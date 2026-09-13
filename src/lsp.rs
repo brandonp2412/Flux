@@ -1379,6 +1379,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "serveConcurrent",
+            3,
+            "fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "readResponse",
             3,
             "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
@@ -3045,7 +3052,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "serve" | "serveOnce" => {
+                "serve" | "serveOnce" | "serveConcurrent" => {
                     return Some(signature_help_for_builtin(
                         &format!("http.{member}"),
                         &[
@@ -8335,6 +8342,50 @@ mod tests {
         .expect("setNoDelay call should have signature help")
         .to_json();
         assert!(help.contains("fn net.noDelay(socket: i64, enabled: bool) -> error"));
+    }
+
+    #[test]
+    fn http_serve_concurrent_is_exposed_in_editor_tooling() {
+        let uri = "file:///tmp/http-serve-concurrent.flux";
+        let completion_source = "fn main() -> i64 {\n    http.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(uri.to_string(), completion_source.to_string())]);
+        let completion_line = completion_source
+            .lines()
+            .position(|line| line.trim() == "http.")
+            .expect("HTTP completion line should exist");
+        let completion_text = completion_source.lines().nth(completion_line).unwrap();
+        let completion = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(completion_text.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(completion.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+
+        let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.serveConcurrent(1, 4096, 1024, request, header, body))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("http.serveConcurrent("))
+            .expect("serveConcurrent call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "http.serveConcurrent(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("serveConcurrent call should have signature help")
+        .to_json();
+        assert!(help.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
     }
 
     #[test]

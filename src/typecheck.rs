@@ -8238,7 +8238,7 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "serve" | "serveOnce" => {
+            "serve" | "serveOnce" | "serveConcurrent" => {
                 if args.len() != 6 {
                     return Err(diag(
                         span,

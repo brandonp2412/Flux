@@ -2933,6 +2933,171 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_serve_concurrent_uses_structured_request_workers() {
+    let source = r#"
+fn request(socket: i64, _method: str, _target: str, _version: str) -> void {
+    time.sleep(250)
+    let _responseError: error = http.respond(socket, 200, "text/plain", "served")
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn serve(listener: i64) -> void {
+    let _serveError: error = http.serveConcurrent(listener, 4096, 1024, request, header, body)
+}
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn responseHeader(_socket: i64, _name: str, _value: str) -> void {
+}
+fn responseBody(_socket: i64, value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(http.serveConcurrent(1, 4096, 1024, request, header, body))
+    return 0
+}
+"#;
+    check_source(source).expect("structured concurrent HTTP server should typecheck");
+    let generated = compile_to_c(source).expect("structured concurrent HTTP server should lower");
+    assert!(generated.contains("flux__net_http_serve_concurrent("));
+    assert!(generated.contains("flux__worker_start_with(flux__net_http_concurrent_entry"));
+    assert!(generated.contains("int64_t handles[64]"));
+    assert!(generated.contains("http.serveConcurrent cancelled by worker scope"));
+    assert!(generated.contains("flux__worker_fail_current(error)"));
+
+    let invalid_limit = check_source(&source.replace(
+        "http.serveConcurrent(listener, 4096, 1024, request, header, body)",
+        "http.serveConcurrent(listener, 0, 1024, request, header, body)",
+    ))
+    .expect_err("serveConcurrent must reject an invalid constant head limit");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.serveConcurrent maxHeadBytes must be between 1 and 65536")
+    );
+
+    let probe =
+        TcpListener::bind("127.0.0.1:0").expect("concurrent HTTP server port should allocate");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let root =
+        std::env::temp_dir().join(format!("flux-http-serve-concurrent-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("concurrent HTTP fixture should be writable");
+    let source_path = root.join("serve.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(socket: i64, _method: str, _target: str, _version: str) -> void {{\n    time.sleep(250)\n    let _responseError: error = http.respond(socket, 200, \"text/plain\", \"served\")\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, _body: str) -> void {{\n}}\nfn serve(listener: i64) -> void {{\n    let _serveError: error = http.serveConcurrent(listener, 4096, 1024, request, header, body)\n}}\nfn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {{\n}}\nfn responseHeader(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn responseBody(_socket: i64, value: str) -> void {{\n    print(value)\n}}\nfn main() -> i64 {{\n    let (listener, listenError) = net.listen(\"127.0.0.1\", {port}, 8)\n    if listenError != nil:\n        return 1\n    let (server, startError) = worker.startWith(serve, listener)\n    if startError != nil:\n        return 2\n    time.sleep(50)\n    let (first, firstError) = net.connect(\"127.0.0.1\", {port})\n    if firstError != nil:\n        return 3\n    let (second, secondError) = net.connect(\"127.0.0.1\", {port})\n    if secondError != nil:\n        return 4\n    let firstRequestError: error = http.request(first, \"GET\", \"/one\", \"example.test\", \"text/plain\", \"\")\n    if firstRequestError != nil:\n        return 5\n    let secondRequestError: error = http.request(second, \"GET\", \"/two\", \"example.test\", \"text/plain\", \"\")\n    if secondRequestError != nil:\n        return 6\n    let started = time.monotonic()\n    let (_firstBytes, firstReadError) = http.readResponseBody(first, 4096, 1024, response, responseHeader, responseBody)\n    if firstReadError != nil:\n        return 7\n    let (_secondBytes, secondReadError) = http.readResponseBody(second, 4096, 1024, response, responseHeader, responseBody)\n    if secondReadError != nil:\n        return 8\n    let elapsed = time.monotonic() - started\n    let firstCloseError: error = net.close(first)\n    if firstCloseError != nil:\n        return 9\n    let secondCloseError: error = net.close(second)\n    if secondCloseError != nil:\n        return 10\n    let cancelError: error = worker.cancel(server)\n    if cancelError != nil:\n        return 11\n    let joinError: error = worker.join(server)\n    if joinError != nil:\n        return 12\n    let listenerCloseError: error = net.close(listener)\n    if listenerCloseError != nil:\n        return 13\n    if elapsed >= 450:\n        return 14\n    return 0\n}}\n"
+        ),
+    )
+    .expect("concurrent HTTP Flux source should be writable");
+    let native_source = r#"
+fn request(socket: i64, _method: str, _target: str, _version: str) -> void {
+    time.sleep(250)
+    let _responseError: error = http.respond(socket, 200, "text/plain", "served")
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn serve(listener: i64) -> void {
+    let _serveError: error = http.serveConcurrent(listener, 4096, 1024, request, header, body)
+}
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn responseHeader(_socket: i64, _name: str, _value: str) -> void {
+}
+fn responseBody(_socket: i64, value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    if listenError != nil:
+        return 1
+    let (port, portError) = net.port(listener)
+    if portError != nil:
+        return 2
+    let (server, startError) = worker.startWith(serve, listener)
+    if startError != nil:
+        return 3
+    time.sleep(50)
+    let (first, firstError) = net.connect("127.0.0.1", port)
+    if firstError != nil:
+        return 4
+    let (second, secondError) = net.connect("127.0.0.1", port)
+    if secondError != nil:
+        return 5
+    let firstRequestError: error = http.request(first, "GET", "/one", "example.test", "text/plain", "")
+    if firstRequestError != nil:
+        return 6
+    let secondRequestError: error = http.request(second, "GET", "/two", "example.test", "text/plain", "")
+    if secondRequestError != nil:
+        return 7
+    let started: i64 = time.monotonic()
+    let (_firstBytes, firstReadError) = http.readResponseBody(first, 4096, 1024, response, responseHeader, responseBody)
+    if firstReadError != nil:
+        return 8
+    let (_secondBytes, secondReadError) = http.readResponseBody(second, 4096, 1024, response, responseHeader, responseBody)
+    if secondReadError != nil:
+        return 9
+    let elapsed: i64 = time.monotonic() - started
+    let firstCloseError: error = net.close(first)
+    if firstCloseError != nil:
+        return 10
+    let secondCloseError: error = net.close(second)
+    if secondCloseError != nil:
+        return 11
+    let cancelError: error = worker.cancel(server)
+    if cancelError != nil:
+        return 12
+    let joinError: error = worker.join(server)
+    if joinError != nil:
+        return 13
+    let listenerCloseError: error = net.close(listener)
+    if listenerCloseError != nil:
+        return 14
+    if elapsed >= 450:
+        return 15
+    return 0
+}
+"#;
+    fs::write(&source_path, native_source)
+        .expect("concurrent HTTP native fixture should be writable");
+    let binary = root.join("serve-concurrent");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("concurrent HTTP Flux binary should build");
+    assert!(
+        built.status.success(),
+        "concurrent HTTP fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let started = Instant::now();
+    let run = Command::new(&binary)
+        .output()
+        .expect("concurrent HTTP Flux binary should run");
+    assert!(
+        run.status.success(),
+        "concurrent HTTP server failed with {:?}: stdout={} stderr={}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "structured concurrent server should cancel and drain promptly"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "served\nserved\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_cancellation_interrupts_blocking_http_server_and_client_io() {
     let serve_source = r#"
 fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
@@ -6849,7 +7014,7 @@ async fn main() -> i64 {
 
     check_source(source).expect("automatic structured cancellation should typecheck");
     let generated = compile_to_c(source).expect("automatic structured cancellation should lower");
-    assert!(generated.contains("else state->entry(); flux__worker_cancel_children(); state->scope_error = flux__worker_join_children()"));
+    assert!(generated.contains("else state->entry(); flux__worker_cancel_children(); const char *child_error = flux__worker_join_children(); if (state->scope_error == NULL) state->scope_error = child_error"));
     assert!(generated.contains("static const char *flux__async_scope_finish(void) { flux__worker_cancel_children(); return flux__worker_join_children(); }"));
     assert!(
         generated
