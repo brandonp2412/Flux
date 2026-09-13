@@ -2,7 +2,7 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 50 406 62 34 60 76 auto
+    grid rows: 50 406 54 34 68 76 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -60,7 +60,9 @@ view HorseTinder {
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        padding: 8
+        padding: 6
+        minHeight: 32
+        maxHeight: 32
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 1
@@ -80,7 +82,7 @@ view HorseTinder {
         wrap: true
         maxLines: 2
         lineHeightPercent: 135
-        padding: 12
+        padding: 10
         backgroundColor: "#11161D"
         borderColor: "#29313B"
         borderWidth: 1
