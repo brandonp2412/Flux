@@ -1,29 +1,29 @@
 view HorseTinder {
     state decision: str = ""
-    derived actionOffset: i64 = (windowWidth - 320) / 2
-    grid columns: 1fr 80 24 80 1fr
-    grid rows: 46 1fr 54 34 72 auto auto
-    grid gap: 8
-    grid padding: 16
+    grid columns: 1fr 80 40 80 1fr
+    grid rows: 48 1fr 60 36 64 80
+    grid gap: 10
+    grid padding: 18
     grid scroll: true
     grid overlay: true
 
     Text brand at 1,1 span columns 3
-        text: "♥︎  HORSE TINDER"
-        color: "#FF5A73"
-        size: 18
+        text: "HORSE TINDER"
+        color: "#FFF8F4"
+        size: 17
         bold: true
         wrap: false
-        letterSpacing: 1
+        letterSpacing: 2
         alignY: "center"
 
     Text nearby at 1,4 span columns 2
-        text: "4 KM  ·  ONLINE"
-        color: "#B9C0CA"
-        size: 11
+        text: "4 KM  /  ONLINE"
+        color: "#B9B8B5"
+        size: 10
         bold: true
         wrap: false
         letterSpacing: 1
+        textAlign: "center"
         alignX: "end"
         alignY: "center"
 
@@ -32,185 +32,152 @@ view HorseTinder {
         alt: "Buttercup, a chestnut horse, with another horse making a ridiculous face in the background"
         fit: "cover"
         clip: true
-        minHeight: 300
-        maxHeight: 447
-        backgroundColor: "#11151B"
-        borderColor: "#252C36"
+        minHeight: 410
+        maxHeight: 490
+        backgroundColor: "#171614"
+        borderColor: "#3A3834"
         borderWidth: 1
-        radius: 28
-        shadowColor: "#00000080"
-        shadowBlur: 10
-        shadowOffsetY: 5
+        radius: 18
+        shadowColor: "#000000A6"
+        shadowBlur: 12
+        shadowOffsetY: 6
 
     Text profileName at 3,1 span columns 5
-        text: "Buttercup, 7"
-        color: "#FFFFFF"
-        size: 34
+        text: "BUTTERCUP, 7"
+        color: "#FFF9F5"
+        size: 31
         bold: true
         wrap: false
+        letterSpacing: 1
         alignY: "center"
 
     Text matchBadge at 4,4 span columns 2
-        text: "98% MATCH"
-        color: "#FFFFFF"
-        size: 9
+        text: "98 / 100"
+        color: "#2A120A"
+        size: 11
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        padding: 4
-        minWidth: 96
-        minHeight: 30
-        maxHeight: 30
-        backgroundColor: "#FF4D67"
-        borderColor: "#FF9AAA"
+        padding: 9
+        minWidth: 92
+        minHeight: 36
+        maxHeight: 36
+        backgroundColor: "#FFB06B"
+        borderColor: "#FFD2AA"
         borderWidth: 1
-        radius: radiusPill
+        radius: 10
 
     Text profileMeta at 4,1 span columns 3
-        text: "Chestnut  ·  Mare  ·  16.1 hands"
-        color: "#C4CBD5"
-        size: 13
+        text: "CHESTNUT MARE  /  16.1 HANDS  /  ACTIVE NOW"
+        color: "#AFAEAA"
+        size: 10
         bold: true
         wrap: false
+        letterSpacing: 1
         alignY: "center"
 
     Text bio at 5,1 span columns 5
-        text: "Beach gallops, shares hay, and emotionally available. Photobomber included."
-        color: "#EEF1F5"
-        size: 15
-        wrap: true
-        maxLines: 2
-        lineHeightPercent: 140
-        padding: 14
-        backgroundColor: "#11161D"
-        borderColor: "#303A47"
-        borderWidth: 1
-        radius: 18
-
-    Button pass at 6,2
-        text: "✕"
-        visible: decision == ""
-        size: 30
-        tooltip: "Pass Buttercup"
-        accessibilityLabel: "Pass on Buttercup"
-        minWidth: 76
-        maxWidth: 76
-        minHeight: 76
-        alignX: "center"
-        alignY: "center"
-        translateX: actionOffset
-        focusable: !windowIsCompact
-        padding: 0
-        radius: 38
-        backgroundColor: "#151B23"
-        borderColor: "#515D6C"
-        borderWidth: 1
-        shadowColor: "#00000080"
-        shadowBlur: 6
-        shadowOffsetY: 3
-        transitionMs: motionFast
-        layoutTransitionMs: motionNormal
-        onPress: decision => "passed"
-
-    Button like at 6,4
-        visible: decision == ""
-        text: "♥︎"
-        size: 36
-        tooltip: "Like Buttercup"
-        accessibilityLabel: "Like Buttercup"
-        minWidth: 76
-        maxWidth: 76
-        minHeight: 76
-        alignX: "center"
-        alignY: "center"
-        translateX: actionOffset
-        focusable: !windowIsCompact
-        padding: 0
-        radius: 38
-        backgroundColor: "#FF4D67"
-        borderColor: "#FF8FA1"
-        borderWidth: 1
-        shadowColor: "#00000080"
-        shadowBlur: 8
-        shadowOffsetY: 3
-        transitionMs: motionFast
-        layoutTransitionMs: motionNormal
-        onPress: decision => "liked"
-
-    Text passLabel at 7,2
-        text: "PASS"
-        visible: decision == ""
-        color: "#7F8996"
-        size: 10
-        bold: true
-        wrap: false
-        letterSpacing: 1
-        textAlign: "center"
-        alignX: "center"
-        alignY: "center"
-        translateX: actionOffset
-        layoutTransitionMs: motionNormal
-
-    Text likeLabel at 7,4
-        text: "LIKE"
-        visible: decision == ""
-        color: "#FF6B80"
-        size: 10
-        bold: true
-        wrap: false
-        letterSpacing: 1
-        textAlign: "center"
-        alignX: "center"
-        alignY: "center"
-        translateX: actionOffset
-        layoutTransitionMs: motionNormal
-
-    Text result at 6,1 span columns 5
-        text: "IT'S A MATCH  ·  Buttercup likes you too."
-        visible: decision == "liked"
-        color: "#FFE8EC"
+        text: "Beach gallops · shares hay · emotionally available · chaotic friend included"
+        color: "#E5E2DD"
         size: 13
         bold: true
         wrap: true
         maxLines: 2
-        lineHeightPercent: 120
+        lineHeightPercent: 135
+        textAlign: "center"
+        alignY: "center"
+        padding: 13
+        backgroundColor: "#171614"
+        borderColor: "#3A3834"
+        borderWidth: 1
+        radius: 12
+
+    Image pass at 6,2
+        source: "assets/icon-pass.png"
+        alt: "Pass"
+        fit: "contain"
+        visible: decision == ""
+        accessibilityLabel: "Pass on Buttercup"
+        minWidth: 80
+        minHeight: 80
+        padding: 20
+        alignX: "center"
+        alignY: "center"
+        clip: true
+        backgroundColor: "#1A1917"
+        borderColor: "#595650"
+        borderWidth: 1
+        radius: 16
+        shadowColor: "#00000099"
+        shadowBlur: 7
+        shadowOffsetY: 4
+        transitionMs: motionFast
+        layoutTransitionMs: motionNormal
+        onTap: decision => "passed"
+
+    Image like at 6,4
+        source: "assets/icon-heart.png"
+        alt: "Like"
+        fit: "contain"
+        visible: decision == ""
+        accessibilityLabel: "Like Buttercup"
+        minWidth: 80
+        minHeight: 80
+        padding: 19
+        alignX: "center"
+        alignY: "center"
+        clip: true
+        backgroundColor: "#FF6A3D"
+        borderColor: "#FF9B7C"
+        borderWidth: 1
+        radius: 16
+        shadowColor: "#FF6A3D52"
+        shadowBlur: 12
+        shadowOffsetY: 5
+        transitionMs: motionFast
+        layoutTransitionMs: motionNormal
+        onTap: decision => "liked"
+
+    Text result at 6,1 span columns 5
+        text: "MATCH CONFIRMED  /  BUTTERCUP LIKES YOU"
+        visible: decision == "liked"
+        color: "#FFF0E9"
+        size: 13
+        bold: true
+        wrap: true
+        letterSpacing: 1
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        margin: 4
-        padding: 10
-        minHeight: 56
-        maxHeight: 56
-        backgroundColor: "#35141AF2"
-        borderColor: "#A23649"
+        padding: 16
+        minHeight: 62
+        backgroundColor: "#3A1B12F2"
+        borderColor: "#A4492E"
         borderWidth: 1
-        radius: 16
+        radius: 12
         layoutTransitionMs: motionNormal
 
     Text passedNote at 6,1 span columns 5
-        text: "PASSED  ·  The photobomber took that personally."
+        text: "PASSED  /  NEXT PROFILE READY"
         visible: decision == "passed"
-        color: "#DDE2E9"
-        size: 12
+        color: "#D8D6D1"
+        size: 13
         bold: true
         wrap: true
-        maxLines: 2
-        lineHeightPercent: 120
+        letterSpacing: 1
         textAlign: "center"
         alignX: "center"
         alignY: "center"
-        margin: 4
-        padding: 10
-        minHeight: 56
-        maxHeight: 56
-        backgroundColor: "#11161DF2"
-        borderColor: "#465261"
+        padding: 16
+        minHeight: 62
+        backgroundColor: "#181715F2"
+        borderColor: "#4B4944"
         borderWidth: 1
-        radius: 16
+        radius: 12
         layoutTransitionMs: motionNormal
 }
 
-app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#080A0E", surfaceRaisedColor: "#11161D", textColor: "#F7F8FA", textMutedColor: "#9AA1AD", accentColor: "#FF4D67", onAccentColor: "#FFFFFF", outlineColor: "#303945", shadowColor: "#00000080")
+app HorseTinder(title: "Horse Tinder", width: 640, height: 900, resizable: true, theme: "dark", surfaceColor: "#0D0C0B", surfaceRaisedColor: "#171614", textColor: "#FFF8F4", textMutedColor: "#AFAEAA", accentColor: "#FF6A3D", onAccentColor: "#FFFFFF", outlineColor: "#3A3834", shadowColor: "#00000099")
