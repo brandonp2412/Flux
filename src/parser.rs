@@ -786,7 +786,7 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(else_value, source_id);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             attach_expr_source(base, source_id);
             attach_expr_source(index, source_id);
         }
@@ -1114,7 +1114,7 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
                 shift_expr_columns(else_value, offset);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             shift_expr_columns(base, offset);
             shift_expr_columns(index, offset);
         }
@@ -6019,7 +6019,17 @@ impl ExprParser<'_> {
         while matches!(
             self.tokens.get(self.index).map(|token| &token.kind),
             Some(TokenKind::LBracket)
-        ) {
+        ) || (matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Question)
+        ) && matches!(
+            self.tokens.get(self.index + 1).map(|token| &token.kind),
+            Some(TokenKind::LBracket)
+        )) {
+            let optional = matches!(self.tokens[self.index].kind, TokenKind::Question);
+            if optional {
+                self.index += 1;
+            }
             let open = self.tokens[self.index].span;
             self.index += 1;
             let start = if matches!(
@@ -6034,6 +6044,13 @@ impl ExprParser<'_> {
                 self.tokens.get(self.index).map(|token| &token.kind),
                 Some(TokenKind::Colon)
             ) {
+                if optional {
+                    return Err(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        open,
+                        "optional-aware indexing currently supports an index expression, not a slice",
+                    ));
+                }
                 self.index += 1;
                 let end = if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
@@ -6115,6 +6132,7 @@ impl ExprParser<'_> {
                     kind: ExprKind::Index {
                         base: Box::new(expr),
                         index,
+                        optional,
                     },
                 };
             }

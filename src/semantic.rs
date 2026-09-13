@@ -483,7 +483,7 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(else_value, symbols, signatures);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_expr_pattern_symbols(base, symbols, signatures);
             collect_expr_pattern_symbols(index, symbols, signatures);
         }

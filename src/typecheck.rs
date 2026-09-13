@@ -648,7 +648,7 @@ pub fn check_all_with_package_constants(
                 if let Err(diagnostic) = require_known_type(span, ty, &signatures) {
                     diagnostics.push(diagnostic);
                 }
-                if matches!(signatures.canonical_type(ty), Type::List(_)) {
+                if is_list_or_optional_list(ty, &signatures) {
                     diagnostics.push(diag(
                         span,
                         "list values cannot be returned from interface capabilities until collection ownership is implemented",
@@ -931,7 +931,7 @@ pub fn check_all_with_package_constants(
                 diagnostics.push(diagnostic);
             }
             let canonical_return = signatures.canonical_type(ty);
-            if matches!(canonical_return, Type::List(_)) {
+            if is_list_or_optional_list(&canonical_return, &signatures) {
                 diagnostics.push(diag(
                     span,
                     "list values cannot be returned from functions until collection ownership is implemented",
@@ -3685,7 +3685,7 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 collect_expr_reads(else_value, reads);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_expr_reads(base, reads);
             collect_expr_reads(index, reads);
         }
@@ -3818,7 +3818,7 @@ fn optional_presence_promotion(
     let Type::Optional(inner) = signatures.canonical_type(env.get(name)?) else {
         return None;
     };
-    if *inner == Type::Void {
+    if *inner == Type::Void || !signatures.is_copy_type(&inner) {
         return None;
     }
     Some((
@@ -4503,7 +4503,12 @@ fn check_block_all(
                             let cond_type = signatures.canonical_type(&cond_type);
                             match cond_type {
                                 Type::Optional(inner) if *inner != Type::Void => {
-                                    if binding.name != "_" {
+                                    if !signatures.is_copy_type(&inner) {
+                                        diagnostics.push(diag(
+                                            cond.span,
+                                            "optional binding patterns currently require a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+                                        ));
+                                    } else if binding.name != "_" {
                                         if env.contains_key(&binding.name) {
                                             diagnostics.push(diag(
                                                 binding.span,
@@ -5271,6 +5276,12 @@ fn type_of_optional_pipe(
             "optional cascade '?..' cannot infer a value type from bare none",
         ));
     }
+    if !signatures.is_copy_type(&inner) {
+        return Err(diag(
+            input.span,
+            "optional cascade '?..' currently requires a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+        ));
+    }
 
     let synthetic_name = format!(
         "__flux_optional_cascade_{}_{}",
@@ -5413,7 +5424,7 @@ fn type_of_anonymous_function(
     };
     if returns
         .iter()
-        .any(|ty| matches!(signatures.canonical_type(ty), Type::List(_)))
+        .any(|ty| is_list_or_optional_list(ty, signatures))
     {
         return Err(diag(
             body.span,
@@ -5808,14 +5819,45 @@ pub fn type_of_expr(
             expr.span,
             "list if/else syntax is only valid inside a list literal",
         )),
-        ExprKind::Index { base, index } => {
+        ExprKind::Index {
+            base,
+            index,
+            optional,
+        } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
-            let Type::List(element) = base_ty else {
-                return Err(diag(base.span, "indexing currently requires a list value"));
-            };
             let index_ty = type_of_expr(index, env, signatures)?;
             require_type(index.span, &Type::I64, &index_ty, "list index")?;
-            Ok(*element)
+            if *optional {
+                let Type::Optional(inner) = base_ty else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware indexing requires an optional list value",
+                    ));
+                };
+                let Type::List(element) = signatures.canonical_type(&inner) else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware indexing requires an optional list value",
+                    ));
+                };
+                let element = *element;
+                if !signatures.is_copy_type(&element) {
+                    return Err(diag(
+                        expr.span,
+                        "optional-aware indexing currently requires a Copy list element; borrowed nested-list results need first-class borrow lifetimes",
+                    ));
+                }
+                if matches!(element, Type::Optional(_)) {
+                    Ok(element)
+                } else {
+                    Ok(Type::Optional(Box::new(element)))
+                }
+            } else {
+                let Type::List(element) = base_ty else {
+                    return Err(diag(base.span, "indexing currently requires a list value"));
+                };
+                Ok(*element)
+            }
         }
         ExprKind::Slice {
             base,
@@ -6858,6 +6900,12 @@ pub fn type_of_expr(
                             ));
                         }
                         return Ok(right_ty);
+                    }
+                    if !signatures.is_copy_type(&inner) {
+                        return Err(diag(
+                            left.span,
+                            "coalescing currently requires a Copy optional payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+                        ));
                     }
                     if right_ty == *inner {
                         Ok(*inner)
@@ -11413,6 +11461,14 @@ fn require_publicly_nameable_type(
     }
 }
 
+fn is_list_or_optional_list(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::List(_) => true,
+        Type::Optional(inner) => matches!(signatures.canonical_type(&inner), Type::List(_)),
+        _ => false,
+    }
+}
+
 fn require_known_type(
     span: SourceSpan,
     ty: &Type,
@@ -11467,7 +11523,12 @@ fn require_known_type(
             require_known_type(span, &inner, signatures)?;
             let actual = signatures.canonical_type(&inner);
             match &actual {
-                Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Function { .. } => Ok(()),
+                Type::I64
+                | Type::Bool
+                | Type::Str
+                | Type::Error
+                | Type::Function { .. }
+                | Type::List(_) => Ok(()),
                 Type::Named(name)
                     if (signatures.struct_type(name).is_some()
                         || signatures.enum_type(name).is_some()
@@ -11479,7 +11540,7 @@ fn require_known_type(
                 _ => Err(diag(
                     span,
                     &format!(
-                        "bootstrap optional values require a Copy scalar, function, struct, enum, or interface value; got {}?",
+                        "bootstrap optional values require a Copy scalar/function/value type or a borrowed list view; got {}?",
                         actual.name()
                     ),
                 )),

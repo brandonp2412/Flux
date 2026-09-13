@@ -815,6 +815,7 @@ pub enum ExprKind {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+        optional: bool,
     },
     Slice {
         base: Box<Expr>,

@@ -5791,6 +5791,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
     }
+    if runtime_usage.contains("struct flux__optional_list") {
+        out.push_str("struct flux__optional_list { bool has_value; struct flux__list value; };\n");
+    }
     if runtime_usage.contains("flux__net_send_text_parts(") {
         out.push_str(r#"static inline const char *flux__net_send_text_parts(int64_t socket_handle, struct flux__list parts) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
@@ -15200,7 +15203,9 @@ fn expr_contains_await(expr: &Expr) -> bool {
                 || expr_contains_await(value)
                 || else_value.as_deref().is_some_and(expr_contains_await)
         }
-        ExprKind::Index { base, index } => expr_contains_await(base) || expr_contains_await(index),
+        ExprKind::Index { base, index, .. } => {
+            expr_contains_await(base) || expr_contains_await(index)
+        }
         ExprKind::Slice {
             base,
             start,
@@ -16611,7 +16616,7 @@ fn collect_interface_names_from_expr(
                 collect_interface_names_from_expr(else_value, signatures, reachable, pending);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_interface_names_from_expr(base, signatures, reachable, pending);
             collect_interface_names_from_expr(index, signatures, reachable, pending);
         }
@@ -16822,7 +16827,7 @@ fn collect_enum_variant_refs_from_expr(
                 collect_enum_variant_refs_from_expr(else_value, signatures, variants);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_enum_variant_refs_from_expr(base, signatures, variants);
             collect_enum_variant_refs_from_expr(index, signatures, variants);
         }
@@ -17295,7 +17300,7 @@ fn collect_value_type_names_from_expr(
                 );
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_value_type_names_from_expr(base, signatures, known, reachable, pending);
             collect_value_type_names_from_expr(index, signatures, known, reachable, pending);
         }
@@ -17644,7 +17649,7 @@ fn collect_interface_pack_facts_from_expr(
                 collect_interface_pack_facts_from_expr(else_value, env, signatures, facts);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_interface_pack_facts_from_expr(base, env, signatures, facts);
             collect_interface_pack_facts_from_expr(index, env, signatures, facts);
         }
@@ -18120,7 +18125,7 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             for item in [base.as_ref(), index.as_ref()] {
                 collect_interface_dispatch_refs_from_expr(
                     item,
@@ -18468,7 +18473,7 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(else_value, known, references);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_named_function_refs_from_expr(base, known, references);
             collect_named_function_refs_from_expr(index, known, references);
         }
@@ -18773,7 +18778,7 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
                 collect_function_helpers_from_expr(else_value, functions);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_function_helpers_from_expr(base, functions);
             collect_function_helpers_from_expr(index, functions);
         }
@@ -22271,8 +22276,13 @@ fn dead_store_rhs_is_discardable(
                 _ => false,
             }
         }
-        ExprKind::Index { base, index } => {
-            dead_store_rhs_is_discardable(base, env, signatures)
+        ExprKind::Index {
+            base,
+            index,
+            optional,
+        } => {
+            !*optional
+                && dead_store_rhs_is_discardable(base, env, signatures)
                 && dead_store_rhs_is_discardable(index, env, signatures)
                 && resolved_static_list_index(base, index, env, signatures)
                     .ok()
@@ -26026,26 +26036,67 @@ fn emit_expr(
                 "list if/else syntax is only valid inside a list literal",
             ));
         }
-        ExprKind::Index { base, index } => {
-            let static_index = resolved_static_list_index(base, index, env, signatures)?;
-            let base = emit_expr(base, env, signatures)?;
-            let index = emit_expr(index, env, signatures)?;
+        ExprKind::Index {
+            base,
+            index,
+            optional,
+        } => {
+            let base_value = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let element_c = c_type(&result_ty, signatures);
-            let code = if let Some(static_index) = static_index {
-                format!(
-                    "(*(({element_c} *)flux_list_at_unchecked({}, {static_index}, sizeof({element_c}))))",
-                    base.code
-                )
+            if *optional {
+                let Type::Optional(inner) = signatures.canonical_type(&base_value.ty) else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware indexing requires an optional list value during code generation",
+                    ));
+                };
+                let Type::List(element) = signatures.canonical_type(&inner) else {
+                    return Err(diag(
+                        base.span,
+                        "optional-aware indexing requires an optional list value during code generation",
+                    ));
+                };
+                let index_value = emit_expr(index, env, signatures)?;
+                let base_c = c_type(&base_value.ty, signatures);
+                let element_c = c_type(&element, signatures);
+                let result_c = c_type(&result_ty, signatures);
+                let present = if matches!(signatures.canonical_type(&element), Type::Optional(_)) {
+                    format!(
+                        "(*(({element_c} *)flux_list_at(flux__optional_index_base.value, {}, sizeof({element_c}))))",
+                        index_value.code
+                    )
+                } else {
+                    format!(
+                        "({result_c}){{ .has_value = true, .value = *(({element_c} *)flux_list_at(flux__optional_index_base.value, {}, sizeof({element_c}))) }}",
+                        index_value.code
+                    )
+                };
+                EmittedExpr {
+                    code: format!(
+                        "__extension__ ({{ {base_c} flux__optional_index_base = {}; flux__optional_index_base.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})",
+                        base_value.code
+                    ),
+                    ty: result_ty,
+                }
             } else {
-                format!(
-                    "(*(({element_c} *)flux_list_at({}, {}, sizeof({element_c}))))",
-                    base.code, index.code
-                )
-            };
-            EmittedExpr {
-                code,
-                ty: result_ty,
+                let static_index = resolved_static_list_index(base, index, env, signatures)?;
+                let index_value = emit_expr(index, env, signatures)?;
+                let element_c = c_type(&result_ty, signatures);
+                let code = if let Some(static_index) = static_index {
+                    format!(
+                        "(*(({element_c} *)flux_list_at_unchecked({}, {static_index}, sizeof({element_c}))))",
+                        base_value.code
+                    )
+                } else {
+                    format!(
+                        "(*(({element_c} *)flux_list_at({}, {}, sizeof({element_c}))))",
+                        base_value.code, index_value.code
+                    )
+                };
+                EmittedExpr {
+                    code,
+                    ty: result_ty,
+                }
             }
         }
         ExprKind::Slice {
@@ -29203,7 +29254,11 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             format!("struct {}", record_c_name(&record, signatures))
         }
         Type::Optional(inner) => {
-            format!("struct flux__optional_{}", type_mangle(&inner, signatures))
+            if matches!(signatures.canonical_type(&inner), Type::List(_)) {
+                "struct flux__optional_list".to_string()
+            } else {
+                format!("struct flux__optional_{}", type_mangle(&inner, signatures))
+            }
         }
         Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
     }
@@ -29767,7 +29822,7 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(else_value, signatures, emitted, helpers);
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             collect_update_helpers_from_expr(base, signatures, emitted, helpers);
             collect_update_helpers_from_expr(index, signatures, emitted, helpers);
         }

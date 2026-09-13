@@ -1117,8 +1117,17 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             }
             text
         }
-        ExprKind::Index { base, index } => {
-            format!("{}[{}]", format_expr(base, 7), format_expr(index, 0))
+        ExprKind::Index {
+            base,
+            index,
+            optional,
+        } => {
+            let marker = if *optional { "?" } else { "" };
+            format!(
+                "{}{marker}[{}]",
+                format_expr(base, 7),
+                format_expr(index, 0)
+            )
         }
         ExprKind::Slice {
             base,

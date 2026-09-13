@@ -67,6 +67,7 @@ pub enum ControlFlowValueKind {
     Index {
         base: ControlFlowValueId,
         index: ControlFlowValueId,
+        optional: bool,
     },
     Slice {
         base: ControlFlowValueId,
@@ -1786,11 +1787,19 @@ impl<'a> ControlFlowBuilder<'a> {
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
-            ExprKind::Index { base, index } => {
+            ExprKind::Index {
+                base,
+                index,
+                optional,
+            } => {
                 let base = self.lower_scalar_expr(producer, base);
                 let index = self.lower_scalar_expr(producer, index);
                 match (base, index) {
-                    (Some(base), Some(index)) => ControlFlowValueKind::Index { base, index },
+                    (Some(base), Some(index)) => ControlFlowValueKind::Index {
+                        base,
+                        index,
+                        optional: *optional,
+                    },
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
@@ -2693,7 +2702,7 @@ fn record_expr_types(
                 evaluations.push((expr.span, vec![signatures.canonical_type(&ty)]));
             }
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index { base, index, .. } => {
             record_expr_types(base, env, signatures, evaluations);
             record_expr_types(index, env, signatures, evaluations);
         }
@@ -3053,9 +3062,25 @@ fn collect_value_uses(
                     );
                 }
             }
-            ControlFlowValueKind::Index { base, index } => {
+            ControlFlowValueKind::Index {
+                base,
+                index,
+                optional,
+            } => {
                 push_value_use(&mut uses, value.id, *base, ControlFlowValueUseKind::Eager);
-                push_value_use(&mut uses, value.id, *index, ControlFlowValueUseKind::Eager);
+                if *optional {
+                    push_value_region_use(
+                        values,
+                        &mut uses,
+                        &mut regions,
+                        value,
+                        *index,
+                        ControlFlowValueUseKind::BranchThen,
+                        ControlFlowValueRegionKind::OptionalPresent { optional: *base },
+                    );
+                } else {
+                    push_value_use(&mut uses, value.id, *index, ControlFlowValueUseKind::Eager);
+                }
             }
             ControlFlowValueKind::Slice {
                 base,

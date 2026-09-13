@@ -34670,20 +34670,163 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout), "9\n7\n");
     let _ = fs::remove_dir_all(&root);
+}
 
-    let non_copy = r#"
+#[test]
+fn optional_list_indexing_is_lazy_flattened_and_ownership_safe() {
+    let source = r#"
+fn sideEffectIndex() -> i64 {
+    print(99)
+    return 1
+}
+
 fn main() -> i64 {
-    let values: i64[]? = none
+    let present: i64[]? = [10, 20, 30]
+    let missing: i64[]? = none
+    print(present?[1] ?? -1)
+    print(missing?[sideEffectIndex()] ?? -1)
+
+    let first: i64? = 7
+    let empty: i64? = none
+    let nested: i64?[]? = [first, empty]
+    print(nested?[0] ?? -1)
+    print(nested?[1] ?? -1)
     return 0
 }
 "#;
-    let error = check_source(non_copy).expect_err("non-Copy optionals must remain rejected");
+
+    check_source(source).expect("borrowed optional list indexing should typecheck");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("optional-aware indexing should format canonically");
+    assert!(formatted.contains("present?[1] ?? -1"));
+    assert!(formatted.contains("missing?[sideEffectIndex()] ?? -1"));
+    assert_eq!(
+        fluxc::formatter::format_source(&formatted)
+            .expect("formatted optional-aware indexing should reparse"),
+        formatted
+    );
+
+    let generated = compile_to_c(source).expect("optional-aware indexing should lower natively");
+    assert!(generated.contains("struct flux__optional_list"));
+    assert!(generated.contains("flux__optional_index_base.has_value"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-optional-aware-index-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional-aware index directory should be writable");
+    let c_path = root.join("optional_aware_index.c");
+    let exe_path = root.join("optional_aware_index");
+    fs::write(&c_path, generated).expect("generated optional-aware index C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional-aware indexing");
     assert!(
-        error.message.contains(
-            "bootstrap optional values require a Copy scalar, function, struct, enum, or interface value; got i64[]?"
-        ),
+        compile.status.success(),
+        "optional-aware index C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-aware index program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "20\n-1\n7\n-1\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let non_optional = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    return values?[0] ?? 0
+}
+"#;
+    let error = check_source(non_optional)
+        .expect_err("optional-aware indexing requires an optional list receiver");
+    assert!(
+        error
+            .message
+            .contains("optional-aware indexing requires an optional list value"),
         "unexpected diagnostic: {}",
         error.message
+    );
+
+    let escaping = r#"
+fn bad() -> i64[]? {
+    let values: i64[] = [1]
+    return values
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(escaping).expect_err("optional list returns must remain ownership-gated");
+    assert!(
+        errors.iter().any(|error| error
+            .message
+            .contains("list values cannot be returned from functions until collection ownership is implemented")),
+        "optional list returns must remain ownership-gated: {errors:?}"
+    );
+
+    let unsafe_unwraps = r#"
+fn main() -> i64 {
+    let values: i64[]? = [4, 5]
+    if let unwrapped = values:
+        print(unwrapped[0])
+    let fallback: i64[] = [9]
+    let chosen: i64[] = values ?? fallback
+    return chosen[0]
+}
+"#;
+    let errors = check_source_all(unsafe_unwraps)
+        .expect_err("borrowed optional lists must not gain implicit unwrap aliases");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("optional binding patterns currently require a Copy payload")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("coalescing currently requires a Copy optional payload")
+    }));
+
+    let nested_view = r#"
+fn main() -> i64 {
+    let rows: i64[][]? = [[1], [2]]
+    let row: i64[]? = rows?[0]
+    return 0
+}
+"#;
+    let error = check_source(nested_view)
+        .expect_err("optional indexing must not manufacture untracked nested-list borrows");
+    assert!(
+        error
+            .message
+            .contains("optional-aware indexing currently requires a Copy list element")
+    );
+
+    let moved_owner = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 5]
+    let maybe: i64[]? = values
+    print(maybe?[0] ?? -1)
+    return values[0]
+}
+"#;
+    let errors = check_source_all(moved_owner)
+        .expect_err("injecting an owned list into an optional must move the local descriptor");
+    assert!(
+        errors.iter().any(|error| error
+            .message
+            .contains("use of moved non-copy binding 'values'")),
+        "injecting an owned list into an optional must transfer the local descriptor: {errors:?}"
     );
 }
 
