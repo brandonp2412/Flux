@@ -15798,19 +15798,6 @@ fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
     Some((name, args, named_args))
 }
 
-fn block_direct_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
-    let mut await_indices = Vec::new();
-    for (index, stmt) in block.iter().enumerate() {
-        if !stmt_contains_await(stmt) {
-            continue;
-        }
-        let await_expr = direct_await_expr(stmt)?;
-        direct_await_call(await_expr)?;
-        await_indices.push(index);
-    }
-    Some(await_indices)
-}
-
 fn block_branch_await_indices(block: &[Stmt]) -> Option<Vec<usize>> {
     let mut await_indices = Vec::new();
     for (index, stmt) in block.iter().enumerate() {
@@ -15885,7 +15872,7 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     if expr_contains_await(cond) {
         return None;
     }
-    let body_await_indices = block_direct_await_indices(body)?;
+    let body_await_indices = block_branch_await_indices(body)?;
     if body_await_indices.is_empty() {
         None
     } else {
@@ -15916,7 +15903,7 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     if expr_contains_await(start) || expr_contains_await(end) {
         return None;
     }
-    let body_await_indices = block_direct_await_indices(body)?;
+    let body_await_indices = block_branch_await_indices(body)?;
     if body_await_indices.is_empty() {
         None
     } else {
@@ -20433,7 +20420,7 @@ fn emit_async_while_iteration(
     )?;
     let awaited_stmt = &body[first_await];
     emit_source_line(out, awaited_stmt.span, context.source_paths);
-    emit_async_suspend(
+    let conditional_suspend = emit_async_branch_suspend(
         out,
         "                ",
         awaited_stmt,
@@ -20441,8 +20428,23 @@ fn emit_async_while_iteration(
         function,
         plan,
         &body_env,
+        &body_mutable,
         signatures,
     )?;
+    if conditional_suspend {
+        let continue_state = while_plan.body_await_indices.len() + 1;
+        emit_async_save_locals(
+            out,
+            "                ",
+            &plan.locals,
+            &body_env,
+            signatures,
+            awaited_stmt.span,
+        )?;
+        out.push_str(&format!(
+            "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+        ));
+    }
     out.push_str(&format!("{pad}}}\n"));
 
     emit_async_while_tail(
@@ -20797,7 +20799,7 @@ fn emit_async_for_range_iteration(
     )?;
     let awaited_stmt = &body[first_await];
     emit_source_line(out, awaited_stmt.span, context.source_paths);
-    emit_async_suspend(
+    let conditional_suspend = emit_async_branch_suspend(
         out,
         "                ",
         awaited_stmt,
@@ -20805,8 +20807,23 @@ fn emit_async_for_range_iteration(
         function,
         plan,
         &body_env,
+        &body_mutable,
         signatures,
     )?;
+    if conditional_suspend {
+        let continue_state = for_plan.body_await_indices.len() + 1;
+        emit_async_save_locals(
+            out,
+            "                ",
+            &plan.locals,
+            &body_env,
+            signatures,
+            awaited_stmt.span,
+        )?;
+        out.push_str(&format!(
+            "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+        ));
+    }
     out.push_str(&format!("{pad}}}\n"));
     emit_async_for_range_tail(
         out,
