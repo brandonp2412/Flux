@@ -8336,7 +8336,10 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     if c_source.contains("GetOpenFileNameW(") || c_source.contains("GetSaveFileNameW(") {
         libraries.push("-lcomdlg32");
     }
-    if c_source.contains("Shell_NotifyIconW(") || c_source.contains("SHBrowseForFolderW(") {
+    if c_source.contains("Shell_NotifyIconW(")
+        || c_source.contains("SHBrowseForFolderW(")
+        || c_source.contains("ShellExecuteW(")
+    {
         libraries.push("-lshell32");
     }
     if c_source.contains("CoTaskMemFree(") {
@@ -9422,6 +9425,10 @@ app OverlayDemo(title: "Overlay")
             vec!["-luser32", "-lcomdlg32", "-lshell32", "-lole32"]
         );
 
+        assert_eq!(
+            windows_native_system_libraries("ShellExecuteW("),
+            vec!["-lshell32"]
+        );
         assert!(windows_native_system_libraries("int main(void) { return 0; }").is_empty());
     }
 

@@ -9359,6 +9359,64 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "windows" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("windows.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "processId" | "uptimeMillis" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("windows.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
+            "open" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("windows.open expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &actual, "windows.open target")?;
+                return Ok(vec![Type::Bool]);
+            }
+            "beep" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("windows.beep expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    let actual = type_of_expr(argument, env, signatures)?;
+                    require_type(
+                        argument.span,
+                        &Type::I64,
+                        &actual,
+                        if index == 0 {
+                            "windows.beep frequencyHz"
+                        } else {
+                            "windows.beep durationMs"
+                        },
+                    )?;
+                }
+                return Ok(vec![Type::Bool]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("windows module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "locale" {
         if !named_args.is_empty() {
             return Err(diag(

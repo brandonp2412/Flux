@@ -1466,6 +1466,20 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "windows" {
+        for (label, detail) in [
+            ("processId", "fn windows.processId() -> i64"),
+            ("uptimeMillis", "fn windows.uptimeMillis() -> i64"),
+            ("open", "fn windows.open(target: str) -> bool"),
+            (
+                "beep",
+                "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
+            ),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "locale" {
         push_completion_item(items, seen, "language", 3, "fn locale.language() -> str");
         push_completion_item(items, seen, "region", 3, "fn locale.region() -> str");
@@ -3803,6 +3817,43 @@ fn signature_help_for_document_cached(
                         "frame.timeline",
                         &["durationMs: i64", "callback: fn(i64) -> void"],
                         "void",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if namespace == "windows" {
+            match implementation_member {
+                "processId" => {
+                    return Some(signature_help_for_builtin(
+                        "windows.processId",
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "uptimeMillis" => {
+                    return Some(signature_help_for_builtin(
+                        "windows.uptimeMillis",
+                        &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "open" => {
+                    return Some(signature_help_for_builtin(
+                        "windows.open",
+                        &["target: str"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "beep" => {
+                    return Some(signature_help_for_builtin(
+                        "windows.beep",
+                        &["frequencyHz: i64", "durationMs: i64"],
+                        "bool",
                         active_parameter,
                     ));
                 }
@@ -9491,6 +9542,74 @@ mod tests {
         .expect("keepScreenOn should have signature help")
         .to_json();
         assert!(help.contains("fn android.awake(enabled: bool) -> void"));
+    }
+
+    #[test]
+    fn windows_platform_calls_have_completion_and_signature_help() {
+        let completion_uri = "file:///tmp/windows-platform-completion.flux";
+        let completion_source = "fn main() -> i64 {\n    windows.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(completion_uri.to_string(), completion_source.to_string())]);
+        let completion_line = 1;
+        let completion_cursor = completion_source
+            .lines()
+            .nth(completion_line)
+            .unwrap()
+            .len();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            completion_uri,
+            completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(completion_cursor),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        for expected in [
+            "fn windows.processId() -> i64",
+            "fn windows.uptimeMillis() -> i64",
+            "fn windows.open(target: str) -> bool",
+            "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
+        ] {
+            assert!(
+                items.contains(expected),
+                "missing Windows completion {expected}"
+            );
+        }
+
+        let uri = "file:///tmp/windows-platform-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(windows.processId())\n    print(windows.uptimeMillis())\n    print(windows.open(\"https://example.com\"))\n    print(windows.beep(440, 25))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("windows.processId(", "fn windows.processId() -> i64"),
+            ("windows.uptimeMillis(", "fn windows.uptimeMillis() -> i64"),
+            ("windows.open(", "fn windows.open(target: str) -> bool"),
+            (
+                "windows.beep(",
+                "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("Windows platform call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("Windows platform call should have signature help")
+            .to_json();
+            assert!(
+                help.contains(expected),
+                "missing Windows signature {expected}"
+            );
+        }
     }
 
     #[test]
