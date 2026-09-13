@@ -3742,11 +3742,17 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    let function = database
-        .program()
-        .functions
-        .iter()
-        .find(|function| function.name == call_name)?;
+    let source_id = source_id_for_uri(uri);
+    let function = database.program().functions.iter().find(|function| {
+        function.name == call_name
+            && (function.name_span.source_id == source_id
+                || (function.public
+                    && source_reaches_source(
+                        database.program(),
+                        source_id,
+                        function.name_span.source_id,
+                    )))
+    })?;
     let label = format_ast_function_signature(function);
     let parameters = function
         .params
@@ -4289,6 +4295,7 @@ fn semantic_tokens_with_database(
     for (line_index, line) in source.lines().enumerate() {
         tokenize_semantic_line(
             &mut tokens,
+            source,
             line,
             line_index,
             source_id,
@@ -4302,6 +4309,7 @@ fn semantic_tokens_with_database(
 
 fn tokenize_semantic_line(
     tokens: &mut Vec<SemanticToken>,
+    source: &str,
     line: &str,
     line_index: usize,
     source_id: SourceId,
@@ -4433,8 +4441,14 @@ fn tokenize_semantic_line(
                 index += 1;
             }
             let word = &line[start..index];
-            let kind =
-                semantic_identifier_kind(word, source_id, line_index + 1, start + 1, database);
+            let kind = semantic_identifier_kind(
+                word,
+                source,
+                source_id,
+                line_index + 1,
+                start + 1,
+                database,
+            );
             push_semantic_token(tokens, line, line_index, start, index, kind, encoding);
             continue;
         }
@@ -4461,6 +4475,7 @@ fn tokenize_semantic_line(
 
 fn semantic_identifier_kind(
     word: &str,
+    source: &str,
     source_id: SourceId,
     line: usize,
     column: usize,
@@ -4479,7 +4494,15 @@ fn semantic_identifier_kind(
         return SemanticTokenKind::Variable;
     };
     let symbol = database.symbol_at(source_id, line, column).or_else(|| {
-        let mut matches = database.symbols_named(word);
+        if let Some(local) =
+            visible_local_symbol_for_position(database, source, source_id, line, word)
+        {
+            return Some(local);
+        }
+        let mut matches = database.symbols_named(word).filter(|symbol| {
+            is_unqualified_symbol_kind(symbol.kind)
+                && source_reaches_source(database.program(), source_id, symbol.span.source_id)
+        });
         let first = matches.next()?;
         matches.next().is_none().then_some(first)
     });
@@ -4737,9 +4760,10 @@ fn symbol_for_position<'a>(
             {
                 return Some(local);
             }
-            let mut matches = database
-                .symbols_named(name)
-                .filter(|symbol| is_unqualified_symbol_kind(symbol.kind));
+            let mut matches = database.symbols_named(name).filter(|symbol| {
+                is_unqualified_symbol_kind(symbol.kind)
+                    && source_reaches_source(database.program(), source_id, symbol.span.source_id)
+            });
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
@@ -9943,7 +9967,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_references_and_rename_ignore_same_named_sibling_fields() {
+    fn editor_symbol_identity_ignores_same_named_sibling_fields() {
         let root = std::env::temp_dir().join(format!(
             "flux-lsp-project-module-scope-{}",
             std::process::id()
@@ -9966,6 +9990,40 @@ mod tests {
         let main = std::fs::canonicalize(main).unwrap();
         let main_uri = file_uri_from_path(&main);
         let documents = HashMap::from([(main_uri.clone(), main_source.to_string())]);
+
+        let semantic_data = semantic_tokens_for_document_cached(
+            &main_uri,
+            main_source,
+            &documents,
+            PositionEncoding::Utf8,
+            None,
+        );
+        let semantic_numbers = semantic_data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (semantic_chunks, semantic_remainder) = semantic_numbers.as_chunks::<5>();
+        assert!(semantic_remainder.is_empty());
+        let expected_start = main_source.lines().nth(2).unwrap().find("value").unwrap() as i64;
+        let mut semantic_line = 0i64;
+        let mut semantic_start = 0i64;
+        let mut value_kind = None;
+        for token in semantic_chunks {
+            semantic_line += token[0];
+            semantic_start = if token[0] == 0 {
+                semantic_start + token[1]
+            } else {
+                token[1]
+            };
+            if semantic_line == 2 && semantic_start == expected_start {
+                value_kind = Some(token[3]);
+                break;
+            }
+        }
+        assert_eq!(value_kind, Some(SemanticTokenKind::Function as i64));
 
         let references = references_for_document(
             &main_uri,
@@ -10234,6 +10292,7 @@ mod tests {
         let mut in_multiline = false;
         tokenize_semantic_line(
             &mut tokens,
+            "",
             "    let text: str = \"\"\"alpha",
             0,
             SourceId::new(1),
@@ -10244,6 +10303,7 @@ mod tests {
         assert!(in_multiline);
         tokenize_semantic_line(
             &mut tokens,
+            "",
             "beta \" quote, (still string)",
             1,
             SourceId::new(1),
@@ -10258,6 +10318,7 @@ mod tests {
         );
         tokenize_semantic_line(
             &mut tokens,
+            "",
             "gamma\"\"\"",
             2,
             SourceId::new(1),
@@ -10269,6 +10330,49 @@ mod tests {
         assert_eq!(
             active_call("print(\"\"\"hello (x, y)\nworld\"\"\", "),
             Some(("print", 1))
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_resolve_same_named_locals_by_usage_scope() {
+        let uri = "file:///tmp/semantic-local-shadow.flux";
+        let source = "fn first(value: i64) -> i64 {\n    return value\n}\nfn second(value: str) -> str {\n    return value\n}\nfn main() -> i64 { 0 }\n";
+        let data = semantic_tokens(uri, source, PositionEncoding::Utf8);
+        let numbers = data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (chunks, remainder) = numbers.as_chunks::<5>();
+        assert!(remainder.is_empty());
+        let expected_starts = [
+            source.lines().nth(1).unwrap().find("value").unwrap() as i64,
+            source.lines().nth(4).unwrap().find("value").unwrap() as i64,
+        ];
+        let mut line = 0i64;
+        let mut start = 0i64;
+        let mut usage_kinds = Vec::new();
+        for token in chunks {
+            line += token[0];
+            start = if token[0] == 0 {
+                start + token[1]
+            } else {
+                token[1]
+            };
+            if (line == 1 && start == expected_starts[0])
+                || (line == 4 && start == expected_starts[1])
+            {
+                usage_kinds.push(token[3]);
+            }
+        }
+        assert_eq!(
+            usage_kinds,
+            vec![
+                SemanticTokenKind::Parameter as i64,
+                SemanticTokenKind::Parameter as i64,
+            ]
         );
     }
 
