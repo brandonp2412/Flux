@@ -15743,6 +15743,10 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     })
 }
 
+fn async_continuation_state_type(signatures: &Signatures, ty: &Type) -> bool {
+    signatures.is_copy_type(ty) && signatures.is_send_type(ty)
+}
+
 fn collect_async_saved_locals(
     block: &[Stmt],
     through_index: usize,
@@ -15756,7 +15760,7 @@ fn collect_async_saved_locals(
         match &stmt.kind {
             StmtKind::Let { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !signatures.is_copy_type(&ty) {
+                if !async_continuation_state_type(signatures, &ty) {
                     return None;
                 }
                 if locals.get(name).is_some_and(|existing| existing != &ty) {
@@ -15767,7 +15771,7 @@ fn collect_async_saved_locals(
             }
             StmtKind::Var { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !signatures.is_copy_type(&ty) {
+                if !async_continuation_state_type(signatures, &ty) {
                     return None;
                 }
                 if locals.get(name).is_some_and(|existing| existing != &ty) {
@@ -15787,7 +15791,7 @@ fn collect_async_saved_locals(
                         continue;
                     }
                     let ty = signatures.canonical_type(&binding.ty);
-                    if !signatures.is_copy_type(&ty)
+                    if !async_continuation_state_type(signatures, &ty)
                         || locals
                             .get(&binding.name)
                             .is_some_and(|existing| existing != &ty)
@@ -15820,7 +15824,7 @@ fn collect_async_saved_locals(
                         continue;
                     }
                     let ty = signatures.canonical_type(&ty);
-                    if !signatures.is_copy_type(&ty)
+                    if !async_continuation_state_type(signatures, &ty)
                         || locals
                             .get(&binding.name)
                             .is_some_and(|existing| existing != &ty)
@@ -15860,7 +15864,7 @@ fn collect_async_struct_pattern_bindings(
             continue;
         }
         let ty = signatures.canonical_type(&field_signature.ty);
-        if !signatures.is_copy_type(&ty)
+        if !async_continuation_state_type(signatures, &ty)
             || locals
                 .get(&field.binding.name)
                 .is_some_and(|existing| existing != &ty)
@@ -15891,7 +15895,7 @@ fn collect_async_match_arm_bindings(
                     continue;
                 }
                 let ty = signatures.canonical_type(payload_ty);
-                if !signatures.is_copy_type(&ty)
+                if !async_continuation_state_type(signatures, &ty)
                     || locals
                         .get(&binding.name)
                         .is_some_and(|existing| existing != &ty)
@@ -16014,7 +16018,7 @@ fn async_continuation_plan(
                     return None;
                 };
                 let inner = signatures.canonical_type(&inner);
-                if !signatures.is_copy_type(&inner)
+                if !async_continuation_state_type(signatures, &inner)
                     || locals
                         .get(&binding.name)
                         .is_some_and(|existing| existing != &inner)
@@ -16111,7 +16115,7 @@ fn async_continuation_plan(
         match &stmt.kind {
             StmtKind::Let { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !signatures.is_copy_type(&ty) {
+                if !async_continuation_state_type(signatures, &ty) {
                     return None;
                 }
                 env.insert(name.clone(), ty.clone());
@@ -16119,7 +16123,7 @@ fn async_continuation_plan(
             }
             StmtKind::Var { name, ty, .. } => {
                 let ty = signatures.canonical_type(ty);
-                if !signatures.is_copy_type(&ty) {
+                if !async_continuation_state_type(signatures, &ty) {
                     return None;
                 }
                 env.insert(name.clone(), ty.clone());
@@ -16136,7 +16140,7 @@ fn async_continuation_plan(
                         continue;
                     }
                     let ty = signatures.canonical_type(&binding.ty);
-                    if !signatures.is_copy_type(&ty) {
+                    if !async_continuation_state_type(signatures, &ty) {
                         return None;
                     }
                     env.insert(binding.name.clone(), ty.clone());
@@ -16165,7 +16169,7 @@ fn async_continuation_plan(
                         continue;
                     }
                     let ty = signatures.canonical_type(&ty);
-                    if !signatures.is_copy_type(&ty) {
+                    if !async_continuation_state_type(signatures, &ty) {
                         return None;
                     }
                     env.insert(binding.name.clone(), ty.clone());

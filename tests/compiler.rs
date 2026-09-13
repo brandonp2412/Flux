@@ -35873,6 +35873,29 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_continuations_keep_non_send_locals_on_the_originating_task_thread() {
+    let source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn main() -> i64 {
+    let label: str = "parent"
+    let code: i64 = await ready()
+    print(label)
+    return code - 1
+}
+"#;
+
+    check_source(source).expect("non-Send locals may remain inside one async task thread");
+    let generated = compile_to_c(source)
+        .expect("non-Send continuation state should fall back to blocking task-local await");
+    assert!(!generated.contains("flux__async_resume_main"));
+    assert!(generated.contains("flux__async_await_ready(flux__async_start_ready())"));
+    assert!(generated.contains("flux__async_body_main"));
+}
+
+#[test]
 fn nested_async_tasks_drain_worker_children_before_completion() {
     let source = r#"
 fn delayedChild() -> void {
