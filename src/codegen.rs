@@ -5982,6 +5982,10 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         || runtime_usage.contains("flux__fs_directory_changed_unix_millis(")
         || runtime_usage.contains("flux__fs_file_permissions(")
         || runtime_usage.contains("flux__fs_directory_permissions(")
+        || runtime_usage.contains("flux__fs_file_owner(")
+        || runtime_usage.contains("flux__fs_directory_owner(")
+        || runtime_usage.contains("flux__fs_file_group(")
+        || runtime_usage.contains("flux__fs_directory_group(")
     {
         out.push_str("struct flux__fs_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__fs_i64_error flux__fs_i64_result(int64_t value, const char *error) { struct flux__fs_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
@@ -6032,6 +6036,25 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_directory_permissions(") {
         out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_permissions(const char *path) { return flux__fs_permissions(path, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_owner(")
+        || runtime_usage.contains("flux__fs_directory_owner(")
+        || runtime_usage.contains("flux__fs_file_group(")
+        || runtime_usage.contains("flux__fs_directory_group(")
+    {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_identity(const char *path, bool expect_directory, bool group) { struct stat info; if (stat(path, &info) != 0) return flux__fs_i64_result(-1, group ? \"failed to inspect group\" : \"failed to inspect owner\"); if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return flux__fs_i64_result(-1, expect_directory ? \"path is not a directory\" : \"path is not a file\"); uintmax_t value = group ? (uintmax_t)info.st_gid : (uintmax_t)info.st_uid; if (value > (uintmax_t)INT64_MAX) return flux__fs_i64_result(-1, group ? \"group id exceeds i64\" : \"owner id exceeds i64\"); return flux__fs_i64_result((int64_t)value, NULL); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_owner(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_owner(const char *path) { return flux__fs_identity(path, false, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_owner(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_owner(const char *path) { return flux__fs_identity(path, true, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_group(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_file_group(const char *path) { return flux__fs_identity(path, false, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_group(") {
+        out.push_str("static inline struct flux__fs_i64_error flux__fs_directory_group(const char *path) { return flux__fs_identity(path, true, true); }\n");
     }
     if runtime_usage.contains("flux__fs_write_text(")
         || runtime_usage.contains("flux__fs_append_text(")
@@ -30652,7 +30675,7 @@ fn emit_qualified_call(
         }
         match name {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
-            | "remove" => {
+            | "owner" | "group" | "remove" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -30681,6 +30704,16 @@ fn emit_qualified_call(
                     ),
                     "permissions" => (
                         "flux__fs_file_permissions",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "owner" => (
+                        "flux__fs_file_owner",
+                        vec![Type::I64, Type::Error],
+                        Some("flux__fs_i64_error".to_string()),
+                    ),
+                    "group" => (
+                        "flux__fs_file_group",
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
@@ -30786,6 +30819,16 @@ fn emit_qualified_call(
             ),
             "permissions" => (
                 "flux__fs_directory_permissions",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "owner" => (
+                "flux__fs_directory_owner",
+                vec![Type::I64, Type::Error],
+                Some("flux__fs_i64_error".to_string()),
+            ),
+            "group" => (
+                "flux__fs_directory_group",
                 vec![Type::I64, Type::Error],
                 Some("flux__fs_i64_error".to_string()),
             ),

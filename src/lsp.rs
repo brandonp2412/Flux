@@ -1648,6 +1648,8 @@ fn add_qualified_namespace_completions(
                 "permissions",
                 "fn file.permissions(path: str) -> (i64, error)",
             ),
+            ("owner", "fn file.owner(path: str) -> (i64, error)"),
+            ("group", "fn file.group(path: str) -> (i64, error)"),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -1688,6 +1690,8 @@ fn add_qualified_namespace_completions(
                 "permissions",
                 "fn directory.permissions(path: str) -> (i64, error)",
             ),
+            ("owner", "fn directory.owner(path: str) -> (i64, error)"),
+            ("group", "fn directory.group(path: str) -> (i64, error)"),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
             (
@@ -3593,7 +3597,8 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" => {
+                "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
+                | "owner" | "group" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
@@ -3654,7 +3659,8 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "modifiedUnixMillis" | "accessed" | "changed" | "permissions" => {
+                "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
+                | "group" => {
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
@@ -7277,6 +7283,8 @@ mod tests {
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.owner(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.group(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.accessed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.changed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
@@ -7306,6 +7314,8 @@ mod tests {
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.owner(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.group(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.accessed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.changed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
@@ -9250,6 +9260,10 @@ mod tests {
     let (_directoryChanged, _directoryChangedFailure) = directory.changed("a")
     let (_filePermissions, _filePermissionsFailure) = file.permissions("a")
     let (_directoryPermissions, _directoryPermissionsFailure) = directory.permissions("a")
+    let (_fileOwner, _fileOwnerFailure) = file.owner("a")
+    let (_directoryOwner, _directoryOwnerFailure) = directory.owner("a")
+    let (_fileGroup, _fileGroupFailure) = file.group("a")
+    let (_directoryGroup, _directoryGroupFailure) = directory.group("a")
     return 0
 }
 "#;
@@ -9286,6 +9300,16 @@ mod tests {
             (
                 "directory.permissions(",
                 "fn directory.permissions(path: str) -> (i64, error)",
+            ),
+            ("file.owner(", "fn file.owner(path: str) -> (i64, error)"),
+            (
+                "directory.owner(",
+                "fn directory.owner(path: str) -> (i64, error)",
+            ),
+            ("file.group(", "fn file.group(path: str) -> (i64, error)"),
+            (
+                "directory.group(",
+                "fn directory.group(path: str) -> (i64, error)",
             ),
         ] {
             let line_index = source

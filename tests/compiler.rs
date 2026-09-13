@@ -8934,6 +8934,18 @@ fn main() -> i64 {{
     let (directoryPermissions, directoryPermissionsError) = directory.permissions("{}")
     print(directoryPermissions >= 0)
     print(directoryPermissionsError)
+    let (fileOwner, fileOwnerError) = file.owner("{}")
+    print(fileOwner >= 0)
+    print(fileOwnerError)
+    let (fileGroup, fileGroupError) = file.group("{}")
+    print(fileGroup >= 0)
+    print(fileGroupError)
+    let (directoryOwner, directoryOwnerError) = directory.owner("{}")
+    print(directoryOwner >= 0)
+    print(directoryOwnerError)
+    let (directoryGroup, directoryGroupError) = directory.group("{}")
+    print(directoryGroup >= 0)
+    print(directoryGroupError)
     let (_wrongDirectory, wrongDirectoryError) = directory.permissions("{}")
     print(wrongDirectoryError)
     let (_wrongFile, wrongFileError) = file.permissions("{}")
@@ -8945,6 +8957,10 @@ fn main() -> i64 {{
         path(&file),
         path(&file),
         path(&root),
+        path(&root),
+        path(&root),
+        path(&file),
+        path(&file),
         path(&root),
         path(&root),
         path(&file),
@@ -8960,6 +8976,10 @@ fn main() -> i64 {{
         "flux__fs_directory_changed_unix_millis",
         "flux__fs_file_permissions",
         "flux__fs_directory_permissions",
+        "flux__fs_file_owner",
+        "flux__fs_directory_owner",
+        "flux__fs_file_group",
+        "flux__fs_directory_group",
     ] {
         assert!(
             generated.contains(helper),
@@ -8988,7 +9008,7 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
+        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
     );
 
     let unused = r#"
@@ -8999,6 +9019,10 @@ fn hidden() -> void {
     let (_directoryAccessed, _directoryAccessedError) = directory.accessed("/tmp/unused-flux-directory")
     let (_directoryChanged, _directoryChangedError) = directory.changed("/tmp/unused-flux-directory")
     let (_directoryPermissions, _directoryPermissionsError) = directory.permissions("/tmp/unused-flux-directory")
+    let (_fileOwner, _fileOwnerError) = file.owner("/tmp/unused-flux-file")
+    let (_directoryOwner, _directoryOwnerError) = directory.owner("/tmp/unused-flux-directory")
+    let (_fileGroup, _fileGroupError) = file.group("/tmp/unused-flux-file")
+    let (_directoryGroup, _directoryGroupError) = directory.group("/tmp/unused-flux-directory")
 }
 fn main() -> i64 {
     return 0
@@ -9013,6 +9037,10 @@ fn main() -> i64 {
         "flux__fs_directory_changed_unix_millis",
         "flux__fs_file_permissions",
         "flux__fs_directory_permissions",
+        "flux__fs_file_owner",
+        "flux__fs_directory_owner",
+        "flux__fs_file_group",
+        "flux__fs_directory_group",
     ] {
         assert!(
             !unused_generated.contains(helper),
@@ -9028,6 +9056,10 @@ fn main() -> i64 {
     let (_directoryAccessed, _directoryAccessedError) = directory.accessed(1)
     let (_directoryChanged, _directoryChangedError) = directory.changed(1)
     let (_directoryPermissions, _directoryPermissionsError) = directory.permissions(false)
+    let (_fileOwner, _fileOwnerError) = file.owner(1)
+    let (_directoryOwner, _directoryOwnerError) = directory.owner(false)
+    let (_fileGroup, _fileGroupError) = file.group(false)
+    let (_directoryGroup, _directoryGroupError) = directory.group(1)
     return 0
 }
 "#;
@@ -9040,6 +9072,10 @@ fn main() -> i64 {
         "directory.accessed path",
         "directory.changed path",
         "directory.permissions path",
+        "file.owner path",
+        "directory.owner path",
+        "file.group path",
+        "directory.group path",
     ] {
         assert!(
             errors.iter().any(
