@@ -16,6 +16,7 @@ pub const C_ABI_VERSION_PACKAGE: u32 = 2;
 pub enum NativeTarget {
     Linux,
     Android,
+    Windows,
 }
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
@@ -1298,6 +1299,9 @@ pub fn emit_c_for_target_with_source_metadata(
             NativeTarget::Android => {
                 emit_android_native_application(&mut application_body, program, signatures)?
             }
+            NativeTarget::Windows => {
+                emit_windows_native_application(&mut application_body, program, signatures)?
+            }
         }
     }
     let runtime_usage = format!("{generated_body}{application_body}");
@@ -1408,6 +1412,7 @@ pub fn emit_c_for_target_with_source_metadata(
         program_uses_background(program, &reachable_functions, &function_ir),
         program.application.is_some() && target == NativeTarget::Linux,
         program.application.is_some() && target == NativeTarget::Android,
+        program.application.is_some() && target == NativeTarget::Windows,
     );
 
     for definition in &program.structs {
@@ -1644,6 +1649,7 @@ fn emit_runtime_prelude(
     uses_background: bool,
     uses_gtk: bool,
     uses_android: bool,
+    uses_windows: bool,
 ) {
     let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(");
     let uses_workers = runtime_usage.contains("flux__worker_")
@@ -1776,6 +1782,9 @@ fn emit_runtime_prelude(
     }
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
+    }
+    if uses_windows {
+        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n");
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
@@ -10180,6 +10189,173 @@ static void flux_size_constraint_set_limits(GtkWidget *widget, int max_width, in
 }
 "#,
     );
+}
+
+fn emit_windows_native_application(
+    out: &mut String,
+    program: &Program,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let application = program
+        .application
+        .as_ref()
+        .expect("application lowering requires app declaration");
+    let view = program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+        .ok_or_else(|| {
+            diag(
+                application.view_span,
+                "app root view was not found during codegen",
+            )
+        })?;
+    for element in &view.elements {
+        if !matches!(element.kind.as_str(), "Text" | "Button" | "TextInput") {
+            return Err(diag(
+                element.kind_span,
+                "bootstrap Windows backend currently renders native Text, Button, and TextInput elements",
+            ));
+        }
+    }
+    let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
+    let width = application_metadata_i64(application, "width", signatures)
+        .unwrap_or(i64::from(bootstrap_width));
+    let height = application_metadata_i64(application, "height", signatures)
+        .unwrap_or(i64::from(bootstrap_height));
+    let title = application_metadata_string(application, "title", signatures)
+        .unwrap_or_else(|| view.name.clone());
+    out.push_str("static HWND flux__win_window = NULL;\n");
+    for element in &view.elements {
+        out.push_str(&format!(
+            "static HWND {} = NULL;\n",
+            ui_widget_c_name(&element.name)
+        ));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        if element.kind != "Button" {
+            continue;
+        }
+        let Some(action) = view_property(element, "on_press") else {
+            continue;
+        };
+        if action.transition.is_some() {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows Button state transitions remain pending; use a named fn() -> void callback",
+            ));
+        }
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows Button.onPress requires a named fn() -> void callback",
+            ));
+        };
+        out.push_str(&format!(
+            "static void flux__win_click_{index}(void) {{ {}(); }}\n",
+            function_c_name(function)
+        ));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        if element.kind != "TextInput" {
+            continue;
+        }
+        let Some(action) = view_property(element, "on_change") else {
+            continue;
+        };
+        if action.transition.is_some() {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows TextInput state transitions remain pending; use a named fn(str) -> void callback",
+            ));
+        }
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows TextInput.onChange requires a named fn(str) -> void callback",
+            ));
+        };
+        out.push_str(&format!("static void flux__win_change_{index}(HWND control) {{ int length = GetWindowTextLengthA(control); if (length < 0) return; char *text = (char *)malloc((size_t)length + 1); if (text == NULL) return; if (GetWindowTextA(control, text, length + 1) > 0 || length == 0) {}(text); free(text); }}\n", function_c_name(function)));
+    }
+    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_COMMAND: switch (LOWORD(wparam)) {\n");
+    for (index, element) in view.elements.iter().enumerate() {
+        if element.kind == "Button" && view_property(element, "on_press").is_some() {
+            out.push_str(&format!(
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) flux__win_click_{index}(); return 0;\n",
+                1000 + index
+            ));
+        } else if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
+        }
+    }
+    out.push_str("default: break; } break; case WM_DESTROY: PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
+    out.push_str("static int flux__win_run(void) { HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
+    out.push_str(&format!("flux__win_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__win_window == NULL) return 1;\n", c_string(&title), width, height));
+    let gap = i64::from(view.grid.gap.unwrap_or(12));
+    let padding = i64::from(view.grid.padding.unwrap_or(20));
+    let columns = view.grid.columns.len().max(1) as i64;
+    let rows = view.grid.rows.len().max(1) as i64;
+    for (index, element) in view.elements.iter().enumerate() {
+        let variable = ui_widget_c_name(&element.name);
+        let x = padding + (element.column as i64 - 1) * ((width - padding * 2 + gap) / columns);
+        let y = padding + (element.row as i64 - 1) * ((height - padding * 2 + gap) / rows);
+        let cell_width =
+            (((width - padding * 2 + gap) / columns) * element.column_span as i64 - gap).max(40);
+        let cell_height =
+            (((height - padding * 2 + gap) / rows) * element.row_span as i64 - gap).max(28);
+        let text = if element.kind == "TextInput" {
+            match view_property(element, "value") {
+                Some(property) => static_expr_str(&property.value, signatures)
+                    .ok_or_else(|| diag(property.value.span, "bootstrap Windows TextInput.value currently requires a compile-time string"))?,
+                None => String::new(),
+            }
+        } else {
+            match view_property(element, "text") {
+                Some(property) => static_expr_str(&property.value, signatures)
+                    .ok_or_else(|| diag(property.value.span, "bootstrap Windows Text/Button.text currently requires a compile-time string"))?,
+                None => element.name.clone(),
+            }
+        };
+        let (class, style) = match element.kind.as_str() {
+            "Button" => (
+                "BUTTON",
+                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
+            ),
+            "TextInput" => {
+                let multiline = view_property(element, "multiline")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                if multiline {
+                    (
+                        "EDIT",
+                        "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL",
+                    )
+                } else {
+                    (
+                        "EDIT",
+                        "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL",
+                    )
+                }
+            }
+            _ => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT"),
+        };
+        let id = if matches!(element.kind.as_str(), "Button" | "TextInput") {
+            (1000 + index).to_string()
+        } else {
+            "0".to_string()
+        };
+        out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {}, {style}, {}, {}, {}, {}, flux__win_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", c_string(&text), x, y, cell_width, cell_height));
+    }
+    out.push_str("ShowWindow(flux__win_window, SW_SHOW); UpdateWindow(flux__win_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } return result < 0 ? 1 : (int)message.wParam; }\n");
+    if let Some(function) = application_metadata_function(application, "on_start") {
+        out.push_str(&format!(
+            "int main(void) {{ {}(); return flux__win_run(); }}\n",
+            function_c_name(function)
+        ));
+    } else {
+        out.push_str("int main(void) { return flux__win_run(); }\n");
+    }
+    Ok(())
 }
 
 fn emit_linux_gtk_application(

@@ -89,6 +89,15 @@ struct NativeTargetOptions {
     sysroot: Option<PathBuf>,
 }
 
+impl NativeTargetOptions {
+    fn codegen_target(&self) -> fluxc::codegen::NativeTarget {
+        match self.triple.as_deref() {
+            Some(triple) if triple.contains("windows") => fluxc::codegen::NativeTarget::Windows,
+            _ => fluxc::codegen::NativeTarget::Linux,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct BuildOptions {
     output: Option<PathBuf>,
@@ -472,10 +481,17 @@ fn run() -> Result<(), CliError> {
             let options = build_options(&args[2..], BuildMode::Release)?;
             let native_package = native_package_config_for_target(path)?;
             let sources = validate_project(path)?;
-            let generated = match fluxc::project::compile_to_c(path) {
+            let codegen_target = options.native_target.codegen_target();
+            let generated = match fluxc::project::analyze_for_target(path, codegen_target).and_then(
+                |analysis| {
+                    analysis
+                        .emit_c_for_target(codegen_target)
+                        .map_err(|error| vec![error])
+                },
+            ) {
                 Ok(generated) => generated,
-                Err(diagnostic) => {
-                    report_diagnostics(path, &[diagnostic], &sources);
+                Err(diagnostics) => {
+                    report_diagnostics(path, &diagnostics, &sources);
                     return Err(CliError::Reported);
                 }
             };
@@ -9164,6 +9180,19 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
         assert_eq!(default.native_target, NativeTargetOptions::default());
+        assert_eq!(
+            default.native_target.codegen_target(),
+            crate::codegen::NativeTarget::Linux
+        );
+        let windows = build_options(
+            &["--target".to_string(), "x86_64-pc-windows-gnu".to_string()],
+            BuildMode::Release,
+        )
+        .expect("Windows target should parse");
+        assert_eq!(
+            windows.native_target.codegen_target(),
+            crate::codegen::NativeTarget::Windows
+        );
         assert!(
             build_options(
                 &["--target".to_string(), "linux".to_string()],

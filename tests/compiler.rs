@@ -61,6 +61,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn windows_backend_emits_native_win32_window_controls_and_click_dispatch() {
+    let source = r#"
+fn pressed() -> void {
+    print("clicked")
+}
+fn changed(value: str) -> void {
+    print(value)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text title at 1,1
+        text: "Flux on Windows"
+    TextInput input at 2,1
+        onChange: changed
+    Button action at 3,1
+        text: "Press"
+        onPress: pressed
+}
+app Screen(title: "Native Flux", width: 640, height: 480)
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows application source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows application should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows application should lower to native Win32 C");
+    assert!(generated.contains("#include <windows.h>"));
+    assert!(generated.contains("WNDCLASSA"));
+    assert!(generated.contains("CreateWindowExA(0, \"STATIC\""));
+    assert!(generated.contains("CreateWindowExA(0, \"EDIT\""));
+    assert!(generated.contains("CreateWindowExA(0, \"BUTTON\""));
+    assert!(generated.contains("case WM_COMMAND"));
+    assert!(generated.contains("EN_CHANGE"));
+    assert!(generated.contains("flux__win_change_1"));
+    assert!(generated.contains("flux__win_click_2"));
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+    assert!(!generated.contains("android/native_activity.h"));
+}
+
+#[test]
 fn extern_c_imports_reject_ownership_sensitive_shapes_and_function_values() {
     let returning_borrowed = r#"
 extern c "native_text" fn nativeText() -> str
@@ -25796,19 +25841,21 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
     for directory in [
         app.join("src"),
         app.join("platform/android"),
+        app.join("platform/windows"),
         dependency.join("src"),
         dependency.join("platform/android"),
+        dependency.join("platform/windows"),
     ] {
         fs::create_dir_all(directory).expect("platform package directory should be writable");
     }
     fs::write(
         app.join("flux.toml"),
-        "[package]\nname = \"platform-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n\n[platform.android]\nmodules = [\"src/local.flux=platform/android/local.flux\"]\n",
+        "[package]\nname = \"platform-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n\n[platform.android]\nmodules = [\"src/local.flux=platform/android/local.flux\"]\n\n[platform.windows]\nmodules = [\"src/local.flux=platform/windows/local.flux\"]\n",
     )
     .expect("app platform manifest should be writable");
     fs::write(
         dependency.join("flux.toml"),
-        "[package]\nname = \"platform-dep\"\nentry = \"src/lib.flux\"\n\n[platform.android]\nmodules = [\"src/lib.flux=platform/android/lib.flux\"]\n",
+        "[package]\nname = \"platform-dep\"\nentry = \"src/lib.flux\"\n\n[platform.android]\nmodules = [\"src/lib.flux=platform/android/lib.flux\"]\n\n[platform.windows]\nmodules = [\"src/lib.flux=platform/windows/lib.flux\"]\n",
     )
     .expect("dependency platform manifest should be writable");
     fs::write(
@@ -25832,6 +25879,11 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
     )
     .expect("Android app module should be writable");
     fs::write(
+        app.join("platform/windows/local.flux"),
+        "import \"pkg:dep/src/capability.flux\"\nstruct NativeValue {\n    marker: i64\n}\nfn nativeValue(_provider: NativeValue) -> i64 { 100 }\nimpl PlatformValue for NativeValue {\n    value: nativeValue\n}\npub fn localValue() -> i64 { PlatformValue.value(NativeValue { marker: 0 }) }\n",
+    )
+    .expect("Windows app module should be writable");
+    fs::write(
         dependency.join("src/lib.flux"),
         "pub fn dependencyValue() -> i64 { 2 }\n",
     )
@@ -25841,6 +25893,11 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
         "pub fn dependencyValue() -> i64 { 20 }\n",
     )
     .expect("Android dependency module should be writable");
+    fs::write(
+        dependency.join("platform/windows/lib.flux"),
+        "pub fn dependencyValue() -> i64 { 200 }\n",
+    )
+    .expect("Windows dependency module should be writable");
     fluxc::project::write_lockfile(&app).expect("platform package lockfile should be writable");
 
     let linux = fluxc::project::analyze(&app).expect("Linux platform package should analyze");
@@ -25902,6 +25959,33 @@ fn package_platform_modules_select_native_implementations_behind_stable_imports(
     assert!(android_c.contains("flux__android_sdk_int"));
     assert!(!android_c.contains("dynamic_dispatch"));
     assert!(!android_c.contains("method_channel"));
+
+    let windows = fluxc::project::analyze_for_target(&app, fluxc::codegen::NativeTarget::Windows)
+        .expect("Windows platform package should analyze");
+    let windows_sources = windows
+        .sources
+        .iter()
+        .map(|source| (source.module_name.as_str(), source.path.as_path()))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        windows_sources.get("platform-app::src::local"),
+        Some(
+            &app.join("platform/windows/local.flux")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
+    );
+    assert_eq!(
+        windows_sources.get("platform-dep::src::lib"),
+        Some(
+            &dependency
+                .join("platform/windows/lib.flux")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

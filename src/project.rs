@@ -288,6 +288,7 @@ pub struct NativePackageConfig {
 pub struct PlatformPackageConfig {
     pub linux_modules: BTreeMap<PathBuf, PathBuf>,
     pub android_modules: BTreeMap<PathBuf, PathBuf>,
+    pub windows_modules: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl PlatformPackageConfig {
@@ -295,6 +296,7 @@ impl PlatformPackageConfig {
         match target {
             codegen::NativeTarget::Linux => &self.linux_modules,
             codegen::NativeTarget::Android => &self.android_modules,
+            codegen::NativeTarget::Windows => &self.windows_modules,
         }
     }
 
@@ -855,6 +857,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut native_search_paths = None::<Vec<String>>;
     let mut platform_linux_modules = None::<BTreeMap<PathBuf, PathBuf>>;
     let mut platform_android_modules = None::<BTreeMap<PathBuf, PathBuf>>;
+    let mut platform_windows_modules = None::<BTreeMap<PathBuf, PathBuf>>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
     let mut constants = BTreeMap::<String, typecheck::ConstantValue>::new();
     let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -886,6 +889,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                     | "translations"
                     | "platform.linux"
                     | "platform.android"
+                    | "platform.windows"
             ) {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
@@ -1073,7 +1077,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 }
                 translations.insert(key.to_string(), localized);
             }
-            Some("platform.linux") | Some("platform.android") => {
+            Some("platform.linux") | Some("platform.android") | Some("platform.windows") => {
                 if key != "modules" {
                     diagnostics.push(manifest_diagnostic(
                         source_id,
@@ -1099,10 +1103,11 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         continue;
                     }
                 };
-                let slot = if section.as_deref() == Some("platform.linux") {
-                    &mut platform_linux_modules
-                } else {
-                    &mut platform_android_modules
+                let slot = match section.as_deref() {
+                    Some("platform.linux") => &mut platform_linux_modules,
+                    Some("platform.android") => &mut platform_android_modules,
+                    Some("platform.windows") => &mut platform_windows_modules,
+                    _ => unreachable!("platform module section already matched"),
                 };
                 if slot.replace(modules).is_some() {
                     diagnostics.push(manifest_diagnostic(
@@ -1239,7 +1244,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], [android], [platform.linux], or [platform.android]",
+                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], [android], [platform.linux], [platform.android], or [platform.windows]",
             )),
         }
     }
@@ -1500,6 +1505,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         platform: PlatformPackageConfig {
             linux_modules: platform_linux_modules.unwrap_or_default(),
             android_modules: platform_android_modules.unwrap_or_default(),
+            windows_modules: platform_windows_modules.unwrap_or_default(),
         },
     })
 }
