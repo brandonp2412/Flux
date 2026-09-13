@@ -5108,6 +5108,108 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_scatter_gather_progress_send_resumes_from_global_byte_offset() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("resumable scatter/gather listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    print(connectError)
+    print(net.nonblocking(socket, true))
+    let (nextOffset, complete, writeError) = net.writePartsFrom(socket, ["hello", "", " ", "world"], 6)
+    print(nextOffset)
+    print(complete)
+    print(writeError)
+    let (doneOffset, done, doneError) = net.writePartsFrom(socket, ["hello", "", " ", "world"], 11)
+    print(doneOffset)
+    print(done)
+    print(doneError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("resumable scatter/gather send should typecheck");
+    let generated = compile_to_c(&source).expect("resumable scatter/gather send should lower");
+    assert!(generated.contains("#include <sys/uio.h>"));
+    assert!(generated.contains("flux__net_send_text_parts_progress("));
+    assert!(generated.contains("sendmsg("));
+    assert!(generated.contains("MSG_NOSIGNAL"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-net-scatter-gather-progress-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("resumable scatter/gather fixture should be writable");
+    let source_path = root.join("scatter_progress.flux");
+    fs::write(&source_path, &source).expect("resumable scatter/gather source should be writable");
+    let binary = root.join("scatter_progress");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("resumable scatter/gather binary should build");
+    assert!(
+        built.status.success(),
+        "resumable scatter/gather build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux resumable scatter/gather client should connect");
+        let mut request = [0u8; 5];
+        stream
+            .read_exact(&mut request)
+            .expect("Flux client should resume at the requested global byte offset");
+        assert_eq!(&request, b"world");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("resumable scatter/gather binary should run");
+    server
+        .join()
+        .expect("resumable scatter/gather server should finish");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\n11\ntrue\nnil\n11\ntrue\nnil\nnil\n"
+    );
+
+    let invalid_offset = check_source(
+        "fn main() -> i64 {\n    let (next, complete, failure) = net.writePartsFrom(1, [\"x\"], -1)\n    print(next)\n    print(complete)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("resumable scatter/gather should reject negative offsets");
+    assert!(
+        invalid_offset
+            .message
+            .contains("offset must be non-negative")
+    );
+
+    let unused = r#"
+fn hidden(socket: i64) -> void {
+    let (next, complete, failure) = net.writePartsFrom(socket, ["hidden", "payload"], 0)
+    print(next)
+    print(complete)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead resumable scatter/gather send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_text_parts_progress("));
+    assert!(!unused_generated.contains("#include <sys/uio.h>"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_scatter_gather_timeout_send_is_typed_tree_shaken_and_runnable() {
     let listener =
         TcpListener::bind("127.0.0.1:0").expect("timed scatter/gather listener should bind");

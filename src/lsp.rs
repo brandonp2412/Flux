@@ -1220,6 +1220,10 @@ fn add_qualified_namespace_completions(
                 "fn net.writeParts(socket: i64, parts: str[]) -> error",
             ),
             (
+                "writePartsFrom",
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)",
+            ),
+            (
                 "writePartsTimeout",
                 "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)",
             ),
@@ -2819,6 +2823,14 @@ fn signature_help_for_document_cached(
                         "net.sendTextParts",
                         &["socket: i64", "parts: str[]"],
                         "error",
+                        active_parameter,
+                    ));
+                }
+                "sendTextPartsProgress" => {
+                    return Some(signature_help_for_builtin(
+                        "net.writePartsFrom",
+                        &["socket: i64", "parts: str[]", "offset: i64"],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -6916,6 +6928,9 @@ mod tests {
         ));
         assert!(net_items.contains("fn net.writeParts(socket: i64, parts: str[]) -> error"));
         assert!(net_items.contains(
+            "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
             "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)"
         ));
         assert!(
@@ -8058,6 +8073,37 @@ mod tests {
         assert!(
             help.contains("fn net.writeParts(socket: i64, parts: str[]) -&gt; error")
                 || help.contains("fn net.writeParts(socket: i64, parts: str[]) -> error")
+        );
+    }
+
+    #[test]
+    fn signature_help_supports_resumable_scatter_gather_text_send() {
+        let uri = "file:///tmp/resumable-scatter-gather-signature.flux";
+        let source = "fn main() -> i64 {\n    let (_next, _complete, _failure) = net.writePartsFrom(1, [\"hello\", \"world\"], 0)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.writePartsFrom("))
+            .expect("resumable scatter/gather call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "net.writePartsFrom(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("resumable scatter/gather call should have signature help")
+        .to_json();
+        assert!(
+            help.contains(
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -&gt; (i64, bool, error)"
+            ) || help.contains(
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
+            )
         );
     }
 
