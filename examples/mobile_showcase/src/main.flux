@@ -54,16 +54,15 @@ view HorseTinder {
     Text matchBadge at 3,4 span columns 2
         text: "98% MATCH"
         color: "#FFFFFF"
-        size: 9
+        size: 8
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        padding: 6
-        minHeight: 30
-        maxHeight: 30
+        padding: 4
+        minWidth: 96
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 1
