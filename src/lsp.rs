@@ -1948,6 +1948,23 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "windows" {
+        for binding in crate::windows_bindings::WINDOWS_BINDINGS {
+            let params = binding
+                .params
+                .iter()
+                .map(|param| param.signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!(
+                "fn windows.{}({params}) -> {}",
+                binding.name,
+                binding.return_name()
+            );
+            push_completion_item(items, seen, binding.name, 3, &detail);
+        }
+        return true;
+    }
     if namespace == "android" {
         for binding in crate::android_bindings::ANDROID_BINDINGS {
             let name = crate::builtin_names::qualified("android", binding.name);
@@ -4125,6 +4142,21 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 _ => {}
+            }
+        }
+        if namespace == "windows" {
+            if let Some(binding) = crate::windows_bindings::binding_named(implementation_member) {
+                let params = binding
+                    .params
+                    .iter()
+                    .map(|param| param.signature)
+                    .collect::<Vec<_>>();
+                return Some(signature_help_for_builtin(
+                    &format!("windows.{member}"),
+                    &params,
+                    binding.return_name(),
+                    active_parameter,
+                ));
             }
         }
         if namespace == "android" {
@@ -7219,7 +7251,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    windows.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -7729,6 +7761,28 @@ mod tests {
         ));
         assert!(android_items.contains("fn android.notifyUrl(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void"));
         assert!(android_items.contains("fn android.cancelNotice(notificationId: i64) -> void"));
+
+        let windows_line = source
+            .lines()
+            .position(|line| line.trim() == "windows.")
+            .expect("Windows completion line should exist");
+        let windows_source = source.lines().nth(windows_line).unwrap();
+        let windows_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(windows_line),
+            Some(windows_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(windows_items.contains("fn windows.messageBox(title: str, message: str) -> i64"));
+        assert!(windows_items.contains("fn windows.open(url: str) -> bool"));
+        assert!(
+            windows_items.contains("fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool")
+        );
+        assert!(windows_items.contains("fn windows.screenWidth() -> i64"));
+        assert!(windows_items.contains("fn windows.screenHeight() -> i64"));
     }
 
     #[test]

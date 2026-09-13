@@ -1305,6 +1305,12 @@ pub fn emit_c_for_target_with_source_metadata(
         }
     }
     let runtime_usage = format!("{generated_body}{application_body}");
+    if target != NativeTarget::Windows && runtime_usage.contains("flux__windows_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "windows.* platform APIs require the Windows target",
+        ));
+    }
     if target != NativeTarget::Android && runtime_usage.contains("flux__android_") {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1423,7 +1429,8 @@ pub fn emit_c_for_target_with_source_metadata(
         program_uses_background(program, &reachable_functions, &function_ir),
         program.application.is_some() && target == NativeTarget::Linux,
         program.application.is_some() && target == NativeTarget::Android,
-        target == NativeTarget::Windows,
+        target == NativeTarget::Windows
+            && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
     );
 
     for definition in &program.structs {
@@ -1865,10 +1872,11 @@ fn emit_runtime_prelude(
         || uses_locale_resources;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_frame_timeline = runtime_usage.contains("flux__frame_timeline(");
-    let uses_windows_process_id = runtime_usage.contains("flux__windows_process_id(");
-    let uses_windows_uptime_millis = runtime_usage.contains("flux__windows_uptime_millis(");
-    let uses_windows_beep = runtime_usage.contains("flux__windows_beep(");
+    let uses_windows_message_box = runtime_usage.contains("flux__windows_message_box(");
     let uses_windows_open = runtime_usage.contains("flux__windows_open(");
+    let uses_windows_beep = runtime_usage.contains("flux__windows_beep(");
+    let uses_windows_screen_width = runtime_usage.contains("flux__windows_screen_width(");
+    let uses_windows_screen_height = runtime_usage.contains("flux__windows_screen_height(");
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_menu_show = runtime_usage.contains("flux__menu_show(");
@@ -3114,22 +3122,27 @@ fn emit_runtime_prelude(
             || uses_clipboard_read_text
             || uses_menu_show
             || uses_tray_show
-            || uses_file_dialog)
+            || uses_file_dialog
+            || uses_windows_message_box
+            || uses_windows_open)
     {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
     }
-    if uses_windows_process_id && uses_windows {
-        out.push_str("static int64_t flux__windows_process_id(void) { return (int64_t)GetCurrentProcessId(); }\n");
-    }
-    if uses_windows_uptime_millis && uses_windows {
-        out.push_str("static int64_t flux__windows_uptime_millis(void) { ULONGLONG value = GetTickCount64(); return value > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)value; }\n");
-    }
-    if uses_windows_beep && uses_windows {
-        out.push_str("static bool flux__windows_beep(int64_t frequency_hz, int64_t duration_ms) { if (frequency_hz < INT64_C(37) || frequency_hz > INT64_C(32767) || duration_ms < 0 || (uint64_t)duration_ms > (uint64_t)UINT32_MAX) return false; return Beep((DWORD)frequency_hz, (DWORD)duration_ms) != 0; }\n");
+    if uses_windows_message_box && uses_windows {
+        out.push_str("static int64_t flux__windows_message_box(const char *title, const char *message) { wchar_t *wide_title = flux__windows_utf8_to_wide(title); wchar_t *wide_message = flux__windows_utf8_to_wide(message); if (wide_title == NULL || wide_message == NULL) { free(wide_title); free(wide_message); return 0; } int result = MessageBoxW(flux__windows_active_window, wide_message, wide_title, MB_OK | MB_ICONINFORMATION); free(wide_title); free(wide_message); return (int64_t)result; }\n");
     }
     if uses_windows_open && uses_windows {
-        out.push_str("static bool flux__windows_open(const char *target) { wchar_t *wide = flux__windows_utf8_to_wide(target); if (wide == NULL) return false; HINSTANCE result = ShellExecuteW(flux__windows_active_window, L\"open\", wide, NULL, NULL, SW_SHOWNORMAL); free(wide); return (INT_PTR)result > 32; }\n");
+        out.push_str("static bool flux__windows_open(const char *url) { wchar_t *wide_url = flux__windows_utf8_to_wide(url); if (wide_url == NULL) return false; HINSTANCE result = ShellExecuteW(flux__windows_active_window, L\"open\", wide_url, NULL, NULL, SW_SHOWNORMAL); free(wide_url); return (INT_PTR)result > 32; }\n");
+    }
+    if uses_windows_beep && uses_windows {
+        out.push_str("static bool flux__windows_beep(int64_t frequency_hz, int64_t duration_ms) { if (frequency_hz < 37 || frequency_hz > 32767 || duration_ms < 0 || (uint64_t)duration_ms > UINT32_MAX) return false; return Beep((DWORD)frequency_hz, (DWORD)duration_ms) != 0; }\n");
+    }
+    if uses_windows_screen_width && uses_windows {
+        out.push_str("static int64_t flux__windows_screen_width(void) { return (int64_t)GetSystemMetrics(SM_CXSCREEN); }\n");
+    }
+    if uses_windows_screen_height && uses_windows {
+        out.push_str("static int64_t flux__windows_screen_height(void) { return (int64_t)GetSystemMetrics(SM_CYSCREEN); }\n");
     }
     if uses_clipboard_set_text && uses_windows {
         out.push_str("static void flux__clipboard_set_text(const char *text) { wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) return; SIZE_T bytes = (wcslen(wide) + 1) * sizeof(wchar_t); HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes); if (memory == NULL) { free(wide); return; } wchar_t *target = (wchar_t *)GlobalLock(memory); if (target == NULL) { GlobalFree(memory); free(wide); return; } memcpy(target, wide, bytes); GlobalUnlock(memory); free(wide); if (!OpenClipboard(flux__windows_active_window)) { GlobalFree(memory); return; } if (!EmptyClipboard() || SetClipboardData(CF_UNICODETEXT, memory) == NULL) GlobalFree(memory); CloseClipboard(); }\n");
@@ -33405,6 +33418,39 @@ fn emit_qualified_call(
                 return Err(diag(span, "invalid textInput call reached code generation"));
             }
         }
+    }
+    if namespace == "windows" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid windows platform call reached code generation",
+            ));
+        }
+        let binding = crate::windows_bindings::binding_named(name).ok_or_else(|| {
+            diag(
+                span,
+                "unknown windows platform call reached code generation",
+            )
+        })?;
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                "invalid windows platform call reached code generation",
+            ));
+        }
+        let values = args
+            .iter()
+            .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+            .collect::<Result<Vec<_>, _>>()?;
+        let returns = match binding.returns {
+            crate::windows_bindings::WindowsBindingReturn::I64 => vec![Type::I64],
+            crate::windows_bindings::WindowsBindingReturn::Bool => vec![Type::Bool],
+        };
+        return Ok((
+            format!("{}({})", binding.runtime_symbol(), values.join(", ")),
+            returns,
+            None,
+        ));
     }
     if namespace == "android" {
         if !named_args.is_empty() {

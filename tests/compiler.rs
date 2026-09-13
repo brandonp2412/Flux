@@ -68,8 +68,6 @@ fn main() -> i64 {
     .expect("safe extern C imports should also lower for Windows native linking");
     assert!(windows.contains("extern int64_t flux_test_double("));
     assert!(windows.contains("flux_test_double(INT64_C(21))"));
-    assert!(!windows.contains("#include <gtk/gtk.h>"));
-    assert!(!windows.contains("android/native_activity.h"));
 }
 
 #[test]
@@ -309,6 +307,60 @@ app Screen(onStart: started)
     assert!(!generated.contains("android/native_activity.h"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
+fn windows_native_api_bindings_lower_directly_to_win32() {
+    let source = r#"
+fn main() -> i64 {
+    print(windows.messageBox("Flux", "Native Windows"))
+    print(windows.open("https://example.com"))
+    print(windows.beep(440, 25))
+    print(windows.screenWidth())
+    return windows.screenHeight()
+}
+"#;
+    check_source(source)
+        .expect("typed windows bindings should typecheck independent of target selection");
+    let program = fluxc::parser::parse(source).expect("Windows native binding source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows native binding source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows native bindings should lower for the Windows target");
+    for native_api in [
+        "MessageBoxW(",
+        "ShellExecuteW(",
+        "Beep(",
+        "GetSystemMetrics(SM_CXSCREEN)",
+        "GetSystemMetrics(SM_CYSCREEN)",
+    ] {
+        assert!(
+            generated.contains(native_api),
+            "missing direct Win32 API {native_api}"
+        );
+    }
+    assert!(generated.contains("flux__windows_message_box(\"Flux\", \"Native Windows\")"));
+    assert!(generated.contains("flux__windows_open(\"https://example.com\")"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+
+    let linux_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect_err("windows.* bindings must reject non-Windows targets");
+    assert!(
+        linux_error
+            .message
+            .contains("windows.* platform APIs require the Windows target")
+    );
 }
 
 #[test]

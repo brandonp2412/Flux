@@ -10918,6 +10918,48 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "windows" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("windows.{name} accepts positional arguments only"),
+            ));
+        }
+        let Some(binding) = crate::windows_bindings::binding_named(name) else {
+            return Err(diag(
+                *name_span,
+                &format!("windows module has no function '{name}'"),
+            ));
+        };
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                &format!(
+                    "windows.{name} expects {} argument{}, got {}",
+                    binding.params.len(),
+                    if binding.params.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            ));
+        }
+        for (argument, parameter) in args.iter().zip(binding.params.iter()) {
+            let actual = type_of_expr(argument, env, signatures)?;
+            let expected = match parameter.ty {
+                crate::windows_bindings::WindowsBindingType::I64 => Type::I64,
+                crate::windows_bindings::WindowsBindingType::Str => Type::Str,
+            };
+            require_type(
+                argument.span,
+                &expected,
+                &actual,
+                &format!("windows.{name} {}", parameter.name),
+            )?;
+        }
+        return Ok(match binding.returns {
+            crate::windows_bindings::WindowsBindingReturn::I64 => vec![Type::I64],
+            crate::windows_bindings::WindowsBindingReturn::Bool => vec![Type::Bool],
+        });
+    }
     if namespace == "android" {
         if !named_args.is_empty() {
             return Err(diag(

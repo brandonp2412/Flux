@@ -8559,6 +8559,8 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     if c_source.contains("CreateWindowExA(")
         || c_source.contains("OpenClipboard(")
         || c_source.contains("SetMenu(")
+        || c_source.contains("MessageBoxW(")
+        || c_source.contains("GetSystemMetrics(")
     {
         libraries.push("-luser32");
     }
