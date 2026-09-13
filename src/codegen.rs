@@ -22156,6 +22156,229 @@ fn emit_async_continuation_function(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfgCheckedI64Proof {
+    Native,
+    NonzeroDivision,
+}
+
+fn cfg_i64_constant(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<i64> {
+    match cfg.value(id)?.constant.as_ref() {
+        Some(ConstantValue::I64(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn cfg_same_i64_value(
+    cfg: &crate::ir::ControlFlowGraph,
+    left: crate::ir::ControlFlowValueId,
+    right: crate::ir::ControlFlowValueId,
+) -> bool {
+    if cfg_i64_constant(cfg, left)
+        .zip(cfg_i64_constant(cfg, right))
+        .is_some_and(|(left, right)| left == right)
+    {
+        return true;
+    }
+    match (
+        &cfg.value(left).map(|value| &value.kind),
+        &cfg.value(right).map(|value| &value.kind),
+    ) {
+        (
+            Some(crate::ir::ControlFlowValueKind::NameRead {
+                definitions: left_definitions,
+                ..
+            }),
+            Some(crate::ir::ControlFlowValueKind::NameRead {
+                definitions: right_definitions,
+                ..
+            }),
+        ) => {
+            !left_definitions.is_empty()
+                && left_definitions.len() == 1
+                && left_definitions == right_definitions
+        }
+        _ => false,
+    }
+}
+
+fn cfg_definition_value_for_read(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<crate::ir::ControlFlowValueId> {
+    let crate::ir::ControlFlowValueKind::NameRead { definitions, .. } = &cfg.value(id)?.kind else {
+        return None;
+    };
+    let [definition] = definitions.as_slice() else {
+        return None;
+    };
+    cfg.definition_value(*definition)
+}
+
+fn cfg_additive_shift(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<i64> {
+    let crate::ir::ControlFlowValueKind::Binary { op, left, right } = &cfg.value(id)?.kind else {
+        return None;
+    };
+    match op {
+        BinOp::Add => match (cfg_i64_constant(cfg, *left), cfg_i64_constant(cfg, *right)) {
+            (Some(shift), None) | (None, Some(shift)) => Some(shift),
+            _ => None,
+        },
+        BinOp::Sub => cfg_i64_constant(cfg, *right).and_then(i64::checked_neg),
+        _ => None,
+    }
+}
+
+fn cfg_additive_shifts_compose_safely(inner_shift: i64, outer_shift: i64) -> bool {
+    ((inner_shift > 0 && outer_shift < 0) || (inner_shift < 0 && outer_shift > 0))
+        && outer_shift.unsigned_abs() <= inner_shift.unsigned_abs()
+}
+
+fn cfg_checked_i64_proof_for_value(
+    cfg: &crate::ir::ControlFlowGraph,
+    value: &crate::ir::ControlFlowValue,
+) -> Option<CfgCheckedI64Proof> {
+    if value.ty != Type::I64 || !cfg.is_value_reachable(value.id) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::Binary { op, left, right } = value.kind else {
+        return None;
+    };
+    let left_definition_value = cfg_definition_value_for_read(cfg, left);
+    let right_definition_value = cfg_definition_value_for_read(cfg, right);
+
+    match op {
+        BinOp::Sub => {
+            if let Some(inner_id) = left_definition_value {
+                if let Some(inner) = cfg.value(inner_id) {
+                    if let crate::ir::ControlFlowValueKind::Binary {
+                        op: BinOp::Add,
+                        left: inner_left,
+                        right: inner_right,
+                    } = inner.kind
+                        && (cfg_same_i64_value(cfg, inner_left, right)
+                            || cfg_same_i64_value(cfg, inner_right, right))
+                    {
+                        return Some(CfgCheckedI64Proof::Native);
+                    }
+                    if let Some(outer) = cfg_i64_constant(cfg, right)
+                        && let Some(outer_shift) = outer.checked_neg()
+                        && cfg_additive_shift(cfg, inner_id).is_some_and(|inner_shift| {
+                            cfg_additive_shifts_compose_safely(inner_shift, outer_shift)
+                        })
+                    {
+                        return Some(CfgCheckedI64Proof::Native);
+                    }
+                }
+            }
+            if let Some(inner_id) = right_definition_value
+                && let Some(crate::ir::ControlFlowValue {
+                    kind:
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: BinOp::Sub,
+                            left: inner_left,
+                            ..
+                        },
+                    ..
+                }) = cfg.value(inner_id)
+                && cfg_same_i64_value(cfg, left, *inner_left)
+            {
+                return Some(CfgCheckedI64Proof::Native);
+            }
+            None
+        }
+        BinOp::Add => {
+            for (inner_read, other) in [(left, right), (right, left)] {
+                let Some(inner_id) = cfg_definition_value_for_read(cfg, inner_read) else {
+                    continue;
+                };
+                if let Some(crate::ir::ControlFlowValue {
+                    kind:
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: BinOp::Sub,
+                            right: inner_right,
+                            ..
+                        },
+                    ..
+                }) = cfg.value(inner_id)
+                    && cfg_same_i64_value(cfg, *inner_right, other)
+                {
+                    return Some(CfgCheckedI64Proof::Native);
+                }
+                if let Some(outer_shift) = cfg_i64_constant(cfg, other)
+                    && cfg_additive_shift(cfg, inner_id).is_some_and(|inner_shift| {
+                        cfg_additive_shifts_compose_safely(inner_shift, outer_shift)
+                    })
+                {
+                    return Some(CfgCheckedI64Proof::Native);
+                }
+            }
+            None
+        }
+        BinOp::Mul => {
+            for (inner_read, factor) in [(left, right), (right, left)] {
+                let Some(inner_id) = cfg_definition_value_for_read(cfg, inner_read) else {
+                    continue;
+                };
+                if let Some(crate::ir::ControlFlowValue {
+                    kind:
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: BinOp::Div,
+                            right: divisor,
+                            ..
+                        },
+                    ..
+                }) = cfg.value(inner_id)
+                    && cfg_same_i64_value(cfg, *divisor, factor)
+                {
+                    return Some(CfgCheckedI64Proof::Native);
+                }
+            }
+            None
+        }
+        BinOp::Div => {
+            let inner_id = left_definition_value?;
+            let crate::ir::ControlFlowValueKind::Binary {
+                op: BinOp::Mul,
+                left: inner_left,
+                right: inner_right,
+            } = cfg.value(inner_id)?.kind
+            else {
+                return None;
+            };
+            if !cfg_same_i64_value(cfg, inner_left, right)
+                && !cfg_same_i64_value(cfg, inner_right, right)
+            {
+                return None;
+            }
+            match cfg_i64_constant(cfg, right) {
+                Some(0) => None,
+                Some(_) => Some(CfgCheckedI64Proof::Native),
+                None => Some(CfgCheckedI64Proof::NonzeroDivision),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn cfg_checked_i64_proofs(
+    cfg: &crate::ir::ControlFlowGraph,
+) -> HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof> {
+    cfg.values()
+        .iter()
+        .filter_map(|value| {
+            cfg_checked_i64_proof_for_value(cfg, value)
+                .map(|proof| (source_span_key(value.span), proof))
+        })
+        .collect()
+}
+
 fn emit_function(
     out: &mut String,
     function: &Function,
@@ -22287,6 +22510,7 @@ fn emit_function(
             (!dead.is_empty()).then_some((source_span_key(node.span), dead))
         })
         .collect::<HashMap<_, _>>();
+    let checked_i64_cfg_proofs = cfg_checked_i64_proofs(cfg);
     let block_context = BlockEmitContext {
         current_function: function,
         source_paths,
@@ -22297,6 +22521,7 @@ fn emit_function(
         dead_expression_spans: &dead_expression_spans,
         dead_non_escaping_let_binding_spans: &dead_non_escaping_let_binding_spans,
         dead_definition_names: &dead_definition_names,
+        checked_i64_cfg_proofs: &checked_i64_cfg_proofs,
         async_state_machine: false,
         async_loop_control: None,
     };
@@ -22362,6 +22587,7 @@ struct BlockEmitContext<'a> {
     dead_expression_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_non_escaping_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
+    checked_i64_cfg_proofs: &'a HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
     async_state_machine: bool,
     async_loop_control: Option<AsyncLoopControlContext<'a>>,
 }
@@ -23773,7 +23999,13 @@ fn emit_block(
                         "assignment target missing from code generation environment",
                     )
                 })?;
-                let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    expr,
+                    expected,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
             }
@@ -23798,7 +24030,13 @@ fn emit_block(
             {
                 emit_source_line(out, stmt.span, context.source_paths);
                 let pad = "    ".repeat(depth);
-                let value = emit_expr_for_expected(expr, ty, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    expr,
+                    ty,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
             }
@@ -23945,7 +24183,13 @@ fn emit_block(
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
-                let value = emit_expr_for_expected(expr, ty, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    expr,
+                    ty,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                )?;
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
                     c_type(ty, signatures),
@@ -23961,7 +24205,13 @@ fn emit_block(
                         "assignment target missing from code generation environment",
                     )
                 })?;
-                let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    expr,
+                    expected,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                )?;
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
@@ -24436,7 +24686,13 @@ fn emit_block(
             }
             StmtKind::Return(values) if values.len() == 1 => {
                 let expected = &context.current_function.returns[0];
-                let value = emit_expr_for_expected(&values[0], expected, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    &values[0],
+                    expected,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                )?;
                 if context.async_state_machine {
                     out.push_str(&format!(
                         "{pad}flux__task->result = {value};\n{pad}{}(flux__task);\n{pad}return;\n",
@@ -24455,7 +24711,13 @@ fn emit_block(
                 out.push_str(&format!("{pad}struct {tag} {temp};\n"));
                 for (index, expr) in values.iter().enumerate() {
                     let expected = &context.current_function.returns[index];
-                    let value = emit_expr_for_expected(expr, expected, env, signatures)?;
+                    let value = emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        expected,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                    )?;
                     out.push_str(&format!("{pad}{temp}.v{index} = {value};\n"));
                 }
                 if context.async_state_machine {
@@ -30026,6 +30288,33 @@ fn emit_qualified_call(
         member.returns.clone(),
         (member.returns.len() > 1).then(|| multi_return_struct_name(mapped)),
     ))
+}
+
+fn emit_expr_for_expected_with_cfg_proofs(
+    expr: &Expr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+) -> Result<String, Diagnostic> {
+    if signatures.canonical_type(expected) == Type::I64
+        && let Some(proof) = proofs.get(&source_span_key(expr.span))
+        && let ExprKind::Binary { left, op, right } = &expr.kind
+        && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+    {
+        let left = emit_expr(left, env, signatures)?;
+        let right = emit_expr(right, env, signatures)?;
+        return Ok(match proof {
+            CfgCheckedI64Proof::Native => {
+                format!("(({}) {} ({}))", left.code, c_operator(*op), right.code)
+            }
+            CfgCheckedI64Proof::NonzeroDivision => {
+                debug_assert!(matches!(op, BinOp::Div));
+                format!("flux_div_nonzero_i64({}, {})", left.code, right.code)
+            }
+        });
+    }
+    emit_expr_for_expected(expr, expected, env, signatures)
 }
 
 fn emit_expr_for_expected(

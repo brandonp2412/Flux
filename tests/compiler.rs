@@ -19677,6 +19677,95 @@ app Counter
 }
 
 #[test]
+fn eliminates_redundant_checked_guards_across_single_reaching_definitions() {
+    let source = r#"
+fn addAcrossBinding(value: i64, offset: i64) -> i64 {
+    let shifted: i64 = value + offset
+    return shifted - offset
+}
+
+fn partialAcrossBinding(value: i64) -> i64 {
+    let shifted: i64 = value + 7
+    return shifted - 3
+}
+
+fn divideAcrossBinding(value: i64, divisor: i64) -> i64 {
+    let quotient: i64 = value / divisor
+    return quotient * divisor
+}
+
+fn multiplyAcrossBinding(value: i64, divisor: i64) -> i64 {
+    let product: i64 = value * divisor
+    return product / divisor
+}
+
+fn joinedDefinitionKeepsGuard(value: i64, offset: i64, choose: bool) -> i64 {
+    var shifted: i64 = value + offset
+    if choose:
+        shifted = value + 1
+    return shifted - offset
+}
+
+fn main() -> i64 {
+    print(addAcrossBinding(10, 3))
+    print(partialAcrossBinding(10))
+    print(divideAcrossBinding(11, 3))
+    print(multiplyAcrossBinding(4, 3))
+    print(joinedDefinitionKeepsGuard(12, 2, false))
+    return 0
+}
+"#;
+
+    check_source(source).expect("cross-statement checked arithmetic proofs should typecheck");
+    let generated = compile_to_c(source)
+        .expect("CFG reaching-definition proofs should remove only redundant checked guards");
+
+    assert!(generated.contains("return ((flux__local_shifted) - (flux__local_offset));"));
+    assert!(generated.contains("return ((flux__local_shifted) - (INT64_C(3)));"));
+    assert!(generated.contains("return ((flux__local_quotient) * (flux__local_divisor));"));
+    assert!(
+        generated
+            .contains("return flux_div_nonzero_i64(flux__local_product, flux__local_divisor);")
+    );
+    assert!(generated.contains("return flux_sub_i64(flux__local_shifted, flux__local_offset);"));
+    assert!(generated.contains("flux_add_i64(flux__local_value, flux__local_offset)"));
+    assert!(generated.contains("flux_div_i64(flux__local_value, flux__local_divisor)"));
+    assert!(generated.contains("flux_mul_i64(flux__local_value, flux__local_divisor)"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-cfg-checked-i64-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary CFG checked-i64 directory should be writable");
+    let c_path = root.join("cfg-checked-i64.c");
+    let exe_path = root.join("cfg-checked-i64");
+    fs::write(&c_path, &generated).expect("generated CFG checked-i64 C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile CFG checked-i64 C");
+    assert!(
+        compile.status.success(),
+        "CFG checked-i64 C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("CFG checked-i64 program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "10\n14\n9\n4\n12\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn eliminates_redundant_checked_inverse_add_sub_guards() {
     let source = r#"
 const OFFSET: i64 = 7
