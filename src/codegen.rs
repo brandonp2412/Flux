@@ -1822,6 +1822,20 @@ fn emit_runtime_prelude(
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
     let uses_android_set_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
+    let uses_android_start_microphone_recording =
+        uses_android && runtime_usage.contains("flux__android_start_microphone_recording(");
+    let uses_android_stop_microphone_recording =
+        uses_android && runtime_usage.contains("flux__android_stop_microphone_recording(");
+    let uses_android_microphone =
+        uses_android_start_microphone_recording || uses_android_stop_microphone_recording;
+    let uses_android_secure_store =
+        uses_android && runtime_usage.contains("flux__android_secure_store(");
+    let uses_android_secure_read =
+        uses_android && runtime_usage.contains("flux__android_secure_read(");
+    let uses_android_secure_remove =
+        uses_android && runtime_usage.contains("flux__android_secure_remove(");
+    let uses_android_secure_storage =
+        uses_android_secure_store || uses_android_secure_read || uses_android_secure_remove;
     let uses_android_read_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_read_clipboard_text(")
             || uses_clipboard_read_text);
@@ -1917,6 +1931,8 @@ fn emit_runtime_prelude(
         || uses_android_open_notification_settings
         || uses_android_share
         || uses_android_set_clipboard_text
+        || uses_android_microphone
+        || uses_android_secure_storage
         || uses_android_read_clipboard_text
         || (uses_android
             && (uses_dialog_alert
@@ -2016,6 +2032,8 @@ fn emit_runtime_prelude(
                 || uses_dialog_choose))
         || uses_android_notifications
         || uses_android_has_system_feature
+        || uses_android_microphone
+        || uses_android_secure_storage
         || uses_android_permission_granted
         || uses_android_request_permission
         || uses_android_generated_ui
@@ -2044,6 +2062,38 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
         out.push_str("    return result;\n");
         out.push_str("}\n");
+    }
+    if uses_android_microphone {
+        out.push_str("static jobject flux__android_microphone_recorder = NULL;\n");
+        if uses_android_start_microphone_recording {
+            out.push_str(
+                "static bool flux__android_start_microphone_recording(const char *path) {\n",
+            );
+            out.push_str("    if (path == NULL || path[0] == '\\0' || flux__android_activity == NULL || flux__android_microphone_recorder != NULL) return false;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
+            out.push_str("    bool started = false; jclass recorder_class = NULL; jobject recorder = NULL; jstring output_path = NULL;\n");
+            out.push_str("    recorder_class = (*env)->FindClass(env, \"android/media/MediaRecorder\"); if (recorder_class == NULL) goto done;\n");
+            out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, recorder_class, \"<init>\", \"()V\"); if (ctor == NULL) goto done; recorder = (*env)->NewObject(env, recorder_class, ctor); if (recorder == NULL || (*env)->ExceptionCheck(env)) goto done;\n");
+            out.push_str("    jmethodID set_audio_source = (*env)->GetMethodID(env, recorder_class, \"setAudioSource\", \"(I)V\"); jmethodID set_output_format = (*env)->GetMethodID(env, recorder_class, \"setOutputFormat\", \"(I)V\"); jmethodID set_audio_encoder = (*env)->GetMethodID(env, recorder_class, \"setAudioEncoder\", \"(I)V\"); jmethodID set_output_file = (*env)->GetMethodID(env, recorder_class, \"setOutputFile\", \"(Ljava/lang/String;)V\"); jmethodID prepare = (*env)->GetMethodID(env, recorder_class, \"prepare\", \"()V\"); jmethodID start = (*env)->GetMethodID(env, recorder_class, \"start\", \"()V\"); if (set_audio_source == NULL || set_output_format == NULL || set_audio_encoder == NULL || set_output_file == NULL || prepare == NULL || start == NULL) goto done;\n");
+            out.push_str("    output_path = flux__android_utf8_string(env, path); if (output_path == NULL) goto done; (*env)->CallVoidMethod(env, recorder, set_audio_source, (jint)1); (*env)->CallVoidMethod(env, recorder, set_output_format, (jint)2); (*env)->CallVoidMethod(env, recorder, set_audio_encoder, (jint)3); (*env)->CallVoidMethod(env, recorder, set_output_file, output_path); (*env)->CallVoidMethod(env, recorder, prepare); (*env)->CallVoidMethod(env, recorder, start); if ((*env)->ExceptionCheck(env)) goto done;\n");
+            out.push_str("    flux__android_microphone_recorder = (*env)->NewGlobalRef(env, recorder); started = flux__android_microphone_recorder != NULL;\n");
+            out.push_str("done:\n    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (!started && recorder != NULL && recorder_class != NULL) { jmethodID release = (*env)->GetMethodID(env, recorder_class, \"release\", \"()V\"); if (release != NULL) (*env)->CallVoidMethod(env, recorder, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); } if (output_path != NULL) (*env)->DeleteLocalRef(env, output_path); if (recorder != NULL) (*env)->DeleteLocalRef(env, recorder); if (recorder_class != NULL) (*env)->DeleteLocalRef(env, recorder_class); flux__android_release_env(detach); return started;\n}\n");
+        }
+        if uses_android_stop_microphone_recording {
+            out.push_str("static bool flux__android_stop_microphone_recording(void) {\n");
+            out.push_str("    if (flux__android_microphone_recorder == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; jobject recorder = flux__android_microphone_recorder; flux__android_microphone_recorder = NULL; bool stopped = false; jclass recorder_class = (*env)->GetObjectClass(env, recorder); if (recorder_class != NULL) { jmethodID stop = (*env)->GetMethodID(env, recorder_class, \"stop\", \"()V\"); jmethodID release = (*env)->GetMethodID(env, recorder_class, \"release\", \"()V\"); if (stop != NULL) { (*env)->CallVoidMethod(env, recorder, stop); stopped = !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (release != NULL) (*env)->CallVoidMethod(env, recorder, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, recorder_class); } (*env)->DeleteGlobalRef(env, recorder); flux__android_release_env(detach); return stopped;\n}\n");
+        }
+    }
+    if uses_android_secure_storage {
+        if uses_android_secure_store {
+            out.push_str("static bool flux__android_secure_store(const char *key, const char *value) {\n    if (key == NULL || key[0] == '\\0' || value == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool stored = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; jstring value_string = NULL; if (storage_class != NULL) { jmethodID put = (*env)->GetStaticMethodID(env, storage_class, \"put\", \"(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z\"); key_string = flux__android_utf8_string(env, key); value_string = flux__android_utf8_string(env, value); if (put != NULL && key_string != NULL && value_string != NULL) stored = (*env)->CallStaticBooleanMethod(env, storage_class, put, flux__android_activity->clazz, key_string, value_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value_string != NULL) (*env)->DeleteLocalRef(env, value_string); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return stored;\n}\n");
+        }
+        if uses_android_secure_read {
+            out.push_str("static bool flux__android_secure_read(const char *key, void (*callback)(const char *)) {\n    if (key == NULL || key[0] == '\\0' || callback == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool found = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; jstring result = NULL; const char *text = NULL; if (storage_class != NULL) { jmethodID get = (*env)->GetStaticMethodID(env, storage_class, \"get\", \"(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;\"); key_string = flux__android_utf8_string(env, key); if (get != NULL && key_string != NULL) result = (jstring)(*env)->CallStaticObjectMethod(env, storage_class, get, flux__android_activity->clazz, key_string); if (!(*env)->ExceptionCheck(env) && result != NULL) { text = (*env)->GetStringUTFChars(env, result, NULL); if (text != NULL) { callback(text); found = true; (*env)->ReleaseStringUTFChars(env, result, text); text = NULL; } } } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (result != NULL) (*env)->DeleteLocalRef(env, result); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return found;\n}\n");
+        }
+        if uses_android_secure_remove {
+            out.push_str("static bool flux__android_secure_remove(const char *key) {\n    if (key == NULL || key[0] == '\\0' || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool removed = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; if (storage_class != NULL) { jmethodID remove = (*env)->GetStaticMethodID(env, storage_class, \"remove\", \"(Landroid/content/Context;Ljava/lang/String;)Z\"); key_string = flux__android_utf8_string(env, key); if (remove != NULL && key_string != NULL) removed = (*env)->CallStaticBooleanMethod(env, storage_class, remove, flux__android_activity->clazz, key_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return removed;\n}\n");
+        }
     }
     if uses_android_keep_screen_on && uses_android_generated_ui {
         out.push_str("static void flux__android_keep_screen_on(bool enabled) {\n");
@@ -4221,7 +4271,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept(int64_t listener) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); return fd < 0 ? flux__net_result(-1, \"failed to accept TCP connection\") : flux__net_result((int64_t)fd, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_tcp_accept_many(") {
-        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"tcpAcceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"tcpAcceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"tcpAcceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"tcpAcceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { if (flux__worker_cancelled()) return flux__net_result(accepted, \"tcpAcceptMany cancelled by worker scope\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"acceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"acceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"acceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"acceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { if (flux__worker_cancelled()) return flux__net_result(accepted, \"acceptMany cancelled by worker scope\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_local_port(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_local_port(int64_t socket_handle) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); struct sockaddr_storage address; socklen_t length = sizeof(address); if (getsockname((int)socket_handle, (struct sockaddr *)&address, &length) != 0) return flux__net_result(-1, \"failed to read socket address\"); if (address.ss_family == AF_INET) return flux__net_result((int64_t)ntohs(((struct sockaddr_in *)&address)->sin_port), NULL); if (address.ss_family == AF_INET6) return flux__net_result((int64_t)ntohs(((struct sockaddr_in6 *)&address)->sin6_port), NULL); return flux__net_result(-1, \"socket address has unsupported family\"); }\n");
@@ -4339,6 +4389,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     }
     if runtime_usage.contains("flux__net_http_receive_request_with_text_body_v2(")
         || runtime_usage.contains("flux__net_http_serve_once(")
+        || runtime_usage.contains("flux__net_http_serve(")
     {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_http_receive_request_with_text_body_v2(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
@@ -4541,17 +4592,19 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
 }
 "#);
     }
-    if runtime_usage.contains("flux__net_http_serve_once(") {
+    if runtime_usage.contains("flux__net_http_serve_once(")
+        || runtime_usage.contains("flux__net_http_serve(")
+    {
         out.push_str(r#"static inline const char *flux__net_http_serve_once(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (listener < 0 || listener > INT_MAX) return "invalid TCP listener handle";
     int socket_type = 0;
     socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect TCP listener";
-    if (socket_type != SOCK_STREAM) return "http.serveOnce requires a TCP listener";
+    if (socket_type != SOCK_STREAM) return "HTTP server requires a TCP listener";
     int accepting = 0;
     socklen_t accepting_length = sizeof(accepting);
     if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return "failed to inspect TCP listener state";
-    if (accepting == 0) return "http.serveOnce requires a listening TCP socket";
+    if (accepting == 0) return "HTTP server requires a listening TCP socket";
     int client;
     do { client = accept((int)listener, NULL, NULL); } while (client < 0 && errno == EINTR);
     if (client < 0) return "failed to accept HTTP connection";
@@ -4566,6 +4619,15 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     const char *close_error = close(client) == 0 ? NULL : "failed to close HTTP connection";
     if (received.v1 != NULL) return received.v1;
     return close_error;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_serve(") {
+        out.push_str(r#"static inline const char *flux__net_http_serve(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+    for (;;) {
+        const char *error = flux__net_http_serve_once(listener, max_head_bytes, max_body_bytes, request_callback, header_callback, body_callback);
+        if (error != NULL) return error;
+    }
 }
 "#);
     }
@@ -21443,7 +21505,7 @@ fn dead_store_rhs_is_discardable(
                 Some(Type::Named(_)) => true,
                 Some(Type::List(_)) => {
                     let static_len = static_list_length(base, env, signatures).ok().flatten();
-                    match name.as_str() {
+                    match crate::builtin_names::list_member_impl(name) {
                         "length" | "isEmpty" | "isNotEmpty" => true,
                         "first" | "last" => static_len.is_some_and(|len| len > 0),
                         "single" => static_len == Some(1),
@@ -23396,7 +23458,10 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "map" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "map"
+            && args.len() == 2 =>
+        {
             Some(SequenceTransform::Map {
                 list: &args[0],
                 callback: &args[1],
@@ -23406,7 +23471,10 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && (name == "filter" || name == "where") && args.len() == 2 => {
+        } if named_args.is_empty()
+            && matches!(crate::builtin_names::global_impl(name), "filter" | "where")
+            && args.len() == 2 =>
+        {
             Some(SequenceTransform::Filter {
                 list: &args[0],
                 callback: &args[1],
@@ -23414,13 +23482,17 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "map" && args.len() == 1 => Some(SequenceTransform::Map {
-            list: input,
-            callback: &args[0],
-        }),
+        } if crate::builtin_names::global_impl(name) == "map" && args.len() == 1 => {
+            Some(SequenceTransform::Map {
+                list: input,
+                callback: &args[0],
+            })
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if (name == "filter" || name == "where") && args.len() == 1 => {
+        } if matches!(crate::builtin_names::global_impl(name), "filter" | "where")
+            && args.len() == 1 =>
+        {
             Some(SequenceTransform::Filter {
                 list: input,
                 callback: &args[0],
@@ -23436,12 +23508,17 @@ fn sequence_chunked(expr: &Expr) -> Option<(&Expr, &Expr)> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "chunked" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "chunked"
+            && args.len() == 2 =>
+        {
             Some((&args[0], &args[1]))
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "chunked" && args.len() == 1 => Some((input, &args[0])),
+        } if crate::builtin_names::global_impl(name) == "chunked" && args.len() == 1 => {
+            Some((input, &args[0]))
+        }
         _ => None,
     }
 }
@@ -23452,10 +23529,15 @@ fn sequence_sorted(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "sorted" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "sorted"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "sorted" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "sorted" && args.is_empty() => Some(input),
         _ => None,
     }
 }
@@ -23466,10 +23548,15 @@ fn sequence_flatten(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "flatten" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "flatten"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "flatten" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "flatten" && args.is_empty() => Some(input),
         _ => None,
     }
 }
@@ -23480,10 +23567,17 @@ fn sequence_distinct(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "distinct" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "distinct"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "distinct" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "distinct" && args.is_empty() => {
+            Some(input)
+        }
         _ => None,
     }
 }
@@ -23494,12 +23588,17 @@ fn sequence_concat(expr: &Expr) -> Option<(&Expr, &Expr)> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "concat" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "concat"
+            && args.len() == 2 =>
+        {
             Some((&args[0], &args[1]))
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "concat" && args.len() == 1 => Some((input, &args[0])),
+        } if crate::builtin_names::global_impl(name) == "concat" && args.len() == 1 => {
+            Some((input, &args[0]))
+        }
         _ => None,
     }
 }
@@ -24291,7 +24390,10 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "fold" && args.len() == 3 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "fold"
+            && args.len() == 3 =>
+        {
             Some(SequenceReduction::Fold {
                 list: &args[0],
                 initial: &args[1],
@@ -24302,7 +24404,10 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "reduce" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "reduce"
+            && args.len() == 2 =>
+        {
             Some(SequenceReduction::Reduce {
                 list: &args[0],
                 reducer: &args[1],
@@ -24310,17 +24415,21 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "fold" && args.len() == 2 => Some(SequenceReduction::Fold {
-            list: input,
-            initial: &args[0],
-            reducer: &args[1],
-        }),
+        } if crate::builtin_names::global_impl(name) == "fold" && args.len() == 2 => {
+            Some(SequenceReduction::Fold {
+                list: input,
+                initial: &args[0],
+                reducer: &args[1],
+            })
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "reduce" && args.len() == 1 => Some(SequenceReduction::Reduce {
-            list: input,
-            reducer: &args[0],
-        }),
+        } if crate::builtin_names::global_impl(name) == "reduce" && args.len() == 1 => {
+            Some(SequenceReduction::Reduce {
+                list: input,
+                reducer: &args[0],
+            })
+        }
         _ => None,
     }
 }
@@ -24879,6 +24988,16 @@ fn emit_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<EmittedExpr, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return emit_expr(&normalized, env, signatures);
+        }
+    }
     if let Some(value) = fold_primitive_expr(expr, env, signatures)? {
         return Ok(EmittedExpr {
             ty: value.ty(),
@@ -25615,7 +25734,7 @@ fn emit_expr(
                 )
             } else if let Type::List(element) = &emitted_base.ty {
                 let element_c = c_type(element, signatures);
-                match name.as_str() {
+                match crate::builtin_names::list_member_impl(name) {
                     "length" => format!("({}).len", emitted_base.code),
                     "isEmpty" => format!("(({}).len == 0)", emitted_base.code),
                     "isNotEmpty" => format!("(({}).len != 0)", emitted_base.code),
@@ -25889,6 +26008,7 @@ fn emit_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    let name = crate::builtin_names::qualified_impl(namespace, name);
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid process call reached code generation"));
@@ -26019,7 +26139,7 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid network call reached code generation"));
         }
         match name {
-            "tcpConnect" => {
+            "connect" | "tcpConnect" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26048,7 +26168,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpListen" => {
+            "listen" | "tcpListen" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26064,7 +26184,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpAccept" => {
+            "accept" | "tcpAccept" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26075,7 +26195,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpAcceptMany" => {
+            "acceptMany" | "tcpAcceptMany" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26418,7 +26538,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "serveOnce" => {
+            "serve" | "serveOnce" => {
                 if args.len() != 6 {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26428,9 +26548,14 @@ fn emit_qualified_call(
                 let request_callback = emit_expr(&args[3], env, signatures)?;
                 let header_callback = emit_expr(&args[4], env, signatures)?;
                 let body_callback = emit_expr(&args[5], env, signatures)?;
+                let helper = if name == "serve" {
+                    "flux__net_http_serve"
+                } else {
+                    "flux__net_http_serve_once"
+                };
                 return Ok((
                     format!(
-                        "flux__net_http_serve_once({}, {}, {}, {}, {}, {})",
+                        "{helper}({}, {}, {}, {}, {}, {})",
                         listener.code,
                         max_head_bytes.code,
                         max_body_bytes.code,
@@ -26486,7 +26611,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "sendTextRequest" => {
+            "request" | "sendTextRequest" => {
                 if !(6..=7).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26516,7 +26641,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextRequestWithHeaders" => {
+            "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26548,7 +26673,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextResponseWithHeaders" => {
+            "respondWithHeaders" | "sendTextResponseWithHeaders" => {
                 if !(5..=6).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26576,7 +26701,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextResponse" => {
+            "respond" | "sendTextResponse" => {
                 if !(4..=5).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26850,7 +26975,7 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
             }
-            "sleepMillis" => {
+            "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
@@ -27125,8 +27250,8 @@ fn emit_qualified_call(
         }
         let value = emit_expr(&args[0], env, signatures)?;
         let helper = match name {
-            "setText" => "flux__clipboard_set_text",
-            "readText" => "flux__clipboard_read_text",
+            "write" | "setText" => "flux__clipboard_set_text",
+            "read" | "readText" => "flux__clipboard_read_text",
             _ => return Err(diag(span, "invalid clipboard call reached code generation")),
         };
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
@@ -27221,8 +27346,8 @@ fn emit_qualified_call(
         }
         let callback = emit_expr(&args[0], env, signatures)?;
         let helper = match name {
-            "openFile" => "flux__file_dialog_open_file",
-            "saveFile" => "flux__file_dialog_save_file",
+            "open" | "openFile" => "flux__file_dialog_open_file",
+            "save" | "saveFile" => "flux__file_dialog_save_file",
             "selectDirectory" => "flux__file_dialog_select_directory",
             _ => {
                 return Err(diag(

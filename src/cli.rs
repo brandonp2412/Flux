@@ -3994,8 +3994,16 @@ fn android_has_generated_job_service(c_source: &str) -> bool {
         || c_source.contains("flux__android_cancel_background_job(")
 }
 
+fn android_has_generated_secure_storage(c_source: &str) -> bool {
+    c_source.contains("flux__android_secure_store(")
+        || c_source.contains("flux__android_secure_read(")
+        || c_source.contains("flux__android_secure_remove(")
+}
+
 fn android_has_generated_java(c_source: &str) -> bool {
-    android_has_generated_activity(c_source) || android_has_generated_job_service(c_source)
+    android_has_generated_activity(c_source)
+        || android_has_generated_job_service(c_source)
+        || android_has_generated_secure_storage(c_source)
 }
 
 fn android_job_service_java_source() -> &'static str {
@@ -4039,6 +4047,92 @@ public final class FluxJobService extends JobService {
     @Override
     public boolean onStopJob(JobParameters params) {
         return false;
+    }
+}
+"#
+}
+
+fn android_secure_storage_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+public final class FluxSecureStorage {
+    private static final String KEY_ALIAS = "flux.secure.storage.v1";
+    private static final String PREFS = "flux_secure_storage";
+
+    private FluxSecureStorage() {}
+
+    private static SecretKey key() throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        KeyStore.Entry existing = store.getEntry(KEY_ALIAS, null);
+        if (existing instanceof KeyStore.SecretKeyEntry) {
+            return ((KeyStore.SecretKeyEntry) existing).getSecretKey();
+        }
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build());
+        return generator.generateKey();
+    }
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    public static synchronized boolean put(Context context, String name, String value) {
+        if (Build.VERSION.SDK_INT < 23 || context == null || name == null || name.isEmpty() || value == null) return false;
+        try {
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, key());
+            byte[] encrypted = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
+            String encoded = Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP)
+                    + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
+            return prefs(context).edit().putString(name, encoded).commit();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public static synchronized String get(Context context, String name) {
+        if (Build.VERSION.SDK_INT < 23 || context == null || name == null || name.isEmpty()) return null;
+        try {
+            String encoded = prefs(context).getString(name, null);
+            if (encoded == null) return null;
+            int separator = encoded.indexOf(':');
+            if (separator <= 0 || separator == encoded.length() - 1) return null;
+            byte[] iv = Base64.decode(encoded.substring(0, separator), Base64.NO_WRAP);
+            byte[] encrypted = Base64.decode(encoded.substring(separator + 1), Base64.NO_WRAP);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, iv));
+            return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    public static synchronized boolean remove(Context context, String name) {
+        if (Build.VERSION.SDK_INT < 23 || context == null || name == null || name.isEmpty()) return false;
+        try {
+            return prefs(context).edit().remove(name).commit();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 }
 "#
@@ -5552,6 +5646,13 @@ fn compile_android_activity_dex(
         })?;
         java_sources.push(java_source);
     }
+    if android_has_generated_secure_storage(c_source) {
+        let java_source = java_dir.join("FluxSecureStorage.java");
+        fs::write(&java_source, android_secure_storage_java_source()).map_err(|error| {
+            format!("failed to write compiler-generated Android secure storage: {error}")
+        })?;
+        java_sources.push(java_source);
+    }
     let mut javac = Command::new("javac");
     javac
         .args(["-source", "8", "-target", "8", "-classpath"])
@@ -5590,6 +5691,15 @@ fn compile_android_activity_dex(
             return Err(CliError::Message(format!(
                 "javac did not produce the compiler-generated Android job service class '{}'",
                 service_class.display()
+            )));
+        }
+    }
+    if android_has_generated_secure_storage(c_source) {
+        let storage_class = runtime_classes.join("FluxSecureStorage.class");
+        if !generated_classes.iter().any(|path| path == &storage_class) {
+            return Err(CliError::Message(format!(
+                "javac did not produce the compiler-generated Android secure storage class '{}'",
+                storage_class.display()
             )));
         }
     }
@@ -5954,6 +6064,9 @@ fn android_manifest_xml(
     let mut permissions = manifest.android.permissions.clone();
     if c_source.contains("flux__android_vibrate(") {
         permissions.push("android.permission.VIBRATE".to_string());
+    }
+    if c_source.contains("flux__android_start_microphone_recording(") {
+        permissions.push("android.permission.RECORD_AUDIO".to_string());
     }
     if c_source.contains("flux__android_notify(")
         || c_source.contains("flux__android_notify_url_action(")
@@ -6715,9 +6828,10 @@ mod tests {
         NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
         android_abi_from_runtime, android_activity_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
-        android_publish_options, build_native_configured, build_native_instrumented, build_options,
-        debug_options, demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
-        json_string, native_build_cache_path_configured, native_cache_entry_is_valid,
+        android_publish_options, android_secure_storage_java_source, build_native_configured,
+        build_native_instrumented, build_options, debug_options, demangle_profile_symbols,
+        display_flux_symbol, find_android_compile_jar, json_string,
+        native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
@@ -7501,6 +7615,7 @@ mod tests {
         assert!(plain.contains("android:targetSdkVersion=\"36\""));
         assert!(plain.contains("android.permission.CAMERA"));
         assert!(!plain.contains("android.permission.VIBRATE"));
+        assert!(!plain.contains("android.permission.RECORD_AUDIO"));
         assert!(!plain.contains("android.permission.POST_NOTIFICATIONS"));
         assert!(plain.contains("android:hasCode=\"false\""));
         assert!(plain.contains("android:name=\"android.app.NativeActivity\""));
@@ -7517,6 +7632,29 @@ mod tests {
         assert!(generated_jobs.contains("android:name=\"app.flux.runtime.FluxJobService\""));
         assert!(generated_jobs.contains("android.permission.BIND_JOB_SERVICE"));
         assert!(generated_jobs.contains("android:exported=\"false\""));
+        let recording = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "static bool f(void) { return flux__android_start_microphone_recording(\"capture.m4a\"); }",
+        );
+        assert!(recording.contains("android.permission.RECORD_AUDIO"));
+        assert!(!recording.contains("android.permission.VIBRATE"));
+
+        let secure = android_manifest_xml(
+            &manifest,
+            BuildMode::Release,
+            "static bool f(void) { return flux__android_secure_store(\"key\", \"value\"); }",
+        );
+        assert!(secure.contains("android:hasCode=\"true\""));
+        assert!(secure.contains("android:name=\"android.app.NativeActivity\""));
+        let secure_storage = android_secure_storage_java_source();
+        assert!(secure_storage.contains("AndroidKeyStore"));
+        assert!(secure_storage.contains("AES/GCM/NoPadding"));
+        assert!(secure_storage.contains("getSharedPreferences(PREFS, Context.MODE_PRIVATE)"));
+        assert!(secure_storage.contains("new GCMParameterSpec(128, iv)"));
+        assert!(!secure_storage.contains("MethodChannel"));
+        assert!(!secure_storage.contains("PluginRegistry"));
+
         let job_service = android_job_service_java_source();
         assert!(job_service.contains("extends JobService"));
         assert!(job_service.contains("new JobInfo.Builder"));

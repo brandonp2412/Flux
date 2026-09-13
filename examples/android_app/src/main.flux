@@ -1,11 +1,11 @@
 fn started() -> void {
     android.vibrate(25)
-    print(android.permissionGranted("android.permission.VIBRATE"))
-    android.createNotificationChannel("updates", "Flux updates", "Native Flux Android notifications")
-    if android.notificationPermissionGranted():
-        android.notifyUrlAction("updates", 1, "Flux", "Native Android notifications work", "Open", "https://example.com")
+    print(android.allowed("android.permission.VIBRATE"))
+    android.channel("updates", "Flux updates", "Native Flux Android notifications")
+    if android.noticeAllowed():
+        android.notifyUrl("updates", 1, "Flux", "Native Android notifications work", "Open", "https://example.com")
     else:
-        android.requestNotificationPermission()
+        android.askNotice()
     print("Flux Android started")
 }
 
@@ -38,11 +38,11 @@ fn keyPressed(key: str) -> void {
 }
 
 fn focusNextWrapped() -> void {
-    android.focusNext(true)
+    android.next(true)
 }
 
 fn focusLast() -> void {
-    android.focusLast()
+    android.last()
 }
 
 view Screen {

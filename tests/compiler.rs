@@ -1984,7 +1984,7 @@ fn main() -> i64 {
     assert!(generated.contains("O_NONBLOCK"));
     assert!(generated.contains("EAGAIN"));
     assert!(generated.contains("SO_ACCEPTCONN"));
-    assert!(generated.contains("tcpAcceptMany cancelled by worker scope"));
+    assert!(generated.contains("acceptMany cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-net-accept-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -2048,7 +2048,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert!(
         String::from_utf8_lossy(&run.stdout)
-            .contains("tcpAcceptMany requires a nonblocking TCP listener")
+            .contains("acceptMany requires a nonblocking TCP listener")
     );
 
     let max_count_error = check_source(
@@ -2634,7 +2634,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("single-request HTTP server helper should lower");
     assert!(generated.contains("flux__net_http_serve_once("));
     assert!(generated.contains("flux__net_http_receive_request_with_text_body_v2("));
-    assert!(generated.contains("http.serveOnce requires a TCP listener"));
+    assert!(generated.contains("HTTP server requires a TCP listener"));
 
     let invalid_limit = check_source(
         "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.serveOnce(1, 0, 1024, request, header, body))\n    return 0\n}\n",
@@ -2713,6 +2713,157 @@ fn main() -> i64 {
         "nil\nPOST\n/one\nHTTP/1.1\nnil\nHost\nexample.test\nContent-Length\n5\nhello\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_serve_is_the_continuous_default_and_handles_multiple_connections() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn main() -> i64 {
+    print(http.serve(1, 4096, 1024, request, header, body))
+    return 0
+}
+"#;
+    check_source(source).expect("canonical HTTP server helper should typecheck");
+    let generated = compile_to_c(source).expect("canonical HTTP server helper should lower");
+    assert!(generated.contains("flux__net_http_serve("));
+    assert!(generated.contains("for (;;)"));
+
+    let probe = TcpListener::bind("127.0.0.1:0").expect("HTTP serve port should allocate");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let root = std::env::temp_dir().join(format!("flux-http-serve-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP serve fixture should be writable");
+    let source_path = root.join("serve.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(socket: i64, _method: str, _target: str, _version: str) -> void {{\n    print(http.respond(socket, 200, \"text/plain\", \"served\"))\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, _value: str) -> void {{\n}}\nfn main() -> i64 {{\n    let (listener, listenError) = net.listen(\"127.0.0.1\", {port}, 8)\n    print(listenError)\n    print(http.serve(listener, 4096, 1024, request, header, body))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP serve Flux source should be writable");
+    let binary = root.join("serve");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP serve Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP serve fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let mut child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP serve Flux binary should start");
+
+    for target in ["/one", "/two"] {
+        let mut stream = (0..100)
+            .find_map(
+                |_| match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                    Ok(stream) => Some(stream),
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(5));
+                        None
+                    }
+                },
+            )
+            .expect("HTTP serve listener should remain reachable");
+        stream
+            .write_all(format!("GET {target} HTTP/1.1\r\nHost: example.test\r\n\r\n").as_bytes())
+            .expect("HTTP serve request should be writable");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("HTTP serve response should be readable through close");
+        assert!(response.contains("HTTP/1.1 200"));
+        assert!(response.ends_with("served"));
+    }
+
+    child
+        .kill()
+        .expect("continuous HTTP server should be stoppable by its owner process");
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn canonical_short_platform_api_names_typecheck_and_lower() {
+    let headless = r#"
+fn main() -> i64 {
+    let (socket, connectError) = net.connect("127.0.0.1", 80)
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    let (accepted, acceptError) = net.accept(listener)
+    time.sleep(0)
+    print(http.request(socket, "GET", "/", "example.test", "text/plain", ""))
+    print(http.respond(socket, 200, "text/plain", "ok"))
+    print(socket)
+    print(connectError)
+    print(accepted)
+    print(acceptError)
+    print(listenError)
+    return 0
+}
+"#;
+    check_source(headless).expect("canonical short headless API names should typecheck");
+    let generated =
+        compile_to_c(headless).expect("canonical short headless API names should lower");
+    for helper in [
+        "flux__net_tcp_connect(",
+        "flux__net_tcp_listen(",
+        "flux__net_tcp_accept(",
+        "flux__time_sleep_millis(",
+        "flux__net_http_send_text_request_v2(",
+        "flux__net_http_send_text_response(",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing lowering helper {helper}"
+        );
+    }
+
+    let application = r#"
+fn text(_value: str) -> void {
+}
+fn selected(_path: str) -> void {
+}
+fn started() -> void {
+    clipboard.write("hello")
+    clipboard.read(text)
+    fileDialog.open(selected)
+    fileDialog.save(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "short API names"
+}
+app Screen(onStart: started)
+"#;
+    check_source(application).expect("canonical short application API names should typecheck");
+    let generated =
+        compile_to_c(application).expect("canonical short application API names should lower");
+    for helper in [
+        "flux__clipboard_set_text(",
+        "flux__clipboard_read_text(",
+        "flux__file_dialog_open_file(",
+        "flux__file_dialog_save_file(",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing lowering helper {helper}"
+        );
+    }
 }
 
 #[test]
@@ -3862,7 +4013,7 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__net_wait_writable("));
     assert!(generated.contains("void (*callback)(int64_t, const char *)"));
     assert!(generated.contains("O_NONBLOCK"));
-    assert!(generated.contains("poll(&descriptor"));
+    assert!(generated.contains("poll(descriptors, count"));
     assert!(generated.contains("MSG_NOSIGNAL"));
 
     let root = std::env::temp_dir().join(format!("flux-net-text-{}", std::process::id()));
@@ -28378,39 +28529,47 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     .expect("Android codegen manifest should be writable");
     fs::write(
         root.join("src/main.flux"),
-        r#"fn started() -> void {
-    print(android.sdkInt())
-    print(android.hasSystemFeature("android.hardware.camera.any"))
+        r#"fn secureValue(value: str) -> void {
+    print(value)
+}
+fn started() -> void {
+    print(android.sdk())
+    print(android.feature("android.hardware.camera.any"))
     android.vibrate(25)
-    android.keepScreenOn(true)
-    android.finishActivity()
-    android.openUrl("https://example.com")
-    android.openAppSettings()
-    android.openNotificationSettings()
+    android.awake(true)
+    android.finish()
+    android.open("https://example.com")
+    android.settings()
+    android.noticeSettings()
     android.share("hello from Flux")
-    android.setClipboardText("copied from Flux")
+    android.clipboard("copied from Flux")
+    print(android.record("/data/local/tmp/flux-recording.m4a"))
+    print(android.stopRecord())
+    print(android.store("token", "secret"))
+    print(android.load("token", secureValue))
+    print(android.erase("token"))
     android.showKeyboard()
     android.hideKeyboard()
-    android.focusNext()
-    android.focusNext(true)
-    android.focusPrevious()
-    android.focusPrevious(true)
-    android.focusFirst()
-    android.focusLast()
-    android.clearFocus()
-    print(android.selectionStart())
-    print(android.selectionEnd())
-    print(android.setCaret(1))
-    print(android.setSelection(0, 1))
-    print(android.setImeAction("done"))
-    print(android.permissionGranted("android.permission.CAMERA"))
-    android.requestPermission("android.permission.CAMERA")
-    android.createNotificationChannel("updates", "Updates", "Flux update notifications")
-    print(android.notificationPermissionGranted())
-    android.requestNotificationPermission()
+    android.next()
+    android.next(true)
+    android.prior()
+    android.prior(true)
+    android.first()
+    android.last()
+    android.blur()
+    print(android.start())
+    print(android.end())
+    print(android.caret(1))
+    print(android.select(0, 1))
+    print(android.ime("done"))
+    print(android.allowed("android.permission.CAMERA"))
+    android.ask("android.permission.CAMERA")
+    android.channel("updates", "Updates", "Flux update notifications")
+    print(android.noticeAllowed())
+    android.askNotice()
     android.notify("updates", 7, "Flux", "Native Android notification")
-    android.notifyUrlAction("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
-    android.cancelNotification(7)
+    android.notifyUrl("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
+    android.cancelNotice(7)
     print("started")
 }
 fn resumed() -> void {
@@ -28509,6 +28668,25 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("android.intent.action.SEND"));
     assert!(generated.contains("android.intent.extra.TEXT"));
     assert!(generated.contains("static void flux__android_set_clipboard_text(const char *text)"));
+    assert!(
+        generated
+            .contains("static bool flux__android_start_microphone_recording(const char *path)")
+    );
+    assert!(generated.contains("android/media/MediaRecorder"));
+    assert!(generated.contains("\"setAudioSource\", \"(I)V\""));
+    assert!(generated.contains("\"setOutputFile\", \"(Ljava/lang/String;)V\""));
+    assert!(generated.contains("static bool flux__android_stop_microphone_recording(void)"));
+    assert!(generated.contains("DeleteGlobalRef"));
+    assert!(
+        generated
+            .contains("static bool flux__android_secure_store(const char *key, const char *value)")
+    );
+    assert!(generated.contains("app/flux/runtime/FluxSecureStorage"));
+    assert!(generated.contains(
+        "static bool flux__android_secure_read(const char *key, void (*callback)(const char *))"
+    ));
+    assert!(generated.contains("flux__fn_secureValue"));
+    assert!(generated.contains("static bool flux__android_secure_remove(const char *key)"));
     assert!(generated.contains("android/content/ClipData"));
     assert!(generated.contains("\"newPlainText\""));
     assert!(generated.contains("\"setPrimaryClip\""));
@@ -28620,32 +28798,40 @@ fn main() -> i64 {
     .expect("Android tree-shaking manifest should be writable");
     fs::write(
         android_tree_root.join("src/main.flux"),
-        r#"fn unused_android() -> void {
-    android.openAppSettings()
-    android.openNotificationSettings()
-    android.keepScreenOn(false)
-    android.finishActivity()
+        r#"fn unusedSecureValue(value: str) -> void {
+    print(value)
+}
+fn unused_android() -> void {
+    android.settings()
+    android.noticeSettings()
+    android.awake(false)
+    android.finish()
     android.showKeyboard()
     android.hideKeyboard()
-    android.focusNext()
-    android.focusNext(true)
-    android.focusPrevious()
-    android.focusPrevious(true)
-    android.focusFirst()
-    android.focusLast()
-    android.clearFocus()
-    android.selectionStart()
-    android.selectionEnd()
-    android.setCaret(1)
-    android.setSelection(0, 1)
-    android.setImeAction("next")
-    android.hasSystemFeature("android.hardware.camera.any")
-    android.permissionGranted("android.permission.CAMERA")
-    android.requestPermission("android.permission.CAMERA")
-    android.createNotificationChannel("unused", "Unused", "Unused")
+    android.next()
+    android.next(true)
+    android.prior()
+    android.prior(true)
+    android.first()
+    android.last()
+    android.blur()
+    android.start()
+    android.end()
+    android.caret(1)
+    android.select(0, 1)
+    android.ime("next")
+    android.feature("android.hardware.camera.any")
+    android.allowed("android.permission.CAMERA")
+    android.ask("android.permission.CAMERA")
+    android.record("unused.m4a")
+    android.stopRecord()
+    android.store("unused", "unused")
+    android.load("unused", unusedSecureValue)
+    android.erase("unused")
+    android.channel("unused", "Unused", "Unused")
     android.notify("unused", 1, "Unused", "Unused")
-    android.notifyUrlAction("unused", 2, "Unused", "Unused", "Open", "https://example.com")
-    android.cancelNotification(1)
+    android.notifyUrl("unused", 2, "Unused", "Unused", "Open", "https://example.com")
+    android.cancelNotice(1)
 }
 view Screen {
     grid columns: 1fr
@@ -28690,6 +28876,13 @@ app Screen
     assert!(!tree_generated.contains("flux__android_has_system_feature"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
     assert!(!tree_generated.contains("flux__android_request_permission"));
+    assert!(!tree_generated.contains("flux__android_start_microphone_recording"));
+    assert!(!tree_generated.contains("flux__android_stop_microphone_recording"));
+    assert!(!tree_generated.contains("android/media/MediaRecorder"));
+    assert!(!tree_generated.contains("flux__android_secure_store"));
+    assert!(!tree_generated.contains("flux__android_secure_read"));
+    assert!(!tree_generated.contains("flux__android_secure_remove"));
+    assert!(!tree_generated.contains("app/flux/runtime/FluxSecureStorage"));
     assert!(!tree_generated.contains("flux__android_create_notification_channel"));
     assert!(!tree_generated.contains("flux__android_notify("));
     assert!(!tree_generated.contains("flux__android_notify_url_action"));
@@ -28700,35 +28893,40 @@ app Screen
 
     let invalid = r#"
 fn main() -> i64 {
-    android.sdkInt(1)
-    android.hasSystemFeature(42)
+    android.sdk(1)
+    android.feature(42)
     android.vibrate("long")
-    android.keepScreenOn(1)
-    android.finishActivity(1)
-    android.openUrl(42)
-    android.openAppSettings(1)
-    android.openNotificationSettings(false)
+    android.awake(1)
+    android.finish(1)
+    android.open(42)
+    android.settings(1)
+    android.noticeSettings(false)
     android.share(42)
+    android.record(false)
+    android.stopRecord(1)
+    android.store(1, false)
+    android.load(false, 1)
+    android.erase(1)
     android.showKeyboard(1)
     android.hideKeyboard(false)
-    android.focusNext(1)
-    android.focusPrevious("bad")
-    android.focusFirst(1)
-    android.focusLast(false)
-    android.clearFocus("bad")
-    android.selectionStart(1)
-    android.selectionEnd(false)
-    android.setCaret("bad")
-    android.setSelection(0, "bad")
-    android.setImeAction(42)
-    android.createNotificationChannel("updates", 1, false)
-    android.permissionGranted(42)
-    android.requestPermission(false)
-    android.notificationPermissionGranted(1)
-    android.requestNotificationPermission(1)
+    android.next(1)
+    android.prior("bad")
+    android.first(1)
+    android.last(false)
+    android.blur("bad")
+    android.start(1)
+    android.end(false)
+    android.caret("bad")
+    android.select(0, "bad")
+    android.ime(42)
+    android.channel("updates", 1, false)
+    android.allowed(42)
+    android.ask(false)
+    android.noticeAllowed(1)
+    android.askNotice(1)
     android.notify(1, "bad", false, 42)
-    android.notifyUrlAction("updates", "bad", "title", "body", "Open", 42)
-    android.cancelNotification("bad")
+    android.notifyUrl("updates", "bad", "title", "body", "Open", 42)
+    android.cancelNotice("bad")
     return 0
 }
 "#;
@@ -28736,37 +28934,35 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.sdkInt expects 0 arguments, got 1")
+            .contains("android.sdk expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.hasSystemFeature feature")
-            && error.message.contains("expected str")
+        error.message.contains("android.feature feature") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate durationMs")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.keepScreenOn enabled")
-            && error.message.contains("expected bool")
+        error.message.contains("android.awake enabled") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.finishActivity expects 0 arguments, got 1")
+            .contains("android.finish expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.openUrl url") && error.message.contains("expected str")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.openAppSettings expects 0 arguments, got 1")
+        error.message.contains("android.open url") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.openNotificationSettings expects 0 arguments, got 1")
+            .contains("android.settings expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.noticeSettings expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")
@@ -28781,13 +28977,7 @@ fn main() -> i64 {
             .message
             .contains("android.hideKeyboard expects 0 arguments, got 1")
     }));
-    for name in [
-        "focusFirst",
-        "focusLast",
-        "clearFocus",
-        "selectionStart",
-        "selectionEnd",
-    ] {
+    for name in ["first", "last", "blur", "start", "end"] {
         assert!(errors.iter().any(|error| {
             error
                 .message
@@ -28795,64 +28985,51 @@ fn main() -> i64 {
         }));
     }
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.focusNext wrap") && error.message.contains("expected bool")
+        error.message.contains("android.next wrap") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.focusPrevious wrap")
-            && error.message.contains("expected bool")
+        error.message.contains("android.prior wrap") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setCaret position")
-            && error.message.contains("expected i64")
+        error.message.contains("android.caret position") && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setSelection end") && error.message.contains("expected i64")
+        error.message.contains("android.select end") && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setImeAction action")
+        error.message.contains("android.ime action") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.channel name") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.allowed permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.createNotificationChannel name")
-            && error.message.contains("expected str")
+        error.message.contains("android.ask permission") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.permissionGranted permission")
-            && error.message.contains("expected str")
+            .contains("android.noticeAllowed expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.requestPermission permission")
-            && error.message.contains("expected str")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.notificationPermissionGranted expects 0 arguments")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.requestNotificationPermission expects 0 arguments")
+            .contains("android.askNotice expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.notify channelId") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.notifyUrlAction notificationId")
+        error.message.contains("android.notifyUrl notificationId")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.cancelNotification notificationId")
+            .contains("android.cancelNotice notificationId")
             && error.message.contains("expected i64")
     }));
 

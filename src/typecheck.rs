@@ -5470,6 +5470,18 @@ pub fn type_of_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Type, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return type_of_expr(&normalized, env, signatures).map_err(|diagnostic| {
+                rename_builtin_diagnostic(diagnostic, implementation_name, name)
+            });
+        }
+    }
     match &expr.kind {
         ExprKind::Int(_) => Ok(Type::I64),
         ExprKind::Bool(_) => Ok(Type::Bool),
@@ -6610,7 +6622,7 @@ pub fn type_of_expr(
                 (base_ty, false)
             };
             let field_ty = if let Type::List(element) = &base_ty {
-                match name.as_str() {
+                match crate::builtin_names::list_member_impl(name) {
                     "length" => Type::I64,
                     "isEmpty" | "isNotEmpty" => Type::Bool,
                     "first" | "last" | "single" => (**element).clone(),
@@ -6827,6 +6839,18 @@ pub(crate) fn value_types_of_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Vec<Type>, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return value_types_of_expr(&normalized, env, signatures).map_err(|diagnostic| {
+                rename_builtin_diagnostic(diagnostic, implementation_name, name)
+            });
+        }
+    }
     match &expr.kind {
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
@@ -6876,16 +6900,22 @@ pub(crate) fn value_types_of_expr(
                         | "skip"
                         | "any"
                         | "every"
+                        | "all"
                         | "fold"
                         | "reduce"
                         | "map"
                         | "filter"
                         | "where"
                         | "concat"
+                        | "join"
                         | "distinct"
+                        | "unique"
                         | "flatten"
+                        | "flat"
                         | "sorted"
+                        | "sort"
                         | "chunked"
+                        | "chunk"
                 ) =>
         {
             Ok(vec![type_of_expr(expr, env, signatures)?])
@@ -6919,6 +6949,18 @@ fn check_qualified_call(
         return Err(diag(expr.span, "expected a qualified call"));
     };
     let span = expr.span;
+    let implementation_name = crate::builtin_names::qualified_impl(namespace, name.as_str());
+    if implementation_name != name {
+        let mut normalized = expr.clone();
+        if let ExprKind::QualifiedCall { name, .. } = &mut normalized.kind {
+            *name = implementation_name.to_string();
+        }
+        let implementation = format!("{namespace}.{implementation_name}");
+        let canonical = format!("{namespace}.{name}");
+        return check_qualified_call(&normalized, env, signatures).map_err(|diagnostic| {
+            rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
+        });
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(
@@ -7088,24 +7130,24 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "tcpConnect" => {
+            "connect" | "tcpConnect" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!("net.tcpConnect expects 2 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let host = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &host, "net.tcpConnect host")?;
+                require_type(args[0].span, &Type::Str, &host, &format!("net.{name} host"))?;
                 let port = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &port, "net.tcpConnect port")?;
+                require_type(args[1].span, &Type::I64, &port, &format!("net.{name} port"))?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
                     Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value)
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "net.tcpConnect port must be between 1 and 65535",
+                        &format!("net.{name} port must be between 1 and 65535"),
                     ));
                 }
                 return Ok(vec![Type::I64, Type::Error]);
@@ -7133,26 +7175,31 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "tcpListen" => {
+            "listen" | "tcpListen" => {
                 if args.len() != 3 {
                     return Err(diag(
                         span,
-                        &format!("net.tcpListen expects 3 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 3 arguments, got {}", args.len()),
                     ));
                 }
                 let host = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &host, "net.tcpListen host")?;
+                require_type(args[0].span, &Type::Str, &host, &format!("net.{name} host"))?;
                 let port = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &port, "net.tcpListen port")?;
+                require_type(args[1].span, &Type::I64, &port, &format!("net.{name} port"))?;
                 let backlog = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::I64, &backlog, "net.tcpListen backlog")?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &backlog,
+                    &format!("net.{name} backlog"),
+                )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
                     Some(ConstantValue::I64(value)) if !(0..=65535).contains(&value)
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "net.tcpListen port must be between 0 and 65535",
+                        &format!("net.{name} port must be between 0 and 65535"),
                     ));
                 }
                 if matches!(
@@ -7161,12 +7208,12 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[2].span,
-                        "net.tcpListen backlog must be between 1 and 2147483647",
+                        &format!("net.{name} backlog must be between 1 and 2147483647"),
                     ));
                 }
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "tcpAccept" | "localPort" => {
+            "accept" | "tcpAccept" | "localPort" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -7182,11 +7229,11 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "tcpAcceptMany" => {
+            "acceptMany" | "tcpAcceptMany" => {
                 if args.len() != 3 {
                     return Err(diag(
                         span,
-                        &format!("net.tcpAcceptMany expects 3 arguments, got {}", args.len()),
+                        &format!("net.{name} expects 3 arguments, got {}", args.len()),
                     ));
                 }
                 let listener = type_of_expr(&args[0], env, signatures)?;
@@ -7194,14 +7241,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &listener,
-                    "net.tcpAcceptMany listener",
+                    &format!("net.{name} listener"),
                 )?;
                 let max_count = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &max_count,
-                    "net.tcpAcceptMany maxCount",
+                    &format!("net.{name} maxCount"),
                 )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
@@ -7209,7 +7256,7 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "net.tcpAcceptMany maxCount must be between 1 and 2147483647",
+                        &format!("net.{name} maxCount must be between 1 and 2147483647"),
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
@@ -7221,7 +7268,7 @@ fn check_qualified_call(
                     args[2].span,
                     &expected,
                     &callback,
-                    "net.tcpAcceptMany callback",
+                    &format!("net.{name} callback"),
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
@@ -7932,11 +7979,11 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "serveOnce" => {
+            "serve" | "serveOnce" => {
                 if args.len() != 6 {
                     return Err(diag(
                         span,
-                        &format!("http.serveOnce expects 6 arguments, got {}", args.len()),
+                        &format!("http.{name} expects 6 arguments, got {}", args.len()),
                     ));
                 }
                 let listener = type_of_expr(&args[0], env, signatures)?;
@@ -7944,7 +7991,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &listener,
-                    "http.serveOnce listener",
+                    &format!("http.{name} listener"),
                 )?;
                 for (index, label, minimum) in [
                     (1usize, "maxHeadBytes", 1i64),
@@ -7955,7 +8002,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::I64,
                         &limit,
-                        &format!("http.serveOnce {label}"),
+                        &format!("http.{name} {label}"),
                     )?;
                     if matches!(
                         constant_primitive_value(&args[index], signatures),
@@ -7963,7 +8010,7 @@ fn check_qualified_call(
                     ) {
                         return Err(diag(
                             args[index].span,
-                            &format!("http.serveOnce {label} must be between {minimum} and 65536"),
+                            &format!("http.{name} {label} must be between {minimum} and 65536"),
                         ));
                     }
                 }
@@ -7977,7 +8024,7 @@ fn check_qualified_call(
                     args[3].span,
                     &expected_request_callback,
                     &request_callback,
-                    "http.serveOnce requestCallback",
+                    &format!("http.{name} requestCallback"),
                 )?;
                 let header_callback =
                     signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
@@ -7989,7 +8036,7 @@ fn check_qualified_call(
                     args[4].span,
                     &expected_header_callback,
                     &header_callback,
-                    "http.serveOnce headerCallback",
+                    &format!("http.{name} headerCallback"),
                 )?;
                 let body_callback =
                     signatures.canonical_type(&type_of_expr(&args[5], env, signatures)?);
@@ -8001,7 +8048,7 @@ fn check_qualified_call(
                     args[5].span,
                     &expected_body_callback,
                     &body_callback,
-                    "http.serveOnce bodyCallback",
+                    &format!("http.{name} bodyCallback"),
                 )?;
                 return Ok(vec![Type::Error]);
             }
@@ -8142,14 +8189,11 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "sendTextRequest" => {
+            "request" | "sendTextRequest" => {
                 if !(6..=7).contains(&args.len()) {
                     return Err(diag(
                         span,
-                        &format!(
-                            "http.sendTextRequest expects 6 or 7 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("http.{name} expects 6 or 7 arguments, got {}", args.len()),
                     ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
@@ -8157,7 +8201,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &socket,
-                    "http.sendTextRequest socket",
+                    &format!("http.{name} socket"),
                 )?;
                 for (index, label) in [
                     (1usize, "method"),
@@ -8171,7 +8215,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &value,
-                        &format!("http.sendTextRequest {label}"),
+                        &format!("http.{name} {label}"),
                     )?;
                 }
                 if args.len() == 7 {
@@ -8180,19 +8224,16 @@ fn check_qualified_call(
                         args[6].span,
                         &Type::Bool,
                         &keep_alive,
-                        "http.sendTextRequest keepAlive",
+                        &format!("http.{name} keepAlive"),
                     )?;
                 }
                 return Ok(vec![Type::Error]);
             }
-            "sendTextRequestWithHeaders" => {
+            "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(
                         span,
-                        &format!(
-                            "http.sendTextRequestWithHeaders expects 7 or 8 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("http.{name} expects 7 or 8 arguments, got {}", args.len()),
                     ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
@@ -8200,7 +8241,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &socket,
-                    "http.sendTextRequestWithHeaders socket",
+                    &format!("http.{name} socket"),
                 )?;
                 for (index, label) in [
                     (1usize, "method"),
@@ -8215,7 +8256,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &value,
-                        &format!("http.sendTextRequestWithHeaders {label}"),
+                        &format!("http.{name} {label}"),
                     )?;
                 }
                 if args.len() == 8 {
@@ -8224,19 +8265,16 @@ fn check_qualified_call(
                         args[7].span,
                         &Type::Bool,
                         &keep_alive,
-                        "http.sendTextRequestWithHeaders keepAlive",
+                        &format!("http.{name} keepAlive"),
                     )?;
                 }
                 return Ok(vec![Type::Error]);
             }
-            "sendTextResponseWithHeaders" => {
+            "respondWithHeaders" | "sendTextResponseWithHeaders" => {
                 if !(5..=6).contains(&args.len()) {
                     return Err(diag(
                         span,
-                        &format!(
-                            "http.sendTextResponseWithHeaders expects 5 or 6 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("http.{name} expects 5 or 6 arguments, got {}", args.len()),
                     ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
@@ -8244,14 +8282,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &socket,
-                    "http.sendTextResponseWithHeaders socket",
+                    &format!("http.{name} socket"),
                 )?;
                 let status = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &status,
-                    "http.sendTextResponseWithHeaders status",
+                    &format!("http.{name} status"),
                 )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
@@ -8259,7 +8297,7 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "http.sendTextResponseWithHeaders status must be between 100 and 599",
+                        &format!("http.{name} status must be between 100 and 599"),
                     ));
                 }
                 for (index, label) in [
@@ -8272,7 +8310,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::Str,
                         &value,
-                        &format!("http.sendTextResponseWithHeaders {label}"),
+                        &format!("http.{name} {label}"),
                     )?;
                 }
                 if args.len() == 6 {
@@ -8281,19 +8319,16 @@ fn check_qualified_call(
                         args[5].span,
                         &Type::Bool,
                         &keep_alive,
-                        "http.sendTextResponseWithHeaders keepAlive",
+                        &format!("http.{name} keepAlive"),
                     )?;
                 }
                 return Ok(vec![Type::Error]);
             }
-            "sendTextResponse" => {
+            "respond" | "sendTextResponse" => {
                 if !(4..=5).contains(&args.len()) {
                     return Err(diag(
                         span,
-                        &format!(
-                            "http.sendTextResponse expects 4 or 5 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("http.{name} expects 4 or 5 arguments, got {}", args.len()),
                     ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
@@ -8301,14 +8336,14 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &socket,
-                    "http.sendTextResponse socket",
+                    &format!("http.{name} socket"),
                 )?;
                 let status = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
                     &Type::I64,
                     &status,
-                    "http.sendTextResponse status",
+                    &format!("http.{name} status"),
                 )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
@@ -8316,7 +8351,7 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[1].span,
-                        "http.sendTextResponse status must be between 100 and 599",
+                        &format!("http.{name} status must be between 100 and 599"),
                     ));
                 }
                 let content_type = type_of_expr(&args[2], env, signatures)?;
@@ -8324,14 +8359,14 @@ fn check_qualified_call(
                     args[2].span,
                     &Type::Str,
                     &content_type,
-                    "http.sendTextResponse contentType",
+                    &format!("http.{name} contentType"),
                 )?;
                 let body = type_of_expr(&args[3], env, signatures)?;
                 require_type(
                     args[3].span,
                     &Type::Str,
                     &body,
-                    "http.sendTextResponse body",
+                    &format!("http.{name} body"),
                 )?;
                 if args.len() == 5 {
                     let keep_alive = type_of_expr(&args[4], env, signatures)?;
@@ -8339,7 +8374,7 @@ fn check_qualified_call(
                         args[4].span,
                         &Type::Bool,
                         &keep_alive,
-                        "http.sendTextResponse keepAlive",
+                        &format!("http.{name} keepAlive"),
                     )?;
                 }
                 return Ok(vec![Type::Error]);
@@ -8754,11 +8789,11 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
-            "sleepMillis" => {
+            "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("time.sleepMillis expects 1 argument, got {}", args.len()),
+                        &format!("time.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
@@ -8766,7 +8801,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &actual,
-                    "time.sleepMillis durationMs",
+                    &format!("time.{name} durationMs"),
                 )?;
                 if matches!(
                     constant_primitive_value(&args[0], signatures),
@@ -8774,7 +8809,7 @@ fn check_qualified_call(
                 ) {
                     return Err(diag(
                         args[0].span,
-                        "time.sleepMillis durationMs must be non-negative",
+                        &format!("time.{name} durationMs must be non-negative"),
                     ));
                 }
                 return Ok(Vec::new());
@@ -9176,22 +9211,27 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "setText" => {
+            "write" | "setText" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("clipboard.setText expects 1 argument, got {}", args.len()),
+                        &format!("clipboard.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &actual, "clipboard.setText text")?;
+                require_type(
+                    args[0].span,
+                    &Type::Str,
+                    &actual,
+                    &format!("clipboard.{name} text"),
+                )?;
                 return Ok(Vec::new());
             }
-            "readText" => {
+            "read" | "readText" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("clipboard.readText expects 1 argument, got {}", args.len()),
+                        &format!("clipboard.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
@@ -9203,7 +9243,7 @@ fn check_qualified_call(
                     args[0].span,
                     &expected,
                     &actual,
-                    "clipboard.readText callback",
+                    &format!("clipboard.{name} callback"),
                 )?;
                 return Ok(Vec::new());
             }
@@ -9401,7 +9441,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "openFile" | "saveFile" | "selectDirectory" => {
+            "open" | "openFile" | "save" | "saveFile" | "selectDirectory" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -11107,6 +11147,20 @@ fn require_type(
             ),
         ))
     }
+}
+
+fn rename_builtin_diagnostic(mut diagnostic: Diagnostic, from: &str, to: &str) -> Diagnostic {
+    diagnostic.message = diagnostic.message.replace(from, to);
+    for label in diagnostic.labels.iter_mut() {
+        label.message = label.message.replace(from, to);
+    }
+    for note in diagnostic.notes.iter_mut() {
+        *note = note.replace(from, to);
+    }
+    for fix in diagnostic.fixes.iter_mut() {
+        fix.message = fix.message.replace(from, to);
+    }
+    diagnostic
 }
 
 fn diag(span: SourceSpan, message: &str) -> Diagnostic {

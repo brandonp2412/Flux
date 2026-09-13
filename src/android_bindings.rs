@@ -84,6 +84,41 @@ const TEXT: &[AndroidBindingParam] = &[AndroidBindingParam {
     ty: AndroidBindingType::Str,
     optional: false,
 }];
+const PATH: &[AndroidBindingParam] = &[AndroidBindingParam {
+    name: "path",
+    signature: "path: str",
+    ty: AndroidBindingType::Str,
+    optional: false,
+}];
+const SECURE_KEY_VALUE: &[AndroidBindingParam] = &[
+    AndroidBindingParam {
+        name: "key",
+        signature: "key: str",
+        ty: AndroidBindingType::Str,
+        optional: false,
+    },
+    AndroidBindingParam {
+        name: "value",
+        signature: "value: str",
+        ty: AndroidBindingType::Str,
+        optional: false,
+    },
+];
+const SECURE_KEY_CALLBACK: &[AndroidBindingParam] = &[
+    AndroidBindingParam {
+        name: "key",
+        signature: "key: str",
+        ty: AndroidBindingType::Str,
+        optional: false,
+    },
+    STR_CALLBACK,
+];
+const SECURE_KEY: &[AndroidBindingParam] = &[AndroidBindingParam {
+    name: "key",
+    signature: "key: str",
+    ty: AndroidBindingType::Str,
+    optional: false,
+}];
 const WRAP: &[AndroidBindingParam] = &[AndroidBindingParam {
     name: "wrap",
     signature: "wrap: bool = false",
@@ -206,6 +241,18 @@ macro_rules! binding {
     };
 }
 
+macro_rules! binding_min_sdk {
+    ($name:literal, $params:expr, $returns:ident, $minimum_sdk:literal) => {
+        AndroidBinding {
+            name: $name,
+            params: $params,
+            returns: AndroidBindingReturn::$returns,
+            minimum_sdk: $minimum_sdk,
+            optional_runtime_suffix: None,
+        }
+    };
+}
+
 macro_rules! binding_with_optional_runtime_suffix {
     ($name:literal, $params:expr, $returns:ident, $suffix:literal) => {
         AndroidBinding {
@@ -231,6 +278,11 @@ pub const ANDROID_BINDINGS: &[AndroidBinding] = &[
     binding!("openNotificationSettings", NO_PARAMS, Void),
     binding!("share", TEXT, Void),
     binding!("setClipboardText", TEXT, Void),
+    binding!("startMicrophoneRecording", PATH, Bool),
+    binding!("stopMicrophoneRecording", NO_PARAMS, Bool),
+    binding_min_sdk!("secureStore", SECURE_KEY_VALUE, Bool, 23),
+    binding_min_sdk!("secureRead", SECURE_KEY_CALLBACK, Bool, 23),
+    binding_min_sdk!("secureRemove", SECURE_KEY, Bool, 23),
     binding!("showKeyboard", NO_PARAMS, Void),
     binding!("hideKeyboard", NO_PARAMS, Void),
     binding_with_optional_runtime_suffix!("focusNext", WRAP, Void, "_wrap"),
@@ -361,6 +413,17 @@ mod tests {
             binding_named("pickFile").unwrap().signature(),
             "fn android.pickFile(callback: fn(str) -> void) -> void"
         );
+        assert_eq!(
+            binding_named("startMicrophoneRecording")
+                .unwrap()
+                .signature(),
+            "fn android.startMicrophoneRecording(path: str) -> bool"
+        );
+        assert_eq!(
+            binding_named("secureRead").unwrap().signature(),
+            "fn android.secureRead(key: str, callback: fn(str) -> void) -> bool"
+        );
+        assert_eq!(binding_named("secureStore").unwrap().minimum_sdk, 23);
         assert_eq!(
             binding_named("notifyUrlAction")
                 .unwrap()

@@ -669,7 +669,10 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+                if matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "take" | "skip" | "chunked"
+                ) =>
             {
                 arguments.first().is_some_and(|argument| {
                     self.value_depends_on_borrow_source(*argument, source, visiting)
@@ -677,9 +680,12 @@ impl ControlFlowGraph {
             }
             ControlFlowValueKind::Call { callee, arguments }
                 if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
-                    && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+                    && matches!(
+                        crate::builtin_names::global_impl(callee),
+                        "filter" | "where" | "flatten" | "concat"
+                    ) =>
             {
-                let retained = if callee == "concat" {
+                let retained = if crate::builtin_names::global_impl(callee) == "concat" {
                     arguments.iter().take(2)
                 } else {
                     arguments.iter().take(1)
@@ -755,7 +761,10 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(callee.as_str(), "take" | "skip" | "chunked") =>
+                if matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "take" | "skip" | "chunked"
+                ) =>
             {
                 arguments.first().is_some_and(|argument| {
                     self.value_depends_on_borrow_source(*argument, source, visiting)
@@ -763,9 +772,12 @@ impl ControlFlowGraph {
             }
             ControlFlowValueKind::Call { callee, arguments }
                 if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
-                    && matches!(callee.as_str(), "filter" | "where" | "flatten" | "concat") =>
+                    && matches!(
+                        crate::builtin_names::global_impl(callee),
+                        "filter" | "where" | "flatten" | "concat"
+                    ) =>
             {
-                let retained = if callee == "concat" {
+                let retained = if crate::builtin_names::global_impl(callee) == "concat" {
                     arguments.iter().take(2)
                 } else {
                     arguments.iter().take(1)

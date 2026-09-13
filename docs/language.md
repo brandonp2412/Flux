@@ -481,7 +481,7 @@ fn classify(values: i64[]) -> i64 {
     return match values:
         []: 0
         [_]: 1
-        [_, ...middle, _]: middle.length + 2
+        [_, ...middle, _]: middle.count + 2
 }
 
 fn show(values: i64[]) -> i64 {
@@ -492,7 +492,7 @@ fn show(values: i64[]) -> i64 {
             print only
         [first, ...middle, last]:
             print first
-            print middle.length
+            print middle.count
             print last
     return 0
 }
@@ -593,27 +593,27 @@ let reverseMiddle: i64[] = values[3:0:-2]
 let spreadValues: i64[] = [0, ...values[1:4], ...values[::-2], 9]
 let includeHigh: bool = true
 let conditionalValues: i64[] = [0, if includeHigh: 7, if false: 8 else: 9, ...values[1:4]]
-let count: i64 = values.length
-let empty: bool = values.isEmpty
-let present: bool = values.isNotEmpty
+let count: i64 = values.count
+let empty: bool = values.empty
+let present: bool = values.nonempty
 let first: i64 = values.first
 let last: i64 = values.last
-let one: i64 = values[2:3].single
+let one: i64 = values[2:3].only
 let window: i64[] = values | skip 1 | take 3
 let checks: bool[] = [value > 2 for value in values]
 let hasLarge: bool = checks | any
-let allLarge: bool = checks | every
+let allLarge: bool = checks | all
 let total: i64 = values | reduce add
 let positive: bool = values | fold true allPositive
 let emptyTotal: i64 = values[:0] | fold 7 add
-let joined: i64[] = values[::2] | concat values[::-1][:2]
-let joinedDoubled: i64[] = values[::2] | concat values[::-1][:2] | map double
-let unique: i64[] = values | concat values[::-1] | distinct
+let joined: i64[] = values[::2] | merge values[::-1][:2]
+let joinedDoubled: i64[] = values[::2] | merge values[::-1][:2] | map double
+let unique: i64[] = values | merge values[::-1] | unique
 let nested: i64[][] = [values[::2], values[::-1][:2]]
-let flat: i64[] = nested | flatten
-let ordered: i64[] = [4, 1, 3, 2] | sorted
-let chunks: i64[][] = values[::-1] | chunked 2
-let rejoined: i64[] = chunks | flatten
+let flat: i64[] = nested | flat
+let ordered: i64[] = [4, 1, 3, 2] | sort
+let chunks: i64[][] = values[::-1] | chunk 2
+let rejoined: i64[] = chunks | flat
 let doubled: i64[] = [value * 2 for value in values]
 let large: i64[] = [value * 2 for value in values if value > 2]
 for value in values:
@@ -622,28 +622,28 @@ for index, value in values:
     print(index + value)
 ```
 
-Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices follow Python-style exclusive-end semantics with `[start:end]` and `[start:end:step]`: bounds may be omitted or negative, bounds clip to the list extent, positive steps move forward, negative steps move backward, and `[::-1]` reverses a list view. A literal zero step is rejected at compile time and a dynamically computed zero step raises an explicit Flux runtime error. Slices remain zero-copy even when stepped or reversed: the native list descriptor carries a byte stride, and slicing an already-strided view composes the strides instead of copying elements. List destructuring uses `let [first, _, last] = source` for exact patterns and `let [first, ...middle, last] = source` for rest patterns. The source must be a concrete `T[]`; ordinary non-`_` bindings infer `T`, while the single optional `...rest` binding infers `T[]`. All named bindings remain immutable and participate in the ordinary unused-binding compile checks. The source is evaluated once and strided/reversed views are read in logical order. Exact patterns require the runtime list length to equal the number of ordinary positions and fail explicitly with `Flux runtime error: list pattern requires exactly N elements` on mismatch. Rest patterns require at least the ordinary-position count, bind the unmatched middle as a zero-copy view preserving the source stride, and fail with `Flux runtime error: list pattern requires at least N elements` when too short. `_` ignores one position and `..._` ignores the unmatched remainder. The same exact/rest shapes are available in direct exhaustive list `match` arms, where a non-matching length selects the next arm instead of raising a runtime error. List literals may splice another list with `...source`, for example `[0, ...middle, ...values[::-2], 9]`. Every spread source must have exactly the same concrete element type as the surrounding literal. List construction also has dedicated control items: `if condition: value` inserts the value only when the condition is true, while `if condition: first else: second` inserts exactly one selected value. This syntax is valid only as a list item; it does not introduce a general ternary/conditional expression. Conditions are `bool`, both branches must match the surrounding element type, and only the selected branch is evaluated. Spread sources, conditions, and selected values are evaluated once in source order; native lowering computes the total length with overflow checks and fills one stack-backed result buffer, including from strided views. During the bootstrap, literals using spread or list-control items must be bound directly to an immutable local `let`, matching the ownership restriction used by other collection-producing operations. Compiler-known list values also expose `length: i64`, `isEmpty: bool`, and `isNotEmpty: bool` as property-like syntax that lowers directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `single` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error.
+Index expressions must be `i64`. Negative indices count from the end and an index outside the list is a checked runtime error. Slices follow Python-style exclusive-end semantics with `[start:end]` and `[start:end:step]`: bounds may be omitted or negative, bounds clip to the list extent, positive steps move forward, negative steps move backward, and `[::-1]` reverses a list view. A literal zero step is rejected at compile time and a dynamically computed zero step raises an explicit Flux runtime error. Slices remain zero-copy even when stepped or reversed: the native list descriptor carries a byte stride, and slicing an already-strided view composes the strides instead of copying elements. List destructuring uses `let [first, _, last] = source` for exact patterns and `let [first, ...middle, last] = source` for rest patterns. The source must be a concrete `T[]`; ordinary non-`_` bindings infer `T`, while the single optional `...rest` binding infers `T[]`. All named bindings remain immutable and participate in the ordinary unused-binding compile checks. The source is evaluated once and strided/reversed views are read in logical order. Exact patterns require the runtime list length to equal the number of ordinary positions and fail explicitly with `Flux runtime error: list pattern requires exactly N elements` on mismatch. Rest patterns require at least the ordinary-position count, bind the unmatched middle as a zero-copy view preserving the source stride, and fail with `Flux runtime error: list pattern requires at least N elements` when too short. `_` ignores one position and `..._` ignores the unmatched remainder. The same exact/rest shapes are available in direct exhaustive list `match` arms, where a non-matching length selects the next arm instead of raising a runtime error. List literals may splice another list with `...source`, for example `[0, ...middle, ...values[::-2], 9]`. Every spread source must have exactly the same concrete element type as the surrounding literal. List construction also has dedicated control items: `if condition: value` inserts the value only when the condition is true, while `if condition: first else: second` inserts exactly one selected value. This syntax is valid only as a list item; it does not introduce a general ternary/conditional expression. Conditions are `bool`, both branches must match the surrounding element type, and only the selected branch is evaluated. Spread sources, conditions, and selected values are evaluated once in source order; native lowering computes the total length with overflow checks and fills one stack-backed result buffer, including from strided views. During the bootstrap, literals using spread or list-control items must be bound directly to an immutable local `let`, matching the ownership restriction used by other collection-producing operations. Compiler-known list values expose the compact properties `count: i64`, `empty: bool`, and `nonempty: bool`, which lower directly to the native list descriptor; these are not methods or object members. `first` and `last` return the element type and reuse checked list indexing, so an empty list fails with an explicit bounds error. `only` returns the element only when the list length is exactly one and otherwise raises an explicit Flux runtime error. The older longer property spellings remain accepted for source compatibility but are not canonical tooling suggestions.
 
 Comprehension sources must be lists, the optional filter must be `bool`, and the produced element type is inferred from the value expression. The bootstrap native lowering evaluates the source once and uses stack-backed result storage sized to the source list, so filtered comprehensions do not require hidden heap allocation or intermediate collections. List iteration likewise evaluates its source exactly once. `for value in values:` infers `value` from the element type; `for index, value in values:` additionally binds an `i64` index without manual counter state. Both forms support the ordinary loop-scoped `break` and `continue` rules.
 
 `take(list, count)` and `skip(list, count)` are compiler-known typed sequence functions. They preserve the concrete list element type, require an `i64` count, clamp oversized counts to the available length, and reject negative counts with an explicit Flux runtime error. Both lower to zero-copy list views, so pipelines such as `values | skip 1 | take 3` do not allocate or copy list elements.
 
 
-`any(list)` and `every(list)` currently accept `bool[]`. `any` returns true when at least one element is true and returns false for an empty list. `every` returns true only when every element is true and uses the standard vacuous-truth identity of true for an empty list. Predicate-style queries remain explicit and allocation-free in source by composing a boolean comprehension with the pipeline, for example `[value > 2 for value in values] | any`.
+`any(list)` and `all(list)` currently accept `bool[]`. `any` returns true when at least one element is true and returns false for an empty list. `all` returns true only when every element is true and uses the standard vacuous-truth identity of true for an empty list. Predicate-style queries remain explicit and allocation-free in source by composing a boolean comprehension with the pipeline, for example `[value > 2 for value in values] | any`.
 
-`map(list, callback)`, `filter(list, predicate)`, and its readable alias `where(list, predicate)` are compiler-known collection transforms. `map` requires a concrete `fn(T) -> U` callback and produces `U[]`; `filter`/`where` require `fn(T) -> bool` and preserve `T[]`. The source is evaluated once and strided views are consumed directly. Chained transform stages fuse into one source loop and write only the final collection into one stack-backed buffer sized to the original source, avoiding intermediate list materialization. During the bootstrap collection-producing transform pipelines must be bound directly to an immutable local value, matching list comprehensions.
+`map(list, callback)` and `where(list, predicate)` are compiler-known collection transforms. `map` requires a concrete `fn(T) -> U` callback and produces `U[]`; `where` requires `fn(T) -> bool` and preserves `T[]`. The source is evaluated once and strided views are consumed directly. Chained transform stages fuse into one source loop and write only the final collection into one stack-backed buffer sized to the original source, avoiding intermediate list materialization. The older `filter` spelling remains accepted for source compatibility but is not canonical. During the bootstrap collection-producing transform pipelines must be bound directly to an immutable local value, matching list comprehensions.
 
-`fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a concrete function value with an exact type, so either a named/function binding or a capture-free anonymous function is valid: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one produced element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly, and compose through pipelines such as `values[::-1] | reduce add`. When a terminal reduction follows `map`/`filter`/`where`, those transforms are executed lazily inside the reduction loop, so no intermediate transformed list or buffer is created. During the bootstrap reductions lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
+`fold(list, initial, reducer)` and `reduce(list, reducer)` are compiler-known scalar reductions. The reducer must be a concrete function value with an exact type, so either a named/function binding or a capture-free anonymous function is valid: `fold` requires `fn(A, T) -> A`, while `reduce` requires `fn(T, T) -> T`. `fold` returns the initial value unchanged for an empty list. `reduce` requires at least one produced element and otherwise raises `Flux runtime error: reduce requires a non-empty list`. Both evaluate their source once, iterate strided list views directly, and compose through pipelines such as `values[::-1] | reduce add`. When a terminal reduction follows `map`/`where`, those transforms are executed lazily inside the reduction loop, so no intermediate transformed list or buffer is created. During the bootstrap reductions lower when bound directly to a local value, matching the direct-binding restriction used by list comprehensions.
 
-`concat(left, right)` joins two lists with exactly the same concrete element type. It accepts strided inputs, preserves logical element order, checks length overflow explicitly, and produces one contiguous stack-backed local list. It composes through pipelines, for example `left | concat right | map double`. Like other collection-producing bootstrap operations, the concatenated result must remain within the supported local lifetime.
+`merge(left, right)` joins two lists with exactly the same concrete element type. It accepts strided inputs, preserves logical element order, checks length overflow explicitly, and produces one contiguous stack-backed local list. It composes through pipelines, for example `left | merge right | map double`. `merge` is used rather than `join` so it does not collide with `worker.join`. Like other collection-producing bootstrap operations, the merged result must remain within the supported local lifetime.
 
-`distinct(list)` removes duplicate scalar values while preserving the first occurrence of each value. It currently supports `i64[]`, `bool[]`, `str[]`, and `error[]`, whose equality rules are already defined by Flux; aggregate, nested-list, and function elements are rejected rather than receiving implicit deep equality. Strided inputs are consumed in logical order and the result is a stack-backed local list that can feed later pipeline stages.
+`unique(list)` removes duplicate scalar values while preserving the first occurrence of each value. It currently supports `i64[]`, `bool[]`, `str[]`, and `error[]`, whose equality rules are already defined by Flux; aggregate, nested-list, and function elements are rejected rather than receiving implicit deep equality. Strided inputs are consumed in logical order and the result is a stack-backed local list that can feed later pipeline stages.
 
-`flatten(nested)` removes exactly one list layer, converting `T[][]` to `T[]`. Both the outer nested list and each inner list may be strided views; flattening walks their logical order, checks total output length overflow before allocating the result buffer, and then writes one contiguous stack-backed local list. It does not recursively flatten arbitrary depth.
+`flat(nested)` removes exactly one list layer, converting `T[][]` to `T[]`. Both the outer nested list and each inner list may be strided views; flattening walks their logical order, checks total output length overflow before allocating the result buffer, and then writes one contiguous stack-backed local list. It does not recursively flatten arbitrary depth.
 
-`sorted(list)` returns a new ascending list without mutating its source. The bootstrap supports `i64[]`, `bool[]`, and `str[]`; booleans order `false` before `true`, strings use lexical ordering, and other element types are rejected until Flux has an explicit ordering contract. Strided inputs are read in logical order, the stable result is stack-backed, and pipelines such as `values[::-1] | sorted | map double` compose normally.
+`sort(list)` returns a new ascending list without mutating its source. The bootstrap supports `i64[]`, `bool[]`, and `str[]`; booleans order `false` before `true`, strings use lexical ordering, and other element types are rejected until Flux has an explicit ordering contract. Strided inputs are read in logical order, the stable result is stack-backed, and pipelines such as `values[::-1] | sort | map double` compose normally.
 
-`chunked(list, size)` splits a list into consecutive `T[]` views and returns them as `T[][]`. The size is an `i64` and must be greater than zero; a literal zero is rejected statically and dynamic non-positive sizes fail with an explicit Flux runtime error. Chunk descriptors are stack-backed but their elements remain zero-copy views into the original list, preserving positive or negative source stride. The final chunk may be shorter, an empty source produces zero chunks, and pipelines such as `values[::-1] | chunked 2 | flatten` preserve logical order.
+`chunk(list, size)` splits a list into consecutive `T[]` views and returns them as `T[][]`. The size is an `i64` and must be greater than zero; a literal zero is rejected statically and dynamic non-positive sizes fail with an explicit Flux runtime error. Chunk descriptors are stack-backed but their elements remain zero-copy views into the original list, preserving positive or negative source stride. The final chunk may be shorter, an empty source produces zero chunks, and pipelines such as `values[::-1] | chunk 2 | flat` preserve logical order.
 
 This is intentionally a local-lifetime slice while Flux's ownership model is unfinished. List values currently cannot be returned from functions, stored in structs/enums, or declared as mutable `var` bindings. Those forms are compile errors rather than unsafe implicit lifetime escapes. List parameters are permitted as non-consuming immutable borrowed views of caller-local storage; owned argument/return transfer, owned storage, mutation, and aggregate storage remain part of the ownership/container roadmap.
 
@@ -755,17 +755,17 @@ Desktop/server Flux code can query process identity/environment state and opt in
 
 ```flux
 print(process.pid())
-print(process.parentPid())
-print(process.cpuMillis())
-print(process.peakResidentMemoryBytes())
+print(process.parent())
+print(process.cpu())
+print(process.memory())
 print(process.hasEnv("CI"))
 print(process.env("APP_MODE", "development"))
-while !process.terminationRequested():
-    time.sleepMillis(10)
+while !process.stopping():
+    time.sleep(10)
 process.exit(0)
 ```
 
-`process.pid()` and `process.parentPid()` return `i64`. Server observability can sample `process.cpuMillis()` for total user-plus-system CPU time consumed by the current process and `process.peakResidentMemoryBytes()` for the Linux process peak resident-set size in bytes; both are direct `getrusage`-backed scalar reads with no metrics runtime or allocation. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. `process.terminationRequested()` lazily installs minimal SIGINT/SIGTERM handlers on the current Linux/server target and then reports whether either termination signal has arrived; the native signal handler only stores a `sig_atomic_t` flag, so application work remains outside signal context. `process.exit(code)` terminates explicitly with a status from `0` through `255`, rejecting known invalid constants at compile time and guarding dynamic values at runtime. These calls lower directly to the host C/POSIX process APIs without a framework runtime and are tree-shaken when unreachable. Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
+`process.pid()` and `process.parent()` return `i64`. Server observability can sample `process.cpu()` for total user-plus-system CPU time consumed by the current process and `process.memory()` for the Linux process peak resident-set size in bytes; both are direct `getrusage`-backed scalar reads with no metrics runtime or allocation. `process.hasEnv(name)` distinguishes an unset variable from an empty value, while `process.env(name, fallback)` returns the current borrowed environment value or the provided fallback. `process.stopping()` lazily installs minimal SIGINT/SIGTERM handlers on the current Linux/server target and then reports whether either termination signal has arrived; the native signal handler only stores a `sig_atomic_t` flag, so application work remains outside signal context. `process.exit(code)` terminates explicitly with a status from `0` through `255`, rejecting known invalid constants at compile time and guarding dynamic values at runtime. These calls lower directly to the host C/POSIX process APIs without a framework runtime and are tree-shaken when unreachable. Android lowering rejects reachable `process.*` calls until portable mobile process semantics are deliberately defined.
 
 ## Locale detection and translation resources
 
@@ -781,9 +781,9 @@ print(locale.region())
 print(locale.text("greeting", "Hello"))
 print(locale.plural("items", 2, "items"))
 print(locale.select("tone", "formal", "Hello"))
-locale.formatNumber(1234567, formatted)
-locale.formatDateTime(time.unixMillis(), formatted)
-locale.formatCurrency(1234, formatted)
+locale.number(1234567, formatted)
+locale.date(time.now(), formatted)
+locale.currency(1234, formatted)
 ```
 
 Package translations live in `flux.toml`. Each key contains one or more `language=text` or `language-REGION=text` entries:
@@ -801,7 +801,7 @@ tone.other = ["en=Hello", "fr=Salut"]
 
 `locale.text(key, fallback)` checks an exact language-region entry first, then the language-only entry, then returns the supplied fallback. `locale.select(key, selector, fallback)` resolves `key.selector`, then `key.other`, while `locale.plural(key, count, fallback)` chooses an integer cardinal category (`zero`, `one`, `two`, `few`, `many`, or `other`) from the current locale before using the same selector lookup. The native plural rules cover the major CLDR-style integer families, including Arabic, Slavic, Baltic, Celtic, Romance, and one/other languages, with region-sensitive Portuguese handling. Translation strings are compiled into the native binary as borrowed static strings, so lookup needs no JSON bundle, allocation, reflection, VM resource manager, or user-written platform bridge; unreachable translation calls and their resource table tree-shake away. Translation keys and locale tags are validated in the package manifest.
 
-Locale-sensitive formatting uses callback-scoped borrowed text so formatting does not invent an owned-string lifetime. `locale.formatNumber(value, callback)` formats an `i64` with the platform locale's integer conventions, `locale.formatDateTime(unixMillis, callback)` formats a local date and time from Unix milliseconds, and `locale.formatCurrency(value, callback)` formats a whole-major-unit `i64` currency amount using the platform's current currency convention. Each call returns `error`; the formatted `str` is valid only during the exact `fn(str) -> void` callback. Linux lowers directly to the native locale/monetary/time APIs, while Android uses compiler-owned direct JNI to `NumberFormat` and `DateFormat`. Unreachable formatting support tree-shakes completely, and application source needs no platform bridge, formatter object, reflection layer, or VM-style portability runtime.
+Locale-sensitive formatting uses callback-scoped borrowed text so formatting does not invent an owned-string lifetime. `locale.number(value, callback)` formats an `i64` with the platform locale's integer conventions, `locale.date(unixMillis, callback)` formats a local date and time from Unix milliseconds, and `locale.currency(value, callback)` formats a whole-major-unit `i64` currency amount using the platform's current currency convention. Each call returns `error`; the formatted `str` is valid only during the exact `fn(str) -> void` callback. Linux lowers directly to the native locale/monetary/time APIs, while Android uses compiler-owned direct JNI to `NumberFormat` and `DateFormat`. Unreachable formatting support tree-shakes completely, and application source needs no platform bridge, formatter object, reflection layer, or VM-style portability runtime.
 
 `locale.language()` returns the platform language code as `str`, using `"und"` when the host has no meaningful language such as the POSIX `C` locale. `locale.region()` returns the region/country code or an empty string when none is available. Linux reads the conventional `LC_ALL`, `LC_MESSAGES`, then `LANG` precedence without invoking locale-sensitive libc parsing, while Android calls the platform default `java.util.Locale` through compiler-owned JNI lowering. Both paths are emitted only when reachable, require no user-written bridge code, and keep their returned strings borrowed under the current bootstrap `str` model. Native text/input behavior follows the platform locale rather than a Flux-owned locale runtime: GTK/Pango and the native GTK input method remain authoritative on Linux, while generated Android text controls apply the current configuration locale list and pass the same locale hints to `EditText` IMEs on API 24+, with `Locale.getDefault()` compatibility on older supported releases. Android configuration changes rebuild the native view surface, so locale changes are applied without application bridge code.
 
@@ -831,23 +831,23 @@ print(directory.removeAll("cache"))
 Current native targets expose scalar clock and sleep operations without allocating a date/time object or linking a framework runtime:
 
 ```flux
-let started: i64 = time.monotonicMillis()
-time.sleepMillis(50)
-let deadline: i64 = time.monotonicMillis() + 50
-time.sleepUntilMonotonic(deadline)
-let elapsed: i64 = time.monotonicMillis() - started
+let started: i64 = time.monotonic()
+time.sleep(50)
+let deadline: i64 = time.monotonic() + 50
+time.sleepUntil(deadline)
+let elapsed: i64 = time.monotonic() - started
 print(elapsed)
-print(time.unixMillis())
-let timestamp: i64 = time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6)
-print(time.utcYear(timestamp))
-print(time.utcMonth(timestamp))
-print(time.utcDay(timestamp))
-print(time.utcWeekday(timestamp))
+print(time.now())
+let timestamp: i64 = time.utc(2000, 1, 2, 3, 4, 5, 6)
+print(time.year(timestamp))
+print(time.month(timestamp))
+print(time.day(timestamp))
+print(time.weekday(timestamp))
 ```
 
-`time.unixMillis()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonicMillis()` is the clock for measuring elapsed durations. `time.sleepMillis(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. `time.sleepUntilMonotonic(deadlineMillis)` blocks until the monotonic clock reaches an absolute deadline; already-expired deadlines return immediately, and the implementation rechecks the monotonic clock so interruptions or oversleep do not accumulate scheduling drift across repeated deadline-based loops.
+`time.now()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonic()` is the clock for measuring elapsed durations. `time.sleep(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. `time.sleepUntil(deadlineMillis)` blocks until the monotonic clock reaches an absolute deadline; already-expired deadlines return immediately, and the implementation rechecks the monotonic clock so interruptions or oversleep do not accumulate scheduling drift across repeated deadline-based loops. Legacy longer spellings remain source-compatible but are omitted from canonical tooling.
 
-UTC calendar conversion remains allocation-free. `time.utcUnixMillis(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.utcYear`, `utcMonth`, `utcDay`, `utcHour`, `utcMinute`, `utcSecond`, `utcMillisecond`, `utcWeekday`, and `utcDayOfYear` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `utcWeekday` uses ISO numbering (`1` Monday through `7` Sunday), and `utcDayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
+UTC calendar conversion remains allocation-free. `time.utc(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.year`, `month`, `day`, `hour`, `minute`, `second`, `millis`, `weekday`, and `dayOfYear` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `weekday` uses ISO numbering (`1` Monday through `7` Sunday), and `dayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
 
 ## Native worker threads
 
@@ -942,7 +942,7 @@ The bootstrap Linux backend lowers this root view to a GTK4 application/window a
 
 Navigation route identity is declared independently from the eventual back-stack runtime with `route home = HomeView`. A route must resolve to a declared, visible view, route names are unique across the loaded application graph, and the route's typed parameter contract is inferred directly from the target view parameters, including their ordinary positional/named/default rules. The declaration remains compiler metadata only: it allocates no route/controller object and emits no native runtime code by itself. Future push/pop/back-stack operations can therefore consume the typed route contract without stringly typed parameter metadata or a duplicate route-parameter declaration.
 
-Frame-synchronized animation can use `frame.timeline(durationMs, callback)`. The duration is a non-negative `i64`, and the exact `fn(i64) -> void` callback receives normalized `0..1000` progress on native frames through the GTK frame clock on Linux or `View.postOnAnimation` on Android; the compiler owns all native glue and omits it when unused. `frame.request(callback)` remains the one-shot next-frame primitive. Common `transitionMs`/`transitionDelayMs`/`transitionEasing` properties animate native style changes, while `layoutTransitionMs` opts an element into visibility-driven layout reflow animation. Every opted-in element in one view uses the same compile-time duration for cross-platform determinism: Linux lowers the element through a compiler-owned `GtkRevealer` whose allocation expands/collapses inside the existing grid, and Android installs the platform `LayoutTransition` on that root grid so `visible` changes animate surrounding sibling placement. Views that do not request `layoutTransitionMs` generate none of this transition machinery and source code never owns an animation/controller object.
+Frame-synchronized animation can use `frame.timeline(durationMs, callback)`. The duration is a non-negative `i64`, and the exact `fn(i64) -> void` callback receives normalized `0..1000` progress on native frames through the GTK frame clock on Linux or `View.postOnAnimation` on Android; the compiler owns all native glue and omits it when unused. `frame.next(callback)` is the one-shot next-frame primitive. Common `transitionMs`/`transitionDelayMs`/`transitionEasing` properties animate native style changes, while `layoutTransitionMs` opts an element into visibility-driven layout reflow animation. Every opted-in element in one view uses the same compile-time duration for cross-platform determinism: Linux lowers the element through a compiler-owned `GtkRevealer` whose allocation expands/collapses inside the existing grid, and Android installs the platform `LayoutTransition` on that root grid so `visible` changes animate surrounding sibling placement. Views that do not request `layoutTransitionMs` generate none of this transition machinery and source code never owns an animation/controller object.
 
 The common `onTap: fn() -> void` and `onLongPress: fn() -> void` properties are available on every built-in native element and support the same typed functional state-transition form as other zero-argument UI events. Linux lowers them through native `GtkGestureClick` and `GtkGestureLongPress` handling, while Android uses compiler-owned native touch/long-click listener glue; neither backend exposes platform event/controller objects to Flux source. Common accessibility metadata includes `accessibilityLabel: str`, `accessibilityDescription: str`, and `accessibilityHidden: bool`; the hidden state maps directly to GTK accessibility state and Android accessibility-tree importance rather than changing visual visibility. Application `theme: "system" | "light" | "dark"` uses the native platform theme on both current application backends: `system` preserves GTK preferences on Linux and follows Android night mode across `uiMode` changes, while explicit modes select the corresponding native light/dark preference without an application-authored theme bridge. Application `layoutDirection: "system" | "ltr" | "rtl"` controls the root native layout direction: `system` inherits the platform locale direction, while explicit `ltr`/`rtl` map directly to GTK text/layout direction and Android `View` layout direction so logical start/end behavior follows the selected direction. UI color properties accept ordinary `#RRGGBB` / `#RRGGBBAA` values or compiler-owned semantic tokens: `surface`, `surfaceRaised`, `text`, `textMuted`, `accent`, `onAccent`, `outline`, `danger`, `success`, `warning`, and `shadow`. The semantic tokens resolve through the active light/dark palette on Android and GTK theme colors on Linux. An application may replace any semantic entry with a concrete color through `surfaceColor`, `surfaceRaisedColor`, `textColor`, `textMutedColor`, `accentColor`, `onAccentColor`, `outlineColor`, `dangerColor`, `successColor`, `warningColor`, and `shadowColor` metadata; those overrides feed the same native token resolution on both backends while explicit element styling remains higher priority. Android buttons normalize ordinary labels to readable sentence case while preserving native interaction/accessibility behavior; ordinary and primary buttons use coherent semantic surfaces, pressed/disabled states, and primary-action contrast without application theme boilerplate.
 

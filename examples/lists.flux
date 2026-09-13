@@ -24,7 +24,7 @@ fn main() -> i64 {
     print reverseLast
     let [reverseHead, ...reverseBody, reverseTail] = reversed
     print reverseHead
-    print reverseBody.length
+    print reverseBody.count
     print reverseBody.first
     print reverseBody.last
     print reverseTail
@@ -35,14 +35,14 @@ fn main() -> i64 {
             print only
         [matchFirst, ...matchMiddle, matchLast]:
             print matchFirst
-            print matchMiddle.length
+            print matchMiddle.count
             print matchMiddle.first
             print matchMiddle.last
             print matchLast
     let matchedLength: i64 = match values:
         []: 0
         [_]: 1
-        [_, ...matchBody, _]: matchBody.length + 2
+        [_, ...matchBody, _]: matchBody.count + 2
     print matchedLength
     let reverseMiddle: i64[] = values[3:0:-2]
     let chained: i64[] = values[::-1][1:4:2]
@@ -50,10 +50,10 @@ fn main() -> i64 {
     let spreadValues: i64[] = [0, ...middle, ...reversed[::2], 9]
     let includeHigh: bool = true
     let conditionalValues: i64[] = [0, if includeHigh: 7, if false: 8 else: 9, ...middle]
-    print spreadValues.length
+    print spreadValues.count
     print spreadValues.first
     print spreadValues.last
-    print conditionalValues.length
+    print conditionalValues.count
     print conditionalValues.first
     print conditionalValues.last
     print evens.first
@@ -66,31 +66,31 @@ fn main() -> i64 {
     print chained.last
     print reverseWindow.first
     print reverseWindow.last
-    print values.length
-    print middle.isEmpty
-    print middle.isNotEmpty
+    print values.count
+    print middle.empty
+    print middle.nonempty
     print values.first
     print values.last
     let one: i64[] = values[2:3]
-    print one.single
+    print one.only
     print middle[0]
     print values[-1]
     let doubled: i64[] = [value * 2 for value in values if value > 2]
     print doubled[0]
     print doubled[-1]
     let window: i64[] = values | skip 1 | take 3
-    print window.length
+    print window.count
     print window.first
     print window.last
     let empty: i64[] = values[:0]
     let checks: bool[] = [value > 2 for value in values]
     let hasLarge: bool = checks | any
-    let allLarge: bool = checks | every
+    let allLarge: bool = checks | all
     print hasLarge
     print allLarge
     let noChecks: bool[] = checks[:0]
     let emptyAny: bool = noChecks | any
-    let emptyEvery: bool = noChecks | every
+    let emptyEvery: bool = noChecks | all
     print emptyAny
     print emptyEvery
     let total: i64 = values | reduce add
@@ -100,47 +100,47 @@ fn main() -> i64 {
     print positive
     print emptyTotal
     let mapped: i64[] = reversed | map double
-    let filtered: i64[] = values | filter greaterThanTwo
+    let filtered: i64[] = values | where greaterThanTwo
     let selected: i64[] = values | where greaterThanTwo
-    let mappedFiltered: i64[] = values | map double | filter greaterThanTwo
+    let mappedFiltered: i64[] = values | map double | where greaterThanTwo
     let mappedTotal: i64 = values | map double | reduce add
-    let filteredTotal: i64 = values | map double | filter greaterThanTwo | reduce add
-    let joined: i64[] = evens | concat reversed[:2]
-    let joinedDoubled: i64[] = evens | concat reversed[:2] | map double
-    let duplicated: i64[] = values | concat values[::-1]
-    let uniqueValues: i64[] = duplicated | distinct
-    let uniqueDoubled: i64[] = duplicated | distinct | map double
+    let filteredTotal: i64 = values | map double | where greaterThanTwo | reduce add
+    let joined: i64[] = evens | merge reversed[:2]
+    let joinedDoubled: i64[] = evens | merge reversed[:2] | map double
+    let duplicated: i64[] = values | merge values[::-1]
+    let uniqueValues: i64[] = duplicated | unique
+    let uniqueDoubled: i64[] = duplicated | unique | map double
     let nested: i64[][] = [evens, reversed[:2]]
-    let flattened: i64[] = nested | flatten
-    let flattenedTotal: i64 = nested | flatten | reduce add
+    let flattened: i64[] = nested | flat
+    let flattenedTotal: i64 = nested | flat | reduce add
     let sortable: i64[] = [4, 1, 3, 2, 3]
-    let ordered: i64[] = sortable[::-1] | sorted
-    let orderedDoubled: i64[] = sortable[::-1] | sorted | map double
-    let chunks: i64[][] = reversed | chunked 2
+    let ordered: i64[] = sortable[::-1] | sort
+    let orderedDoubled: i64[] = sortable[::-1] | sort | map double
+    let chunks: i64[][] = reversed | chunk 2
     let firstChunk: i64[] = chunks[0]
-    let rejoined: i64[] = chunks | flatten
+    let rejoined: i64[] = chunks | flat
     print mapped.first
     print mapped.last
-    print filtered.length
+    print filtered.count
     print filtered.first
     print filtered.last
-    print selected.length
-    print mappedFiltered.length
+    print selected.count
+    print mappedFiltered.count
     print mappedFiltered.first
     print mappedFiltered.last
     print mappedTotal
     print filteredTotal
-    print joined.length
+    print joined.count
     print joined.first
     print joined.last
     print joinedDoubled.first
     print joinedDoubled.last
-    print uniqueValues.length
+    print uniqueValues.count
     print uniqueValues.first
     print uniqueValues.last
     print uniqueDoubled.first
     print uniqueDoubled.last
-    print flattened.length
+    print flattened.count
     print flattened.first
     print flattened.last
     print flattenedTotal
@@ -150,7 +150,7 @@ fn main() -> i64 {
     print ordered.last
     print orderedDoubled.first
     print orderedDoubled.last
-    print chunks.length
+    print chunks.count
     print firstChunk.first
     print firstChunk.last
     print rejoined.last
