@@ -2,7 +2,7 @@ view HorseTinder {
     state liked: bool = false
     state passed: bool = false
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 50 406 54 34 68 76 auto
+    grid rows: 50 406 52 34 68 74 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -53,16 +53,16 @@ view HorseTinder {
     Text matchBadge at 3,4
         text: "98% MATCH"
         color: "#FFFFFF"
-        size: 10
+        size: 9
         bold: true
         wrap: false
         letterSpacing: 1
         textAlign: "center"
         alignX: "end"
         alignY: "center"
-        padding: 6
-        minHeight: 32
-        maxHeight: 32
+        padding: 4
+        minHeight: 26
+        maxHeight: 26
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 1
@@ -90,17 +90,18 @@ view HorseTinder {
 
     Button pass at 6,2
         text: "✕"
-        size: 42
+        size: 40
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 70
-        maxWidth: 70
-        minHeight: 70
+        minWidth: 72
+        maxWidth: 72
+        minHeight: 72
         alignX: "center"
         alignY: "center"
+        translateX: 83
         focusable: true
         padding: 0
-        radius: 35
+        radius: 36
         backgroundColor: "#151B23"
         borderColor: "#465261"
         borderWidth: 2
@@ -112,17 +113,18 @@ view HorseTinder {
 
     Button like at 6,4
         text: "♥︎"
-        size: 47
+        size: 44
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
-        minWidth: 74
-        maxWidth: 74
-        minHeight: 74
+        minWidth: 72
+        maxWidth: 72
+        minHeight: 72
         alignX: "center"
         alignY: "center"
+        translateX: 83
         focusable: true
         padding: 0
-        radius: 37
+        radius: 36
         backgroundColor: "#FF4D67"
         borderColor: "#FF9AAA"
         borderWidth: 2
