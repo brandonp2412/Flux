@@ -9769,6 +9769,15 @@ interface Readable {
     fn read(value: i64) -> i64
 }
 
+fn readPair(pair: Pair, value: i64) -> i64 {
+    print(pair.label)
+    return value
+}
+
+impl Readable for Pair {
+    read: readPair
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -9791,6 +9800,25 @@ fn main() -> i64 {
     }));
     assert!(!signatures.is_copy_type(&fluxc::ast::Type::Void));
     assert!(!signatures.is_copy_type(&fluxc::ast::Type::List(Box::new(fluxc::ast::Type::I64,))));
+
+    assert!(signatures.is_send_type(&fluxc::ast::Type::I64));
+    assert!(signatures.is_send_type(&fluxc::ast::Type::Bool));
+    assert!(signatures.is_send_type(&fluxc::ast::Type::Error));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Str));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Named("Pair".to_string())));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Named("PairAlias".to_string())));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Named("Choice".to_string())));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Named("Readable".to_string())));
+    assert!(signatures.is_send_type(&fluxc::ast::Type::Optional(
+        Box::new(fluxc::ast::Type::I64,)
+    )));
+    assert!(!signatures.is_send_type(&fluxc::ast::Type::Optional(
+        Box::new(fluxc::ast::Type::Str,)
+    )));
+    assert!(signatures.is_send_type(&fluxc::ast::Type::Function {
+        params: vec![fluxc::ast::Type::Str],
+        returns: vec![fluxc::ast::Type::Str],
+    }));
 }
 
 #[test]
@@ -34038,7 +34066,65 @@ async fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("async parameter 'values' must currently use a Copy type")
+            .contains("async parameter 'values' must use a Send type")
+    }));
+
+    let borrowed_string_parameter = r#"
+async fn consume(value: str) -> i64 {
+    print(value)
+    return 0
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(borrowed_string_parameter)
+        .expect_err("borrowed strings must not detach across an async task boundary");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("async parameter 'value' must use a Send type, got str")
+    }));
+
+    let borrowed_string_return = r#"
+async fn label() -> str {
+    return "ready"
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(borrowed_string_return)
+        .expect_err("borrowed string results must not cross an async task boundary");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("async return value 1 must use a Send type, got str")
+    }));
+
+    let nested_borrowed_string = r#"
+struct Labelled {
+    id: i64
+    label: str
+}
+
+async fn consume(value: Labelled) -> i64 {
+    print(value.id)
+    return 0
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(nested_borrowed_string)
+        .expect_err("aggregates containing borrowed strings must not cross async task boundaries");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("async parameter 'value' must use a Send type, got Labelled")
     }));
 
     let dead = r#"

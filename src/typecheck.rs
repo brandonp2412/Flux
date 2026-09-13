@@ -212,6 +212,10 @@ impl Signatures {
         self.is_copy_type_inner(ty, &mut HashSet::new())
     }
 
+    pub fn is_send_type(&self, ty: &Type) -> bool {
+        self.is_send_type_inner(ty, &mut HashSet::new())
+    }
+
     fn is_bootstrap_record_field_type(&self, ty: &Type) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
@@ -262,6 +266,60 @@ impl Signatures {
                 };
                 visiting.remove(&name);
                 copyable
+            }
+        }
+    }
+
+    fn is_send_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
+        match self.canonical_type(ty) {
+            Type::I64 | Type::Bool | Type::Error => true,
+            Type::Str | Type::Void | Type::List(_) => false,
+            Type::Optional(inner) => self.is_send_type_inner(&inner, visiting),
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| self.is_send_type_inner(&field.ty, visiting)),
+            Type::Function { .. } => true,
+            Type::Named(name) => {
+                if self.interface(&name).is_some() {
+                    let interface_key = format!("interface:{name}");
+                    if !visiting.insert(interface_key.clone()) {
+                        return true;
+                    }
+                    let sendable = self
+                        .implementations
+                        .values()
+                        .filter(|implementation| implementation.interface_name == name)
+                        .all(|implementation| {
+                            self.is_send_type_inner(
+                                &Type::Named(implementation.target_name.clone()),
+                                visiting,
+                            )
+                        });
+                    visiting.remove(&interface_key);
+                    return sendable;
+                }
+                if !visiting.insert(name.clone()) {
+                    // Recursive by-value aggregates are rejected separately; do not mask that
+                    // diagnostic with a sendability failure while the type is still being built.
+                    return true;
+                }
+                let sendable = if let Some(definition) = self.struct_type(&name) {
+                    definition
+                        .fields
+                        .iter()
+                        .all(|field| self.is_send_type_inner(&field.ty, visiting))
+                } else if let Some(definition) = self.enum_type(&name) {
+                    definition.variants.iter().all(|variant| {
+                        variant
+                            .payloads
+                            .iter()
+                            .all(|payload| self.is_send_type_inner(payload, visiting))
+                    })
+                } else {
+                    false
+                };
+                visiting.remove(&name);
+                sendable
             }
         }
     }
@@ -3114,24 +3172,24 @@ fn check_function_all(
     if function.asynchronous {
         env.insert("flux__async_context".to_string(), Type::Bool);
         for param in &function.params {
-            if !signatures.is_copy_type(&param.ty) {
+            if !signatures.is_send_type(&param.ty) {
                 diagnostics.push(
                     diag(
                         param.type_span,
                         &format!(
-                            "async parameter '{}' must currently use a Copy type, got {}",
+                            "async parameter '{}' must use a Send type, got {}",
                             param.name,
                             param.ty.name()
                         ),
                     )
                     .with_note(
-                        "compiler-owned native tasks may only move Copy values across the worker boundary until owned transfer and sendability rules land",
+                        "detached native tasks may outlive borrowed data; borrowed str and values containing it are not Send",
                     ),
                 );
             }
         }
         for (index, ty) in function.returns.iter().enumerate() {
-            if !matches!(signatures.canonical_type(ty), Type::Void) && !signatures.is_copy_type(ty)
+            if !matches!(signatures.canonical_type(ty), Type::Void) && !signatures.is_send_type(ty)
             {
                 diagnostics.push(
                     diag(
@@ -3141,13 +3199,13 @@ fn check_function_all(
                             .copied()
                             .unwrap_or(function.return_span),
                         &format!(
-                            "async return value {} must currently use a Copy type, got {}",
+                            "async return value {} must use a Send type, got {}",
                             index + 1,
                             ty.name()
                         ),
                     )
                     .with_note(
-                        "compiler-owned native tasks may only return Copy values until owned transfer and sendability rules land",
+                        "detached native task results must not carry borrowed str data across the worker boundary",
                     ),
                 );
             }
