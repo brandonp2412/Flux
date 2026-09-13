@@ -1731,8 +1731,10 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <errno.h>\n");
     }
-    if uses_background {
+    if uses_background || runtime_usage.contains("flux__fs_") {
         out.push_str("#include <sys/types.h>\n");
+    }
+    if uses_background {
         out.push_str("#include <sys/wait.h>\n");
     }
     if runtime_usage.contains("flux__time_")
@@ -6089,6 +6091,25 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_directory_set_permissions(") {
         out.push_str("static inline const char *flux__fs_directory_set_permissions(const char *path, int64_t permissions) { return flux__fs_set_permissions(path, true, permissions); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_owner(")
+        || runtime_usage.contains("flux__fs_file_set_group(")
+        || runtime_usage.contains("flux__fs_directory_set_owner(")
+        || runtime_usage.contains("flux__fs_directory_set_group(")
+    {
+        out.push_str("static inline const char *flux__fs_set_identity(const char *path, bool expect_directory, int64_t identity, bool group) { if (identity < 0) return group ? \"group id must be non-negative\" : \"owner id must be non-negative\"; struct stat info; if (stat(path, &info) != 0) return group ? \"failed to inspect group target\" : \"failed to inspect owner target\"; if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return expect_directory ? \"path is not a directory\" : \"path is not a file\"; if (group) { gid_t native = (gid_t)(uintmax_t)identity; if ((uintmax_t)native != (uintmax_t)identity) return \"group id exceeds platform range\"; return chown(path, (uid_t)-1, native) == 0 ? NULL : \"failed to set group\"; } uid_t native = (uid_t)(uintmax_t)identity; if ((uintmax_t)native != (uintmax_t)identity) return \"owner id exceeds platform range\"; return chown(path, native, (gid_t)-1) == 0 ? NULL : \"failed to set owner\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_owner(") {
+        out.push_str("static inline const char *flux__fs_file_set_owner(const char *path, int64_t owner) { return flux__fs_set_identity(path, false, owner, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_set_group(") {
+        out.push_str("static inline const char *flux__fs_file_set_group(const char *path, int64_t group) { return flux__fs_set_identity(path, false, group, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_set_owner(") {
+        out.push_str("static inline const char *flux__fs_directory_set_owner(const char *path, int64_t owner) { return flux__fs_set_identity(path, true, owner, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_set_group(") {
+        out.push_str("static inline const char *flux__fs_directory_set_group(const char *path, int64_t group) { return flux__fs_set_identity(path, true, group, true); }\n");
     }
     if runtime_usage.contains("flux__fs_file_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
@@ -31843,7 +31864,8 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "truncate" | "setPermissions" | "setModified" | "setAccessed" => {
+            "truncate" | "setPermissions" | "setModified" | "setAccessed" | "setOwner"
+            | "setGroup" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -31854,6 +31876,8 @@ fn emit_qualified_call(
                     "setPermissions" => "flux__fs_file_set_permissions",
                     "setModified" => "flux__fs_file_set_modified_unix_millis",
                     "setAccessed" => "flux__fs_file_set_accessed_unix_millis",
+                    "setOwner" => "flux__fs_file_set_owner",
+                    "setGroup" => "flux__fs_file_set_group",
                     _ => unreachable!(),
                 };
                 return Ok((
@@ -31871,7 +31895,7 @@ fn emit_qualified_call(
         }
         if matches!(
             name,
-            "rename" | "setPermissions" | "setModified" | "setAccessed"
+            "rename" | "setPermissions" | "setModified" | "setAccessed" | "setOwner" | "setGroup"
         ) {
             if args.len() != 2 {
                 return Err(diag(span, "invalid directory call reached code generation"));
@@ -31883,6 +31907,8 @@ fn emit_qualified_call(
                 "setPermissions" => "flux__fs_directory_set_permissions",
                 "setModified" => "flux__fs_directory_set_modified_unix_millis",
                 "setAccessed" => "flux__fs_directory_set_accessed_unix_millis",
+                "setOwner" => "flux__fs_directory_set_owner",
+                "setGroup" => "flux__fs_directory_set_group",
                 _ => unreachable!(),
             };
             return Ok((

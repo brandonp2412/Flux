@@ -1691,6 +1691,14 @@ fn add_qualified_namespace_completions(
                 "fn file.setAccessed(path: str, unixMillis: i64) -> error",
             ),
             (
+                "setOwner",
+                "fn file.setOwner(path: str, owner: i64) -> error",
+            ),
+            (
+                "setGroup",
+                "fn file.setGroup(path: str, group: i64) -> error",
+            ),
+            (
                 "copy",
                 "fn file.copy(source: str, destination: str) -> error",
             ),
@@ -1753,6 +1761,14 @@ fn add_qualified_namespace_completions(
             (
                 "setAccessed",
                 "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setOwner",
+                "fn directory.setOwner(path: str, owner: i64) -> error",
+            ),
+            (
+                "setGroup",
+                "fn directory.setGroup(path: str, group: i64) -> error",
             ),
             ("remove", "fn directory.remove(path: str) -> error"),
             ("removeAll", "fn directory.removeAll(path: str) -> error"),
@@ -3691,6 +3707,19 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "setOwner" | "setGroup" => {
+                    let parameter = if implementation_member == "setOwner" {
+                        "owner: i64"
+                    } else {
+                        "group: i64"
+                    };
+                    return Some(signature_help_for_builtin(
+                        &format!("file.{member}"),
+                        &["path: str", parameter],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "copy" | "rename" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
@@ -3757,6 +3786,19 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str", "unixMillis: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "setOwner" | "setGroup" => {
+                    let parameter = if implementation_member == "setOwner" {
+                        "owner: i64"
+                    } else {
+                        "group: i64"
+                    };
+                    return Some(signature_help_for_builtin(
+                        &format!("directory.{member}"),
+                        &["path: str", parameter],
                         "error",
                         active_parameter,
                     ));
@@ -7407,6 +7449,8 @@ mod tests {
         );
         assert!(file_items.contains("fn file.setModified(path: str, unixMillis: i64) -> error"));
         assert!(file_items.contains("fn file.setAccessed(path: str, unixMillis: i64) -> error"));
+        assert!(file_items.contains("fn file.setOwner(path: str, owner: i64) -> error"));
+        assert!(file_items.contains("fn file.setGroup(path: str, group: i64) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
@@ -7454,6 +7498,8 @@ mod tests {
             directory_items
                 .contains("fn directory.setAccessed(path: str, unixMillis: i64) -> error")
         );
+        assert!(directory_items.contains("fn directory.setOwner(path: str, owner: i64) -> error"));
+        assert!(directory_items.contains("fn directory.setGroup(path: str, group: i64) -> error"));
         assert!(directory_items.contains("fn directory.remove(path: str) -> error"));
         assert!(directory_items.contains("fn directory.removeAll(path: str) -> error"));
 
@@ -9304,10 +9350,14 @@ mod tests {
     print(file.setPermissions("a", 384))
     print(file.setModified("a", 1))
     print(file.setAccessed("a", 2))
+    print(file.setOwner("a", 1))
+    print(file.setGroup("a", 2))
     print(directory.rename("a", "b"))
     print(directory.setPermissions("a", 448))
     print(directory.setModified("a", 3))
     print(directory.setAccessed("a", 4))
+    print(directory.setOwner("a", 1))
+    print(directory.setGroup("a", 2))
     return 0
 }
 "#;
@@ -9330,6 +9380,14 @@ mod tests {
                 "fn file.setAccessed(path: str, unixMillis: i64) -> error",
             ),
             (
+                "file.setOwner(",
+                "fn file.setOwner(path: str, owner: i64) -> error",
+            ),
+            (
+                "file.setGroup(",
+                "fn file.setGroup(path: str, group: i64) -> error",
+            ),
+            (
                 "directory.rename(",
                 "fn directory.rename(source: str, destination: str) -> error",
             ),
@@ -9344,6 +9402,14 @@ mod tests {
             (
                 "directory.setAccessed(",
                 "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "directory.setOwner(",
+                "fn directory.setOwner(path: str, owner: i64) -> error",
+            ),
+            (
+                "directory.setGroup(",
+                "fn directory.setGroup(path: str, group: i64) -> error",
             ),
         ] {
             let line_index = source

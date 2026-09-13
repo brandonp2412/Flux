@@ -9969,7 +9969,8 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "truncate" | "setPermissions" | "setModified" | "setAccessed" => {
+            "truncate" | "setPermissions" | "setModified" | "setAccessed" | "setOwner"
+            | "setGroup" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -9993,6 +9994,8 @@ fn check_qualified_call(
                         "setPermissions" => "file.setPermissions permissions",
                         "setModified" => "file.setModified unixMillis",
                         "setAccessed" => "file.setAccessed unixMillis",
+                        "setOwner" => "file.setOwner owner",
+                        "setGroup" => "file.setGroup group",
                         _ => unreachable!(),
                     },
                 )?;
@@ -10009,6 +10012,18 @@ fn check_qualified_call(
                         return Err(diag(
                             args[1].span,
                             "file.setPermissions permissions must be in 0..=4095",
+                        ));
+                    }
+                    if name == "setOwner" && value < 0 {
+                        return Err(diag(
+                            args[1].span,
+                            "file.setOwner owner must be non-negative",
+                        ));
+                    }
+                    if name == "setGroup" && value < 0 {
+                        return Err(diag(
+                            args[1].span,
+                            "file.setGroup group must be non-negative",
                         ));
                     }
                 }
@@ -10097,7 +10112,7 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
-            "setPermissions" | "setModified" | "setAccessed" => {
+            "setPermissions" | "setModified" | "setAccessed" | "setOwner" | "setGroup" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -10116,24 +10131,36 @@ fn check_qualified_call(
                     args[1].span,
                     &Type::I64,
                     &value_type,
-                    if name == "setPermissions" {
-                        "directory.setPermissions permissions"
-                    } else if name == "setModified" {
-                        "directory.setModified unixMillis"
-                    } else {
-                        "directory.setAccessed unixMillis"
+                    match name.as_str() {
+                        "setPermissions" => "directory.setPermissions permissions",
+                        "setModified" => "directory.setModified unixMillis",
+                        "setAccessed" => "directory.setAccessed unixMillis",
+                        "setOwner" => "directory.setOwner owner",
+                        "setGroup" => "directory.setGroup group",
+                        _ => unreachable!(),
                     },
                 )?;
-                if name == "setPermissions"
-                    && matches!(
-                        constant_primitive_value(&args[1], signatures),
-                        Some(ConstantValue::I64(value)) if !(0..=0o7777).contains(&value)
-                    )
+                if let Some(ConstantValue::I64(value)) =
+                    constant_primitive_value(&args[1], signatures)
                 {
-                    return Err(diag(
-                        args[1].span,
-                        "directory.setPermissions permissions must be in 0..=4095",
-                    ));
+                    if name == "setPermissions" && !(0..=0o7777).contains(&value) {
+                        return Err(diag(
+                            args[1].span,
+                            "directory.setPermissions permissions must be in 0..=4095",
+                        ));
+                    }
+                    if name == "setOwner" && value < 0 {
+                        return Err(diag(
+                            args[1].span,
+                            "directory.setOwner owner must be non-negative",
+                        ));
+                    }
+                    if name == "setGroup" && value < 0 {
+                        return Err(diag(
+                            args[1].span,
+                            "directory.setGroup group must be non-negative",
+                        ));
+                    }
                 }
                 return Ok(vec![Type::Error]);
             }
