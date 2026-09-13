@@ -15744,6 +15744,7 @@ struct AsyncContinuationPlan {
 #[derive(Clone)]
 struct AsyncBranchAwaitPlan {
     statement_index: usize,
+    condition_await: bool,
     then_await_indices: Vec<usize>,
     else_await_indices: Vec<usize>,
 }
@@ -16054,6 +16055,7 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     let statement_index = *statement_index;
     let StmtKind::If {
         cond,
+        binding,
         body,
         else_body,
         ..
@@ -16061,16 +16063,21 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     else {
         return None;
     };
-    if expr_contains_await(cond) {
-        return None;
+    let condition_await = expr_contains_await(cond);
+    if condition_await {
+        if binding.is_some() {
+            return None;
+        }
+        direct_await_call(cond)?;
     }
     let then_await_indices = block_branch_await_indices(body, true)?;
     let else_await_indices = block_branch_await_indices(else_body, true)?;
-    if then_await_indices.is_empty() && else_await_indices.is_empty() {
+    if !condition_await && then_await_indices.is_empty() && else_await_indices.is_empty() {
         None
     } else {
         Some(AsyncBranchAwaitPlan {
             statement_index,
+            condition_await,
             then_await_indices,
             else_await_indices,
         })
@@ -20506,22 +20513,17 @@ fn emit_async_restore_locals(
     Ok(())
 }
 
-fn emit_async_suspend(
+fn emit_async_suspend_expr(
     out: &mut String,
     pad: &str,
-    stmt: &Stmt,
+    await_expr: &Expr,
+    span: SourceSpan,
     next_state: usize,
     function: &Function,
     plan: &AsyncContinuationPlan,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    let await_expr = continuation_await_expr(stmt).ok_or_else(|| {
-        diag(
-            stmt.span,
-            "async continuation lowering requires a direct await statement",
-        )
-    })?;
     let (callee, args, named_args) = direct_await_call(await_expr).ok_or_else(|| {
         diag(
             await_expr.span,
@@ -20534,7 +20536,7 @@ fn emit_async_suspend(
             &format!("unknown async function '{callee}' during continuation lowering"),
         )
     })?;
-    emit_async_save_locals(out, pad, &plan.locals, env, signatures, stmt.span)?;
+    emit_async_save_locals(out, pad, &plan.locals, env, signatures, span)?;
     out.push_str(&format!("{pad}flux__task->state = {next_state};\n"));
     out.push_str(&format!(
         "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
@@ -20551,6 +20553,84 @@ fn emit_async_suspend(
     ));
     out.push_str(&format!("{pad}return;\n"));
     Ok(())
+}
+
+fn emit_async_suspend(
+    out: &mut String,
+    pad: &str,
+    stmt: &Stmt,
+    next_state: usize,
+    function: &Function,
+    plan: &AsyncContinuationPlan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    let await_expr = continuation_await_expr(stmt).ok_or_else(|| {
+        diag(
+            stmt.span,
+            "async continuation lowering requires a direct await statement",
+        )
+    })?;
+    emit_async_suspend_expr(
+        out, pad, await_expr, stmt.span, next_state, function, plan, env, signatures,
+    )
+}
+
+fn emit_async_completed_bool_await(
+    out: &mut String,
+    pad: &str,
+    await_expr: &Expr,
+    current_function: &Function,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<String, Diagnostic> {
+    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation lowering requires a direct async function call",
+        )
+    })?;
+    let signature = signatures.get(callee).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            &format!("unknown async function '{callee}' during continuation lowering"),
+        )
+    })?;
+    let [result_ty] = signature.returns.as_slice() else {
+        return Err(diag(
+            await_expr.span,
+            "async if condition changed return arity after type checking",
+        ));
+    };
+    if signatures.canonical_type(result_ty) != Type::Bool {
+        return Err(diag(
+            await_expr.span,
+            "async if condition changed type after type checking",
+        ));
+    }
+    let child = format!("flux__completed_task_{}", *temp_counter);
+    *temp_counter += 1;
+    let result = format!("flux__async_condition_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct {} *{child} = (struct {} *)flux__completed_child;\n",
+        async_task_c_name(callee),
+        async_task_c_name(callee)
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child} == NULL) {{ fputs(\"Flux runtime error: missing completed async child\\n\", stderr); abort(); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child}->scope_error != NULL) {{ flux__task->scope_error = {child}->scope_error; {}({child}); {}(flux__task); return; }}\n",
+        async_release_c_name(callee),
+        async_finish_c_name(&current_function.name)
+    ));
+    out.push_str(&format!("{pad}bool {result} = {child}->result;\n"));
+    out.push_str(&format!(
+        "{pad}{}({child});\n",
+        async_release_c_name(callee)
+    ));
+    Ok(result)
 }
 
 fn emit_async_branch_suspend(
@@ -20817,8 +20897,34 @@ fn emit_async_branch_continuation_function(
     )?;
     let outer_env = env.clone();
     let outer_mutable = mutable.clone();
-    let promotion = binding
-        .is_none()
+    let first_branch_state = if branch.condition_await { 2 } else { 1 };
+    let completed_condition = if branch.condition_await {
+        emit_source_line(out, cond.span, context.source_paths);
+        emit_async_suspend_expr(
+            out, pad, cond, cond.span, 1, function, plan, &env, signatures,
+        )?;
+        out.push_str("        }\n");
+        out.push_str("        case 1: {\n");
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, cond.span)?;
+        Some(emit_async_completed_bool_await(
+            out,
+            pad,
+            cond,
+            function,
+            signatures,
+            temp_counter,
+        )?)
+    } else {
+        None
+    };
+    let promotion = (!branch.condition_await && binding.is_none())
         .then(|| optional_presence_promotion(cond, &env, &mutable, signatures))
         .flatten()
         .map(|(name, inner, present_in_then)| {
@@ -20827,7 +20933,9 @@ fn emit_async_branch_continuation_function(
             (name, inner, present_in_then, temp)
         });
     let mut optional_binding = None;
-    let condition = if let Some(binding) = binding {
+    let condition = if let Some(condition) = completed_condition {
+        condition
+    } else if let Some(binding) = binding {
         let optional = emit_expr(cond, &env, signatures)?;
         let Type::Optional(inner) = signatures.canonical_type(&optional.ty) else {
             return Err(diag(
@@ -20901,7 +21009,7 @@ fn emit_async_branch_continuation_function(
             out,
             "                ",
             awaited_stmt,
-            1,
+            first_branch_state,
             function,
             plan,
             &then_env,
@@ -20964,7 +21072,7 @@ fn emit_async_branch_continuation_function(
                 out,
                 "                ",
                 awaited_stmt,
-                branch.then_await_indices.len() + 1,
+                first_branch_state + branch.then_await_indices.len(),
                 function,
                 plan,
                 &else_env,
@@ -21031,7 +21139,7 @@ fn emit_async_branch_continuation_function(
         plan,
         body,
         &branch.then_await_indices,
-        1,
+        first_branch_state,
         branch.statement_index + 1,
         then_env,
         then_mutable,
@@ -21048,7 +21156,7 @@ fn emit_async_branch_continuation_function(
         plan,
         else_body,
         &branch.else_await_indices,
-        branch.then_await_indices.len() + 1,
+        first_branch_state + branch.then_await_indices.len(),
         branch.statement_index + 1,
         else_env,
         else_mutable,

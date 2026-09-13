@@ -37854,6 +37854,88 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_if_condition_suspends_without_blocking_worker() {
+    let source = r#"
+async fn ready(value: bool) -> bool {
+    return value
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(flag: bool) -> i64 {
+    var total: i64 = 1
+    if await ready(flag):
+        total = total + 10
+    else:
+        total = total + 20
+    return total
+}
+
+async fn chooseAndAwait(flag: bool) -> i64 {
+    var total: i64 = 40
+    if await ready(flag):
+        total = await addOne(total)
+    else:
+        total = await addOne(10)
+    return total
+}
+
+async fn main() -> i64 {
+    let taken: i64 = await choose(true)
+    let skipped: i64 = await choose(false)
+    let nestedTaken: i64 = await chooseAndAwait(true)
+    let nestedElse: i64 = await chooseAndAwait(false)
+    return taken + skipped + nestedTaken + nestedElse
+}
+"#;
+
+    check_source(source).expect("awaited if conditions should typecheck");
+    let generated =
+        compile_to_c(source).expect("awaited if conditions should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("flux__async_resume_chooseAndAwait"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(!generated.contains("flux__async_body_chooseAndAwait("));
+    assert!(generated.contains(
+        "flux__async_start_cont_ready(flux__local_flag, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_ready(flux__local_flag, flux__async_resume_chooseAndAwait, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_chooseAndAwait, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_ready(flux__async_start_ready"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-if-condition-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async if-condition fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async if-condition source should be writable");
+    let binary = root.join("async-if-condition");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async if-condition binary should build");
+    assert!(
+        built.status.success(),
+        "async if-condition build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async if-condition binary should run");
+    assert_eq!(status.code(), Some(84));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_inside_for_ranges_suspends_without_blocking_worker() {
     let source = r#"
 async fn add(value: i64, amount: i64) -> i64 {
