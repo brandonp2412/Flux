@@ -1386,6 +1386,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "serveOnce",
+            3,
+            "fn http.serveOnce(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "receiveResponseHeadWithHeaders",
             3,
             "fn http.receiveResponseHeadWithHeaders(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
@@ -3044,6 +3051,21 @@ fn signature_help_for_document_cached(
                             "bodyCallback: fn(i64, str) -> void",
                         ],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "serveOnce" => {
+                    return Some(signature_help_for_builtin(
+                        "http.serveOnce",
+                        &[
+                            "listener: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "requestCallback: fn(i64, str, str, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, str) -> void",
+                        ],
+                        "error",
                         active_parameter,
                     ));
                 }

@@ -4304,7 +4304,9 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     if runtime_usage.contains("flux__net_http_receive_request_with_text_body(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_http_receive_request_with_text_body(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_head_bytes < 1 || max_head_bytes > 65536) return flux__net_result(-1, \"receiveRequestWithTextBody maxHeadBytes must be between 1 and 65536\"); if (max_body_bytes < 0 || max_body_bytes > 65536) return flux__net_result(-1, \"receiveRequestWithTextBody maxBodyBytes must be between 0 and 65536\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"HTTP request requires a TCP socket\"); char head[65537]; size_t head_length = 0; bool complete = false; while (head_length < (size_t)max_head_bytes) { ssize_t received; do { received = recv((int)socket_handle, head + head_length, 1, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive HTTP request head\"); if (received == 0) return flux__net_result(-1, \"connection closed before HTTP request head completed\"); if (head[head_length] == '\\0') return flux__net_result(-1, \"HTTP request head contains a NUL byte\"); head_length += 1; if (head_length >= 4 && memcmp(head + head_length - 4, \"\\r\\n\\r\\n\", 4) == 0) { complete = true; break; } } if (!complete) return flux__net_result(-1, \"HTTP request head exceeds maxHeadBytes\"); head[head_length] = '\\0'; char *line_end = strstr(head, \"\\r\\n\"); if (line_end == NULL) return flux__net_result(-1, \"malformed HTTP request line\"); *line_end = '\\0'; char *method = head; char *first_space = strchr(method, ' '); if (first_space == NULL || first_space == method) return flux__net_result(-1, \"malformed HTTP request line\"); *first_space = '\\0'; char *target = first_space + 1; char *second_space = strchr(target, ' '); if (second_space == NULL || second_space == target) return flux__net_result(-1, \"malformed HTTP request line\"); *second_space = '\\0'; char *version = second_space + 1; if (version[0] == '\\0' || strchr(version, ' ') != NULL) return flux__net_result(-1, \"malformed HTTP request line\"); for (const unsigned char *part = (const unsigned char *)method; *part != '\\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__net_result(-1, \"invalid HTTP method\"); for (const unsigned char *part = (const unsigned char *)target; *part != '\\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__net_result(-1, \"invalid HTTP request target\"); if (strcmp(version, \"HTTP/1.1\") != 0 && strcmp(version, \"HTTP/1.0\") != 0) return flux__net_result(-1, \"unsupported HTTP version\"); char *headers = line_end + 2; char *cursor = headers; size_t body_length = 0; bool content_length_seen = false; while (!(cursor[0] == '\\r' && cursor[1] == '\\n')) { char *next = strstr(cursor, \"\\r\\n\"); if (next == NULL) return flux__net_result(-1, \"malformed HTTP header line\"); if (cursor[0] == ' ' || cursor[0] == '\\t') return flux__net_result(-1, \"folded HTTP headers are not supported\"); char *colon = memchr(cursor, ':', (size_t)(next - cursor)); if (colon == NULL || colon == cursor) return flux__net_result(-1, \"malformed HTTP header field\"); for (const unsigned char *part = (const unsigned char *)cursor; part < (const unsigned char *)colon; part += 1) { bool token = (*part >= '0' && *part <= '9') || (*part >= 'A' && *part <= 'Z') || (*part >= 'a' && *part <= 'z') || strchr(\"!#$%&'*+-.^_`|~\", *part) != NULL; if (!token) return flux__net_result(-1, \"invalid HTTP header name\"); } for (const unsigned char *part = (const unsigned char *)(colon + 1); part < (const unsigned char *)next; part += 1) if ((*part < 0x20 && *part != '\\t') || *part == 0x7f) return flux__net_result(-1, \"invalid HTTP header value\"); size_t name_length = (size_t)(colon - cursor); char *value = colon + 1; while (value < next && (*value == ' ' || *value == '\\t')) value += 1; char *value_end = next; while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\\t')) value_end -= 1; if (name_length == 17 && strncasecmp(cursor, \"Transfer-Encoding\", 17) == 0) return flux__net_result(-1, \"Transfer-Encoding request bodies are not supported\"); if (name_length == 14 && strncasecmp(cursor, \"Content-Length\", 14) == 0) { if (content_length_seen) return flux__net_result(-1, \"duplicate Content-Length is not supported\"); if (value == value_end) return flux__net_result(-1, \"invalid Content-Length\"); body_length = 0; for (char *digit = value; digit < value_end; digit += 1) { if (*digit < '0' || *digit > '9') return flux__net_result(-1, \"invalid Content-Length\"); body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\"); } content_length_seen = true; } cursor = next + 2; } char body[65537]; size_t body_offset = 0; while (body_offset < body_length) { ssize_t received; do { received = recv((int)socket_handle, body + body_offset, body_length - body_offset, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive HTTP request body\"); if (received == 0) return flux__net_result(-1, \"connection closed before HTTP request body completed\"); if (memchr(body + body_offset, '\\0', (size_t)received) != NULL) return flux__net_result(-1, \"HTTP request body contains a NUL byte\"); body_offset += (size_t)received; } body[body_length] = '\\0'; request_callback(socket_handle, method, target, version); cursor = headers; while (!(cursor[0] == '\\r' && cursor[1] == '\\n')) { char *next = strstr(cursor, \"\\r\\n\"); char *colon = memchr(cursor, ':', (size_t)(next - cursor)); *colon = '\\0'; char *value = colon + 1; while (*value == ' ' || *value == '\\t') value += 1; char *value_end = next; while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\\t')) value_end -= 1; *value_end = '\\0'; header_callback(socket_handle, cursor, value); cursor = next + 2; } body_callback(socket_handle, body); return flux__net_result((int64_t)(head_length + body_length), NULL); }\n");
     }
-    if runtime_usage.contains("flux__net_http_receive_request_with_text_body_v2(") {
+    if runtime_usage.contains("flux__net_http_receive_request_with_text_body_v2(")
+        || runtime_usage.contains("flux__net_http_serve_once(")
+    {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_http_receive_request_with_text_body_v2(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
     if (max_head_bytes < 1 || max_head_bytes > 65536) return flux__net_result(-1, "receiveRequestWithTextBody maxHeadBytes must be between 1 and 65536");
@@ -4503,6 +4505,34 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     }
     body_callback(socket_handle, body);
     return flux__net_result((int64_t)(head_length + body_wire_length), NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_serve_once(") {
+        out.push_str(r#"static inline const char *flux__net_http_serve_once(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+    if (listener < 0 || listener > INT_MAX) return "invalid TCP listener handle";
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect TCP listener";
+    if (socket_type != SOCK_STREAM) return "http.serveOnce requires a TCP listener";
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return "failed to inspect TCP listener state";
+    if (accepting == 0) return "http.serveOnce requires a listening TCP socket";
+    int client;
+    do { client = accept((int)listener, NULL, NULL); } while (client < 0 && errno == EINTR);
+    if (client < 0) return "failed to accept HTTP connection";
+    struct flux__net_i64_error received = flux__net_http_receive_request_with_text_body_v2(
+        (int64_t)client,
+        max_head_bytes,
+        max_body_bytes,
+        request_callback,
+        header_callback,
+        body_callback
+    );
+    const char *close_error = close(client) == 0 ? NULL : "failed to close HTTP connection";
+    if (received.v1 != NULL) return received.v1;
+    return close_error;
 }
 "#);
     }
@@ -26188,6 +26218,30 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "serveOnce" => {
+                if args.len() != 6 {
+                    return Err(diag(span, "invalid HTTP call reached code generation"));
+                }
+                let listener = emit_expr(&args[0], env, signatures)?;
+                let max_head_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_body_bytes = emit_expr(&args[2], env, signatures)?;
+                let request_callback = emit_expr(&args[3], env, signatures)?;
+                let header_callback = emit_expr(&args[4], env, signatures)?;
+                let body_callback = emit_expr(&args[5], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_http_serve_once({}, {}, {}, {}, {}, {})",
+                        listener.code,
+                        max_head_bytes.code,
+                        max_body_bytes.code,
+                        request_callback.code,
+                        header_callback.code,
+                        body_callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
                 ));
             }
             "receiveResponseHeadWithHeaders" => {
