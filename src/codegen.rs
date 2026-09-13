@@ -17037,13 +17037,6 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
             return None;
         }
         let await_indices = block_branch_await_indices(&arm.body, true)?;
-        if await_indices
-            .iter()
-            .any(|index| coalescing_assignment_await_expr(&arm.body[*index]).is_some())
-            && await_indices.len() != 1
-        {
-            return None;
-        }
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -17078,13 +17071,6 @@ fn async_list_match_await_plan(function: &Function) -> Option<AsyncListMatchAwai
             return None;
         }
         let await_indices = block_branch_await_indices(&arm.body, true)?;
-        if await_indices
-            .iter()
-            .any(|index| coalescing_assignment_await_expr(&arm.body[*index]).is_some())
-            && await_indices.len() != 1
-        {
-            return None;
-        }
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -23991,7 +23977,7 @@ fn emit_async_match_continuation_function(
             if let Some(next_await_index) = next_await {
                 let next_stmt = &arm.body[next_await_index];
                 emit_source_line(out, next_stmt.span, context.source_paths);
-                emit_async_suspend(
+                let conditional_suspend = emit_async_branch_suspend(
                     out,
                     pad,
                     next_stmt,
@@ -23999,8 +23985,33 @@ fn emit_async_match_continuation_function(
                     function,
                     plan,
                     &arm_env,
+                    &arm_mutable,
                     signatures,
                 )?;
+                if conditional_suspend {
+                    let mut present_env = arm_env.clone();
+                    let mut present_mutable = arm_mutable.clone();
+                    emit_block(
+                        out,
+                        &arm.body[next_await_index + 1..],
+                        3,
+                        &mut present_env,
+                        &mut present_mutable,
+                        signatures,
+                        temp_counter,
+                        state_context,
+                    )?;
+                    emit_async_match_tail(
+                        out,
+                        function,
+                        signatures,
+                        match_plan,
+                        &outer_env,
+                        &outer_mutable,
+                        temp_counter,
+                        state_context,
+                    )?;
+                }
                 previous_await = next_await_index;
                 segment_start = next_await_index + 1;
             } else {
@@ -24289,7 +24300,7 @@ fn emit_async_list_match_continuation_function(
             if let Some(next_await_index) = next_await {
                 let next_stmt = &arm.body[next_await_index];
                 emit_source_line(out, next_stmt.span, context.source_paths);
-                emit_async_suspend(
+                let conditional_suspend = emit_async_branch_suspend(
                     out,
                     pad,
                     next_stmt,
@@ -24297,8 +24308,33 @@ fn emit_async_list_match_continuation_function(
                     function,
                     plan,
                     &arm_env,
+                    &arm_mutable,
                     signatures,
                 )?;
+                if conditional_suspend {
+                    let mut present_env = arm_env.clone();
+                    let mut present_mutable = arm_mutable.clone();
+                    emit_block(
+                        out,
+                        &arm.body[next_await_index + 1..],
+                        3,
+                        &mut present_env,
+                        &mut present_mutable,
+                        signatures,
+                        temp_counter,
+                        state_context,
+                    )?;
+                    emit_async_list_match_tail(
+                        out,
+                        function,
+                        signatures,
+                        match_plan,
+                        &outer_env,
+                        &outer_mutable,
+                        temp_counter,
+                        state_context,
+                    )?;
+                }
                 previous_await = next_await_index;
                 segment_start = next_await_index + 1;
             } else {

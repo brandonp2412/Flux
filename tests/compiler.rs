@@ -40570,6 +40570,98 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_direct_await_then_coalescing_assignment_in_match_arms_stays_nonblocking() {
+    let source = r#"
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+async fn step(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn chooseEnum(choice: Choice, initial: i64?) -> i64 {
+    var value: i64? = initial
+    match choice:
+        Choice.Value(item):
+            let first: i64 = await step(item)
+            value ??= await step(12)
+            return first + (value ?? 0)
+        Choice.Empty():
+            return 0
+}
+
+async fn chooseList(item: i64, initial: i64?) -> i64 {
+    var value: i64? = initial
+    match [item]:
+        [entry]:
+            let first: i64 = await step(entry)
+            value ??= await step(23)
+            return first + (value ?? 0)
+        _:
+            return 0
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let present: i64? = 7
+    let first: i64 = await chooseEnum(Choice.Value(2), missing)
+    let second: i64 = await chooseEnum(Choice.Value(2), present)
+    let third: i64 = await chooseList(3, missing)
+    let fourth: i64 = await chooseList(3, present)
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source).expect("mixed match-arm suspension should typecheck");
+    let generated =
+        compile_to_c(source).expect("mixed match-arm suspension should use continuation states");
+    assert!(generated.contains("flux__async_resume_chooseEnum"));
+    assert!(generated.contains("flux__async_resume_chooseList"));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(12), flux__async_resume_chooseEnum, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(23), flux__async_resume_chooseList, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(12)))"));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step(INT64_C(23)))"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-match-coalescing-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mixed match-arm suspension fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-match-coalescing");
+    fs::write(&source_path, source).expect("mixed match-arm suspension source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("mixed match-arm suspension binary should build");
+    assert!(
+        built.status.success(),
+        "mixed match-arm suspension build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("mixed match-arm suspension binary should run");
+    assert_eq!(output.status.code(), Some(59));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "2\n12\n2\n3\n23\n3\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_struct_destructuring_await_suspends_without_blocking_worker() {
     let source = r#"
 struct Pair {
