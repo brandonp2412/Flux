@@ -16128,7 +16128,7 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     let statement_index = *statement_index;
     let StmtKind::If {
         cond,
-        binding,
+        binding: _,
         body,
         else_body,
         ..
@@ -16138,9 +16138,6 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     };
     let condition_await = expr_contains_await(cond);
     if condition_await {
-        if binding.is_some() {
-            return None;
-        }
         direct_await_call(cond)?;
     }
     let then_await_indices = block_branch_await_indices(body, true)?;
@@ -20663,6 +20660,68 @@ fn emit_async_suspend(
     )
 }
 
+fn emit_async_completed_optional_await(
+    out: &mut String,
+    pad: &str,
+    await_expr: &Expr,
+    current_function: &Function,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(String, Type), Diagnostic> {
+    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation lowering requires a direct async function call",
+        )
+    })?;
+    let signature = signatures.get(callee).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            &format!("unknown async function '{callee}' during continuation lowering"),
+        )
+    })?;
+    let [result_ty] = signature.returns.as_slice() else {
+        return Err(diag(
+            await_expr.span,
+            "async optional if condition changed return arity after type checking",
+        ));
+    };
+    let result_ty = signatures.canonical_type(result_ty);
+    let Type::Optional(inner) = &result_ty else {
+        return Err(diag(
+            await_expr.span,
+            "async optional if condition changed type after type checking",
+        ));
+    };
+    let inner = signatures.canonical_type(inner);
+    let child = format!("flux__completed_task_{}", *temp_counter);
+    *temp_counter += 1;
+    let result = format!("flux__async_optional_condition_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct {} *{child} = (struct {} *)flux__completed_child;\n",
+        async_task_c_name(callee),
+        async_task_c_name(callee)
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child} == NULL) {{ fputs(\"Flux runtime error: missing completed async child\\n\", stderr); abort(); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}if ({child}->scope_error != NULL) {{ flux__task->scope_error = {child}->scope_error; {}({child}); {}(flux__task); return; }}\n",
+        async_release_c_name(callee),
+        async_finish_c_name(&current_function.name)
+    ));
+    out.push_str(&format!(
+        "{pad}{} {result} = {child}->result;\n",
+        c_type(&result_ty, signatures)
+    ));
+    out.push_str(&format!(
+        "{pad}{}({child});\n",
+        async_release_c_name(callee)
+    ));
+    Ok((result, inner))
+}
+
 fn emit_async_completed_bool_await(
     out: &mut String,
     pad: &str,
@@ -20985,6 +21044,7 @@ fn emit_async_branch_continuation_function(
     let outer_env = env.clone();
     let outer_mutable = mutable.clone();
     let first_branch_state = if branch.condition_await { 2 } else { 1 };
+    let mut completed_optional_binding = None;
     let completed_condition = if branch.condition_await {
         emit_source_line(out, cond.span, context.source_paths);
         emit_async_suspend_expr(
@@ -21000,14 +21060,27 @@ fn emit_async_branch_continuation_function(
             ));
         }
         emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, cond.span)?;
-        Some(emit_async_completed_bool_await(
-            out,
-            pad,
-            cond,
-            function,
-            signatures,
-            temp_counter,
-        )?)
+        if let Some(binding) = binding {
+            let (temp, inner) = emit_async_completed_optional_await(
+                out,
+                pad,
+                cond,
+                function,
+                signatures,
+                temp_counter,
+            )?;
+            completed_optional_binding = Some((binding.name.clone(), inner, temp));
+            None
+        } else {
+            Some(emit_async_completed_bool_await(
+                out,
+                pad,
+                cond,
+                function,
+                signatures,
+                temp_counter,
+            )?)
+        }
     } else {
         None
     };
@@ -21019,9 +21092,11 @@ fn emit_async_branch_continuation_function(
             *temp_counter += 1;
             (name, inner, present_in_then, temp)
         });
-    let mut optional_binding = None;
+    let mut optional_binding = completed_optional_binding;
     let condition = if let Some(condition) = completed_condition {
         condition
+    } else if let Some((_, _, temp)) = &optional_binding {
+        format!("{temp}.has_value")
     } else if let Some(binding) = binding {
         let optional = emit_expr(cond, &env, signatures)?;
         let Type::Optional(inner) = signatures.canonical_type(&optional.ty) else {

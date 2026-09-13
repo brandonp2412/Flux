@@ -38479,6 +38479,78 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_awaited_optional_binding_condition_suspends_without_blocking_worker() {
+    let source = r#"
+async fn maybe(value: i64, present: bool) -> i64? {
+    if present:
+        return value
+    return none
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(present: bool) -> i64 {
+    var total: i64 = 1
+    if let value = await maybe(40, present):
+        total = await addOne(value)
+    else:
+        total = await addOne(9)
+    return total
+}
+
+async fn main() -> i64 {
+    let present: i64 = await choose(true)
+    let missing: i64 = await choose(false)
+    return present + missing
+}
+"#;
+
+    check_source(source).expect("awaited optional-binding if conditions should typecheck");
+    let generated = compile_to_c(source)
+        .expect("awaited optional-binding if conditions should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(generated.contains("flux__async_optional_condition_"));
+    assert!(generated.contains(".has_value"));
+    assert!(generated.contains(
+        "flux__async_start_cont_maybe(INT64_C(40), flux__local_present, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_value, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_maybe(flux__async_start_maybe"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-optional-condition-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("awaited optional condition fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-optional-condition");
+    fs::write(&source_path, source).expect("awaited optional condition source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("awaited optional condition binary should build");
+    assert!(
+        built.status.success(),
+        "awaited optional condition build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("awaited optional condition binary should run");
+    assert_eq!(status.code(), Some(51));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_inside_for_ranges_suspends_without_blocking_worker() {
     let source = r#"
 async fn add(value: i64, amount: i64) -> i64 {

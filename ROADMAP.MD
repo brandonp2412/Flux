@@ -315,6 +315,8 @@ Straight-line continuation lowering now also treats a non-`Send` mutable local a
 
 Verified direct-await destructuring follow-up: explicit typed multi-value declarations, inferred `Copy` record declarations, `Copy` record assignments, and struct-pattern assignments now resume through compiler-owned continuations rather than blocking a worker; mutable destructured bindings retain mutability after resume. This advances the unchecked suspension track without claiming general CFG-wide suspension, `for`-each/non-`Send` view state, or first-class ownership/lifetime work complete.
 
+Verified awaited optional-binding condition follow-up: `if let value = await optionalCall(...)` now suspends before branch selection, restores the completed optional without blocking the parent worker, binds the concrete `Copy` payload only on the present path, and can continue through further direct awaits in either branch. General CFG-wide suspension remains incomplete.
+
 - [x] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
 - [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
   - Current continuation coverage also keeps `optional ??= await asyncCall(...)` non-blocking inside await-free-condition `while` and await-free-bound integer range `for` loops when await-free statements follow the coalescing assignment: present optionals execute the tail immediately without creating a child task, while absent optionals resume into the same tail after child completion. Mixed loop-body suspension shapes remain on the safe blocking fallback.
