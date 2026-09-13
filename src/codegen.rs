@@ -14673,6 +14673,7 @@ fn expr_contains_await(expr: &Expr) -> bool {
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
+        | ExprKind::InterpolatedString(_)
         | ExprKind::Nil
         | ExprKind::None
         | ExprKind::Var(_) => false,
