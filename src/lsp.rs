@@ -1624,6 +1624,7 @@ fn add_qualified_namespace_completions(
             ("size", "fn file.size(path: str) -> (i64, error)"),
             ("modified", "fn file.modified(path: str) -> (i64, error)"),
             ("accessed", "fn file.accessed(path: str) -> (i64, error)"),
+            ("changed", "fn file.changed(path: str) -> (i64, error)"),
             (
                 "permissions",
                 "fn file.permissions(path: str) -> (i64, error)",
@@ -1655,6 +1656,7 @@ fn add_qualified_namespace_completions(
                 "accessed",
                 "fn directory.accessed(path: str) -> (i64, error)",
             ),
+            ("changed", "fn directory.changed(path: str) -> (i64, error)"),
             (
                 "permissions",
                 "fn directory.permissions(path: str) -> (i64, error)",
@@ -3523,7 +3525,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "size" | "modifiedUnixMillis" | "accessed" | "permissions" => {
+                "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str"],
@@ -3568,7 +3570,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "modifiedUnixMillis" | "accessed" | "permissions" => {
+                "modifiedUnixMillis" | "accessed" | "changed" | "permissions" => {
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
@@ -7157,6 +7159,7 @@ mod tests {
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.accessed(path: str) -> (i64, error)"));
+        assert!(file_items.contains("fn file.changed(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
@@ -7181,6 +7184,7 @@ mod tests {
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.accessed(path: str) -> (i64, error)"));
+        assert!(directory_items.contains("fn directory.changed(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
@@ -9058,6 +9062,8 @@ mod tests {
     let (_directoryModified, _directoryFailure) = directory.modifiedUnixMillis("a")
     let (_fileAccessed, _fileAccessFailure) = file.accessed("a")
     let (_directoryAccessed, _directoryAccessFailure) = directory.accessed("a")
+    let (_fileChanged, _fileChangedFailure) = file.changed("a")
+    let (_directoryChanged, _directoryChangedFailure) = directory.changed("a")
     let (_filePermissions, _filePermissionsFailure) = file.permissions("a")
     let (_directoryPermissions, _directoryPermissionsFailure) = directory.permissions("a")
     return 0
@@ -9080,6 +9086,14 @@ mod tests {
             (
                 "directory.accessed(",
                 "fn directory.accessed(path: str) -> (i64, error)",
+            ),
+            (
+                "file.changed(",
+                "fn file.changed(path: str) -> (i64, error)",
+            ),
+            (
+                "directory.changed(",
+                "fn directory.changed(path: str) -> (i64, error)",
             ),
             (
                 "file.permissions(",

@@ -8880,12 +8880,18 @@ fn main() -> i64 {{
     let (fileAccessed, fileAccessedError) = file.accessed("{}")
     print(fileAccessed > 0)
     print(fileAccessedError)
+    let (fileChanged, fileChangedError) = file.changed("{}")
+    print(fileChanged > 0)
+    print(fileChangedError)
     let (filePermissions, filePermissionsError) = file.permissions("{}")
     print(filePermissions >= 0)
     print(filePermissionsError)
     let (directoryAccessed, directoryAccessedError) = directory.accessed("{}")
     print(directoryAccessed > 0)
     print(directoryAccessedError)
+    let (directoryChanged, directoryChangedError) = directory.changed("{}")
+    print(directoryChanged > 0)
+    print(directoryChangedError)
     let (directoryPermissions, directoryPermissionsError) = directory.permissions("{}")
     print(directoryPermissions >= 0)
     print(directoryPermissionsError)
@@ -8898,6 +8904,8 @@ fn main() -> i64 {{
 "#,
         path(&file),
         path(&file),
+        path(&file),
+        path(&root),
         path(&root),
         path(&root),
         path(&file),
@@ -8909,6 +8917,8 @@ fn main() -> i64 {{
     for helper in [
         "flux__fs_file_accessed_unix_millis",
         "flux__fs_directory_accessed_unix_millis",
+        "flux__fs_file_changed_unix_millis",
+        "flux__fs_directory_changed_unix_millis",
         "flux__fs_file_permissions",
         "flux__fs_directory_permissions",
     ] {
@@ -8939,14 +8949,16 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
+        "true\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\ntrue\nnil\npath is not a directory\npath is not a file\n"
     );
 
     let unused = r#"
 fn hidden() -> void {
     let (_fileAccessed, _fileAccessedError) = file.accessed("/tmp/unused-flux-file")
+    let (_fileChanged, _fileChangedError) = file.changed("/tmp/unused-flux-file")
     let (_filePermissions, _filePermissionsError) = file.permissions("/tmp/unused-flux-file")
     let (_directoryAccessed, _directoryAccessedError) = directory.accessed("/tmp/unused-flux-directory")
+    let (_directoryChanged, _directoryChangedError) = directory.changed("/tmp/unused-flux-directory")
     let (_directoryPermissions, _directoryPermissionsError) = directory.permissions("/tmp/unused-flux-directory")
 }
 fn main() -> i64 {
@@ -8958,6 +8970,8 @@ fn main() -> i64 {
     for helper in [
         "flux__fs_file_accessed_unix_millis",
         "flux__fs_directory_accessed_unix_millis",
+        "flux__fs_file_changed_unix_millis",
+        "flux__fs_directory_changed_unix_millis",
         "flux__fs_file_permissions",
         "flux__fs_directory_permissions",
     ] {
@@ -8970,8 +8984,10 @@ fn main() -> i64 {
     let invalid = r#"
 fn main() -> i64 {
     let (_fileAccessed, _fileAccessedError) = file.accessed(1)
+    let (_fileChanged, _fileChangedError) = file.changed(1)
     let (_filePermissions, _filePermissionsError) = file.permissions(false)
     let (_directoryAccessed, _directoryAccessedError) = directory.accessed(1)
+    let (_directoryChanged, _directoryChangedError) = directory.changed(1)
     let (_directoryPermissions, _directoryPermissionsError) = directory.permissions(false)
     return 0
 }
@@ -8980,8 +8996,10 @@ fn main() -> i64 {
         .expect_err("invalid filesystem scalar metadata calls should fail");
     for label in [
         "file.accessed path",
+        "file.changed path",
         "file.permissions path",
         "directory.accessed path",
+        "directory.changed path",
         "directory.permissions path",
     ] {
         assert!(
