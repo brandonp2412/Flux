@@ -10336,10 +10336,13 @@ fn emit_windows_native_application(
             )
         })?;
     for element in &view.elements {
-        if !matches!(element.kind.as_str(), "Text" | "Button" | "TextInput") {
+        if !matches!(
+            element.kind.as_str(),
+            "Text" | "Button" | "TextInput" | "Toggle" | "Radio"
+        ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Windows backend currently renders native Text, Button, and TextInput elements",
+                "bootstrap Windows backend currently renders native Text, Button, TextInput, Toggle, and Radio elements",
             ));
         }
     }
@@ -10350,57 +10353,268 @@ fn emit_windows_native_application(
         .unwrap_or(i64::from(bootstrap_height));
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
+    let gap = i64::from(view.grid.gap.unwrap_or(12));
+    let padding = i64::from(view.grid.padding.unwrap_or(20));
+    let columns = view.grid.columns.len().max(1) as i64;
+    let rows = view.grid.rows.len().max(1) as i64;
+
+    out.push_str("static int64_t flux__ui_window_width = INT64_C(0);\nstatic int64_t flux__ui_window_height = INT64_C(0);\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic bool flux__win_refreshing = false;\n");
+    for state in &view.states {
+        let state_name = ui_state_c_name(&state.name);
+        match signatures.canonical_type(&state.ty) {
+            Type::Bool => {
+                let Some(initial) = static_expr_bool(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Windows bool state requires a compile-time bool initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static bool {state_name} = {};\n",
+                    if initial { "true" } else { "false" }
+                ));
+            }
+            Type::I64 => {
+                let Some(initial) = static_expr_i64(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Windows i64 state requires a compile-time integer initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static int64_t {state_name} = INT64_C({initial});\n"
+                ));
+            }
+            Type::Str => {
+                let Some(initial) = static_expr_str(&state.initial, signatures) else {
+                    return Err(diag(
+                        state.initial.span,
+                        "bootstrap Windows str state requires a compile-time string initial value",
+                    ));
+                };
+                out.push_str(&format!(
+                    "static const char *{state_name} = {};\n",
+                    c_string(&initial)
+                ));
+                if view_state_accepts_text_input_value(view, &state.name) {
+                    out.push_str(&format!(
+                        "static char *{} = NULL;\n",
+                        ui_owned_state_c_name(&state.name)
+                    ));
+                }
+            }
+            _ => {
+                return Err(diag(
+                    state.type_span,
+                    "bootstrap Windows view state currently supports bool, i64, and borrowed str; owned aggregate state remains pending",
+                ));
+            }
+        }
+    }
+    for state in &view.states {
+        if signatures.canonical_type(&state.ty) != Type::Str
+            || !view_state_accepts_text_input_value(view, &state.name)
+        {
+            continue;
+        }
+        let state_name = ui_state_c_name(&state.name);
+        let owned_name = ui_owned_state_c_name(&state.name);
+        let setter_name = ui_set_state_c_name(&state.name);
+        out.push_str(&format!(
+            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
+        ));
+    }
+    for derived in &view.derived {
+        let derived_name = ui_derived_c_name(&derived.name);
+        let initial = match signatures.canonical_type(&derived.ty) {
+            Type::I64 => "INT64_C(0)",
+            Type::Bool => "false",
+            Type::Str => "NULL",
+            _ => {
+                return Err(diag(
+                    derived.type_span,
+                    "bootstrap Windows derived view values currently support i64, bool, and str",
+                ));
+            }
+        };
+        out.push_str(&format!(
+            "static {} {derived_name} = {initial};\n",
+            c_type(&derived.ty, signatures)
+        ));
+    }
     for element in &view.elements {
         out.push_str(&format!(
             "static HWND {} = NULL;\n",
             ui_widget_c_name(&element.name)
         ));
     }
-    for (index, element) in view.elements.iter().enumerate() {
-        if element.kind != "Button" {
-            continue;
-        }
-        let Some(action) = view_property(element, "on_press") else {
-            continue;
-        };
-        if action.transition.is_some() {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows Button state transitions remain pending; use a named fn() -> void callback",
-            ));
-        }
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows Button.onPress requires a named fn() -> void callback",
-            ));
-        };
+    out.push('\n');
+
+    out.push_str("static void flux__win_layout_controls(HWND hwnd) { RECT client = {0}; if (!GetClientRect(hwnd, &client)) return; flux__ui_window_width = (int64_t)(client.right - client.left); flux__ui_window_height = (int64_t)(client.bottom - client.top);\n");
+    out.push_str(&format!(
+        "int64_t flux__win_column_width = (flux__ui_window_width - INT64_C({}) + INT64_C({gap})) / INT64_C({columns}); int64_t flux__win_row_height = (flux__ui_window_height - INT64_C({}) + INT64_C({gap})) / INT64_C({rows});\n",
+        padding * 2,
+        padding * 2
+    ));
+    for element in &view.elements {
+        let variable = ui_widget_c_name(&element.name);
+        let column_offset = element.column as i64 - 1;
+        let row_offset = element.row as i64 - 1;
+        let column_span = element.column_span as i64;
+        let row_span = element.row_span as i64;
         out.push_str(&format!(
-            "static void flux__win_click_{index}(void) {{ {}(); }}\n",
-            function_c_name(function)
+            "if ({variable} != NULL) {{ int64_t x = INT64_C({padding}) + INT64_C({column_offset}) * flux__win_column_width; int64_t y = INT64_C({padding}) + INT64_C({row_offset}) * flux__win_row_height; int64_t w = flux__win_column_width * INT64_C({column_span}) - INT64_C({gap}); int64_t h = flux__win_row_height * INT64_C({row_span}) - INT64_C({gap}); if (w < INT64_C(40)) w = INT64_C(40); if (h < INT64_C(28)) h = INT64_C(28); MoveWindow({variable}, (int)x, (int)y, (int)w, (int)h, TRUE); }}\n"
         ));
     }
-    for (index, element) in view.elements.iter().enumerate() {
-        if element.kind != "TextInput" {
-            continue;
-        }
-        let Some(action) = view_property(element, "on_change") else {
-            continue;
-        };
-        if action.transition.is_some() {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows TextInput state transitions remain pending; use a named fn(str) -> void callback",
-            ));
-        }
-        let ExprKind::Var(function) = &action.value.kind else {
-            return Err(diag(
-                action.value.span,
-                "bootstrap Windows TextInput.onChange requires a named fn(str) -> void callback",
-            ));
-        };
-        out.push_str(&format!("static void flux__win_change_{index}(HWND control) {{ int length = GetWindowTextLengthA(control); if (length < 0) return; char *text = (char *)malloc((size_t)length + 1); if (text == NULL) return; if (GetWindowTextA(control, text, length + 1) > 0 || length == 0) {}(text); free(text); }}\n", function_c_name(function)));
+    out.push_str("}\n");
+
+    out.push_str("static void flux__win_refresh(int changed_state) { (void)changed_state;\n");
+    for derived in &view.derived {
+        let value = ui_expr_c(&derived.value, view, signatures)?;
+        out.push_str(&format!(
+            "{} = {value};\n",
+            ui_derived_c_name(&derived.name)
+        ));
     }
+    out.push_str("flux__win_refreshing = true;\n");
+    for element in &view.elements {
+        let variable = ui_widget_c_name(&element.name);
+        let text_property = match element.kind.as_str() {
+            "Text" | "Button" => "text",
+            "TextInput" => "text",
+            "Toggle" | "Radio" => "label",
+            _ => unreachable!(),
+        };
+        if let Some(property) = view_property(element, text_property) {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "if ({variable} != NULL) SetWindowTextA({variable}, {value});\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "visible") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "if ({variable} != NULL) ShowWindow({variable}, ({value}) ? SW_SHOW : SW_HIDE);\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "enabled") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "if ({variable} != NULL) EnableWindow({variable}, ({value}) ? TRUE : FALSE);\n"
+            ));
+        }
+        let checked_property = match element.kind.as_str() {
+            "Toggle" => Some("checked"),
+            "Radio" => Some("selected"),
+            _ => None,
+        };
+        if let Some(property_name) = checked_property
+            && let Some(property) = view_property(element, property_name)
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "if ({variable} != NULL) SendMessageA({variable}, BM_SETCHECK, ({value}) ? BST_CHECKED : BST_UNCHECKED, 0);\n"
+            ));
+        }
+    }
+    out.push_str("flux__win_refreshing = false;\n}\n");
+
+    for (index, element) in view.elements.iter().enumerate() {
+        match element.kind.as_str() {
+            "Button" => {
+                let Some(action) = view_property(element, "on_press") else {
+                    continue;
+                };
+                if let Some(transition) = &action.transition {
+                    let next = ui_expr_c(&action.value, view, signatures)?;
+                    let state_index = ui_state_index(view, &transition.state);
+                    out.push_str(&format!(
+                        "static void flux__win_click_{index}(void) {{ {} = {next}; flux__win_refresh({state_index}); }}\n",
+                        ui_state_c_name(&transition.state)
+                    ));
+                } else {
+                    let ExprKind::Var(function) = &action.value.kind else {
+                        return Err(diag(
+                            action.value.span,
+                            "bootstrap Windows Button.onPress requires a named fn() -> void callback or state transition",
+                        ));
+                    };
+                    out.push_str(&format!(
+                        "static void flux__win_click_{index}(void) {{ {}(); flux__win_refresh(-1); }}\n",
+                        function_c_name(function)
+                    ));
+                }
+            }
+            "Toggle" | "Radio" => {
+                let action_name = if element.kind == "Toggle" {
+                    "on_change"
+                } else {
+                    "on_select"
+                };
+                let Some(action) = view_property(element, action_name) else {
+                    continue;
+                };
+                let guard = if element.kind == "Radio" {
+                    "if (SendMessageA(control, BM_GETCHECK, 0, 0) != BST_CHECKED) return; "
+                } else {
+                    ""
+                };
+                if let Some(transition) = &action.transition {
+                    let next = ui_expr_c(&action.value, view, signatures)?;
+                    let state_index = ui_state_index(view, &transition.state);
+                    out.push_str(&format!(
+                        "static void flux__win_check_{index}(HWND control) {{ {guard}{} = {next}; flux__win_refresh({state_index}); }}\n",
+                        ui_state_c_name(&transition.state)
+                    ));
+                } else {
+                    let ExprKind::Var(function) = &action.value.kind else {
+                        return Err(diag(
+                            action.value.span,
+                            "bootstrap Windows Toggle/Radio events require a named fn() -> void callback or state transition",
+                        ));
+                    };
+                    out.push_str(&format!(
+                        "static void flux__win_check_{index}(HWND control) {{ {guard}(void)control; {}(); flux__win_refresh(-1); }}\n",
+                        function_c_name(function)
+                    ));
+                }
+            }
+            "TextInput" => {
+                let Some(action) = view_property(element, "on_change") else {
+                    continue;
+                };
+                let body = if let Some(transition) = &action.transition {
+                    let state_index = ui_state_index(view, &transition.state);
+                    if transition.event_value.is_some() {
+                        format!(
+                            "{}(text); flux__win_refresh({state_index});",
+                            ui_set_state_c_name(&transition.state)
+                        )
+                    } else {
+                        let next = ui_expr_c(&action.value, view, signatures)?;
+                        format!(
+                            "{} = {next}; flux__win_refresh({state_index});",
+                            ui_state_c_name(&transition.state)
+                        )
+                    }
+                } else {
+                    let ExprKind::Var(function) = &action.value.kind else {
+                        return Err(diag(
+                            action.value.span,
+                            "bootstrap Windows TextInput.onChange requires a named fn(str) -> void callback or state transition",
+                        ));
+                    };
+                    format!(
+                        "{}(text); flux__win_refresh(-1);",
+                        function_c_name(function)
+                    )
+                };
+                out.push_str(&format!("static void flux__win_change_{index}(HWND control) {{ int length = GetWindowTextLengthA(control); if (length < 0) return; char *text = (char *)malloc((size_t)length + 1); if (text == NULL) return; if (GetWindowTextA(control, text, length + 1) > 0 || length == 0) {{ {body} }} free(text); }}\n"));
+            }
+            _ => {}
+        }
+    }
+
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_COMMAND: switch (LOWORD(wparam)) {\n");
     for (index, element) in view.elements.iter().enumerate() {
         if element.kind == "Button" && view_property(element, "on_press").is_some() {
@@ -10408,42 +10622,55 @@ fn emit_windows_native_application(
                 "case {}: if (HIWORD(wparam) == BN_CLICKED) flux__win_click_{index}(); return 0;\n",
                 1000 + index
             ));
+        } else if matches!(element.kind.as_str(), "Toggle" | "Radio") {
+            let action_name = if element.kind == "Toggle" {
+                "on_change"
+            } else {
+                "on_select"
+            };
+            if view_property(element, action_name).is_some() {
+                out.push_str(&format!(
+                    "case {}: if (HIWORD(wparam) == BN_CLICKED) flux__win_check_{index}((HWND)lparam); return 0;\n",
+                    1000 + index
+                ));
+            }
         } else if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE && !flux__win_refreshing) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
         }
     }
-    out.push_str("default: break; } break; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
+    out.push_str("default: break; } break; case WM_SIZE: flux__win_layout_controls(hwnd); flux__win_refresh(-2); return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
     out.push_str("static int flux__win_run(void) { HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
-    let gap = i64::from(view.grid.gap.unwrap_or(12));
-    let padding = i64::from(view.grid.padding.unwrap_or(20));
-    let columns = view.grid.columns.len().max(1) as i64;
-    let rows = view.grid.rows.len().max(1) as i64;
+
     for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
-        let x = padding + (element.column as i64 - 1) * ((width - padding * 2 + gap) / columns);
-        let y = padding + (element.row as i64 - 1) * ((height - padding * 2 + gap) / rows);
-        let cell_width =
-            (((width - padding * 2 + gap) / columns) * element.column_span as i64 - gap).max(40);
-        let cell_height =
-            (((height - padding * 2 + gap) / rows) * element.row_span as i64 - gap).max(28);
-        let text = if element.kind == "TextInput" {
-            match view_property(element, "value") {
-                Some(property) => static_expr_str(&property.value, signatures)
-                    .ok_or_else(|| diag(property.value.span, "bootstrap Windows TextInput.value currently requires a compile-time string"))?,
-                None => String::new(),
-            }
-        } else {
-            match view_property(element, "text") {
-                Some(property) => static_expr_str(&property.value, signatures)
-                    .ok_or_else(|| diag(property.value.span, "bootstrap Windows Text/Button.text currently requires a compile-time string"))?,
-                None => element.name.clone(),
-            }
+        let text_property = match element.kind.as_str() {
+            "Text" | "Button" => "text",
+            "TextInput" => "text",
+            "Toggle" | "Radio" => "label",
+            _ => unreachable!(),
         };
+        let text = view_property(element, text_property)
+            .and_then(|property| static_expr_str(&property.value, signatures))
+            .unwrap_or_else(|| {
+                if element.kind == "TextInput" {
+                    String::new()
+                } else {
+                    element.name.clone()
+                }
+            });
         let (class, style) = match element.kind.as_str() {
             "Button" => (
                 "BUTTON",
                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
+            ),
+            "Toggle" => (
+                "BUTTON",
+                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX",
+            ),
+            "Radio" => (
+                "BUTTON",
+                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON",
             ),
             "TextInput" => {
                 let multiline = view_property(element, "multiline")
@@ -10463,13 +10690,19 @@ fn emit_windows_native_application(
             }
             _ => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT"),
         };
-        let id = if matches!(element.kind.as_str(), "Button" | "TextInput") {
+        let id = if matches!(
+            element.kind.as_str(),
+            "Button" | "TextInput" | "Toggle" | "Radio"
+        ) {
             (1000 + index).to_string()
         } else {
             "0".to_string()
         };
-        out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", c_string(&text), x, y, cell_width, cell_height));
+        out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {}, {style}, 0, 0, 40, 28, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", c_string(&text)));
     }
+    out.push_str(
+        "flux__win_layout_controls(flux__windows_active_window); flux__win_refresh(-1);\n",
+    );
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }

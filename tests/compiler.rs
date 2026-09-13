@@ -58,27 +58,46 @@ fn main() -> i64 {
     .expect("safe extern C imports should also lower for Android NDK linking");
     assert!(android.contains("extern int64_t flux_test_double("));
     assert!(android.contains("flux_test_double(INT64_C(21))"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("safe extern C imports should also lower for Windows native linking");
+    assert!(windows.contains("extern int64_t flux_test_double("));
+    assert!(windows.contains("flux_test_double(INT64_C(21))"));
+    assert!(!windows.contains("#include <gtk/gtk.h>"));
+    assert!(!windows.contains("android/native_activity.h"));
 }
 
 #[test]
 fn windows_backend_emits_native_win32_window_controls_and_click_dispatch() {
     let source = r#"
-fn pressed() -> void {
-    print("clicked")
-}
-fn changed(value: str) -> void {
-    print(value)
-}
 view Screen {
+    state active: bool = false
+    state query: str = ""
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto auto
     Text title at 1,1
-        text: "Flux on Windows"
+        text: query
+        visible: active
     TextInput input at 2,1
-        onChange: changed
-    Button action at 3,1
+        text: query
+        enabled: active
+        onChange: query, value => value
+    Toggle toggle at 3,1
+        label: "Enabled"
+        checked: active
+        onChange: active => !active
+    Radio radio at 4,1
+        label: "Selected"
+        selected: active
+        onSelect: active => true
+    Button action at 5,1
         text: "Press"
-        onPress: pressed
+        onPress: active => !active
 }
 app Screen(title: "Native Flux", width: 640, height: 480)
 "#;
@@ -97,10 +116,29 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("CreateWindowExA(0, \"STATIC\""));
     assert!(generated.contains("CreateWindowExA(0, \"EDIT\""));
     assert!(generated.contains("CreateWindowExA(0, \"BUTTON\""));
+    assert!(generated.contains("BS_AUTOCHECKBOX"));
+    assert!(generated.contains("BS_AUTORADIOBUTTON"));
+    assert!(generated.contains("static bool flux__ui_state_active = false;"));
+    assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
+    assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(generated.contains("SetWindowTextA(flux__ui_title, flux__ui_state_query)"));
+    assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
+    assert!(
+        generated
+            .contains("ShowWindow(flux__ui_title, (flux__ui_state_active) ? SW_SHOW : SW_HIDE)")
+    );
+    assert!(
+        generated.contains("EnableWindow(flux__ui_input, (flux__ui_state_active) ? TRUE : FALSE)")
+    );
     assert!(generated.contains("case WM_COMMAND"));
-    assert!(generated.contains("EN_CHANGE"));
+    assert!(generated.contains("case WM_SIZE"));
+    assert!(generated.contains("GetClientRect(hwnd, &client)"));
+    assert!(generated.contains("MoveWindow(flux__ui_title"));
+    assert!(generated.contains("EN_CHANGE && !flux__win_refreshing"));
     assert!(generated.contains("flux__win_change_1"));
-    assert!(generated.contains("flux__win_click_2"));
+    assert!(generated.contains("flux__win_check_2"));
+    assert!(generated.contains("flux__win_check_3"));
+    assert!(generated.contains("flux__win_click_4"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
 }
