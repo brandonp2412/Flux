@@ -39167,6 +39167,107 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_awaited_for_range_bounds_suspend_without_blocking_worker() {
+    let source = r#"
+async fn bound(value: i64) -> i64 {
+    return value
+}
+
+async fn add(value: i64, amount: i64) -> i64 {
+    return value + amount
+}
+
+async fn awaitedStart() -> i64 {
+    var total: i64 = 0
+    for index in await bound(1)..4:
+        total = total + index
+    return total
+}
+
+async fn awaitedEnd() -> i64 {
+    var total: i64 = 0
+    for index in 1..await bound(4):
+        total = total + index
+    return total
+}
+
+async fn awaitedBoth() -> i64 {
+    var total: i64 = 0
+    for index in await bound(2)..=await bound(4):
+        total = total + index
+    return total
+}
+
+async fn awaitedBoundsAndBody() -> i64 {
+    var total: i64 = 0
+    for index in await bound(1)..await bound(4):
+        total = await add(total, index)
+    return total
+}
+
+async fn main() -> i64 {
+    let first: i64 = await awaitedStart()
+    let second: i64 = await awaitedEnd()
+    let third: i64 = await awaitedBoth()
+    let fourth: i64 = await awaitedBoundsAndBody()
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source).expect("awaited range bounds should typecheck");
+    let generated = compile_to_c(source)
+        .expect("awaited range bounds should lower through continuation states");
+    for name in [
+        "awaitedStart",
+        "awaitedEnd",
+        "awaitedBoth",
+        "awaitedBoundsAndBody",
+    ] {
+        assert!(generated.contains(&format!("flux__async_resume_{name}")));
+        assert!(!generated.contains(&format!("flux__async_body_{name}(")));
+    }
+    assert!(generated.contains(
+        "flux__async_start_cont_bound(INT64_C(1), flux__async_resume_awaitedStart, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_bound(INT64_C(4), flux__async_resume_awaitedEnd, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_bound(INT64_C(2), flux__async_resume_awaitedBoth, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_add(flux__local_total, flux__local_index, flux__async_resume_awaitedBoundsAndBody, flux__task)"
+    ));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-for-range-bounds-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async range-bound fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("async range-bound source should be writable");
+    let binary = root.join("async-for-range-bounds");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async range-bound fixture should build");
+    assert!(
+        built.status.success(),
+        "async range-bound build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async range-bound fixture should run");
+    assert_eq!(status.code(), Some(27));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_inside_enum_match_suspends_without_blocking_worker() {
     let source = r#"
 enum Choice {

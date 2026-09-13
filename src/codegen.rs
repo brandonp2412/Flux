@@ -16132,6 +16132,8 @@ struct AsyncWhileAwaitPlan {
 #[derive(Clone)]
 struct AsyncForRangeAwaitPlan {
     statement_index: usize,
+    start_await: bool,
+    end_await: bool,
     body_await_indices: Vec<usize>,
 }
 
@@ -16510,8 +16512,13 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     else {
         return None;
     };
-    if expr_contains_await(start) || expr_contains_await(end) {
-        return None;
+    let start_await = expr_contains_await(start);
+    if start_await {
+        direct_await_call(start)?;
+    }
+    let end_await = expr_contains_await(end);
+    if end_await {
+        direct_await_call(end)?;
     }
     let body_await_indices = block_branch_await_indices(body, true)?;
     if body_await_indices
@@ -16521,11 +16528,13 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     {
         return None;
     }
-    if body_await_indices.is_empty() {
+    if !start_await && !end_await && body_await_indices.is_empty() {
         None
     } else {
         Some(AsyncForRangeAwaitPlan {
             statement_index,
+            start_await,
+            end_await,
             body_await_indices,
         })
     }
@@ -22230,7 +22239,8 @@ fn emit_async_for_range_iteration(
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(HashMap<String, Type>, HashSet<String>), Diagnostic> {
-    let first_await = for_plan.body_await_indices[0];
+    let first_body_state = 1 + usize::from(for_plan.start_await) + usize::from(for_plan.end_await);
+    let continue_state = first_body_state + for_plan.body_await_indices.len();
     let pad = "            ";
     let c_name = local_c_name(name);
     if advance {
@@ -22249,33 +22259,10 @@ fn emit_async_for_range_iteration(
     let mut body_env = outer_env.clone();
     body_env.insert(name.to_string(), Type::I64);
     let mut body_mutable = outer_mutable.clone();
-    emit_block(
-        out,
-        &body[..first_await],
-        4,
-        &mut body_env,
-        &mut body_mutable,
-        signatures,
-        temp_counter,
-        context,
-    )?;
-    let awaited_stmt = &body[first_await];
-    emit_source_line(out, awaited_stmt.span, context.source_paths);
-    let conditional_suspend = emit_async_branch_suspend(
-        out,
-        "                ",
-        awaited_stmt,
-        1,
-        function,
-        plan,
-        &body_env,
-        &body_mutable,
-        signatures,
-    )?;
-    if conditional_suspend {
+    if let Some(first_await) = for_plan.body_await_indices.first().copied() {
         emit_block(
             out,
-            &body[first_await + 1..],
+            &body[..first_await],
             4,
             &mut body_env,
             &mut body_mutable,
@@ -22283,14 +22270,60 @@ fn emit_async_for_range_iteration(
             temp_counter,
             context,
         )?;
-        let continue_state = for_plan.body_await_indices.len() + 1;
+        let awaited_stmt = &body[first_await];
+        emit_source_line(out, awaited_stmt.span, context.source_paths);
+        let conditional_suspend = emit_async_branch_suspend(
+            out,
+            "                ",
+            awaited_stmt,
+            first_body_state,
+            function,
+            plan,
+            &body_env,
+            &body_mutable,
+            signatures,
+        )?;
+        if conditional_suspend {
+            emit_block(
+                out,
+                &body[first_await + 1..],
+                4,
+                &mut body_env,
+                &mut body_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
+            emit_async_save_locals(
+                out,
+                "                ",
+                &plan.locals,
+                &body_env,
+                signatures,
+                awaited_stmt.span,
+            )?;
+            out.push_str(&format!(
+                "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+            ));
+        }
+    } else {
+        emit_block(
+            out,
+            body,
+            4,
+            &mut body_env,
+            &mut body_mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
         emit_async_save_locals(
             out,
             "                ",
             &plan.locals,
             &body_env,
             signatures,
-            awaited_stmt.span,
+            function.body[for_plan.statement_index].span,
         )?;
         out.push_str(&format!(
             "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
@@ -22330,11 +22363,14 @@ fn emit_async_for_range_resume_states(
     let mut state_context = context;
     state_context.async_state_machine = true;
     let await_indices = &for_plan.body_await_indices;
-    let mut previous_await = await_indices[0];
+    let Some(mut previous_await) = await_indices.first().copied() else {
+        return Ok(());
+    };
     let mut segment_start = previous_await + 1;
+    let first_body_state = 1 + usize::from(for_plan.start_await) + usize::from(for_plan.end_await);
 
     for offset in 0..await_indices.len() {
-        let state = offset + 1;
+        let state = first_body_state + offset;
         out.push_str(&format!("        case {state}: {{\n"));
         for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
@@ -22438,7 +22474,8 @@ fn emit_async_for_range_continuation_function(
         ));
     };
     let task_name = async_task_c_name(&function.name);
-    let continue_state = for_plan.body_await_indices.len() + 1;
+    let first_body_state = 1 + usize::from(for_plan.start_await) + usize::from(for_plan.end_await);
+    let continue_state = first_body_state + for_plan.body_await_indices.len();
     let break_state = continue_state + 1;
     let mut state_context = context;
     state_context.async_state_machine = true;
@@ -22483,35 +22520,162 @@ fn emit_async_for_range_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let start = emit_expr(start, &outer_env, signatures)?;
-    let end = emit_expr(end, &outer_env, signatures)?;
-    out.push_str(&format!(
-        "{pad}int64_t {} = {};\n",
-        local_c_name(name),
-        start.code
-    ));
-    out.push_str(&format!(
-        "{pad}int64_t flux__async_range_end = {};\n",
-        end.code
-    ));
-    out.push_str("            flux__task->saved_flux__async_range_end = flux__async_range_end;\n");
-    let (body_env, body_mutable) = emit_async_for_range_iteration(
-        out,
-        function,
-        signatures,
-        plan,
-        for_plan,
-        name,
-        body,
-        *inclusive,
-        "flux__async_range_end",
-        false,
-        &outer_env,
-        &outer_mutable,
-        temp_counter,
-        loop_context,
-    )?;
+
+    let mut range_env = outer_env.clone();
+    range_env.insert(name.clone(), Type::I64);
+    let mut initial_body_state = None;
+    if for_plan.start_await {
+        emit_source_line(out, start.span, context.source_paths);
+        emit_async_suspend_expr(
+            out, pad, start, start.span, 1, function, plan, &outer_env, signatures,
+        )?;
+    } else {
+        let start_value = emit_expr(start, &outer_env, signatures)?;
+        out.push_str(&format!(
+            "{pad}int64_t {} = {};\n",
+            local_c_name(name),
+            start_value.code
+        ));
+        if for_plan.end_await {
+            emit_source_line(out, end.span, context.source_paths);
+            emit_async_suspend_expr(
+                out, pad, end, end.span, 1, function, plan, &range_env, signatures,
+            )?;
+        } else {
+            let end_value = emit_expr(end, &outer_env, signatures)?;
+            out.push_str(&format!(
+                "{pad}int64_t flux__async_range_end = {};\n",
+                end_value.code
+            ));
+            out.push_str(
+                "            flux__task->saved_flux__async_range_end = flux__async_range_end;\n",
+            );
+            initial_body_state = Some(emit_async_for_range_iteration(
+                out,
+                function,
+                signatures,
+                plan,
+                for_plan,
+                name,
+                body,
+                *inclusive,
+                "flux__async_range_end",
+                false,
+                &outer_env,
+                &outer_mutable,
+                temp_counter,
+                loop_context,
+            )?);
+        }
+    }
     out.push_str("        }\n");
+
+    if for_plan.start_await {
+        out.push_str("        case 1: {\n");
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, start.span)?;
+        let (completed_start, completed_ty) =
+            emit_async_completed_single_await(out, pad, start, function, signatures, temp_counter)?;
+        if completed_ty != Type::I64 {
+            return Err(diag(
+                start.span,
+                "async range start changed type after type checking",
+            ));
+        }
+        out.push_str(&format!(
+            "{pad}int64_t {} = {completed_start};\n",
+            local_c_name(name)
+        ));
+        if for_plan.end_await {
+            emit_source_line(out, end.span, context.source_paths);
+            emit_async_suspend_expr(
+                out, pad, end, end.span, 2, function, plan, &range_env, signatures,
+            )?;
+        } else {
+            let end_value = emit_expr(end, &outer_env, signatures)?;
+            out.push_str(&format!(
+                "{pad}int64_t flux__async_range_end = {};\n",
+                end_value.code
+            ));
+            out.push_str(
+                "            flux__task->saved_flux__async_range_end = flux__async_range_end;\n",
+            );
+            initial_body_state = Some(emit_async_for_range_iteration(
+                out,
+                function,
+                signatures,
+                plan,
+                for_plan,
+                name,
+                body,
+                *inclusive,
+                "flux__async_range_end",
+                false,
+                &outer_env,
+                &outer_mutable,
+                temp_counter,
+                loop_context,
+            )?);
+        }
+        out.push_str("        }\n");
+    }
+
+    if for_plan.end_await {
+        let end_state = 1 + usize::from(for_plan.start_await);
+        out.push_str(&format!("        case {end_state}: {{\n"));
+        for (index, param) in function.params.iter().enumerate() {
+            out.push_str(&format!(
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
+            ));
+        }
+        emit_async_restore_locals(out, pad, &plan.locals, &range_env, signatures, end.span)?;
+        let (completed_end, completed_ty) =
+            emit_async_completed_single_await(out, pad, end, function, signatures, temp_counter)?;
+        if completed_ty != Type::I64 {
+            return Err(diag(
+                end.span,
+                "async range end changed type after type checking",
+            ));
+        }
+        out.push_str(&format!(
+            "{pad}int64_t flux__async_range_end = {completed_end};\n"
+        ));
+        out.push_str(
+            "            flux__task->saved_flux__async_range_end = flux__async_range_end;\n",
+        );
+        initial_body_state = Some(emit_async_for_range_iteration(
+            out,
+            function,
+            signatures,
+            plan,
+            for_plan,
+            name,
+            body,
+            *inclusive,
+            "flux__async_range_end",
+            false,
+            &outer_env,
+            &outer_mutable,
+            temp_counter,
+            loop_context,
+        )?);
+        out.push_str("        }\n");
+    }
+
+    let (body_env, body_mutable) = initial_body_state.ok_or_else(|| {
+        diag(
+            function.body[for_plan.statement_index].span,
+            "async range continuation failed to initialize loop state",
+        )
+    })?;
 
     emit_async_for_range_resume_states(
         out,
