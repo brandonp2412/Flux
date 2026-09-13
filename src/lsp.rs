@@ -1393,6 +1393,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "serveWorker",
+            3,
+            "fn http.serveWorker(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "receiveResponseHeadWithHeaders",
             3,
             "fn http.receiveResponseHeadWithHeaders(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",

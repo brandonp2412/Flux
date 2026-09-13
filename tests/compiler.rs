@@ -2715,6 +2715,121 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_serve_worker_is_structured_cancellable_and_reports_failures() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn main() -> i64 {
+    let (workerHandle, startError) = http.serveWorker(1, 4096, 1024, request, header, body)
+    print(startError)
+    print(worker.cancel(workerHandle))
+    print(worker.join(workerHandle))
+    return 0
+}
+"#;
+    check_source(source).expect("structured HTTP request worker should typecheck");
+    let generated = compile_to_c(source).expect("structured HTTP request worker should lower");
+    assert!(generated.contains("flux__net_http_serve_worker("));
+    assert!(generated.contains("flux__worker_start_with_cancel_fd("));
+    assert!(generated.contains("flux__worker_interrupt_cancel_fd(state->cancel_fd)"));
+    assert!(generated.contains("flux__worker_fail_current(error)"));
+
+    let invalid_limit = check_source(
+        "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    let (workerHandle, failure) = http.serveWorker(1, 0, 1024, request, header, body)\n    print(workerHandle)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("serveWorker must reject an invalid constant head limit");
+    assert!(
+        invalid_limit
+            .message
+            .contains("http.serveWorker maxHeadBytes must be between 1 and 65536")
+    );
+
+    let probe = TcpListener::bind("127.0.0.1:0").expect("HTTP worker port should allocate");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let root = std::env::temp_dir().join(format!("flux-http-serve-worker-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP worker fixture should be writable");
+    let source_path = root.join("serve_worker.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {{\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, _body: str) -> void {{\n}}\nfn main() -> i64 {{\n    let (listener, listenError) = net.tcpListen(\"127.0.0.1\", {port}, 8)\n    print(listenError)\n    let (cancelledWorker, firstStartError) = http.serveWorker(listener, 4096, 1024, request, header, body)\n    print(firstStartError)\n    print(worker.cancel(cancelledWorker))\n    print(worker.join(cancelledWorker))\n    let (failedWorker, secondStartError) = http.serveWorker(listener, 4096, 1024, request, header, body)\n    print(secondStartError)\n    print(worker.join(failedWorker))\n    print(net.close(listener))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP worker Flux source should be writable");
+    let binary = root.join("serve_worker");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP worker Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP worker fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP worker Flux binary should start");
+
+    let mut first = (0..100)
+        .find_map(
+            |_| match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => Some(stream),
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(5));
+                    None
+                }
+            },
+        )
+        .expect("first HTTP worker connection should be accepted");
+    first
+        .write_all(b"GET /slow HTTP/1.1\r\n")
+        .expect("partial request should be writable");
+    let mut closed = [0u8; 1];
+    assert_eq!(
+        first
+            .read(&mut closed)
+            .expect("cancelled request socket should close"),
+        0
+    );
+
+    let mut second = (0..100)
+        .find_map(
+            |_| match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => Some(stream),
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(5));
+                    None
+                }
+            },
+        )
+        .expect("second HTTP worker connection should be accepted");
+    second
+        .write_all(b"BAD\r\n\r\n")
+        .expect("malformed request should be writable");
+    drop(second);
+
+    let output = child
+        .wait_with_output()
+        .expect("HTTP worker Flux binary should finish");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\nnil\nnil\nnil\nnil\nmalformed HTTP request line\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn http_chunked_text_request_body_is_decoded_bounded_and_does_not_overread() {
     let listener =
         TcpListener::bind("127.0.0.1:0").expect("HTTP chunked request listener should bind");

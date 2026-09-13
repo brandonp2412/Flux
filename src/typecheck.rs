@@ -7795,11 +7795,12 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "serveOnce" => {
+            "serveOnce" | "serveWorker" => {
+                let operation = format!("http.{name}");
                 if args.len() != 6 {
                     return Err(diag(
                         span,
-                        &format!("http.serveOnce expects 6 arguments, got {}", args.len()),
+                        &format!("{operation} expects 6 arguments, got {}", args.len()),
                     ));
                 }
                 let listener = type_of_expr(&args[0], env, signatures)?;
@@ -7807,7 +7808,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &listener,
-                    "http.serveOnce listener",
+                    &format!("{operation} listener"),
                 )?;
                 for (index, label, minimum) in [
                     (1usize, "maxHeadBytes", 1i64),
@@ -7818,7 +7819,7 @@ fn check_qualified_call(
                         args[index].span,
                         &Type::I64,
                         &limit,
-                        &format!("http.serveOnce {label}"),
+                        &format!("{operation} {label}"),
                     )?;
                     if matches!(
                         constant_primitive_value(&args[index], signatures),
@@ -7826,7 +7827,7 @@ fn check_qualified_call(
                     ) {
                         return Err(diag(
                             args[index].span,
-                            &format!("http.serveOnce {label} must be between {minimum} and 65536"),
+                            &format!("{operation} {label} must be between {minimum} and 65536"),
                         ));
                     }
                 }
@@ -7840,7 +7841,7 @@ fn check_qualified_call(
                     args[3].span,
                     &expected_request_callback,
                     &request_callback,
-                    "http.serveOnce requestCallback",
+                    &format!("{operation} requestCallback"),
                 )?;
                 let header_callback =
                     signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
@@ -7852,7 +7853,7 @@ fn check_qualified_call(
                     args[4].span,
                     &expected_header_callback,
                     &header_callback,
-                    "http.serveOnce headerCallback",
+                    &format!("{operation} headerCallback"),
                 )?;
                 let body_callback =
                     signatures.canonical_type(&type_of_expr(&args[5], env, signatures)?);
@@ -7864,9 +7865,13 @@ fn check_qualified_call(
                     args[5].span,
                     &expected_body_callback,
                     &body_callback,
-                    "http.serveOnce bodyCallback",
+                    &format!("{operation} bodyCallback"),
                 )?;
-                return Ok(vec![Type::Error]);
+                return Ok(if name == "serveWorker" {
+                    vec![Type::I64, Type::Error]
+                } else {
+                    vec![Type::Error]
+                });
             }
             "receiveResponseHeadWithHeaders" => {
                 if args.len() != 4 {
