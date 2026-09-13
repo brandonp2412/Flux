@@ -8126,6 +8126,26 @@ fn build_native_instrumented(
     )
 }
 
+fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
+    let mut libraries = Vec::new();
+    if c_source.contains("CreateWindowExA(")
+        || c_source.contains("OpenClipboard(")
+        || c_source.contains("SetMenu(")
+    {
+        libraries.push("-luser32");
+    }
+    if c_source.contains("GetOpenFileNameW(") || c_source.contains("GetSaveFileNameW(") {
+        libraries.push("-lcomdlg32");
+    }
+    if c_source.contains("Shell_NotifyIconW(") || c_source.contains("SHBrowseForFolderW(") {
+        libraries.push("-lshell32");
+    }
+    if c_source.contains("CoTaskMemFree(") {
+        libraries.push("-lole32");
+    }
+    libraries
+}
+
 fn build_native_configured(
     c_source: &str,
     output: &Path,
@@ -8172,6 +8192,13 @@ fn build_native_configured(
     native_cflags.extend(sqlite_cflags);
     let mut native_libs = gtk_libs;
     native_libs.extend(sqlite_libs);
+    if native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows {
+        native_libs.extend(
+            windows_native_system_libraries(c_source)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
     if let Some(native_package) = native_package {
         native_libs.extend(
             native_package
@@ -8512,7 +8539,7 @@ mod tests {
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
-        write_native_cache_metadata,
+        windows_native_system_libraries, write_native_cache_metadata,
     };
 
     #[test]
@@ -9150,6 +9177,22 @@ app OverlayDemo(title: "Overlay")
         assert!(release.contains(&"-DNDEBUG"));
         assert!(!release.contains(&"-g"));
         assert!(!release.contains(&"-DFLUX_DEBUG_METADATA=1"));
+    }
+
+    #[test]
+    fn windows_native_system_libraries_follow_reachable_platform_features() {
+        let basic = windows_native_system_libraries("CreateWindowExA(");
+        assert_eq!(basic, vec!["-luser32"]);
+
+        let integrated = windows_native_system_libraries(
+            "CreateWindowExA( OpenClipboard( GetOpenFileNameW( GetSaveFileNameW( Shell_NotifyIconW( SHBrowseForFolderW( CoTaskMemFree(",
+        );
+        assert_eq!(
+            integrated,
+            vec!["-luser32", "-lcomdlg32", "-lshell32", "-lole32"]
+        );
+
+        assert!(windows_native_system_libraries("int main(void) { return 0; }").is_empty());
     }
 
     #[test]

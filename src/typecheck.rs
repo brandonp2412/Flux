@@ -10589,7 +10589,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "open" | "openFile" | "save" | "saveFile" | "selectDirectory" => {
+            "open" | "openFile" | "save" | "saveFile" | "folder" | "selectDirectory" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

@@ -1342,7 +1342,7 @@ pub fn emit_c_for_target_with_source_metadata(
     {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "menu.* and tray.* APIs currently require the Linux desktop target",
+            "menu.* and tray.* APIs currently require a Linux or Windows desktop target",
         ));
     }
     if runtime_usage.contains("flux__frame_") && program.application.is_none() {
@@ -1366,7 +1366,7 @@ pub fn emit_c_for_target_with_source_metadata(
     if target == NativeTarget::Android && runtime_usage.contains("flux__file_dialog_") {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "fileDialog.* APIs currently require the Linux desktop target",
+            "fileDialog.* APIs currently require a Linux or Windows desktop target",
         ));
     }
     if runtime_usage.contains("flux__focus_") && program.application.is_none() {
@@ -1784,7 +1784,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <gtk/gtk.h>\n");
     }
     if uses_windows {
-        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n");
+        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
@@ -1836,6 +1836,9 @@ fn emit_runtime_prelude(
     let uses_file_dialog = uses_file_dialog_open_file
         || uses_file_dialog_save_file
         || uses_file_dialog_select_directory;
+    if uses_windows {
+        out.push_str("static HWND flux__windows_active_window = NULL;\n");
+    }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
     let uses_focus_previous = runtime_usage.contains("flux__focus_previous(");
     let uses_focus_next_in = runtime_usage.contains("flux__focus_next_in(");
@@ -3055,6 +3058,59 @@ fn emit_runtime_prelude(
         }
         if uses_file_dialog_select_directory {
             out.push_str("static inline void flux__file_dialog_select_directory(void (*callback)(const char *)) { flux__file_dialog_show(GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, \"Select Folder\", \"_Select\", callback); }\n");
+        }
+    }
+    if uses_windows
+        && (uses_clipboard_set_text
+            || uses_clipboard_read_text
+            || uses_menu_show
+            || uses_tray_show
+            || uses_file_dialog)
+    {
+        out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
+        out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
+    }
+    if uses_clipboard_set_text && uses_windows {
+        out.push_str("static void flux__clipboard_set_text(const char *text) { wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) return; SIZE_T bytes = (wcslen(wide) + 1) * sizeof(wchar_t); HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes); if (memory == NULL) { free(wide); return; } wchar_t *target = (wchar_t *)GlobalLock(memory); if (target == NULL) { GlobalFree(memory); free(wide); return; } memcpy(target, wide, bytes); GlobalUnlock(memory); free(wide); if (!OpenClipboard(flux__windows_active_window)) { GlobalFree(memory); return; } if (!EmptyClipboard() || SetClipboardData(CF_UNICODETEXT, memory) == NULL) GlobalFree(memory); CloseClipboard(); }\n");
+    }
+    if uses_clipboard_read_text && uses_windows {
+        out.push_str("static void flux__clipboard_read_text(void (*callback)(const char *)) { if (callback == NULL || !OpenClipboard(flux__windows_active_window)) return; HANDLE memory = GetClipboardData(CF_UNICODETEXT); if (memory != NULL) { const wchar_t *wide = (const wchar_t *)GlobalLock(memory); if (wide != NULL) { char *utf8 = flux__windows_wide_to_utf8(wide); GlobalUnlock(memory); if (utf8 != NULL) { callback(utf8); free(utf8); } } } CloseClipboard(); }\n");
+    }
+    if uses_windows && (uses_menu_show || uses_tray_show) {
+        out.push_str("static WNDPROC flux__windows_runtime_previous_proc = NULL;\n");
+        if uses_menu_show {
+            out.push_str("static void (*flux__windows_menu_callback)(int64_t) = NULL; static UINT flux__windows_menu_count = 0; enum { FLUX_WINDOWS_MENU_BASE = 0x7000 };\n");
+        }
+        if uses_tray_show {
+            out.push_str("static void (*flux__windows_tray_callback)(void) = NULL; static NOTIFYICONDATAW flux__windows_tray_data = {0}; static HICON flux__windows_tray_icon = NULL; static bool flux__windows_tray_icon_owned = false; static bool flux__windows_tray_added = false; enum { FLUX_WINDOWS_TRAY_MESSAGE = WM_APP + 73 };\n");
+        }
+        out.push_str("static LRESULT CALLBACK flux__windows_runtime_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {\n");
+        if uses_menu_show {
+            out.push_str("    if (message == WM_COMMAND) { UINT command = LOWORD(wparam); if (command >= FLUX_WINDOWS_MENU_BASE && command < FLUX_WINDOWS_MENU_BASE + flux__windows_menu_count && flux__windows_menu_callback != NULL) { flux__windows_menu_callback((int64_t)(command - FLUX_WINDOWS_MENU_BASE)); return 0; } }\n");
+        }
+        if uses_tray_show {
+            out.push_str("    if (message == FLUX_WINDOWS_TRAY_MESSAGE && flux__windows_tray_callback != NULL && (lparam == WM_LBUTTONUP || lparam == WM_LBUTTONDBLCLK || lparam == WM_RBUTTONUP)) { flux__windows_tray_callback(); return 0; }\n");
+            out.push_str("    if (message == WM_DESTROY && flux__windows_tray_added) { Shell_NotifyIconW(NIM_DELETE, &flux__windows_tray_data); flux__windows_tray_added = false; if (flux__windows_tray_icon_owned && flux__windows_tray_icon != NULL) DestroyIcon(flux__windows_tray_icon); flux__windows_tray_icon = NULL; flux__windows_tray_icon_owned = false; }\n");
+        }
+        out.push_str("    return flux__windows_runtime_previous_proc == NULL ? DefWindowProcW(hwnd, message, wparam, lparam) : CallWindowProcW(flux__windows_runtime_previous_proc, hwnd, message, wparam, lparam);\n}\n");
+        out.push_str("static bool flux__windows_ensure_runtime_proc(void) { if (flux__windows_active_window == NULL) return false; if (flux__windows_runtime_previous_proc != NULL) return true; SetLastError(0); LONG_PTR previous = SetWindowLongPtrW(flux__windows_active_window, GWLP_WNDPROC, (LONG_PTR)flux__windows_runtime_proc); if (previous == 0 && GetLastError() != 0) return false; flux__windows_runtime_previous_proc = (WNDPROC)previous; return true; }\n");
+    }
+    if uses_menu_show && uses_windows {
+        out.push_str("static void flux__menu_show(const char *title, const char **items, int64_t item_count, void (*callback)(int64_t)) { if (title == NULL || items == NULL || callback == NULL || item_count <= 0 || item_count > 4096 || !flux__windows_ensure_runtime_proc()) return; HMENU bar = CreateMenu(); HMENU popup = CreatePopupMenu(); wchar_t *wide_title = flux__windows_utf8_to_wide(title); if (bar == NULL || popup == NULL || wide_title == NULL) { if (bar != NULL) DestroyMenu(bar); if (popup != NULL) DestroyMenu(popup); free(wide_title); return; } bool ok = true; for (int64_t index = 0; index < item_count; ++index) { wchar_t *label = flux__windows_utf8_to_wide(items[index] == NULL ? \"\" : items[index]); if (label == NULL || !AppendMenuW(popup, MF_STRING, (UINT_PTR)(FLUX_WINDOWS_MENU_BASE + index), label)) ok = false; free(label); if (!ok) break; } if (ok) ok = AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, wide_title) != 0; free(wide_title); if (!ok) { DestroyMenu(popup); DestroyMenu(bar); return; } HMENU previous = GetMenu(flux__windows_active_window); if (!SetMenu(flux__windows_active_window, bar)) { DestroyMenu(bar); return; } if (previous != NULL) DestroyMenu(previous); flux__windows_menu_callback = callback; flux__windows_menu_count = (UINT)item_count; DrawMenuBar(flux__windows_active_window); }\n");
+    }
+    if uses_tray_show && uses_windows {
+        out.push_str("static void flux__tray_show(const char *title, const char *icon_name, void (*callback)(void)) { if (title == NULL || icon_name == NULL || callback == NULL || !flux__windows_ensure_runtime_proc()) return; wchar_t *wide_title = flux__windows_utf8_to_wide(title); wchar_t *wide_icon = flux__windows_utf8_to_wide(icon_name); if (wide_title == NULL || wide_icon == NULL) { free(wide_title); free(wide_icon); return; } HICON icon = NULL; bool owns_icon = false; if (wide_icon[0] != L'\\0') { icon = (HICON)LoadImageW(NULL, wide_icon, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE); owns_icon = icon != NULL; } if (icon == NULL) icon = LoadIconW(NULL, IDI_APPLICATION); memset(&flux__windows_tray_data, 0, sizeof(flux__windows_tray_data)); flux__windows_tray_data.cbSize = sizeof(flux__windows_tray_data); flux__windows_tray_data.hWnd = flux__windows_active_window; flux__windows_tray_data.uID = 1; flux__windows_tray_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; flux__windows_tray_data.uCallbackMessage = FLUX_WINDOWS_TRAY_MESSAGE; flux__windows_tray_data.hIcon = icon; lstrcpynW(flux__windows_tray_data.szTip, wide_title, (int)(sizeof(flux__windows_tray_data.szTip) / sizeof(flux__windows_tray_data.szTip[0]))); bool added = icon != NULL && Shell_NotifyIconW(flux__windows_tray_added ? NIM_MODIFY : NIM_ADD, &flux__windows_tray_data) != 0; if (added) { if (flux__windows_tray_icon_owned && flux__windows_tray_icon != NULL && flux__windows_tray_icon != icon) DestroyIcon(flux__windows_tray_icon); flux__windows_tray_icon = icon; flux__windows_tray_icon_owned = owns_icon; flux__windows_tray_added = true; flux__windows_tray_callback = callback; } else if (owns_icon && icon != NULL) { DestroyIcon(icon); } free(wide_title); free(wide_icon); }\n");
+    }
+    if uses_file_dialog && uses_windows {
+        out.push_str("static void flux__windows_file_dialog_callback_path(const wchar_t *path, void (*callback)(const char *)) { if (path == NULL || callback == NULL) return; char *utf8 = flux__windows_wide_to_utf8(path); if (utf8 != NULL) { callback(utf8); free(utf8); } }\n");
+        if uses_file_dialog_open_file {
+            out.push_str("static void flux__file_dialog_open_file(void (*callback)(const char *)) { if (callback == NULL) return; wchar_t path[32768] = L\"\"; OPENFILENAMEW dialog = {0}; dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = flux__windows_active_window; dialog.lpstrFile = path; dialog.nMaxFile = (DWORD)(sizeof(path) / sizeof(path[0])); dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (GetOpenFileNameW(&dialog)) flux__windows_file_dialog_callback_path(path, callback); }\n");
+        }
+        if uses_file_dialog_save_file {
+            out.push_str("static void flux__file_dialog_save_file(void (*callback)(const char *)) { if (callback == NULL) return; wchar_t path[32768] = L\"\"; OPENFILENAMEW dialog = {0}; dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = flux__windows_active_window; dialog.lpstrFile = path; dialog.nMaxFile = (DWORD)(sizeof(path) / sizeof(path[0])); dialog.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (GetSaveFileNameW(&dialog)) flux__windows_file_dialog_callback_path(path, callback); }\n");
+        }
+        if uses_file_dialog_select_directory {
+            out.push_str("static void flux__file_dialog_select_directory(void (*callback)(const char *)) { if (callback == NULL) return; BROWSEINFOW browse = {0}; browse.hwndOwner = flux__windows_active_window; browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE; PIDLIST_ABSOLUTE selected = SHBrowseForFolderW(&browse); if (selected == NULL) return; wchar_t path[MAX_PATH]; if (SHGetPathFromIDListW(selected, path)) flux__windows_file_dialog_callback_path(path, callback); CoTaskMemFree(selected); }\n");
         }
     }
     if uses_android_set_clipboard_text {
@@ -10225,7 +10281,6 @@ fn emit_windows_native_application(
         .unwrap_or(i64::from(bootstrap_height));
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
-    out.push_str("static HWND flux__win_window = NULL;\n");
     for element in &view.elements {
         out.push_str(&format!(
             "static HWND {} = NULL;\n",
@@ -10288,9 +10343,9 @@ fn emit_windows_native_application(
             out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
         }
     }
-    out.push_str("default: break; } break; case WM_DESTROY: PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
+    out.push_str("default: break; } break; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
     out.push_str("static int flux__win_run(void) { HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
-    out.push_str(&format!("flux__win_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__win_window == NULL) return 1;\n", c_string(&title), width, height));
+    out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     let gap = i64::from(view.grid.gap.unwrap_or(12));
     let padding = i64::from(view.grid.padding.unwrap_or(20));
     let columns = view.grid.columns.len().max(1) as i64;
@@ -10344,17 +10399,13 @@ fn emit_windows_native_application(
         } else {
             "0".to_string()
         };
-        out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {}, {style}, {}, {}, {}, {}, flux__win_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", c_string(&text), x, y, cell_width, cell_height));
+        out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", c_string(&text), x, y, cell_width, cell_height));
     }
-    out.push_str("ShowWindow(flux__win_window, SW_SHOW); UpdateWindow(flux__win_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } return result < 0 ? 1 : (int)message.wParam; }\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
-        out.push_str(&format!(
-            "int main(void) {{ {}(); return flux__win_run(); }}\n",
-            function_c_name(function)
-        ));
-    } else {
-        out.push_str("int main(void) { return flux__win_run(); }\n");
+        out.push_str(&format!("{}();\n", function_c_name(function)));
     }
+    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } return result < 0 ? 1 : (int)message.wParam; }\n");
+    out.push_str("int main(void) { return flux__win_run(); }\n");
     Ok(())
 }
 
@@ -31412,7 +31463,7 @@ fn emit_qualified_call(
         let helper = match name {
             "open" | "openFile" => "flux__file_dialog_open_file",
             "save" | "saveFile" => "flux__file_dialog_save_file",
-            "selectDirectory" => "flux__file_dialog_select_directory",
+            "folder" | "selectDirectory" => "flux__file_dialog_select_directory",
             _ => {
                 return Err(diag(
                     span,

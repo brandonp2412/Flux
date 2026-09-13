@@ -106,6 +106,95 @@ app Screen(title: "Native Flux", width: 640, height: 480)
 }
 
 #[test]
+fn windows_desktop_integration_lowers_directly_to_win32_apis() {
+    let source = r#"
+fn clipboardText(value: str) -> void {
+    print(value)
+}
+fn selectedPath(path: str) -> void {
+    print(path)
+}
+fn menuSelected(index: i64) -> void {
+    print(index)
+}
+fn trayActivated() -> void {
+    print("tray")
+}
+fn started() -> void {
+    clipboard.write("hello")
+    clipboard.read(clipboardText)
+    menu.show("File", ["Open", "Save"], menuSelected)
+    tray.show("Flux", "", trayActivated)
+    fileDialog.open(selectedPath)
+    fileDialog.save(selectedPath)
+    fileDialog.folder(selectedPath)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Windows integration"
+}
+app Screen(onStart: started)
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows desktop integration should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows desktop integration should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows desktop integration should lower to direct Win32 APIs");
+
+    for native_api in [
+        "CF_UNICODETEXT",
+        "OpenClipboard(",
+        "AppendMenuW(",
+        "SetWindowLongPtrW(",
+        "Shell_NotifyIconW(",
+        "GetOpenFileNameW(",
+        "GetSaveFileNameW(",
+        "SHBrowseForFolderW(",
+        "SHGetPathFromIDListW(",
+    ] {
+        assert!(
+            generated.contains(native_api),
+            "missing Win32 lowering {native_api}"
+        );
+    }
+    for helper in [
+        "flux__clipboard_set_text(\"hello\")",
+        "flux__clipboard_read_text(flux__fn_clipboardText)",
+        "flux__menu_show(\"File\"",
+        "flux__tray_show(\"Flux\", \"\"",
+        "flux__file_dialog_open_file(flux__fn_selectedPath)",
+        "flux__file_dialog_save_file(flux__fn_selectedPath)",
+        "flux__file_dialog_select_directory(flux__fn_selectedPath)",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing portable helper lowering {helper}"
+        );
+    }
+    let window = generated
+        .find("flux__windows_active_window = CreateWindowExA(")
+        .expect("Windows root window should be created");
+    let startup = generated
+        .find("flux__fn_started();")
+        .expect("onStart should be invoked");
+    let shown = generated
+        .find("ShowWindow(flux__windows_active_window")
+        .expect("Windows root window should be shown");
+    assert!(window < startup && startup < shown);
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+    assert!(!generated.contains("android/native_activity.h"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
 fn extern_c_imports_reject_ownership_sensitive_shapes_and_function_values() {
     let returning_borrowed = r#"
 extern c "native_text" fn nativeText() -> str
@@ -31793,7 +31882,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("fileDialog.* APIs currently require the Linux desktop target")
+            .contains("fileDialog.* APIs currently require a Linux or Windows desktop target")
     );
 
     let invalid = r#"
@@ -31912,7 +32001,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("menu.* and tray.* APIs currently require the Linux desktop target")
+            .contains("menu.* and tray.* APIs currently require a Linux or Windows desktop target")
     );
 
     let invalid = r#"

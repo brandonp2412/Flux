@@ -857,7 +857,7 @@ Android is the first application-platform target. Android integration must feel 
 
 - [ ] Native Windows window/render/input backend. Bootstrap Windows-target lowering now emits a real Win32 top-level window plus native `STATIC`, `BUTTON`, and `EDIT` controls from the portable flat grid, with native button activation and text-change dispatch into named Flux callbacks. State/derived refresh, the broader built-in control surface, styling/accessibility parity, resize-aware relayout, and native Windows E2E validation remain before this backend is complete.
 - [ ] Win32/modern Windows integration as appropriate. Generic native builds now select Windows codegen for Windows Clang triples, and package `[platform.windows]` module substitution uses the same stable logical imports as Linux/Android. Broader Windows platform APIs and packaging remain pending.
-- [ ] Menus/tray/clipboard/file dialogs.
+- [x] Menus/tray/clipboard/file dialogs: the existing portable `menu.show`, `tray.show`, `clipboard.write`/`clipboard.read`, and `fileDialog.open`/`save`/`folder` APIs now lower directly to compiler-owned Win32 menu, notification-area, Unicode clipboard, and native common/folder dialog APIs. Reachable features select only their required Windows system libraries, callbacks receive temporary compiler-owned UTF-8 values without exposing Win32 handles or user-written bridge code, and the same source APIs remain native on Linux while Android rejects desktop-only surfaces explicitly.
 - [ ] Multi-window.
 - [ ] MSIX/store packaging.
 
