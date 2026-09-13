@@ -38296,6 +38296,97 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_destructuring_assignments_suspend_without_blocking_worker() {
+    let source = r#"
+type NumberPair = (left: i64, right: i64)
+
+struct Pair {
+    left: i64
+    right: i64
+}
+
+async fn pair(value: i64) -> (i64, i64) {
+    return value, value + 1
+}
+
+async fn makeRecord(value: i64) -> NumberPair {
+    return (left: value + 2, right: value + 3)
+}
+
+async fn makePair(value: i64) -> Pair {
+    return Pair { left: value + 4, right: value + 5 }
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn exercise(value: i64) -> i64 {
+    var typedLeft: i64, typedRight: i64 = await pair(value)
+    typedLeft = await addOne(typedLeft)
+    var (recordLeft, recordRight) = await makeRecord(typedRight)
+    recordLeft = await addOne(recordLeft)
+    var assignedLeft: i64 = 0
+    var assignedRight: i64 = 0
+    (assignedLeft, assignedRight) = await makeRecord(recordRight)
+    var structLeft: i64 = 0
+    var structRight: i64 = 0
+    Pair { left: structLeft, right: structRight } = await makePair(assignedLeft)
+    return typedLeft + typedRight + recordLeft + recordRight + assignedLeft + assignedRight + structLeft + structRight
+}
+
+async fn main() -> i64 {
+    return await exercise(10)
+}
+"#;
+
+    check_source(source).expect("direct await destructuring forms should typecheck");
+    let generated = compile_to_c(source)
+        .expect("direct await destructuring forms should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_exercise"));
+    assert!(!generated.contains("flux__async_body_exercise("));
+    assert!(generated.contains("flux__completed_result_"));
+    assert!(generated.contains("flux__completed_struct_assign_"));
+    assert!(generated.contains(".flux__field_left"));
+    assert!(generated.contains(
+        "flux__async_start_cont_pair(flux__local_value, flux__async_resume_exercise, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_makeRecord(flux__local_typedRight, flux__async_resume_exercise, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_makePair(flux__local_assignedLeft, flux__async_resume_exercise, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_pair(flux__async_start_pair"));
+    assert!(!generated.contains("flux__async_await_makeRecord(flux__async_start_makeRecord"));
+    assert!(!generated.contains("flux__async_await_makePair(flux__async_start_makePair"));
+
+    let root = std::env::temp_dir().join(format!("flux-async-destructure-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async destructure fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-destructure");
+    fs::write(&source_path, source).expect("async destructure source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async destructure fixture should build");
+    assert!(
+        built.status.success(),
+        "async destructure build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async destructure fixture should run");
+    assert_eq!(status.code(), Some(124));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn ui_profiler_inspector_reports_flat_source_controls() {
     let source = r#"
 view InspectorDemo {

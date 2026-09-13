@@ -15911,9 +15911,15 @@ fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
         StmtKind::Let { expr, .. }
         | StmtKind::Var { expr, .. }
         | StmtKind::LetStructDestructure { expr, .. }
+        | StmtKind::AssignStructDestructure { expr, .. }
         | StmtKind::Assign {
             expr,
             coalescing: false,
+            ..
+        }
+        | StmtKind::LetDestructure {
+            expr,
+            else_return: false,
             ..
         }
         | StmtKind::LetMultiDestructure {
@@ -16387,11 +16393,8 @@ fn collect_async_saved_locals(
                 mutable: is_mutable,
                 ..
             } => {
-                let actuals = if let Some((callee, _, _)) = direct_await_call(expr) {
-                    signatures.get(callee)?.returns.clone()
-                } else {
-                    typecheck::value_types_of_expr(expr, &env, signatures).ok()?
-                };
+                let (actuals, _) =
+                    typecheck::positional_destructure_types_of_expr(expr, &env, signatures).ok()?;
                 if actuals.len() != bindings.len() {
                     return None;
                 }
@@ -16893,11 +16896,8 @@ fn async_continuation_plan(
                 mutable: is_mutable,
                 ..
             } => {
-                let actuals = if let Some((callee, _, _)) = direct_await_call(expr) {
-                    signatures.get(callee)?.returns.clone()
-                } else {
-                    typecheck::value_types_of_expr(expr, &env, signatures).ok()?
-                };
+                let (actuals, _) =
+                    typecheck::positional_destructure_types_of_expr(expr, &env, signatures).ok()?;
                 if actuals.len() != bindings.len() {
                     return None;
                 }
@@ -20096,43 +20096,86 @@ fn emit_async_completed_await(
             }
         }
         StmtKind::AssignMultiDestructure { bindings, .. } => {
-            if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
-                return Err(diag(
-                    stmt.span,
-                    "multi-value assignment await changed return arity after type checking",
-                ));
-            }
-            for (index, (binding, actual)) in bindings.iter().zip(&signature.returns).enumerate() {
-                if binding.name == "_" {
-                    continue;
-                }
-                let Some(expected) = env
-                    .get(&binding.name)
-                    .map(|ty| signatures.canonical_type(ty))
-                else {
+            if let [record_ty] = signature.returns.as_slice()
+                && let Type::Record(fields) = signatures.canonical_type(record_ty)
+            {
+                if fields.len() != bindings.len() {
                     return Err(diag(
-                        binding.span,
-                        "async continuation assignment target disappeared after type checking",
-                    ));
-                };
-                let actual = signatures.canonical_type(actual);
-                if expected != actual || !mutable.contains(&binding.name) {
-                    return Err(diag(
-                        binding.span,
-                        "async continuation assignment contract changed after type checking",
+                        stmt.span,
+                        "record assignment await changed arity after type checking",
                     ));
                 }
-                out.push_str(&format!(
-                    "{pad}{} = {child}->result.v{index};\n",
-                    local_c_name(&binding.name)
-                ));
+                for (index, (binding, field)) in bindings.iter().zip(&fields).enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let Some(expected) = env
+                        .get(&binding.name)
+                        .map(|ty| signatures.canonical_type(ty))
+                    else {
+                        return Err(diag(
+                            binding.span,
+                            "async continuation assignment target disappeared after type checking",
+                        ));
+                    };
+                    let actual = signatures.canonical_type(&field.ty);
+                    if expected != actual || !mutable.contains(&binding.name) {
+                        return Err(diag(
+                            binding.span,
+                            "async continuation assignment contract changed after type checking",
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "{pad}{} = {child}->result.{};\n",
+                        local_c_name(&binding.name),
+                        record_field_c_name(field.name.as_deref(), index)
+                    ));
+                }
+            } else {
+                if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
+                    return Err(diag(
+                        stmt.span,
+                        "multi-value assignment await changed return arity after type checking",
+                    ));
+                }
+                for (index, (binding, actual)) in
+                    bindings.iter().zip(&signature.returns).enumerate()
+                {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let Some(expected) = env
+                        .get(&binding.name)
+                        .map(|ty| signatures.canonical_type(ty))
+                    else {
+                        return Err(diag(
+                            binding.span,
+                            "async continuation assignment target disappeared after type checking",
+                        ));
+                    };
+                    let actual = signatures.canonical_type(actual);
+                    if expected != actual || !mutable.contains(&binding.name) {
+                        return Err(diag(
+                            binding.span,
+                            "async continuation assignment contract changed after type checking",
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "{pad}{} = {child}->result.v{index};\n",
+                        local_c_name(&binding.name)
+                    ));
+                }
             }
         }
-        StmtKind::LetMultiDestructure { bindings, .. } => {
+        StmtKind::LetDestructure {
+            bindings,
+            mutable: is_mutable,
+            ..
+        } => {
             if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
                 return Err(diag(
                     stmt.span,
-                    "multi-value await changed return arity after type checking",
+                    "typed multi-value await changed return arity after type checking",
                 ));
             }
             let value = format!("flux__completed_result_{}", *temp_counter);
@@ -20141,18 +20184,122 @@ fn emit_async_completed_await(
                 "{pad}struct {} {value} = {child}->result;\n",
                 multi_return_struct_name(callee)
             ));
-            for (index, (binding, ty)) in bindings.iter().zip(&signature.returns).enumerate() {
+            for (index, (binding, actual)) in bindings.iter().zip(&signature.returns).enumerate() {
                 if binding.name == "_" {
                     continue;
                 }
-                let ty = signatures.canonical_type(ty);
+                let declared = signatures.canonical_type(&binding.ty);
+                let actual = signatures.canonical_type(actual);
+                if declared != actual {
+                    return Err(diag(
+                        binding.name_span,
+                        "typed multi-value await binding changed type after type checking",
+                    ));
+                }
                 out.push_str(&format!(
                     "{pad}{} {} = {value}.v{index};\n",
-                    c_type(&ty, signatures),
+                    c_type(&declared, signatures),
                     local_c_name(&binding.name)
                 ));
-                env.insert(binding.name.clone(), ty);
+                env.insert(binding.name.clone(), declared);
+                if *is_mutable {
+                    mutable.insert(binding.name.clone());
+                }
             }
+        }
+        StmtKind::LetMultiDestructure {
+            bindings,
+            mutable: is_mutable,
+            ..
+        } => {
+            if let [record_ty] = signature.returns.as_slice()
+                && let Type::Record(fields) = signatures.canonical_type(record_ty)
+            {
+                if fields.len() != bindings.len() {
+                    return Err(diag(
+                        stmt.span,
+                        "record destructuring await changed arity after type checking",
+                    ));
+                }
+                for (index, (binding, field)) in bindings.iter().zip(&fields).enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(&field.ty);
+                    out.push_str(&format!(
+                        "{pad}{} {} = {child}->result.{};\n",
+                        c_type(&ty, signatures),
+                        local_c_name(&binding.name),
+                        record_field_c_name(field.name.as_deref(), index)
+                    ));
+                    env.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            } else {
+                if signature.returns.len() != bindings.len() || signature.returns.len() < 2 {
+                    return Err(diag(
+                        stmt.span,
+                        "multi-value await changed return arity after type checking",
+                    ));
+                }
+                let value = format!("flux__completed_result_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}struct {} {value} = {child}->result;\n",
+                    multi_return_struct_name(callee)
+                ));
+                for (index, (binding, ty)) in bindings.iter().zip(&signature.returns).enumerate() {
+                    if binding.name == "_" {
+                        continue;
+                    }
+                    let ty = signatures.canonical_type(ty);
+                    out.push_str(&format!(
+                        "{pad}{} {} = {value}.v{index};\n",
+                        c_type(&ty, signatures),
+                        local_c_name(&binding.name)
+                    ));
+                    env.insert(binding.name.clone(), ty);
+                    if *is_mutable {
+                        mutable.insert(binding.name.clone());
+                    }
+                }
+            }
+        }
+        StmtKind::AssignStructDestructure {
+            struct_name,
+            fields,
+            ..
+        } => {
+            let [actual] = signature.returns.as_slice() else {
+                return Err(diag(
+                    stmt.span,
+                    "struct assignment await changed return arity after type checking",
+                ));
+            };
+            let actual = signatures.canonical_type(actual);
+            if actual != Type::Named(struct_name.clone()) {
+                return Err(diag(
+                    stmt.span,
+                    "struct assignment await type changed after type checking",
+                ));
+            }
+            let value = format!("flux__completed_struct_assign_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!(
+                "{pad}{} {value} = {child}->result;\n",
+                c_type(&actual, signatures)
+            ));
+            emit_struct_pattern_assignments(
+                out,
+                pad,
+                fields,
+                struct_name,
+                &value,
+                signatures,
+                None,
+            )?;
         }
         StmtKind::LetStructDestructure {
             struct_name,

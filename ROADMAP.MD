@@ -313,6 +313,8 @@ Adapt the convenience of Dart's async language features while preserving Flux's 
 
 Straight-line continuation lowering now also treats a non-`Send` mutable local as post-suspension storage when its pre-suspension value is definitely overwritten before the first resumed read. The old borrowed value is not copied into task state, the resumed case gets fresh local storage, and any read-before-overwrite (including `??=` target reads) keeps the safe blocking fallback. Definite-overwrite analysis recognizes direct assignment, multi-value/list/struct pattern assignment, and `if`/`else` joins only when both branches overwrite before a read; partial branches remain on the blocking path.
 
+Verified direct-await destructuring follow-up: explicit typed multi-value declarations, inferred `Copy` record declarations, `Copy` record assignments, and struct-pattern assignments now resume through compiler-owned continuations rather than blocking a worker; mutable destructured bindings retain mutability after resume. This advances the unchecked suspension track without claiming general CFG-wide suspension, `for`-each/non-`Send` view state, or first-class ownership/lifetime work complete.
+
 - [x] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
 - [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
 - [x] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
