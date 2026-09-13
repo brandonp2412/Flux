@@ -35893,6 +35893,29 @@ async fn main() -> i64 {
     assert!(!generated.contains("flux__async_resume_main"));
     assert!(generated.contains("flux__async_await_ready(flux__async_start_ready())"));
     assert!(generated.contains("flux__async_body_main"));
+
+    let post_await_source = r#"
+async fn ready() -> i64 {
+    return 1
+}
+
+async fn resumed() -> i64 {
+    let code: i64 = await ready()
+    let label: str = "resumed"
+    print(label)
+    return code - 1
+}
+
+async fn main() -> i64 {
+    return await resumed()
+}
+"#;
+
+    check_source(post_await_source).expect("post-await non-Send locals should remain task-local");
+    let post_await_generated = compile_to_c(post_await_source)
+        .expect("post-await non-Send locals should not disable continuation lowering");
+    assert!(post_await_generated.contains("flux__async_resume_resumed"));
+    assert!(!post_await_generated.contains("flux__async_body_resumed("));
 }
 
 #[test]

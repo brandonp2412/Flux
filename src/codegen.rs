@@ -15924,10 +15924,11 @@ fn async_continuation_plan(
     if function
         .params
         .iter()
-        .any(|param| !signatures.is_copy_type(&param.ty))
+        .any(|param| !async_continuation_state_type(signatures, &param.ty))
     {
         return None;
     }
+    let last_await_statement_index = function.body.iter().rposition(stmt_contains_await)?;
 
     let mut env = function
         .params
@@ -16110,6 +16111,10 @@ fn async_continuation_plan(
                     &mut mutable,
                 )?;
             }
+        }
+
+        if stmt_index > last_await_statement_index {
+            continue;
         }
 
         match &stmt.kind {
