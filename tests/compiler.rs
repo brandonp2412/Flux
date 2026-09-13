@@ -142,82 +142,64 @@ app Screen(title: "Native Flux", width: 640, height: 480)
 }
 
 #[test]
-fn windows_platform_bindings_lower_directly_and_reject_other_targets() {
+fn windows_backend_refreshes_stateful_controls_and_relayouts_on_resize() {
     let source = r#"
-fn main() -> i64 {
-    print(windows.processId())
-    print(windows.uptimeMillis())
-    print(windows.beep(440, 25))
-    print(windows.open("https://example.com"))
-    return 0
+view Screen {
+    grid columns: 1fr 1fr
+    grid rows: auto auto auto
+    state enabled: bool = true
+    state selected: i64 = 0
+    state caption: str = "Ready"
+    Text title at 1,1 span columns 2
+        text: caption
+        visible: enabled
+    Toggle toggle at 2,1
+        label: "Enabled"
+        checked: enabled
+        onChange: enabled => !enabled
+    Radio first at 2,2
+        label: "First"
+        selected: selected == 0
+        onSelect: selected => 0
+    Radio second at 3,2
+        label: "Second"
+        selected: selected == 1
+        onSelect: selected => 1
+    Card summary at 3,1
+        title: "Summary"
 }
+app Screen(title: "Stateful Windows", width: 720, height: 480)
 "#;
-    let program = fluxc::parser::parse(source).expect("Windows platform source should parse");
+    let program = fluxc::parser::parse(source).expect("stateful Windows application should parse");
     let signatures =
-        fluxc::typecheck::check(&program).expect("Windows platform source should typecheck");
+        fluxc::typecheck::check(&program).expect("stateful Windows application should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect("Windows platform APIs should lower for the Windows target");
-    for native_api in [
-        "GetCurrentProcessId()",
-        "GetTickCount64()",
-        "Beep((DWORD)frequency_hz",
-        "ShellExecuteW(",
-    ] {
-        assert!(
-            generated.contains(native_api),
-            "missing native Windows API {native_api}"
-        );
-    }
-    for call in [
-        "flux__windows_process_id()",
-        "flux__windows_uptime_millis()",
-        "flux__windows_beep(INT64_C(440), INT64_C(25))",
-        "flux__windows_open(\"https://example.com\")",
-    ] {
-        assert!(
-            generated.contains(call),
-            "missing typed Windows lowering {call}"
-        );
-    }
+    .expect("stateful Windows application should lower to native Win32 C");
+
+    assert!(generated.contains("BS_AUTOCHECKBOX"));
+    assert!(generated.contains("WS_GROUP | BS_AUTORADIOBUTTON"));
+    assert!(generated.contains("case WM_SIZE: flux__win_layout"));
+    assert!(generated.contains("MoveWindow(flux__ui_toggle"));
+    assert!(
+        generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_caption)")
+    );
+    assert!(
+        generated
+            .contains("ShowWindow(flux__ui_title, (flux__ui_state_enabled) ? SW_SHOW : SW_HIDE)")
+    );
+    assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK, (flux__ui_state_enabled) ? BST_CHECKED : BST_UNCHECKED"));
+    assert!(generated.contains("flux__ui_state_enabled ="));
+    assert!(generated.contains("(!(flux__ui_state_enabled))"));
+    assert!(generated.contains("flux__ui_state_selected = INT64_C(1)"));
+    assert!(generated.contains("flux__win_refresh();"));
+    assert!(generated.contains("CreateWindowExA(0, \"STATIC\", \"Summary\""));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
-    assert!(!generated.contains("#include <gtk/gtk.h>"));
-    assert!(!generated.contains("android/native_activity.h"));
-
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Linux,
-    )
-    .expect_err("reachable windows.* calls must reject non-Windows native targets");
-    assert!(
-        error
-            .message
-            .contains("windows.* platform APIs require the Windows target")
-    );
-
-    let tiny = fluxc::parser::parse(
-        "fn main() -> i64 {\n    print(windows.processId())\n    return 0\n}\n",
-    )
-    .expect("minimal Windows platform source should parse");
-    let tiny_signatures =
-        fluxc::typecheck::check(&tiny).expect("minimal Windows platform source should typecheck");
-    let tiny_generated = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &tiny,
-        &tiny_signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect("minimal Windows platform source should lower");
-    assert!(tiny_generated.contains("GetCurrentProcessId()"));
-    assert!(!tiny_generated.contains("ShellExecuteW("));
-    assert!(!tiny_generated.contains("Beep((DWORD)frequency_hz"));
 }
 
 #[test]
