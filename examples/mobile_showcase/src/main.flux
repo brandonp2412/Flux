@@ -3,7 +3,7 @@ view HorseTinder {
     state passed: bool = false
     derived actionOffset: i64 = (windowWidth - 320) / 2
     grid columns: 1fr 80 24 80 1fr
-    grid rows: 46 1fr 54 34 68 80 auto
+    grid rows: 46 1fr 54 34 72 80 auto
     grid gap: 8
     grid padding: 16
     grid scroll: true
@@ -20,8 +20,8 @@ view HorseTinder {
 
     Text nearby at 1,4 span columns 2
         text: "4 KM  ·  ONLINE"
-        color: "#AEB5C0"
-        size: 10
+        color: "#B9C0CA"
+        size: 11
         bold: true
         wrap: false
         letterSpacing: 1
@@ -38,10 +38,10 @@ view HorseTinder {
         backgroundColor: "#11151B"
         borderColor: "#252C36"
         borderWidth: 1
-        radius: 30
-        shadowColor: "#00000099"
-        shadowBlur: 12
-        shadowOffsetY: 6
+        radius: 28
+        shadowColor: "#00000080"
+        shadowBlur: 10
+        shadowOffsetY: 5
 
     Text profileName at 3,1 span columns 5
         text: "Buttercup, 7"
@@ -79,39 +79,39 @@ view HorseTinder {
         alignY: "center"
 
     Text bio at 5,1 span columns 5
-        text: "Beach gallops, generous with hay, and emotionally available. Photobomber included."
+        text: "Beach gallops, shares hay, and emotionally available. Photobomber included."
         color: "#EEF1F5"
         size: 15
         wrap: true
         maxLines: 2
-        lineHeightPercent: 135
-        padding: 12
-        backgroundColor: "#10151C"
-        borderColor: "#303946"
+        lineHeightPercent: 140
+        padding: 14
+        backgroundColor: "#11161D"
+        borderColor: "#303A47"
         borderWidth: 1
-        radius: 20
+        radius: 18
 
     Button pass at 6,2
         text: "✕"
         visible: !liked && !passed
-        size: 34
+        size: 30
         tooltip: "Pass"
         accessibilityLabel: "Pass on Buttercup"
-        minWidth: 80
-        maxWidth: 80
-        minHeight: 80
+        minWidth: 76
+        maxWidth: 76
+        minHeight: 76
         alignX: "center"
         alignY: "center"
         translateX: actionOffset
         focusable: !windowIsCompact
         padding: 0
-        radius: 40
+        radius: 38
         backgroundColor: "#151B23"
-        borderColor: "#465261"
-        borderWidth: 2
-        shadowColor: "#00000099"
-        shadowBlur: 8
-        shadowOffsetY: 4
+        borderColor: "#515D6C"
+        borderWidth: 1
+        shadowColor: "#00000080"
+        shadowBlur: 6
+        shadowOffsetY: 3
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
         onPress: passed => !passed
@@ -119,24 +119,24 @@ view HorseTinder {
     Button like at 6,4
         visible: !liked && !passed
         text: "♥︎"
-        size: 40
+        size: 36
         tooltip: "Like"
         accessibilityLabel: "Like Buttercup"
-        minWidth: 80
-        maxWidth: 80
-        minHeight: 80
+        minWidth: 76
+        maxWidth: 76
+        minHeight: 76
         alignX: "center"
         alignY: "center"
         translateX: actionOffset
         focusable: !windowIsCompact
         padding: 0
-        radius: 40
+        radius: 38
         backgroundColor: "#FF4D67"
-        borderColor: "#FF9AAA"
-        borderWidth: 2
-        shadowColor: "#00000099"
-        shadowBlur: 10
-        shadowOffsetY: 4
+        borderColor: "#FF8FA1"
+        borderWidth: 1
+        shadowColor: "#00000080"
+        shadowBlur: 8
+        shadowOffsetY: 3
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
         onPress: liked => !liked
