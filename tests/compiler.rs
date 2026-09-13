@@ -38009,6 +38009,158 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_await_inside_list_match_suspends_without_blocking_worker() {
+    let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn choose(value: i64) -> i64 {
+    var total: i64 = 1
+    match [value]:
+        [item]:
+            total = await addOne(item)
+            total = await addOne(total)
+        _:
+            total = 0
+    return total
+}
+
+async fn guarded(value: i64) -> i64 {
+    match [value]:
+        [item] if item > 10:
+            return await addOne(item)
+        [item]:
+            return item
+        _:
+            return 0
+}
+
+async fn main() -> i64 {
+    let selected: i64 = await choose(40)
+    let guardedSelected: i64 = await guarded(41)
+    let guardedFallback: i64 = await guarded(0)
+    return selected + guardedSelected + guardedFallback
+}
+"#;
+
+    check_source(source).expect("await inside list-match arms should remain supported");
+    let generated =
+        compile_to_c(source).expect("list-match awaits should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_choose"));
+    assert!(!generated.contains("flux__async_body_choose("));
+    assert!(generated.contains("flux__async_list_match_"));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_item, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_choose, flux__task)"
+    ));
+    assert!(
+        !generated.contains("flux__async_await_addOne(flux__async_start_addOne(flux__local_item))")
+    );
+    assert!(generated.contains("flux__async_resume_guarded"));
+    assert!(!generated.contains("flux__async_body_guarded("));
+
+    let root = std::env::temp_dir().join(format!("flux-async-list-match-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async list-match fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-list-match");
+    fs::write(&source_path, source).expect("async list-match source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async list-match fixture should build");
+    assert!(
+        built.status.success(),
+        "async list-match build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async list-match fixture should run");
+    assert_eq!(status.code(), Some(84));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn async_struct_destructuring_await_suspends_without_blocking_worker() {
+    let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+async fn makePair(value: i64) -> Pair {
+    return Pair { left: value, right: value + 1 }
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn total(value: i64) -> i64 {
+    let Pair { left, right } = await makePair(value)
+    let bumped: i64 = await addOne(left)
+    return bumped + right
+}
+
+async fn main() -> i64 {
+    return await total(20)
+}
+"#;
+
+    check_source(source).expect("struct destructuring await should typecheck");
+    let generated = compile_to_c(source)
+        .expect("struct destructuring await should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_total"));
+    assert!(!generated.contains("flux__async_body_total("));
+    assert!(generated.contains("flux__completed_struct_"));
+    assert!(generated.contains(
+        "flux__async_start_cont_makePair(flux__local_value, flux__async_resume_total, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_addOne(flux__local_left, flux__async_resume_total, flux__task)"
+    ));
+    assert!(
+        !generated
+            .contains("flux__async_await_makePair(flux__async_start_makePair(flux__local_value))")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-struct-destructure-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("async struct-destructure fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-struct-destructure");
+    fs::write(&source_path, source).expect("async struct-destructure source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async struct-destructure fixture should build");
+    assert!(
+        built.status.success(),
+        "async struct-destructure build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&binary)
+        .status()
+        .expect("async struct-destructure fixture should run");
+    assert_eq!(status.code(), Some(42));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_await_branch_with_scalar_condition_suspends_without_blocking_worker() {
     let source = r#"
 async fn addOne(value: i64) -> i64 {
