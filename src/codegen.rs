@@ -1822,6 +1822,20 @@ fn emit_runtime_prelude(
     let uses_android_share = uses_android && runtime_usage.contains("flux__android_share(");
     let uses_android_set_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_set_clipboard_text(") || uses_clipboard_set_text);
+    let uses_android_start_microphone_recording =
+        uses_android && runtime_usage.contains("flux__android_start_microphone_recording(");
+    let uses_android_stop_microphone_recording =
+        uses_android && runtime_usage.contains("flux__android_stop_microphone_recording(");
+    let uses_android_microphone =
+        uses_android_start_microphone_recording || uses_android_stop_microphone_recording;
+    let uses_android_secure_store =
+        uses_android && runtime_usage.contains("flux__android_secure_store(");
+    let uses_android_secure_read =
+        uses_android && runtime_usage.contains("flux__android_secure_read(");
+    let uses_android_secure_remove =
+        uses_android && runtime_usage.contains("flux__android_secure_remove(");
+    let uses_android_secure_storage =
+        uses_android_secure_store || uses_android_secure_read || uses_android_secure_remove;
     let uses_android_read_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_read_clipboard_text(")
             || uses_clipboard_read_text);
@@ -1917,6 +1931,8 @@ fn emit_runtime_prelude(
         || uses_android_open_notification_settings
         || uses_android_share
         || uses_android_set_clipboard_text
+        || uses_android_microphone
+        || uses_android_secure_storage
         || uses_android_read_clipboard_text
         || (uses_android
             && (uses_dialog_alert
@@ -2016,6 +2032,8 @@ fn emit_runtime_prelude(
                 || uses_dialog_choose))
         || uses_android_notifications
         || uses_android_has_system_feature
+        || uses_android_microphone
+        || uses_android_secure_storage
         || uses_android_permission_granted
         || uses_android_request_permission
         || uses_android_generated_ui
@@ -2044,6 +2062,38 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
         out.push_str("    return result;\n");
         out.push_str("}\n");
+    }
+    if uses_android_microphone {
+        out.push_str("static jobject flux__android_microphone_recorder = NULL;\n");
+        if uses_android_start_microphone_recording {
+            out.push_str(
+                "static bool flux__android_start_microphone_recording(const char *path) {\n",
+            );
+            out.push_str("    if (path == NULL || path[0] == '\\0' || flux__android_activity == NULL || flux__android_microphone_recorder != NULL) return false;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
+            out.push_str("    bool started = false; jclass recorder_class = NULL; jobject recorder = NULL; jstring output_path = NULL;\n");
+            out.push_str("    recorder_class = (*env)->FindClass(env, \"android/media/MediaRecorder\"); if (recorder_class == NULL) goto done;\n");
+            out.push_str("    jmethodID ctor = (*env)->GetMethodID(env, recorder_class, \"<init>\", \"()V\"); if (ctor == NULL) goto done; recorder = (*env)->NewObject(env, recorder_class, ctor); if (recorder == NULL || (*env)->ExceptionCheck(env)) goto done;\n");
+            out.push_str("    jmethodID set_audio_source = (*env)->GetMethodID(env, recorder_class, \"setAudioSource\", \"(I)V\"); jmethodID set_output_format = (*env)->GetMethodID(env, recorder_class, \"setOutputFormat\", \"(I)V\"); jmethodID set_audio_encoder = (*env)->GetMethodID(env, recorder_class, \"setAudioEncoder\", \"(I)V\"); jmethodID set_output_file = (*env)->GetMethodID(env, recorder_class, \"setOutputFile\", \"(Ljava/lang/String;)V\"); jmethodID prepare = (*env)->GetMethodID(env, recorder_class, \"prepare\", \"()V\"); jmethodID start = (*env)->GetMethodID(env, recorder_class, \"start\", \"()V\"); if (set_audio_source == NULL || set_output_format == NULL || set_audio_encoder == NULL || set_output_file == NULL || prepare == NULL || start == NULL) goto done;\n");
+            out.push_str("    output_path = flux__android_utf8_string(env, path); if (output_path == NULL) goto done; (*env)->CallVoidMethod(env, recorder, set_audio_source, (jint)1); (*env)->CallVoidMethod(env, recorder, set_output_format, (jint)2); (*env)->CallVoidMethod(env, recorder, set_audio_encoder, (jint)3); (*env)->CallVoidMethod(env, recorder, set_output_file, output_path); (*env)->CallVoidMethod(env, recorder, prepare); (*env)->CallVoidMethod(env, recorder, start); if ((*env)->ExceptionCheck(env)) goto done;\n");
+            out.push_str("    flux__android_microphone_recorder = (*env)->NewGlobalRef(env, recorder); started = flux__android_microphone_recorder != NULL;\n");
+            out.push_str("done:\n    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (!started && recorder != NULL && recorder_class != NULL) { jmethodID release = (*env)->GetMethodID(env, recorder_class, \"release\", \"()V\"); if (release != NULL) (*env)->CallVoidMethod(env, recorder, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); } if (output_path != NULL) (*env)->DeleteLocalRef(env, output_path); if (recorder != NULL) (*env)->DeleteLocalRef(env, recorder); if (recorder_class != NULL) (*env)->DeleteLocalRef(env, recorder_class); flux__android_release_env(detach); return started;\n}\n");
+        }
+        if uses_android_stop_microphone_recording {
+            out.push_str("static bool flux__android_stop_microphone_recording(void) {\n");
+            out.push_str("    if (flux__android_microphone_recorder == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; jobject recorder = flux__android_microphone_recorder; flux__android_microphone_recorder = NULL; bool stopped = false; jclass recorder_class = (*env)->GetObjectClass(env, recorder); if (recorder_class != NULL) { jmethodID stop = (*env)->GetMethodID(env, recorder_class, \"stop\", \"()V\"); jmethodID release = (*env)->GetMethodID(env, recorder_class, \"release\", \"()V\"); if (stop != NULL) { (*env)->CallVoidMethod(env, recorder, stop); stopped = !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (release != NULL) (*env)->CallVoidMethod(env, recorder, release); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, recorder_class); } (*env)->DeleteGlobalRef(env, recorder); flux__android_release_env(detach); return stopped;\n}\n");
+        }
+    }
+    if uses_android_secure_storage {
+        if uses_android_secure_store {
+            out.push_str("static bool flux__android_secure_store(const char *key, const char *value) {\n    if (key == NULL || key[0] == '\\0' || value == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool stored = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; jstring value_string = NULL; if (storage_class != NULL) { jmethodID put = (*env)->GetStaticMethodID(env, storage_class, \"put\", \"(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z\"); key_string = flux__android_utf8_string(env, key); value_string = flux__android_utf8_string(env, value); if (put != NULL && key_string != NULL && value_string != NULL) stored = (*env)->CallStaticBooleanMethod(env, storage_class, put, flux__android_activity->clazz, key_string, value_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value_string != NULL) (*env)->DeleteLocalRef(env, value_string); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return stored;\n}\n");
+        }
+        if uses_android_secure_read {
+            out.push_str("static bool flux__android_secure_read(const char *key, void (*callback)(const char *)) {\n    if (key == NULL || key[0] == '\\0' || callback == NULL || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool found = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; jstring result = NULL; const char *text = NULL; if (storage_class != NULL) { jmethodID get = (*env)->GetStaticMethodID(env, storage_class, \"get\", \"(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;\"); key_string = flux__android_utf8_string(env, key); if (get != NULL && key_string != NULL) result = (jstring)(*env)->CallStaticObjectMethod(env, storage_class, get, flux__android_activity->clazz, key_string); if (!(*env)->ExceptionCheck(env) && result != NULL) { text = (*env)->GetStringUTFChars(env, result, NULL); if (text != NULL) { callback(text); found = true; (*env)->ReleaseStringUTFChars(env, result, text); text = NULL; } } } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (result != NULL) (*env)->DeleteLocalRef(env, result); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return found;\n}\n");
+        }
+        if uses_android_secure_remove {
+            out.push_str("static bool flux__android_secure_remove(const char *key) {\n    if (key == NULL || key[0] == '\\0' || flux__android_activity == NULL) return false; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false; bool removed = false; jclass storage_class = (*env)->FindClass(env, \"app/flux/runtime/FluxSecureStorage\"); jstring key_string = NULL; if (storage_class != NULL) { jmethodID remove = (*env)->GetStaticMethodID(env, storage_class, \"remove\", \"(Landroid/content/Context;Ljava/lang/String;)Z\"); key_string = flux__android_utf8_string(env, key); if (remove != NULL && key_string != NULL) removed = (*env)->CallStaticBooleanMethod(env, storage_class, remove, flux__android_activity->clazz, key_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); } if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (storage_class != NULL) (*env)->DeleteLocalRef(env, storage_class); flux__android_release_env(detach); return removed;\n}\n");
+        }
     }
     if uses_android_keep_screen_on && uses_android_generated_ui {
         out.push_str("static void flux__android_keep_screen_on(bool enabled) {\n");

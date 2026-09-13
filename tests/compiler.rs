@@ -28262,7 +28262,10 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     .expect("Android codegen manifest should be writable");
     fs::write(
         root.join("src/main.flux"),
-        r#"fn started() -> void {
+        r#"fn secureValue(value: str) -> void {
+    print(value)
+}
+fn started() -> void {
     print(android.sdkInt())
     print(android.hasSystemFeature("android.hardware.camera.any"))
     android.vibrate(25)
@@ -28273,6 +28276,11 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     android.openNotificationSettings()
     android.share("hello from Flux")
     android.setClipboardText("copied from Flux")
+    print(android.startMicrophoneRecording("/data/local/tmp/flux-recording.m4a"))
+    print(android.stopMicrophoneRecording())
+    print(android.secureStore("token", "secret"))
+    print(android.secureRead("token", secureValue))
+    print(android.secureRemove("token"))
     android.showKeyboard()
     android.hideKeyboard()
     android.focusNext()
@@ -28393,6 +28401,25 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains("android.intent.action.SEND"));
     assert!(generated.contains("android.intent.extra.TEXT"));
     assert!(generated.contains("static void flux__android_set_clipboard_text(const char *text)"));
+    assert!(
+        generated
+            .contains("static bool flux__android_start_microphone_recording(const char *path)")
+    );
+    assert!(generated.contains("android/media/MediaRecorder"));
+    assert!(generated.contains("\"setAudioSource\", \"(I)V\""));
+    assert!(generated.contains("\"setOutputFile\", \"(Ljava/lang/String;)V\""));
+    assert!(generated.contains("static bool flux__android_stop_microphone_recording(void)"));
+    assert!(generated.contains("DeleteGlobalRef"));
+    assert!(
+        generated
+            .contains("static bool flux__android_secure_store(const char *key, const char *value)")
+    );
+    assert!(generated.contains("app/flux/runtime/FluxSecureStorage"));
+    assert!(generated.contains(
+        "static bool flux__android_secure_read(const char *key, void (*callback)(const char *))"
+    ));
+    assert!(generated.contains("flux__fn_secureValue"));
+    assert!(generated.contains("static bool flux__android_secure_remove(const char *key)"));
     assert!(generated.contains("android/content/ClipData"));
     assert!(generated.contains("\"newPlainText\""));
     assert!(generated.contains("\"setPrimaryClip\""));
@@ -28504,7 +28531,10 @@ fn main() -> i64 {
     .expect("Android tree-shaking manifest should be writable");
     fs::write(
         android_tree_root.join("src/main.flux"),
-        r#"fn unused_android() -> void {
+        r#"fn unusedSecureValue(value: str) -> void {
+    print(value)
+}
+fn unused_android() -> void {
     android.openAppSettings()
     android.openNotificationSettings()
     android.keepScreenOn(false)
@@ -28526,6 +28556,11 @@ fn main() -> i64 {
     android.hasSystemFeature("android.hardware.camera.any")
     android.permissionGranted("android.permission.CAMERA")
     android.requestPermission("android.permission.CAMERA")
+    android.startMicrophoneRecording("unused.m4a")
+    android.stopMicrophoneRecording()
+    android.secureStore("unused", "unused")
+    android.secureRead("unused", unusedSecureValue)
+    android.secureRemove("unused")
     android.createNotificationChannel("unused", "Unused", "Unused")
     android.notify("unused", 1, "Unused", "Unused")
     android.notifyUrlAction("unused", 2, "Unused", "Unused", "Open", "https://example.com")
@@ -28574,6 +28609,13 @@ app Screen
     assert!(!tree_generated.contains("flux__android_has_system_feature"));
     assert!(!tree_generated.contains("flux__android_permission_granted"));
     assert!(!tree_generated.contains("flux__android_request_permission"));
+    assert!(!tree_generated.contains("flux__android_start_microphone_recording"));
+    assert!(!tree_generated.contains("flux__android_stop_microphone_recording"));
+    assert!(!tree_generated.contains("android/media/MediaRecorder"));
+    assert!(!tree_generated.contains("flux__android_secure_store"));
+    assert!(!tree_generated.contains("flux__android_secure_read"));
+    assert!(!tree_generated.contains("flux__android_secure_remove"));
+    assert!(!tree_generated.contains("app/flux/runtime/FluxSecureStorage"));
     assert!(!tree_generated.contains("flux__android_create_notification_channel"));
     assert!(!tree_generated.contains("flux__android_notify("));
     assert!(!tree_generated.contains("flux__android_notify_url_action"));
@@ -28593,6 +28635,11 @@ fn main() -> i64 {
     android.openAppSettings(1)
     android.openNotificationSettings(false)
     android.share(42)
+    android.startMicrophoneRecording(false)
+    android.stopMicrophoneRecording(1)
+    android.secureStore(1, false)
+    android.secureRead(false, 1)
+    android.secureRemove(1)
     android.showKeyboard(1)
     android.hideKeyboard(false)
     android.focusNext(1)

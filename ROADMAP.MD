@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 533
+- Completed baseline units: 535
 - Reported overall progress: **72%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -797,9 +797,9 @@ Android is the first application-platform target. Android integration must feel 
   - [x] General Android permissions are declarative and typed without Gradle: `[android].permissions = ["android.permission.CAMERA", ...]` is parsed, validated, deterministically de-duplicated, and emitted as `<uses-permission>` entries; `android.permissionGranted(permission)` and `android.requestPermission(permission)` lower directly to compiler-owned framework JNI and appear in static checking plus LSP completion/signature help.
 - [x] Background services/tasks where allowed: typed `android.scheduleBackgroundJob(jobId, delayMs)` registers a one-shot native Android `JobScheduler` job through compiler-generated `JobService`/DEX/manifest glue, `android.cancelBackgroundJob(jobId)` cancels it, and application `onBackgroundJob: fn(i64) -> void` receives execution directly in compiled Flux. Invalid negative/out-of-range job IDs and negative delays fail safely, unreachable scheduling/cancellation helpers and service glue tree-shake, and application source writes no Java/Kotlin/JNI bridge, method channel, serialization bus, or plugin registry. AndroidX WorkManager remains separately tracked above for richer constraints/chaining/guaranteed-work semantics.
 - [ ] Camera.
-- [ ] Microphone.
+- [x] Microphone: typed `android.startMicrophoneRecording(path)` / `android.stopMicrophoneRecording()` lower through compiler-owned direct JNI to Android `MediaRecorder`, use AAC-in-MP4 file capture, return explicit success/failure, infer `RECORD_AUDIO` only when reachable recording code exists, tree-shake when unused, and require no application-authored Kotlin/Java/JNI bridge or plugin channel.
 - [ ] Media playback.
-- [ ] Secure storage.
+- [x] Secure storage: typed `android.secureStore`, `android.secureRead`, and `android.secureRemove` lower through compiler-owned JNI into a generated Android-only storage helper using an app-scoped Android Keystore AES-GCM key plus private encrypted `SharedPreferences` ciphertext. Reads lend decrypted text only for callback scope, API 23 is enforced by binding availability, generated JVM glue/Dex tree-shakes when unreachable, and applications write no platform bridge code.
 - [x] Files/media picker: typed `android.pickFile`, `android.pickMedia`, and `android.pickDirectory` launch Android's native Storage Access Framework directly from ordinary Flux code and lend the selected content URI to an exact `fn(str) -> void` callback. Compiler-generated `FluxActivity`/JNI owns request/result routing and persistable URI grants, cancellation clears pending callbacks without inventing a nullable source value, unreachable picker support tree-shakes from both native and generated-Java glue, and application source needs no Activity/Kotlin/Java/JNI bridge.
 - [x] Android keyboard/IME: the current native Android surface covers platform-owned text composition, keyboard-type selection, submit policy, compiler-managed caret/selection/composition preservation across required rebuilds, direct show/hide IME control, focus restoration and scoped traversal, focused selection/caret mutation, and typed IME action configuration. The integrated Android codegen regression verifies these helpers lower through direct platform/JNI calls, reject non-Android reachability, tree-shake when unused, and introduce no method-channel/plugin bridge.
   - [x] Bootstrap native text input supports compiler-managed autofocus, password input type, maximum length, live `onChange: fn(str)`, native multiline editing, compile-time `submitOnEnter` policy, and IME Done/Enter `onSubmit: fn(str)` callbacks without application Java/Kotlin code.

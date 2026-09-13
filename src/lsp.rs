@@ -7166,6 +7166,14 @@ mod tests {
         assert!(android_items.contains("fn android.openNotificationSettings() -> void"));
         assert!(android_items.contains("fn android.share(text: str) -> void"));
         assert!(android_items.contains("fn android.setClipboardText(text: str) -> void"));
+        assert!(android_items.contains("fn android.startMicrophoneRecording(path: str) -> bool"));
+        assert!(android_items.contains("fn android.stopMicrophoneRecording() -> bool"));
+        assert!(android_items.contains("fn android.secureStore(key: str, value: str) -> bool"));
+        assert!(
+            android_items
+                .contains("fn android.secureRead(key: str, callback: fn(str) -> void) -> bool")
+        );
+        assert!(android_items.contains("fn android.secureRemove(key: str) -> bool"));
         assert!(android_items.contains("fn android.pickFile(callback: fn(str) -> void) -> void"));
         assert!(android_items.contains("fn android.pickMedia(callback: fn(str) -> void) -> void"));
         assert!(
