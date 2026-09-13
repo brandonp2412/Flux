@@ -32286,6 +32286,9 @@ app DynamicInput
     assert!(android.contains("setMaxLength"));
     assert!(android.contains("TextInput.keyboardType must be one of"));
     assert!(android.contains("TextInput.maxLength must be between 0 and 2147483647"));
+    assert!(android.contains(
+        "if (changed_state == -1 || changed_state == 0 || changed_state == 1 || changed_state == 2 || changed_state == 3 || changed_state == 4 || changed_state == 5) {"
+    ));
 
     let static_source = r#"
 view StaticInput {

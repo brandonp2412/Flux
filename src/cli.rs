@@ -5127,18 +5127,25 @@ __FLUX_PICKER_METHODS__
     }
 
     public void setMaxLength(EditText view, int maxLength) {
-        view.setFilters(new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
+        view.setFilters(maxLength == 0
+            ? new InputFilter[0]
+            : new InputFilter[] { new InputFilter.LengthFilter(maxLength) });
     }
 
     public void setInputTypePreservingSelection(EditText view, int inputType) {
         int start = view.getSelectionStart();
         int end = view.getSelectionEnd();
+        int composingStart = BaseInputConnection.getComposingSpanStart(view.getText());
+        int composingEnd = BaseInputConnection.getComposingSpanEnd(view.getText());
         view.setInputType(inputType);
         int length = view.getText().length();
         if (start >= 0 && end >= 0) {
             int restoredStart = Math.max(0, Math.min(length, start));
             int restoredEnd = Math.max(restoredStart, Math.min(length, end));
             view.setSelection(restoredStart, restoredEnd);
+        }
+        if (composingStart >= 0 && composingEnd > composingStart && composingEnd <= length) {
+            new BaseInputConnection(view, true).setComposingRegion(composingStart, composingEnd);
         }
     }
 
@@ -8225,6 +8232,23 @@ app OverlayDemo(title: "Overlay")
         assert!(activity.contains("source.startsWith(\"asset://\")"));
         assert!(activity.contains("getAssets().open(assetName)"));
         assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(stream)"));
+    }
+
+    #[test]
+    fn android_text_input_helpers_preserve_portable_input_semantics() {
+        let activity = android_activity_java_source("");
+        assert!(activity.contains("public void setMaxLength(EditText view, int maxLength)"));
+        assert!(activity.contains("maxLength == 0"));
+        assert!(activity.contains("? new InputFilter[0]"));
+        assert!(activity.contains(
+            "int composingStart = BaseInputConnection.getComposingSpanStart(view.getText());"
+        ));
+        assert!(activity.contains(
+            "int composingEnd = BaseInputConnection.getComposingSpanEnd(view.getText());"
+        ));
+        assert!(activity.contains(
+            "if (composingStart >= 0 && composingEnd > composingStart && composingEnd <= length)"
+        ));
     }
 
     #[test]
