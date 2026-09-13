@@ -41349,6 +41349,128 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_assignment_preserves_copy_destructuring_between_suspensions() {
+    let source = r#"
+type NumberPair = (left: i64, right: i64)
+
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn pair(value: i64) -> (i64, i64) {
+    return value, value + 1
+}
+
+fn makeRecord(value: i64) -> NumberPair {
+    return (left: value + 2, right: value + 3)
+}
+
+fn makePair(value: i64) -> Pair {
+    return Pair { left: value + 4, right: value + 5 }
+}
+
+async fn fallback(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn chain(first: i64?, second: i64?) -> i64 {
+    var left: i64? = first
+    var right: i64? = second
+    left ??= await fallback(4)
+    var typedLeft: i64, typedRight: i64 = pair(left ?? 0)
+    var (recordLeft, recordRight) = makeRecord(typedRight)
+    var Pair { left: structLeft, right: structRight } = makePair(recordRight)
+    right ??= await fallback(6)
+    typedLeft = typedLeft + 1
+    recordLeft = recordLeft + 1
+    structLeft = structLeft + 1
+    return typedLeft + typedRight + recordLeft + recordRight + structLeft + structRight + (right ?? 0)
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    return await chain(missing, missing)
+}
+"#;
+
+    check_source(source).expect("copy destructuring between coalescing awaits should typecheck");
+    let generated = compile_to_c(source)
+        .expect("copy destructuring between coalescing awaits should stay on continuation states");
+    assert!(generated.contains("flux__async_resume_chain"));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(6), flux__async_resume_chain, flux__task)"
+    ));
+    assert!(
+        !generated.contains("flux__async_await_fallback(flux__async_start_fallback(INT64_C(6)))")
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-copy-destructure-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async coalescing destructuring fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-copy-destructure");
+    fs::write(&source_path, source)
+        .expect("async coalescing destructuring source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async coalescing destructuring binary should build");
+    assert!(
+        built.status.success(),
+        "async coalescing destructuring build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("async coalescing destructuring binary should run");
+    assert_eq!(output.status.code(), Some(58));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "4\n6\n");
+    let _ = fs::remove_dir_all(&root);
+}
+#[test]
+fn async_coalescing_assignment_keeps_list_destructuring_on_safe_blocking_path() {
+    let source = r#"
+async fn fallback(value: i64) -> i64 {
+    return value
+}
+
+async fn chain(first: i64?, second: i64?) -> i64 {
+    var left: i64? = first
+    var right: i64? = second
+    left ??= await fallback(4)
+    let values: i64[] = [left ?? 0, 5, 6]
+    let [head, ...rest] = values
+    right ??= await fallback(7)
+    return head + rest.count + (right ?? 0)
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    return await chain(missing, missing)
+}
+"#;
+
+    check_source(source).expect("ownership-sensitive list destructuring should remain valid");
+    let generated = compile_to_c(source)
+        .expect("ownership-sensitive list destructuring should use the safe blocking fallback");
+    assert!(generated.contains("flux__async_body_chain("));
+    assert!(
+        generated.contains("flux__async_await_fallback(flux__async_start_fallback(INT64_C(7)))")
+    );
+    assert!(!generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(7), flux__async_resume_chain, flux__task)"
+    ));
+}
+
+#[test]
 fn async_coalescing_assignment_inside_branch_shapes_stays_lazy_and_nonblocking() {
     let source = r#"
 enum Choice {

@@ -16986,23 +16986,10 @@ fn async_coalescing_await_plan(function: &Function) -> Option<AsyncCoalescingAwa
         .enumerate()
         .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
         .collect::<Vec<_>>();
-    let (&first, &last) = statement_indices.first().zip(statement_indices.last())?;
+    statement_indices.first()?;
     for &statement_index in &statement_indices {
         let await_expr = coalescing_assignment_await_expr(&function.body[statement_index])?;
         direct_await_call(await_expr)?;
-    }
-    if first < last
-        && function.body[first + 1..last].iter().any(|stmt| {
-            matches!(
-                &stmt.kind,
-                StmtKind::LetDestructure { .. }
-                    | StmtKind::LetMultiDestructure { .. }
-                    | StmtKind::LetListDestructure { .. }
-                    | StmtKind::LetStructDestructure { .. }
-            )
-        })
-    {
-        return None;
     }
     Some(AsyncCoalescingAwaitPlan { statement_indices })
 }
@@ -24551,8 +24538,6 @@ fn emit_async_coalescing_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let resume_env = prefix_env.clone();
-    let resume_mutable = prefix_mutable.clone();
     emit_async_coalescing_sequence(
         out,
         function,
@@ -24578,31 +24563,29 @@ fn emit_async_coalescing_continuation_function(
                 local_c_name(&param.name)
             ));
         }
-        let mut state_env = resume_env.clone();
-        let mut state_mutable = resume_mutable.clone();
-        for prior_stmt in &function.body[..statement_index] {
-            match &prior_stmt.kind {
-                StmtKind::Let { name, .. } => {
-                    if let Some((_, ty)) = plan
-                        .locals
-                        .iter()
-                        .find(|(local_name, _)| local_name == name)
-                    {
-                        state_env.insert(name.clone(), ty.clone());
-                    }
-                }
-                StmtKind::Var { name, .. } => {
-                    if let Some((_, ty)) = plan
-                        .locals
-                        .iter()
-                        .find(|(local_name, _)| local_name == name)
-                    {
-                        state_env.insert(name.clone(), ty.clone());
-                        state_mutable.insert(name.clone());
-                    }
-                }
-                _ => {}
-            }
+        let mut state_env = function
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+            .collect::<HashMap<_, _>>();
+        let mut state_mutable = HashSet::new();
+        if statement_index > 0 {
+            let mut prior_locals = BTreeMap::new();
+            collect_async_saved_locals(
+                &function.body[..statement_index],
+                statement_index - 1,
+                &state_env,
+                signatures,
+                &mut prior_locals,
+                &mut state_mutable,
+            )
+            .ok_or_else(|| {
+                diag(
+                    function.body[statement_index].span,
+                    "async coalescing continuation locals changed after planning",
+                )
+            })?;
+            state_env.extend(prior_locals);
         }
         for (local_name, ty) in &plan.locals {
             if state_env.contains_key(local_name) {
@@ -25238,6 +25221,9 @@ fn emit_function(
     }
     out.push_str(" {\n");
     let mut env = HashMap::new();
+    if function.asynchronous {
+        env.insert("flux__async_context".to_string(), Type::Bool);
+    }
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
