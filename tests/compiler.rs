@@ -2797,6 +2797,176 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_cancellation_interrupts_blocking_http_server_and_client_io() {
+    let serve_source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn serve(listener: i64) -> void {
+    let serveError: error = http.serveOnce(listener, 4096, 1024, request, header, body)
+    if serveError == nil:
+        print(-1)
+    else:
+        print(1)
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    if listenError != nil:
+        return 1
+    let (handle, startError) = worker.startWith(serve, listener)
+    if startError != nil:
+        return 2
+    time.sleep(100)
+    let cancelError: error = worker.cancel(handle)
+    if cancelError != nil:
+        return 3
+    let joinError: error = worker.join(handle)
+    if joinError != nil:
+        return 4
+    let closeError: error = net.close(listener)
+    if closeError != nil:
+        return 5
+    return 0
+}
+"#;
+    check_source(serve_source).expect("cancelled HTTP server should typecheck");
+    let serve_generated =
+        compile_to_c(serve_source).expect("cancelled HTTP server should lower natively");
+    assert!(serve_generated.contains("http.serveOnce cancelled by worker scope"));
+    assert!(serve_generated.contains("HTTP request receive cancelled by worker scope"));
+
+    let root = std::env::temp_dir().join(format!("flux-worker-http-cancel-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP cancellation fixture should be writable");
+    let serve_path = root.join("serve.flux");
+    fs::write(&serve_path, serve_source).expect("HTTP cancellation server source should write");
+    let serve_binary = root.join("serve-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&serve_path)
+        .arg("-o")
+        .arg(&serve_binary)
+        .output()
+        .expect("HTTP cancellation server binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP cancellation server build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let started = Instant::now();
+    let run = Command::new(&serve_binary)
+        .output()
+        .expect("HTTP cancellation server binary should run");
+    assert!(
+        run.status.success(),
+        "HTTP cancellation server failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "cancelled serveOnce should not remain blocked in accept"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP cancellation port should bind");
+    let port = listener.local_addr().unwrap().port();
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (_stream, _) = listener
+            .accept()
+            .expect("HTTP cancellation peer should accept");
+        accepted_tx
+            .send(())
+            .expect("HTTP cancellation peer should signal accept");
+        let _ = release_rx.recv();
+    });
+    let receive_source = format!(
+        r#"fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {{
+}}
+fn header(_socket: i64, _name: str, _value: str) -> void {{
+}}
+fn body(_socket: i64, _body: str) -> void {{
+}}
+fn receive(socket: i64) -> void {{
+    let (_received, receiveError) = http.readResponseBody(socket, 4096, 1024, response, header, body)
+    if receiveError == nil:
+        print(-2)
+    else:
+        print(2)
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    if connectError != nil:
+        return 1
+    let (handle, startError) = worker.startWith(receive, socket)
+    if startError != nil:
+        return 2
+    time.sleep(100)
+    let cancelError: error = worker.cancel(handle)
+    if cancelError != nil:
+        return 3
+    let joinError: error = worker.join(handle)
+    if joinError != nil:
+        return 4
+    let closeError: error = net.close(socket)
+    if closeError != nil:
+        return 5
+    return 0
+}}
+"#
+    );
+    check_source(&receive_source).expect("cancelled HTTP response receive should typecheck");
+    let receive_generated = compile_to_c(&receive_source)
+        .expect("cancelled HTTP response receive should lower natively");
+    assert!(receive_generated.contains("HTTP response receive cancelled by worker scope"));
+    let receive_path = root.join("receive.flux");
+    fs::write(&receive_path, receive_source).expect("HTTP cancellation client source should write");
+    let receive_binary = root.join("receive-cancel");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&receive_path)
+        .arg("-o")
+        .arg(&receive_binary)
+        .output()
+        .expect("HTTP cancellation client binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP cancellation client build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let child = Command::new(&receive_binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP cancellation client should start");
+    accepted_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("HTTP cancellation peer should be accepted");
+    let started = Instant::now();
+    let output = child
+        .wait_with_output()
+        .expect("HTTP cancellation client should finish");
+    assert!(
+        output.status.success(),
+        "HTTP cancellation client failed with {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "cancelled HTTP response receive should not remain blocked"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+    let _ = release_tx.send(());
+    server.join().expect("HTTP cancellation peer should finish");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn canonical_short_platform_api_names_typecheck_and_lower() {
     let headless = r#"
 fn main() -> i64 {

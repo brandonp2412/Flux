@@ -4226,11 +4226,16 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_wait_readable_many(")
         || runtime_usage.contains("flux__net_wait_writable_many(")
         || runtime_usage.contains("flux__net_wait_ready_many(");
+    let uses_cancellable_http = runtime_usage
+        .contains("flux__net_http_receive_request_with_text_body_v2(")
+        || runtime_usage.contains("flux__net_http_receive_response_with_text_body_v2(")
+        || runtime_usage.contains("flux__net_http_serve_once(");
     let uses_cancellable_net = uses_net_wait
         || runtime_usage.contains("flux__net_tcp_accept_many(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
         || runtime_usage.contains("flux__net_receive_text_many(")
-        || runtime_usage.contains("flux__net_receive_text_from_many(");
+        || runtime_usage.contains("flux__net_receive_text_from_many(")
+        || uses_cancellable_http;
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
     {
@@ -4240,10 +4245,14 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
     if uses_cancellable_net {
         if runtime_usage.contains("flux__worker_") {
             out.push_str("static bool flux__worker_cancelled(void);\n");
+            out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int64_t remaining = timeout_millis; for (;;) { if (flux__worker_cancelled()) return -2; int wait_millis = remaining < 0 ? 50 : (remaining > 50 ? 50 : (int)remaining); int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); if (result != 0) return result; if (remaining == 0) return 0; if (remaining > 0) { remaining -= wait_millis; if (remaining <= 0) return 0; } } }\n");
         } else {
             out.push_str("#define flux__worker_cancelled() false\n");
+            out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int wait_millis = timeout_millis < 0 ? -1 : (int)timeout_millis; int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); return result; }\n");
         }
-        out.push_str("static inline int flux__net_poll_cancellable(struct pollfd *descriptors, nfds_t count, int64_t timeout_millis) { int64_t remaining = timeout_millis; for (;;) { if (flux__worker_cancelled()) return -2; int wait_millis = remaining < 0 ? 50 : (remaining > 50 ? 50 : (int)remaining); int result; do { for (nfds_t index = 0; index < count; ++index) descriptors[index].revents = 0; result = poll(descriptors, count, wait_millis); } while (result < 0 && errno == EINTR); if (result != 0) return result; if (remaining == 0) return 0; if (remaining > 0) { remaining -= wait_millis; if (remaining <= 0) return 0; } } }\n");
+        if uses_cancellable_http {
+            out.push_str("static inline ssize_t flux__net_recv_cancellable(int socket_handle, void *buffer, size_t length, int flags) { for (;;) { struct pollfd descriptor = { .fd = socket_handle, .events = POLLIN, .revents = 0 }; int ready = flux__net_poll_cancellable(&descriptor, 1, -1); if (ready == -2) return -2; if (ready < 0 || (descriptor.revents & POLLNVAL) != 0) return -1; ssize_t received = recv(socket_handle, buffer, length, flags); if (received < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue; return received; } }\n");
+        }
     }
     if runtime_usage.contains("flux__net_tcp_connect(")
         || runtime_usage.contains("flux__net_tcp_listen(")
@@ -4403,8 +4412,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     size_t head_length = 0;
     bool complete = false;
     while (head_length < (size_t)max_head_bytes) {
-        ssize_t received;
-        do { received = recv((int)socket_handle, head + head_length, 1, 0); } while (received < 0 && errno == EINTR);
+        ssize_t received = flux__net_recv_cancellable((int)socket_handle, head + head_length, 1, 0);
+        if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
         if (received < 0) return flux__net_result(-1, "failed to receive HTTP request head");
         if (received == 0) return flux__net_result(-1, "connection closed before HTTP request head completed");
         if (head[head_length] == '\0') return flux__net_result(-1, "HTTP request head contains a NUL byte");
@@ -4480,8 +4489,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             size_t chunk_line_length = 0;
             for (;;) {
                 if (chunk_line_length >= 1024) return flux__net_result(-1, "HTTP chunk size line is too long");
-                ssize_t received;
-                do { received = recv((int)socket_handle, chunk_line + chunk_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, chunk_line + chunk_line_length, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk size");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk size completed");
                 body_wire_length += 1;
@@ -4512,8 +4521,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
                     size_t trailer_line_length = 0;
                     for (;;) {
                         if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP request trailers exceed maxHeadBytes");
-                        ssize_t received;
-                        do { received = recv((int)socket_handle, trailer_line + trailer_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                        ssize_t received = flux__net_recv_cancellable((int)socket_handle, trailer_line + trailer_line_length, 1, 0);
+                        if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
                         if (received < 0) return flux__net_result(-1, "failed to receive HTTP request trailers");
                         if (received == 0) return flux__net_result(-1, "connection closed before HTTP request trailers completed");
                         if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP request trailer contains a NUL byte");
@@ -4539,8 +4548,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             }
             size_t chunk_offset = 0;
             while (chunk_offset < chunk_size) {
-                ssize_t received;
-                do { received = recv((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP request chunk");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP request chunk completed");
                 if (memchr(body + body_offset + chunk_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP request body contains a NUL byte");
@@ -4551,8 +4560,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             char ending[2];
             size_t ending_offset = 0;
             while (ending_offset < 2) {
-                ssize_t received;
-                do { received = recv((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk terminator");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk completed");
                 ending_offset += (size_t)received;
@@ -4563,8 +4572,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         body_length = body_offset;
     } else {
         while (body_offset < body_length) {
-            ssize_t received;
-            do { received = recv((int)socket_handle, body + body_offset, body_length - body_offset, 0); } while (received < 0 && errno == EINTR);
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, body_length - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP request receive cancelled by worker scope");
             if (received < 0) return flux__net_result(-1, "failed to receive HTTP request body");
             if (received == 0) return flux__net_result(-1, "connection closed before HTTP request body completed");
             if (memchr(body + body_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP request body contains a NUL byte");
@@ -4606,8 +4615,15 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return "failed to inspect TCP listener state";
     if (accepting == 0) return "HTTP server requires a listening TCP socket";
     int client;
-    do { client = accept((int)listener, NULL, NULL); } while (client < 0 && errno == EINTR);
-    if (client < 0) return "failed to accept HTTP connection";
+    for (;;) {
+        struct pollfd descriptor = { .fd = (int)listener, .events = POLLIN, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
+        if (ready == -2) return "http.serveOnce cancelled by worker scope";
+        if (ready < 0 || (descriptor.revents & POLLNVAL) != 0) return "failed to wait for HTTP connection";
+        do { client = accept((int)listener, NULL, NULL); } while (client < 0 && errno == EINTR);
+        if (client >= 0) break;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return "failed to accept HTTP connection";
+    }
     struct flux__net_i64_error received = flux__net_http_receive_request_with_text_body_v2(
         (int64_t)client,
         max_head_bytes,
@@ -4650,8 +4666,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     size_t head_length = 0;
     bool complete = false;
     while (head_length < (size_t)max_head_bytes) {
-        ssize_t received;
-        do { received = recv((int)socket_handle, head + head_length, 1, 0); } while (received < 0 && errno == EINTR);
+        ssize_t received = flux__net_recv_cancellable((int)socket_handle, head + head_length, 1, 0);
+        if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
         if (received < 0) return flux__net_result(-1, "failed to receive HTTP response head");
         if (received == 0) return flux__net_result(-1, "connection closed before HTTP response head completed");
         if (head[head_length] == '\0') return flux__net_result(-1, "HTTP response head contains a NUL byte");
@@ -4727,8 +4743,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             size_t chunk_line_length = 0;
             for (;;) {
                 if (chunk_line_length >= 1024) return flux__net_result(-1, "HTTP chunk size line is too long");
-                ssize_t received;
-                do { received = recv((int)socket_handle, chunk_line + chunk_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, chunk_line + chunk_line_length, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk size");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk size completed");
                 body_wire_length += 1;
@@ -4759,8 +4775,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
                     size_t trailer_line_length = 0;
                     for (;;) {
                         if (trailer_line_length >= 1024 || trailer_bytes >= (size_t)max_head_bytes) return flux__net_result(-1, "HTTP response trailers exceed maxHeadBytes");
-                        ssize_t received;
-                        do { received = recv((int)socket_handle, trailer_line + trailer_line_length, 1, 0); } while (received < 0 && errno == EINTR);
+                        ssize_t received = flux__net_recv_cancellable((int)socket_handle, trailer_line + trailer_line_length, 1, 0);
+                        if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
                         if (received < 0) return flux__net_result(-1, "failed to receive HTTP response trailers");
                         if (received == 0) return flux__net_result(-1, "connection closed before HTTP response trailers completed");
                         if (trailer_line[trailer_line_length] == '\0') return flux__net_result(-1, "HTTP response trailer contains a NUL byte");
@@ -4786,8 +4802,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             }
             size_t chunk_offset = 0;
             while (chunk_offset < chunk_size) {
-                ssize_t received;
-                do { received = recv((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset + chunk_offset, chunk_size - chunk_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP response chunk");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP response chunk completed");
                 if (memchr(body + body_offset + chunk_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP response body contains a NUL byte");
@@ -4798,8 +4814,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
             char ending[2];
             size_t ending_offset = 0;
             while (ending_offset < 2) {
-                ssize_t received;
-                do { received = recv((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, ending + ending_offset, 2 - ending_offset, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP chunk terminator");
                 if (received == 0) return flux__net_result(-1, "connection closed before HTTP chunk completed");
                 ending_offset += (size_t)received;
@@ -4810,8 +4826,8 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         body_length = body_offset;
     } else if (content_length_seen) {
         while (body_offset < body_length) {
-            ssize_t received;
-            do { received = recv((int)socket_handle, body + body_offset, body_length - body_offset, 0); } while (received < 0 && errno == EINTR);
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, body_length - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
             if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
             if (received == 0) return flux__net_result(-1, "connection closed before HTTP response body completed");
             if (memchr(body + body_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP response body contains a NUL byte");
@@ -4822,14 +4838,14 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         for (;;) {
             if (body_offset >= (size_t)max_body_bytes) {
                 char overflow_probe;
-                ssize_t received;
-                do { received = recv((int)socket_handle, &overflow_probe, 1, 0); } while (received < 0 && errno == EINTR);
+                ssize_t received = flux__net_recv_cancellable((int)socket_handle, &overflow_probe, 1, 0);
+                if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
                 if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
                 if (received == 0) break;
                 return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
             }
-            ssize_t received;
-            do { received = recv((int)socket_handle, body + body_offset, (size_t)max_body_bytes - body_offset, 0); } while (received < 0 && errno == EINTR);
+            ssize_t received = flux__net_recv_cancellable((int)socket_handle, body + body_offset, (size_t)max_body_bytes - body_offset, 0);
+            if (received == -2) return flux__net_result(-1, "HTTP response receive cancelled by worker scope");
             if (received < 0) return flux__net_result(-1, "failed to receive HTTP response body");
             if (received == 0) break;
             if (memchr(body + body_offset, '\0', (size_t)received) != NULL) return flux__net_result(-1, "HTTP response body contains a NUL byte");
