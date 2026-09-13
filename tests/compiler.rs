@@ -3327,6 +3327,14 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_http_serve_concurrent("));
     assert!(generated.contains("flux__worker_start_with(flux__net_http_concurrent_entry"));
     assert!(generated.contains("int64_t handles[64]"));
+    assert!(generated.contains("size_t payload_slots[64]"));
+    assert!(generated.contains("struct flux__http_concurrent_payload payloads[64]"));
+    assert!(generated.contains(
+        "flux__net_http_concurrent_payload_slot(payload_slots, pending, (size_t)max_concurrent)"
+    ));
+    assert!(generated.contains("payload_slots[pending] = payload_index"));
+    assert!(!generated.contains("malloc(sizeof(*payload))"));
+    assert!(!generated.contains("free(payload)"));
     assert!(
         generated.contains("static pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER")
     );
@@ -3338,7 +3346,10 @@ fn main() -> i64 {
     );
     assert!(generated.contains("pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex)"));
     assert!(generated.contains("current != NULL && current->cancel_requested"));
-    assert!(generated.contains("flux__net_http_reap_concurrent_ready(handles, &pending)"));
+    assert!(
+        generated
+            .contains("flux__net_http_reap_concurrent_ready(handles, payload_slots, &pending)")
+    );
     assert!(generated.contains("flux__net_http_cancel_join_concurrent_batch(handles, pending)"));
     assert!(generated.contains("if (!flux__worker_wait_any_done(handles, pending))"));
     assert!(!generated.contains("flux__worker_join(handles[0])"));
@@ -3597,6 +3608,8 @@ fn main() -> i64 {
     ));
     assert!(generated.contains("if (pending == (size_t)max_concurrent)"));
     assert!(generated.contains("while (pending < (size_t)max_concurrent)"));
+    assert!(generated.contains("struct flux__http_concurrent_payload payloads[64]"));
+    assert!(generated.contains("payload_slots[pending] = payload_index"));
     assert!(generated.contains("flux__net_poll_cancellable(&queued, 1, 0)"));
     assert!(generated.contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64"));
 
@@ -3610,6 +3623,109 @@ fn main() -> i64 {
             .message
             .contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64")
     );
+}
+
+#[test]
+fn http_serve_concurrent_limit_reuses_bounded_request_slot() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-serve-concurrent-slot-reuse-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("concurrent HTTP slot-reuse fixture should be writable");
+    let source_path = root.join("serve-slot-reuse.flux");
+    let source = r#"
+fn request(socket: i64, _method: str, _target: str, _version: str) -> void {
+    time.sleep(50)
+    let _responseError: error = http.respond(socket, 200, "text/plain", "served")
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn serve(listener: i64) -> void {
+    let _serveError: error = http.serveConcurrentLimit(listener, 4096, 1024, 1, request, header, body)
+}
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn responseHeader(_socket: i64, _name: str, _value: str) -> void {
+}
+fn responseBody(_socket: i64, value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    if listenError != nil:
+        return 1
+    let (port, portError) = net.port(listener)
+    if portError != nil:
+        return 2
+    let (server, startError) = worker.startWith(serve, listener)
+    if startError != nil:
+        return 3
+    time.sleep(50)
+    let (first, firstError) = net.connect("127.0.0.1", port)
+    if firstError != nil:
+        return 4
+    let (second, secondError) = net.connect("127.0.0.1", port)
+    if secondError != nil:
+        return 5
+    let firstRequestError: error = http.request(first, "GET", "/one", "example.test", "text/plain", "")
+    if firstRequestError != nil:
+        return 6
+    let secondRequestError: error = http.request(second, "GET", "/two", "example.test", "text/plain", "")
+    if secondRequestError != nil:
+        return 7
+    let (_firstBytes, firstReadError) = http.readResponseBody(first, 4096, 1024, response, responseHeader, responseBody)
+    if firstReadError != nil:
+        return 8
+    let (_secondBytes, secondReadError) = http.readResponseBody(second, 4096, 1024, response, responseHeader, responseBody)
+    if secondReadError != nil:
+        return 9
+    let firstCloseError: error = net.close(first)
+    if firstCloseError != nil:
+        return 10
+    let secondCloseError: error = net.close(second)
+    if secondCloseError != nil:
+        return 11
+    let cancelError: error = worker.cancel(server)
+    if cancelError != nil:
+        return 12
+    let joinError: error = worker.join(server)
+    if joinError != nil:
+        return 13
+    let listenerCloseError: error = net.close(listener)
+    if listenerCloseError != nil:
+        return 14
+    return 0
+}
+"#;
+    fs::write(&source_path, source).expect("concurrent HTTP slot-reuse source should write");
+    let binary = root.join("serve-slot-reuse");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("concurrent HTTP slot-reuse binary should build");
+    assert!(
+        built.status.success(),
+        "concurrent HTTP slot-reuse build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("concurrent HTTP slot-reuse binary should run");
+    assert!(
+        run.status.success(),
+        "concurrent HTTP slot-reuse fixture failed with {:?}: stdout={} stderr={}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "served\nserved\n");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

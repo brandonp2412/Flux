@@ -5857,8 +5857,20 @@ static void flux__net_http_concurrent_entry(int64_t opaque) {
     );
     if (payload->socket_handle >= 0 && payload->socket_handle <= INT_MAX) close((int)payload->socket_handle);
     const char *error = received.v1;
-    free(payload);
     if (error != NULL) flux__worker_fail_current(error);
+}
+static size_t flux__net_http_concurrent_payload_slot(const size_t *payload_slots, size_t count, size_t capacity) {
+    for (size_t candidate = 0; candidate < capacity; ++candidate) {
+        bool used = false;
+        for (size_t index = 0; index < count; ++index) {
+            if (payload_slots[index] == candidate) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return candidate;
+    }
+    return capacity;
 }
 static const char *flux__net_http_join_concurrent_batch(int64_t *handles, size_t count) {
     const char *first_error = NULL;
@@ -5877,7 +5889,7 @@ static const char *flux__net_http_cancel_join_concurrent_batch(int64_t *handles,
     const char *join_error = flux__net_http_join_concurrent_batch(handles, count);
     return first_error != NULL ? first_error : join_error;
 }
-static const char *flux__net_http_reap_concurrent_ready(int64_t *handles, size_t *count) {
+static const char *flux__net_http_reap_concurrent_ready(int64_t *handles, size_t *payload_slots, size_t *count) {
     const char *first_error = NULL;
     size_t write_index = 0;
     for (size_t index = 0; index < *count; ++index) {
@@ -5886,7 +5898,9 @@ static const char *flux__net_http_reap_concurrent_ready(int64_t *handles, size_t
             const char *error = flux__worker_join(handle);
             if (error != NULL && first_error == NULL) first_error = error;
         } else {
-            handles[write_index++] = handle;
+            handles[write_index] = handle;
+            payload_slots[write_index] = payload_slots[index];
+            write_index += 1;
         }
     }
     *count = write_index;
@@ -5905,9 +5919,11 @@ static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_
     if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return "failed to inspect HTTP server listener state";
     if (accepting == 0) return "HTTP concurrent server requires a listening TCP socket";
     int64_t handles[64];
+    size_t payload_slots[64];
+    struct flux__http_concurrent_payload payloads[64];
     size_t pending = 0;
     for (;;) {
-        const char *reap_error = flux__net_http_reap_concurrent_ready(handles, &pending);
+        const char *reap_error = flux__net_http_reap_concurrent_ready(handles, payload_slots, &pending);
         if (reap_error != NULL) {
             (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
             return reap_error;
@@ -5917,7 +5933,7 @@ static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_
                 const char *batch_error = flux__net_http_cancel_join_concurrent_batch(handles, pending);
                 return batch_error != NULL ? batch_error : "http.serveConcurrent cancelled by worker scope";
             }
-            const char *slot_error = flux__net_http_reap_concurrent_ready(handles, &pending);
+            const char *slot_error = flux__net_http_reap_concurrent_ready(handles, payload_slots, &pending);
             if (slot_error != NULL) {
                 (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
                 return slot_error;
@@ -5949,12 +5965,13 @@ static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_
                 (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
                 return "failed to accept HTTP connection";
             }
-            struct flux__http_concurrent_payload *payload = malloc(sizeof(*payload));
-            if (payload == NULL) {
+            size_t payload_index = flux__net_http_concurrent_payload_slot(payload_slots, pending, (size_t)max_concurrent);
+            if (payload_index >= (size_t)max_concurrent) {
                 close(accepted);
                 (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
-                return "http.serveConcurrent could not allocate request state";
+                return "http.serveConcurrent request slot accounting failed";
             }
+            struct flux__http_concurrent_payload *payload = &payloads[payload_index];
             payload->socket_handle = (int64_t)accepted;
             payload->max_head_bytes = max_head_bytes;
             payload->max_body_bytes = max_body_bytes;
@@ -5964,11 +5981,12 @@ static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_
             struct flux__worker_i64_error started = flux__worker_start_with(flux__net_http_concurrent_entry, (int64_t)(intptr_t)payload);
             if (started.v1 != NULL) {
                 close(accepted);
-                free(payload);
                 (void)flux__net_http_cancel_join_concurrent_batch(handles, pending);
                 return started.v1;
             }
-            handles[pending++] = started.v0;
+            handles[pending] = started.v0;
+            payload_slots[pending] = payload_index;
+            pending += 1;
             if (pending == (size_t)max_concurrent) break;
 
             struct pollfd queued = { .fd = (int)listener, .events = POLLIN, .revents = 0 };
