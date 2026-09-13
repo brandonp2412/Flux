@@ -16553,7 +16553,7 @@ struct AsyncListMatchAwaitPlan {
 
 #[derive(Clone)]
 struct AsyncCoalescingAwaitPlan {
-    statement_index: usize,
+    statement_indices: Vec<usize>,
 }
 
 fn expr_contains_await(expr: &Expr) -> bool {
@@ -16980,19 +16980,33 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
 }
 
 fn async_coalescing_await_plan(function: &Function) -> Option<AsyncCoalescingAwaitPlan> {
-    let await_statements = function
+    let statement_indices = function
         .body
         .iter()
         .enumerate()
         .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
         .collect::<Vec<_>>();
-    let [statement_index] = await_statements.as_slice() else {
+    let (&first, &last) = statement_indices.first().zip(statement_indices.last())?;
+    for &statement_index in &statement_indices {
+        let await_expr = coalescing_assignment_await_expr(&function.body[statement_index])?;
+        direct_await_call(await_expr)?;
+    }
+    if first < last
+        && function.body[first + 1..last].iter().any(|stmt| {
+            matches!(
+                &stmt.kind,
+                StmtKind::Let { .. }
+                    | StmtKind::Var { .. }
+                    | StmtKind::LetDestructure { .. }
+                    | StmtKind::LetMultiDestructure { .. }
+                    | StmtKind::LetListDestructure { .. }
+                    | StmtKind::LetStructDestructure { .. }
+            )
+        })
+    {
         return None;
-    };
-    let statement_index = *statement_index;
-    let await_expr = coalescing_assignment_await_expr(&function.body[statement_index])?;
-    direct_await_call(await_expr)?;
-    Some(AsyncCoalescingAwaitPlan { statement_index })
+    }
+    Some(AsyncCoalescingAwaitPlan { statement_indices })
 }
 
 fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
@@ -17554,9 +17568,9 @@ fn async_continuation_plan(
             || list_match_await
                 .as_ref()
                 .is_some_and(|match_plan| match_plan.statement_index == stmt_index)
-            || coalescing_await
-                .as_ref()
-                .is_some_and(|coalescing_plan| coalescing_plan.statement_index == stmt_index);
+            || coalescing_await.as_ref().is_some_and(|coalescing_plan| {
+                coalescing_plan.statement_indices.contains(&stmt_index)
+            });
         if stmt_contains_await(stmt) && !specially_lowered {
             let await_expr = direct_await_expr(stmt)?;
             let (callee, _, _) = direct_await_call(await_expr)?;
@@ -24398,6 +24412,95 @@ fn emit_async_list_match_continuation_function(
     Ok(())
 }
 
+fn emit_async_coalescing_sequence(
+    out: &mut String,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    coalescing_plan: &AsyncCoalescingAwaitPlan,
+    start_order: usize,
+    mut segment_start: usize,
+    env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let pad = "            ";
+    for order in start_order..coalescing_plan.statement_indices.len() {
+        let statement_index = coalescing_plan.statement_indices[order];
+        emit_block(
+            out,
+            &function.body[segment_start..statement_index],
+            3,
+            env,
+            mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
+        let stmt = &function.body[statement_index];
+        let StmtKind::Assign {
+            name,
+            coalescing: true,
+            ..
+        } = &stmt.kind
+        else {
+            return Err(diag(
+                stmt.span,
+                "async coalescing continuation plan no longer points at a coalescing assignment",
+            ));
+        };
+        let Some(target_ty) = env.get(name).map(|ty| signatures.canonical_type(ty)) else {
+            return Err(diag(
+                stmt.span,
+                "async coalescing continuation target disappeared after type checking",
+            ));
+        };
+        if !matches!(target_ty, Type::Optional(_)) || !mutable.contains(name) {
+            return Err(diag(
+                stmt.span,
+                "async coalescing continuation target contract changed after type checking",
+            ));
+        }
+        out.push_str(&format!("{pad}if (!{}.has_value) {{\n", local_c_name(name)));
+        emit_source_line(out, stmt.span, context.source_paths);
+        emit_async_suspend(
+            out,
+            "                ",
+            stmt,
+            order + 1,
+            function,
+            plan,
+            env,
+            signatures,
+        )?;
+        out.push_str(&format!("{pad}}}\n"));
+        segment_start = statement_index + 1;
+    }
+
+    emit_block(
+        out,
+        &function.body[segment_start..],
+        3,
+        env,
+        mutable,
+        signatures,
+        temp_counter,
+        context,
+    )?;
+    if function.returns.is_empty() {
+        out.push_str(&format!(
+            "{pad}{}(flux__task);\n{pad}return;\n",
+            async_finish_c_name(&function.name)
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+        ));
+    }
+    Ok(())
+}
+
 fn emit_async_coalescing_continuation_function(
     out: &mut String,
     function: &Function,
@@ -24407,16 +24510,10 @@ fn emit_async_coalescing_continuation_function(
     temp_counter: &mut usize,
     context: BlockEmitContext<'_>,
 ) -> Result<(), Diagnostic> {
-    let stmt = &function.body[coalescing_plan.statement_index];
-    let StmtKind::Assign {
-        name,
-        coalescing: true,
-        ..
-    } = &stmt.kind
-    else {
+    let Some(&first_statement_index) = coalescing_plan.statement_indices.first() else {
         return Err(diag(
-            stmt.span,
-            "async coalescing continuation plan no longer points at a coalescing assignment",
+            function.span,
+            "async coalescing continuation plan has no suspension points",
         ));
     };
     let task_name = async_task_c_name(&function.name);
@@ -24431,12 +24528,12 @@ fn emit_async_coalescing_continuation_function(
     out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
     out.push_str("    switch (flux__task->state) {\n");
 
-    let mut resume_env = function
+    let mut prefix_env = function
         .params
         .iter()
         .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
         .collect::<HashMap<_, _>>();
-    let mut resume_mutable = plan.mutable.clone();
+    let mut prefix_mutable = plan.mutable.clone();
     let pad = "            ";
     out.push_str("        case 0: {\n");
     for (index, param) in function.params.iter().enumerate() {
@@ -24448,113 +24545,79 @@ fn emit_async_coalescing_continuation_function(
     }
     emit_block(
         out,
-        &function.body[..coalescing_plan.statement_index],
+        &function.body[..first_statement_index],
         3,
-        &mut resume_env,
-        &mut resume_mutable,
+        &mut prefix_env,
+        &mut prefix_mutable,
         signatures,
         temp_counter,
         state_context,
     )?;
-    let Some(target_ty) = resume_env.get(name).map(|ty| signatures.canonical_type(ty)) else {
-        return Err(diag(
-            stmt.span,
-            "async coalescing continuation target disappeared after type checking",
-        ));
-    };
-    if !matches!(target_ty, Type::Optional(_)) || !resume_mutable.contains(name) {
-        return Err(diag(
-            stmt.span,
-            "async coalescing continuation target contract changed after type checking",
-        ));
-    }
-    out.push_str(&format!("{pad}if (!{}.has_value) {{\n", local_c_name(name)));
-    emit_source_line(out, stmt.span, context.source_paths);
-    emit_async_suspend(
+    let resume_env = prefix_env.clone();
+    let resume_mutable = prefix_mutable.clone();
+    emit_async_coalescing_sequence(
         out,
-        "                ",
-        stmt,
-        1,
         function,
+        signatures,
         plan,
-        &resume_env,
-        signatures,
-    )?;
-    out.push_str(&format!("{pad}}}\n"));
-
-    let mut initial_tail_env = resume_env.clone();
-    let mut initial_tail_mutable = resume_mutable.clone();
-    emit_block(
-        out,
-        &function.body[coalescing_plan.statement_index + 1..],
-        3,
-        &mut initial_tail_env,
-        &mut initial_tail_mutable,
-        signatures,
+        coalescing_plan,
+        0,
+        first_statement_index,
+        &mut prefix_env,
+        &mut prefix_mutable,
         temp_counter,
         state_context,
     )?;
-    if function.returns.is_empty() {
-        out.push_str(&format!(
-            "{pad}{}(flux__task);\n{pad}return;\n",
-            async_finish_c_name(&function.name)
-        ));
-    } else {
-        out.push_str(&format!(
-            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-        ));
-    }
     out.push_str("        }\n");
 
-    out.push_str("        case 1: {\n");
-    for (index, param) in function.params.iter().enumerate() {
-        out.push_str(&format!(
-            "{pad}{} {} = flux__task->arg_{index};\n",
-            c_type(&param.ty, signatures),
-            local_c_name(&param.name)
-        ));
-    }
-    for (local_name, ty) in &plan.locals {
-        if resume_env.contains_key(local_name) {
+    for (order, &statement_index) in coalescing_plan.statement_indices.iter().enumerate() {
+        let state = order + 1;
+        out.push_str(&format!("        case {state}: {{\n"));
+        for (index, param) in function.params.iter().enumerate() {
             out.push_str(&format!(
-                "{pad}{} {} = flux__task->{};\n",
-                c_type(ty, signatures),
-                local_c_name(local_name),
-                async_saved_local_field_name(local_name)
+                "{pad}{} {} = flux__task->arg_{index};\n",
+                c_type(&param.ty, signatures),
+                local_c_name(&param.name)
             ));
         }
+        let mut state_env = resume_env.clone();
+        let mut state_mutable = resume_mutable.clone();
+        for (local_name, ty) in &plan.locals {
+            if state_env.contains_key(local_name) {
+                out.push_str(&format!(
+                    "{pad}{} {} = flux__task->{};\n",
+                    c_type(ty, signatures),
+                    local_c_name(local_name),
+                    async_saved_local_field_name(local_name)
+                ));
+            }
+        }
+        let stmt = &function.body[statement_index];
+        emit_async_completed_await(
+            out,
+            pad,
+            stmt,
+            function,
+            &mut state_env,
+            &mut state_mutable,
+            signatures,
+            temp_counter,
+        )?;
+        emit_async_coalescing_sequence(
+            out,
+            function,
+            signatures,
+            plan,
+            coalescing_plan,
+            order + 1,
+            statement_index + 1,
+            &mut state_env,
+            &mut state_mutable,
+            temp_counter,
+            state_context,
+        )?;
+        out.push_str("        }\n");
     }
-    emit_async_completed_await(
-        out,
-        pad,
-        stmt,
-        function,
-        &mut resume_env,
-        &mut resume_mutable,
-        signatures,
-        temp_counter,
-    )?;
-    emit_block(
-        out,
-        &function.body[coalescing_plan.statement_index + 1..],
-        3,
-        &mut resume_env,
-        &mut resume_mutable,
-        signatures,
-        temp_counter,
-        state_context,
-    )?;
-    if function.returns.is_empty() {
-        out.push_str(&format!(
-            "{pad}{}(flux__task);\n{pad}return;\n",
-            async_finish_c_name(&function.name)
-        ));
-    } else {
-        out.push_str(&format!(
-            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-        ));
-    }
-    out.push_str("        }\n");
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
     out.push_str("    }\n}\n");
     Ok(())

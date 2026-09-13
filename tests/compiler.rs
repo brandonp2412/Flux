@@ -41205,6 +41205,78 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_assignment_chains_multiple_top_level_suspensions() {
+    let source = r#"
+async fn fallback(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn chain(first: i64?, second: i64?) -> i64 {
+    var left: i64? = first
+    var right: i64? = second
+    var total: i64 = 1
+    left ??= await fallback(4)
+    total = total + (left ?? 0)
+    right ??= await fallback(6)
+    total = total + (right ?? 0)
+    return total
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let leftPresent: i64? = 3
+    let rightPresent: i64? = 5
+    let first: i64 = await chain(missing, missing)
+    let second: i64 = await chain(leftPresent, missing)
+    let third: i64 = await chain(missing, rightPresent)
+    let fourth: i64 = await chain(leftPresent, rightPresent)
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source).expect("chained async coalescing assignments should typecheck");
+    let generated = compile_to_c(source)
+        .expect("chained async coalescing assignments should lower to continuation states");
+    assert!(generated.contains("flux__async_resume_chain"));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(4), flux__async_resume_chain, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(6), flux__async_resume_chain, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_fallback(flux__async_start_fallback"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-chain-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async coalescing chain fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-chain");
+    fs::write(&source_path, source).expect("async coalescing chain source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("async coalescing chain binary should build");
+    assert!(
+        built.status.success(),
+        "async coalescing chain build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("async coalescing chain binary should run");
+    assert_eq!(output.status.code(), Some(40));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "4\n6\n6\n4\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_coalescing_assignment_inside_branch_shapes_stays_lazy_and_nonblocking() {
     let source = r#"
 enum Choice {
