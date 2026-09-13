@@ -2546,7 +2546,7 @@ fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
         native_package.as_ref(),
     )?;
 
-    eprintln!("profile: recording task/frame timeline");
+    eprintln!("profile: recording task/frame/layout/network timeline");
     let run_status = Command::new(&binary)
         .env("FLUX_TIMELINE_FILE", &timeline)
         .stdin(Stdio::inherit())
@@ -2571,7 +2571,7 @@ fn profile_timeline_target(target: &Path) -> Result<(), CliError> {
         String::new()
     };
     if report.is_empty() {
-        eprintln!("profile: timeline contained no task/frame events");
+        eprintln!("profile: timeline contained no task/frame/layout/network events");
     } else {
         eprintln!("profile: timeline report (monotonic_us\tcategory\tname\tphase\tvalue)");
         print!("{report}");

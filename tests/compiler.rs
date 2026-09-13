@@ -25979,6 +25979,12 @@ app TimelineScreen(onStart: startAnimation)
     assert!(linux.contains(
         "flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state)"
     ));
+    assert!(linux.contains(
+        "flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state)"
+    ));
+    assert!(linux.contains(
+        "flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state)"
+    ));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("animation timeline fixture should analyze");
@@ -25993,6 +25999,12 @@ app TimelineScreen(onStart: startAnimation)
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnTimelineFrame"));
     assert!(android.contains("(jlong)duration_ms"));
     assert!(android.contains("callback((int64_t)progress)"));
+    assert!(android.contains(
+        "flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state)"
+    ));
+    assert!(android.contains(
+        "flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state)"
+    ));
     assert!(!android.contains("gdk_frame_clock_get_frame_time"));
 
     let negative = r#"
@@ -36110,6 +36122,44 @@ async fn main() -> i64 {
     assert!(stdout.contains("\ttask\taddOne\tstart\t0"));
     assert!(stdout.contains("\ttask\taddOne\tfinish\t"));
     assert!(stdout.contains("\ttask\tmain\tfinish\t"));
+}
+
+#[test]
+fn timeline_profiler_reports_network_spans() {
+    let source = r#"
+fn main() -> i64 {
+    let (listener, listenError) = net.tcpListen("127.0.0.1", 0, 1)
+    print(listenError)
+    print(net.close(listener))
+    return 0
+}
+"#;
+    let root = std::env::temp_dir().join(format!(
+        "flux-network-timeline-profile-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("network timeline profile fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("network timeline profile source should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("profile")
+        .arg(&source_path)
+        .arg("--timeline")
+        .output()
+        .expect("network timeline profiler should run");
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        output.status.success(),
+        "network timeline profiler failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("profile: timeline report"));
+    assert!(stdout.contains("\tnetwork\tnet.tcpListen\tbegin\t0"));
+    assert!(stdout.contains("\tnetwork\tnet.tcpListen\tend\t0"));
 }
 
 #[test]

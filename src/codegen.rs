@@ -1643,7 +1643,7 @@ fn emit_runtime_prelude(
     out.push_str("#include <stdio.h>\n");
     out.push_str("#include <stdlib.h>\n");
     out.push_str("#include <string.h>\n");
-    out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n#include <time.h>\nstatic void flux__profile_timeline_emit(const char *category, const char *name, const char *phase, int64_t value) { const char *path = getenv(\"FLUX_TIMELINE_FILE\"); if (path == NULL || path[0] == '\\0') return; struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return; FILE *file = fopen(path, \"a\"); if (file == NULL) return; int64_t micros = (int64_t)now.tv_sec * INT64_C(1000000) + (int64_t)(now.tv_nsec / 1000); fprintf(file, \"%lld\\t%s\\t%s\\t%s\\t%lld\\n\", (long long)micros, category, name, phase, (long long)value); fclose(file); }\n#else\n#define flux__profile_timeline_emit(category, name, phase, value) ((void)0)\n#endif\n");
+    out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n#include <time.h>\nstatic void flux__profile_timeline_emit(const char *category, const char *name, const char *phase, int64_t value) { const char *path = getenv(\"FLUX_TIMELINE_FILE\"); if (path == NULL || path[0] == '\\0') return; struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return; FILE *file = fopen(path, \"a\"); if (file == NULL) return; int64_t micros = (int64_t)now.tv_sec * INT64_C(1000000) + (int64_t)(now.tv_nsec / 1000); fprintf(file, \"%lld\\t%s\\t%s\\t%s\\t%lld\\n\", (long long)micros, category, name, phase, (long long)value); fclose(file); }\n#define flux__profile_timeline_span(category, name, expression) ({ flux__profile_timeline_emit((category), (name), \"begin\", 0); __auto_type flux__profile_result = (expression); flux__profile_timeline_emit((category), (name), \"end\", 0); flux__profile_result; })\n#else\n#define flux__profile_timeline_emit(category, name, phase, value) ((void)0)\n#define flux__profile_timeline_span(category, name, expression) (expression)\n#endif\n");
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
@@ -12043,7 +12043,7 @@ fn emit_android_ui_refresh(
 ) -> Result<(), Diagnostic> {
     let runtime_names = android_ui_runtime_value_names(view);
     let runtime_dependencies = ui_runtime_dependency_map(view);
-    out.push_str("static void flux__android_ui_refresh(JNIEnv *env, jobject activity, int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n");
+    out.push_str("static void flux__android_ui_refresh(JNIEnv *env, jobject activity, int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state);\n");
     for derived in &view.derived {
         if !runtime_names.contains(&derived.name) {
             continue;
@@ -12059,10 +12059,10 @@ fn emit_android_ui_refresh(
         ));
     }
     out.push_str("    jclass activity_class = (*env)->GetObjectClass(env, activity);\n");
-    out.push_str("    if (activity_class == NULL) { flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n");
+    out.push_str("    if (activity_class == NULL) { flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state); flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n");
     out.push_str("    jmethodID find_view = (*env)->GetMethodID(env, activity_class, \"findViewById\", \"(I)Landroid/view/View;\");\n");
     out.push_str(
-        "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n",
+        "    if (find_view == NULL) { (*env)->DeleteLocalRef(env, activity_class); flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state); flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state); return; }\n",
     );
 
     for element in &view.elements {
@@ -13209,7 +13209,7 @@ fn emit_android_ui_refresh(
         out.push_str("    }\n");
     }
     out.push_str("    (*env)->DeleteLocalRef(env, activity_class);\n");
-    out.push_str("    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
+    out.push_str("    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state);\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
     out.push_str("JNIEXPORT void JNICALL Java_app_flux_runtime_FluxActivity_nativeRefreshUi(JNIEnv *env, jobject activity) { flux__android_ui_refresh(env, activity, -1); }\n\n");
     Ok(())
 }
@@ -13817,7 +13817,7 @@ fn emit_ui_refresh(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let runtime_dependencies = ui_runtime_dependency_map(view);
-    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n");
+    out.push_str("static void flux__ui_refresh_changed(int changed_state) {\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"begin\", changed_state);\n    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"begin\", changed_state);\n");
     for derived in &view.derived {
         let value = ui_expr_c(&derived.value, view, signatures)?;
         let dependencies = runtime_dependencies
@@ -14194,7 +14194,7 @@ fn emit_ui_refresh(
         }
         out.push_str("    }\n");
     }
-    out.push_str("    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
+    out.push_str("    flux__profile_timeline_emit(\"layout\", \"ui-refresh\", \"end\", changed_state);\n    flux__profile_timeline_emit(\"frame\", \"ui-refresh\", \"end\", changed_state);\n}\n\n");
     out.push_str("static inline void flux__ui_refresh(void) { flux__ui_refresh_changed(-1); }\n\n");
     Ok(())
 }
@@ -26755,6 +26755,10 @@ fn emit_expr(
     Ok(emitted)
 }
 
+fn profiled_timeline_call(category: &str, name: &str, code: String) -> String {
+    format!("flux__profile_timeline_span(\"{category}\", \"{name}\", ({code}))")
+}
+
 fn emit_qualified_call(
     span: SourceSpan,
     namespace: &str,
@@ -26902,7 +26906,11 @@ fn emit_qualified_call(
                 let host = emit_expr(&args[0], env, signatures)?;
                 let port = emit_expr(&args[1], env, signatures)?;
                 return Ok((
-                    format!("flux__net_tcp_connect({}, {})", host.code, port.code),
+                    profiled_timeline_call(
+                        "network",
+                        "net.tcpConnect",
+                        format!("flux__net_tcp_connect({}, {})", host.code, port.code),
+                    ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
                 ));
@@ -26932,9 +26940,13 @@ fn emit_qualified_call(
                 let port = emit_expr(&args[1], env, signatures)?;
                 let backlog = emit_expr(&args[2], env, signatures)?;
                 return Ok((
-                    format!(
-                        "flux__net_tcp_listen({}, {}, {})",
-                        host.code, port.code, backlog.code
+                    profiled_timeline_call(
+                        "network",
+                        "net.tcpListen",
+                        format!(
+                            "flux__net_tcp_listen({}, {}, {})",
+                            host.code, port.code, backlog.code
+                        ),
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
@@ -26946,7 +26958,11 @@ fn emit_qualified_call(
                 }
                 let listener = emit_expr(&args[0], env, signatures)?;
                 return Ok((
-                    format!("flux__net_tcp_accept({})", listener.code),
+                    profiled_timeline_call(
+                        "network",
+                        "net.tcpAccept",
+                        format!("flux__net_tcp_accept({})", listener.code),
+                    ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
                 ));
@@ -27049,7 +27065,11 @@ fn emit_qualified_call(
                 let socket_handle = emit_expr(&args[0], env, signatures)?;
                 let text = emit_expr(&args[1], env, signatures)?;
                 return Ok((
-                    format!("flux__net_send_text({}, {})", socket_handle.code, text.code),
+                    profiled_timeline_call(
+                        "network",
+                        "net.sendText",
+                        format!("flux__net_send_text({}, {})", socket_handle.code, text.code),
+                    ),
                     vec![Type::Error],
                     None,
                 ));
@@ -27165,9 +27185,13 @@ fn emit_qualified_call(
                 let max_bytes = emit_expr(&args[1], env, signatures)?;
                 let callback = emit_expr(&args[2], env, signatures)?;
                 return Ok((
-                    format!(
-                        "flux__net_receive_text({}, {}, {})",
-                        socket_handle.code, max_bytes.code, callback.code
+                    profiled_timeline_call(
+                        "network",
+                        "net.receiveText",
+                        format!(
+                            "flux__net_receive_text({}, {}, {})",
+                            socket_handle.code, max_bytes.code, callback.code
+                        ),
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
@@ -27362,14 +27386,18 @@ fn emit_qualified_call(
                 let header_callback = emit_expr(&args[4], env, signatures)?;
                 let body_callback = emit_expr(&args[5], env, signatures)?;
                 return Ok((
-                    format!(
-                        "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {}, {}, {})",
-                        socket_handle.code,
-                        max_head_bytes.code,
-                        max_body_bytes.code,
-                        request_callback.code,
-                        header_callback.code,
-                        body_callback.code
+                    profiled_timeline_call(
+                        "network",
+                        "http.receiveRequestWithTextBody",
+                        format!(
+                            "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            max_head_bytes.code,
+                            max_body_bytes.code,
+                            request_callback.code,
+                            header_callback.code,
+                            body_callback.code
+                        ),
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
@@ -27435,14 +27463,18 @@ fn emit_qualified_call(
                 let header_callback = emit_expr(&args[4], env, signatures)?;
                 let body_callback = emit_expr(&args[5], env, signatures)?;
                 return Ok((
-                    format!(
-                        "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {}, {}, {})",
-                        socket_handle.code,
-                        max_head_bytes.code,
-                        max_body_bytes.code,
-                        response_callback.code,
-                        header_callback.code,
-                        body_callback.code
+                    profiled_timeline_call(
+                        "network",
+                        "http.receiveResponseWithTextBody",
+                        format!(
+                            "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            max_head_bytes.code,
+                            max_body_bytes.code,
+                            response_callback.code,
+                            header_callback.code,
+                            body_callback.code
+                        ),
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
@@ -27464,15 +27496,19 @@ fn emit_qualified_call(
                     "false".to_string()
                 };
                 return Ok((
-                    format!(
-                        "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {})",
-                        socket_handle.code,
-                        method.code,
-                        target.code,
-                        host.code,
-                        content_type.code,
-                        body.code,
-                        keep_alive
+                    profiled_timeline_call(
+                        "network",
+                        "http.request",
+                        format!(
+                            "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            method.code,
+                            target.code,
+                            host.code,
+                            content_type.code,
+                            body.code,
+                            keep_alive
+                        ),
                     ),
                     vec![Type::Error],
                     None,
@@ -27552,9 +27588,17 @@ fn emit_qualified_call(
                     "false".to_string()
                 };
                 return Ok((
-                    format!(
-                        "flux__net_http_send_text_response({}, {}, {}, {}, {})",
-                        socket_handle.code, status.code, content_type.code, body.code, keep_alive
+                    profiled_timeline_call(
+                        "network",
+                        "http.respond",
+                        format!(
+                            "flux__net_http_send_text_response({}, {}, {}, {}, {})",
+                            socket_handle.code,
+                            status.code,
+                            content_type.code,
+                            body.code,
+                            keep_alive
+                        ),
                     ),
                     vec![Type::Error],
                     None,

@@ -44,7 +44,7 @@ flux profile benchmarks/perf/compute.flux --sample
 
 This path is intended for production-representative CPU investigation where `gprof` instrumentation would distort the workload. It requires Linux `perf` plus permission to use the kernel performance counters; restrictive `kernel.perf_event_paranoid` or container policies can still block sampling. `flux doctor` reports whether the `perf` command is installed, and failures point at the kernel permission setting rather than silently falling back to an instrumented profiler. Ordinary Flux binaries remain unchanged.
 
-## Task and frame timelines
+## Task, frame, layout, and network timelines
 
 `flux profile <target> --timeline` builds an isolated optimized profile binary with compiler-owned timeline tracing enabled only for that run. The report is emitted as tab-separated monotonic timestamps with `category`, `name`, `phase`, and `value` columns, then the temporary trace and binary are removed.
 
@@ -52,8 +52,10 @@ This path is intended for production-representative CPU investigation where `gpr
 flux profile examples/profiling.flux --timeline
 ```
 
-Async task tracing records task start, continuation suspension, and finish events, including the continuation state number at suspension/finish. Application tracing records UI refresh begin/end spans and explicit `frame.request` / `frame.timeline` callback begin/end spans, with animation progress carried in the value column. This makes task stalls and render work comparable on one monotonic clock without exposing a framework object hierarchy.
+Async task tracing records task start, continuation suspension, and finish events, including the continuation state number at suspension/finish. Frame tracing records UI refresh begin/end spans and explicit `frame.request` / `frame.timeline` callback begin/end spans, with animation progress carried in the value column. Dedicated `layout` spans bracket compiler-owned native UI refresh work on Linux and Android and retain the changed-state identifier in the value column, making layout/reflow work visible beside the enclosing frame activity without exposing a widget-object hierarchy.
 
-Timeline tracing is opt-in at native compile time through the dedicated profiler path. Normal debug/profile/release builds preprocess the trace calls to no-ops and do not open trace files, sample clocks, or carry a timeline runtime tax.
+Network tracing brackets canonical TCP connect/listen/accept, text send/receive, and HTTP request/response-body operations with `network` begin/end spans. Blocking network latency therefore shares the same monotonic trace as task, frame, and layout work, while payloads, credentials, and request bodies are never written to the trace.
+
+Timeline tracing is opt-in at native compile time through the dedicated profiler path. Normal debug/profile/release builds preprocess event emission to no-ops and reduce profiled network-span wrappers to the original native expression, so they do not open trace files, sample clocks, or carry a timeline runtime tax.
 
 CPU address-to-source enrichment gracefully falls back to the profiler's native location when `addr2line` is unavailable or an instruction has no Flux source line.

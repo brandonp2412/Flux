@@ -1025,8 +1025,8 @@ Web is a supported target, not the implementation substrate for native apps.
 - [x] Bootstrap memory leak tooling through `flux profile <target> --leaks`: the CLI builds an isolated optimized native binary with Clang AddressSanitizer, enables leak detection only for that run, preserves Flux source locations through existing debug metadata, fails distinctly on sanitizer findings, and removes the temporary binary afterward. Full retained-object graph visualization remains naturally downstream of general owned heap values rather than blocking useful leak diagnostics now.
 - [x] Task/async timeline.
 - [x] Frame/render timeline.
-- [ ] Layout diagnostics.
-- [ ] Network inspection.
+- [x] Layout diagnostics. Bootstrap timeline profiling records dedicated begin/end spans around compiler-owned native UI refresh/layout work on Linux and Android, retaining the changed-state identifier beside the enclosing frame activity without exposing a widget-object hierarchy; tracing remains opt-in and ordinary builds retain the zero-cost no-op path.
+- [x] Network inspection. Bootstrap timeline profiling records begin/end spans for canonical TCP connect/listen/accept, text send/receive, and HTTP request/response-body operations on the same monotonic trace as task/frame/layout work, exposing blocking latency without recording payload contents or adding instrumentation to ordinary builds.
 - [x] Native symbolization. Bootstrap CPU profiles demangle compiler-generated `flux__fn_` application symbols back to Flux function names while leaving compiler/runtime helpers visibly native; profile-build debug symbols remain available to ordinary native tooling.
 - [x] Source mapping. `flux profile` collects sampled native addresses from gprof output and resolves them through `addr2line` against the exact instrumented binary, replacing compiler-stdin locations with original `.flux` file/line locations wherever DWARF has a source mapping while retaining a safe native fallback for prologue/runtime instructions.
 - [ ] UI inspector without exposing a widget-object hierarchy.
