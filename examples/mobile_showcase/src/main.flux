@@ -1,6 +1,5 @@
 view HorseTinder {
-    state liked: bool = false
-    state passed: bool = false
+    state decision: str = ""
     derived actionOffset: i64 = (windowWidth - 320) / 2
     grid columns: 1fr 80 24 80 1fr
     grid rows: 46 1fr 54 34 72 auto auto
@@ -93,9 +92,9 @@ view HorseTinder {
 
     Button pass at 6,2
         text: "✕"
-        visible: !liked && !passed
+        visible: decision == ""
         size: 30
-        tooltip: "Pass"
+        tooltip: "Pass Buttercup"
         accessibilityLabel: "Pass on Buttercup"
         minWidth: 76
         maxWidth: 76
@@ -114,13 +113,13 @@ view HorseTinder {
         shadowOffsetY: 3
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
-        onPress: passed => !passed
+        onPress: decision => "passed"
 
     Button like at 6,4
-        visible: !liked && !passed
+        visible: decision == ""
         text: "♥︎"
         size: 36
-        tooltip: "Like"
+        tooltip: "Like Buttercup"
         accessibilityLabel: "Like Buttercup"
         minWidth: 76
         maxWidth: 76
@@ -139,11 +138,11 @@ view HorseTinder {
         shadowOffsetY: 3
         transitionMs: motionFast
         layoutTransitionMs: motionNormal
-        onPress: liked => !liked
+        onPress: decision => "liked"
 
     Text passLabel at 7,2
         text: "PASS"
-        visible: !liked && !passed
+        visible: decision == ""
         color: "#7F8996"
         size: 10
         bold: true
@@ -157,7 +156,7 @@ view HorseTinder {
 
     Text likeLabel at 7,4
         text: "LIKE"
-        visible: !liked && !passed
+        visible: decision == ""
         color: "#FF6B80"
         size: 10
         bold: true
@@ -171,7 +170,7 @@ view HorseTinder {
 
     Text result at 6,1 span columns 5
         text: "IT'S A MATCH  ·  Buttercup likes you too."
-        visible: liked
+        visible: decision == "liked"
         color: "#FFE8EC"
         size: 13
         bold: true
@@ -193,7 +192,7 @@ view HorseTinder {
 
     Text passedNote at 6,1 span columns 5
         text: "PASSED  ·  The photobomber took that personally."
-        visible: passed
+        visible: decision == "passed"
         color: "#DDE2E9"
         size: 12
         bold: true
