@@ -7093,7 +7093,9 @@ mod tests {
         assert!(android_items.contains("fn android.record(path: str) -> bool"));
         assert!(android_items.contains("fn android.stopRecord() -> bool"));
         assert!(android_items.contains("fn android.store(key: str, value: str) -> bool"));
-        assert!(android_items.contains("fn android.load(key: str, callback: fn(str) -> void) -> bool"));
+        assert!(
+            android_items.contains("fn android.load(key: str, callback: fn(str) -> void) -> bool")
+        );
         assert!(android_items.contains("fn android.erase(key: str) -> bool"));
         assert!(android_items.contains("fn android.file(callback: fn(str) -> void) -> void"));
         assert!(android_items.contains("fn android.media(callback: fn(str) -> void) -> void"));

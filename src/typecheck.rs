@@ -5454,7 +5454,9 @@ pub fn type_of_expr(
             if let ExprKind::Call { name, .. } = &mut normalized.kind {
                 *name = implementation_name.to_string();
             }
-            return type_of_expr(&normalized, env, signatures);
+            return type_of_expr(&normalized, env, signatures).map_err(|diagnostic| {
+                rename_builtin_diagnostic(diagnostic, implementation_name, name)
+            });
         }
     }
     match &expr.kind {
@@ -6801,7 +6803,9 @@ pub(crate) fn value_types_of_expr(
             if let ExprKind::Call { name, .. } = &mut normalized.kind {
                 *name = implementation_name.to_string();
             }
-            return value_types_of_expr(&normalized, env, signatures);
+            return value_types_of_expr(&normalized, env, signatures).map_err(|diagnostic| {
+                rename_builtin_diagnostic(diagnostic, implementation_name, name)
+            });
         }
     }
     match &expr.kind {
@@ -6908,7 +6912,11 @@ fn check_qualified_call(
         if let ExprKind::QualifiedCall { name, .. } = &mut normalized.kind {
             *name = implementation_name.to_string();
         }
-        return check_qualified_call(&normalized, env, signatures);
+        let implementation = format!("{namespace}.{implementation_name}");
+        let canonical = format!("{namespace}.{name}");
+        return check_qualified_call(&normalized, env, signatures).map_err(|diagnostic| {
+            rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
+        });
     }
     if namespace == "process" {
         if !named_args.is_empty() {
@@ -11096,6 +11104,20 @@ fn require_type(
             ),
         ))
     }
+}
+
+fn rename_builtin_diagnostic(mut diagnostic: Diagnostic, from: &str, to: &str) -> Diagnostic {
+    diagnostic.message = diagnostic.message.replace(from, to);
+    for label in diagnostic.labels.iter_mut() {
+        label.message = label.message.replace(from, to);
+    }
+    for note in diagnostic.notes.iter_mut() {
+        *note = note.replace(from, to);
+    }
+    for fix in diagnostic.fixes.iter_mut() {
+        fix.message = fix.message.replace(from, to);
+    }
+    diagnostic
 }
 
 fn diag(span: SourceSpan, message: &str) -> Diagnostic {

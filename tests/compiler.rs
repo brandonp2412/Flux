@@ -1984,7 +1984,7 @@ fn main() -> i64 {
     assert!(generated.contains("O_NONBLOCK"));
     assert!(generated.contains("EAGAIN"));
     assert!(generated.contains("SO_ACCEPTCONN"));
-    assert!(generated.contains("tcpAcceptMany cancelled by worker scope"));
+    assert!(generated.contains("acceptMany cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!("flux-net-accept-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -28417,43 +28417,43 @@ fn android_target_lowers_app_entry_to_native_activity_without_gtk() {
     print(value)
 }
 fn started() -> void {
-    print(android.sdkInt())
-    print(android.hasSystemFeature("android.hardware.camera.any"))
+    print(android.sdk())
+    print(android.feature("android.hardware.camera.any"))
     android.vibrate(25)
-    android.keepScreenOn(true)
-    android.finishActivity()
-    android.openUrl("https://example.com")
-    android.openAppSettings()
-    android.openNotificationSettings()
+    android.awake(true)
+    android.finish()
+    android.open("https://example.com")
+    android.settings()
+    android.noticeSettings()
     android.share("hello from Flux")
-    android.setClipboardText("copied from Flux")
-    print(android.startMicrophoneRecording("/data/local/tmp/flux-recording.m4a"))
-    print(android.stopMicrophoneRecording())
-    print(android.secureStore("token", "secret"))
-    print(android.secureRead("token", secureValue))
-    print(android.secureRemove("token"))
+    android.clipboard("copied from Flux")
+    print(android.record("/data/local/tmp/flux-recording.m4a"))
+    print(android.stopRecord())
+    print(android.store("token", "secret"))
+    print(android.load("token", secureValue))
+    print(android.erase("token"))
     android.showKeyboard()
     android.hideKeyboard()
-    android.focusNext()
-    android.focusNext(true)
-    android.focusPrevious()
-    android.focusPrevious(true)
-    android.focusFirst()
-    android.focusLast()
-    android.clearFocus()
-    print(android.selectionStart())
-    print(android.selectionEnd())
-    print(android.setCaret(1))
-    print(android.setSelection(0, 1))
-    print(android.setImeAction("done"))
-    print(android.permissionGranted("android.permission.CAMERA"))
-    android.requestPermission("android.permission.CAMERA")
-    android.createNotificationChannel("updates", "Updates", "Flux update notifications")
-    print(android.notificationPermissionGranted())
-    android.requestNotificationPermission()
+    android.next()
+    android.next(true)
+    android.prior()
+    android.prior(true)
+    android.first()
+    android.last()
+    android.blur()
+    print(android.start())
+    print(android.end())
+    print(android.caret(1))
+    print(android.select(0, 1))
+    print(android.ime("done"))
+    print(android.allowed("android.permission.CAMERA"))
+    android.ask("android.permission.CAMERA")
+    android.channel("updates", "Updates", "Flux update notifications")
+    print(android.noticeAllowed())
+    android.askNotice()
     android.notify("updates", 7, "Flux", "Native Android notification")
-    android.notifyUrlAction("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
-    android.cancelNotification(7)
+    android.notifyUrl("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
+    android.cancelNotice(7)
     print("started")
 }
 fn resumed() -> void {
@@ -28686,36 +28686,36 @@ fn main() -> i64 {
     print(value)
 }
 fn unused_android() -> void {
-    android.openAppSettings()
-    android.openNotificationSettings()
-    android.keepScreenOn(false)
-    android.finishActivity()
+    android.settings()
+    android.noticeSettings()
+    android.awake(false)
+    android.finish()
     android.showKeyboard()
     android.hideKeyboard()
-    android.focusNext()
-    android.focusNext(true)
-    android.focusPrevious()
-    android.focusPrevious(true)
-    android.focusFirst()
-    android.focusLast()
-    android.clearFocus()
-    android.selectionStart()
-    android.selectionEnd()
-    android.setCaret(1)
-    android.setSelection(0, 1)
-    android.setImeAction("next")
-    android.hasSystemFeature("android.hardware.camera.any")
-    android.permissionGranted("android.permission.CAMERA")
-    android.requestPermission("android.permission.CAMERA")
-    android.startMicrophoneRecording("unused.m4a")
-    android.stopMicrophoneRecording()
-    android.secureStore("unused", "unused")
-    android.secureRead("unused", unusedSecureValue)
-    android.secureRemove("unused")
-    android.createNotificationChannel("unused", "Unused", "Unused")
+    android.next()
+    android.next(true)
+    android.prior()
+    android.prior(true)
+    android.first()
+    android.last()
+    android.blur()
+    android.start()
+    android.end()
+    android.caret(1)
+    android.select(0, 1)
+    android.ime("next")
+    android.feature("android.hardware.camera.any")
+    android.allowed("android.permission.CAMERA")
+    android.ask("android.permission.CAMERA")
+    android.record("unused.m4a")
+    android.stopRecord()
+    android.store("unused", "unused")
+    android.load("unused", unusedSecureValue)
+    android.erase("unused")
+    android.channel("unused", "Unused", "Unused")
     android.notify("unused", 1, "Unused", "Unused")
-    android.notifyUrlAction("unused", 2, "Unused", "Unused", "Open", "https://example.com")
-    android.cancelNotification(1)
+    android.notifyUrl("unused", 2, "Unused", "Unused", "Open", "https://example.com")
+    android.cancelNotice(1)
 }
 view Screen {
     grid columns: 1fr
@@ -28777,40 +28777,40 @@ app Screen
 
     let invalid = r#"
 fn main() -> i64 {
-    android.sdkInt(1)
-    android.hasSystemFeature(42)
+    android.sdk(1)
+    android.feature(42)
     android.vibrate("long")
-    android.keepScreenOn(1)
-    android.finishActivity(1)
-    android.openUrl(42)
-    android.openAppSettings(1)
-    android.openNotificationSettings(false)
+    android.awake(1)
+    android.finish(1)
+    android.open(42)
+    android.settings(1)
+    android.noticeSettings(false)
     android.share(42)
-    android.startMicrophoneRecording(false)
-    android.stopMicrophoneRecording(1)
-    android.secureStore(1, false)
-    android.secureRead(false, 1)
-    android.secureRemove(1)
+    android.record(false)
+    android.stopRecord(1)
+    android.store(1, false)
+    android.load(false, 1)
+    android.erase(1)
     android.showKeyboard(1)
     android.hideKeyboard(false)
-    android.focusNext(1)
-    android.focusPrevious("bad")
-    android.focusFirst(1)
-    android.focusLast(false)
-    android.clearFocus("bad")
-    android.selectionStart(1)
-    android.selectionEnd(false)
-    android.setCaret("bad")
-    android.setSelection(0, "bad")
-    android.setImeAction(42)
-    android.createNotificationChannel("updates", 1, false)
-    android.permissionGranted(42)
-    android.requestPermission(false)
-    android.notificationPermissionGranted(1)
-    android.requestNotificationPermission(1)
+    android.next(1)
+    android.prior("bad")
+    android.first(1)
+    android.last(false)
+    android.blur("bad")
+    android.start(1)
+    android.end(false)
+    android.caret("bad")
+    android.select(0, "bad")
+    android.ime(42)
+    android.channel("updates", 1, false)
+    android.allowed(42)
+    android.ask(false)
+    android.noticeAllowed(1)
+    android.askNotice(1)
     android.notify(1, "bad", false, 42)
-    android.notifyUrlAction("updates", "bad", "title", "body", "Open", 42)
-    android.cancelNotification("bad")
+    android.notifyUrl("updates", "bad", "title", "body", "Open", 42)
+    android.cancelNotice("bad")
     return 0
 }
 "#;
@@ -28818,37 +28818,35 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.sdkInt expects 0 arguments, got 1")
+            .contains("android.sdk expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.hasSystemFeature feature")
-            && error.message.contains("expected str")
+        error.message.contains("android.feature feature") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.vibrate durationMs")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.keepScreenOn enabled")
-            && error.message.contains("expected bool")
+        error.message.contains("android.awake enabled") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.finishActivity expects 0 arguments, got 1")
+            .contains("android.finish expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.openUrl url") && error.message.contains("expected str")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.openAppSettings expects 0 arguments, got 1")
+        error.message.contains("android.open url") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.openNotificationSettings expects 0 arguments, got 1")
+            .contains("android.settings expects 0 arguments, got 1")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("android.noticeSettings expects 0 arguments, got 1")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.share text") && error.message.contains("expected str")
@@ -28863,13 +28861,7 @@ fn main() -> i64 {
             .message
             .contains("android.hideKeyboard expects 0 arguments, got 1")
     }));
-    for name in [
-        "focusFirst",
-        "focusLast",
-        "clearFocus",
-        "selectionStart",
-        "selectionEnd",
-    ] {
+    for name in ["first", "last", "blur", "start", "end"] {
         assert!(errors.iter().any(|error| {
             error
                 .message
@@ -28877,64 +28869,51 @@ fn main() -> i64 {
         }));
     }
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.focusNext wrap") && error.message.contains("expected bool")
+        error.message.contains("android.next wrap") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.focusPrevious wrap")
-            && error.message.contains("expected bool")
+        error.message.contains("android.prior wrap") && error.message.contains("expected bool")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setCaret position")
-            && error.message.contains("expected i64")
+        error.message.contains("android.caret position") && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setSelection end") && error.message.contains("expected i64")
+        error.message.contains("android.select end") && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
-        error.message.contains("android.setImeAction action")
+        error.message.contains("android.ime action") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.channel name") && error.message.contains("expected str")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.allowed permission")
             && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.createNotificationChannel name")
-            && error.message.contains("expected str")
+        error.message.contains("android.ask permission") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.permissionGranted permission")
-            && error.message.contains("expected str")
+            .contains("android.noticeAllowed expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.requestPermission permission")
-            && error.message.contains("expected str")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.notificationPermissionGranted expects 0 arguments")
-    }));
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.requestNotificationPermission expects 0 arguments")
+            .contains("android.askNotice expects 0 arguments")
     }));
     assert!(errors.iter().any(|error| {
         error.message.contains("android.notify channelId") && error.message.contains("expected str")
     }));
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("android.notifyUrlAction notificationId")
+        error.message.contains("android.notifyUrl notificationId")
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("android.cancelNotification notificationId")
+            .contains("android.cancelNotice notificationId")
             && error.message.contains("expected i64")
     }));
 
