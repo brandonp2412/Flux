@@ -8789,11 +8789,16 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "serve" | "serveOnce" | "serveConcurrent" => {
-                if args.len() != 6 {
+            "serve" | "serveOnce" | "serveConcurrent" | "serveConcurrentLimit" => {
+                let limited_concurrency = name == "serveConcurrentLimit";
+                let expected_args = if limited_concurrency { 7 } else { 6 };
+                if args.len() != expected_args {
                     return Err(diag(
                         span,
-                        &format!("http.{name} expects 6 arguments, got {}", args.len()),
+                        &format!(
+                            "http.{name} expects {expected_args} arguments, got {}",
+                            args.len()
+                        ),
                     ));
                 }
                 let listener = type_of_expr(&args[0], env, signatures)?;
@@ -8824,38 +8829,66 @@ fn check_qualified_call(
                         ));
                     }
                 }
-                let request_callback =
-                    signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let callback_index = if limited_concurrency { 4 } else { 3 };
+                if limited_concurrency {
+                    let max_concurrent = type_of_expr(&args[3], env, signatures)?;
+                    require_type(
+                        args[3].span,
+                        &Type::I64,
+                        &max_concurrent,
+                        "http.serveConcurrentLimit maxConcurrent",
+                    )?;
+                    if matches!(
+                        constant_primitive_value(&args[3], signatures),
+                        Some(ConstantValue::I64(value)) if !(1..=64).contains(&value)
+                    ) {
+                        return Err(diag(
+                            args[3].span,
+                            "http.serveConcurrentLimit maxConcurrent must be between 1 and 64",
+                        ));
+                    }
+                }
+                let request_callback = signatures.canonical_type(&type_of_expr(
+                    &args[callback_index],
+                    env,
+                    signatures,
+                )?);
                 let expected_request_callback = Type::Function {
                     params: vec![Type::I64, Type::Str, Type::Str, Type::Str],
                     returns: Vec::new(),
                 };
                 require_type(
-                    args[3].span,
+                    args[callback_index].span,
                     &expected_request_callback,
                     &request_callback,
                     &format!("http.{name} requestCallback"),
                 )?;
-                let header_callback =
-                    signatures.canonical_type(&type_of_expr(&args[4], env, signatures)?);
+                let header_callback = signatures.canonical_type(&type_of_expr(
+                    &args[callback_index + 1],
+                    env,
+                    signatures,
+                )?);
                 let expected_header_callback = Type::Function {
                     params: vec![Type::I64, Type::Str, Type::Str],
                     returns: Vec::new(),
                 };
                 require_type(
-                    args[4].span,
+                    args[callback_index + 1].span,
                     &expected_header_callback,
                     &header_callback,
                     &format!("http.{name} headerCallback"),
                 )?;
-                let body_callback =
-                    signatures.canonical_type(&type_of_expr(&args[5], env, signatures)?);
+                let body_callback = signatures.canonical_type(&type_of_expr(
+                    &args[callback_index + 2],
+                    env,
+                    signatures,
+                )?);
                 let expected_body_callback = Type::Function {
                     params: vec![Type::I64, Type::Str],
                     returns: Vec::new(),
                 };
                 require_type(
-                    args[5].span,
+                    args[callback_index + 2].span,
                     &expected_body_callback,
                     &body_callback,
                     &format!("http.{name} bodyCallback"),

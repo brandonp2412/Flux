@@ -1410,6 +1410,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "serveConcurrentLimit",
+            3,
+            "fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "readResponse",
             3,
             "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
@@ -3296,6 +3303,22 @@ fn signature_help_for_document_cached(
                             "listener: i64",
                             "maxHeadBytes: i64",
                             "maxBodyBytes: i64",
+                            "requestCallback: fn(i64, str, str, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, str) -> void",
+                        ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "serveConcurrentLimit" => {
+                    return Some(signature_help_for_builtin(
+                        "http.serveConcurrentLimit",
+                        &[
+                            "listener: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "maxConcurrent: i64",
                             "requestCallback: fn(i64, str, str, str) -> void",
                             "headerCallback: fn(i64, str, str) -> void",
                             "bodyCallback: fn(i64, str) -> void",
@@ -8876,6 +8899,7 @@ mod tests {
         ))
         .to_json();
         assert!(completion.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+        assert!(completion.contains("fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
 
         let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.serveConcurrent(1, 4096, 1024, request, header, body))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
@@ -8897,6 +8921,30 @@ mod tests {
         .expect("serveConcurrent call should have signature help")
         .to_json();
         assert!(help.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+
+        let limited_source = source.replace(
+            "http.serveConcurrent(1, 4096, 1024, request, header, body)",
+            "http.serveConcurrentLimit(1, 4096, 1024, 8, request, header, body)",
+        );
+        let limited_documents = HashMap::from([(uri.to_string(), limited_source.clone())]);
+        let limited_line_index = limited_source
+            .lines()
+            .position(|line| line.contains("http.serveConcurrentLimit("))
+            .expect("serveConcurrentLimit call line should exist");
+        let limited_line = limited_source.lines().nth(limited_line_index).unwrap();
+        let limited_needle = "http.serveConcurrentLimit(";
+        let limited_cursor = limited_line.find(limited_needle).unwrap() + limited_needle.len();
+        let limited_help = signature_help_for_document(
+            uri,
+            &limited_source,
+            &limited_documents,
+            limited_line_index,
+            limited_cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("serveConcurrentLimit call should have signature help")
+        .to_json();
+        assert!(limited_help.contains("fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
     }
 
     #[test]

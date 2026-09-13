@@ -1662,7 +1662,8 @@ fn emit_runtime_prelude(
     uses_android: bool,
     uses_windows: bool,
 ) {
-    let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(");
+    let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(")
+        || runtime_usage.contains("flux__net_http_serve_concurrent_limit(");
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
         || uses_http_concurrent;
@@ -5880,7 +5881,7 @@ static const char *flux__net_http_reap_concurrent_ready(int64_t *handles, size_t
     *count = write_index;
     return first_error;
 }
-static const char *flux__net_http_serve_concurrent(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+static const char *flux__net_http_serve_concurrent_impl(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, int64_t max_concurrent, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (listener < 0 || listener > INT_MAX) return "invalid TCP listener handle";
     if (max_head_bytes < 1 || max_head_bytes > 65536) return "http.serveConcurrent maxHeadBytes must be between 1 and 65536";
     if (max_body_bytes < 0 || max_body_bytes > 65536) return "http.serveConcurrent maxBodyBytes must be between 0 and 65536";
@@ -5897,7 +5898,7 @@ static const char *flux__net_http_serve_concurrent(int64_t listener, int64_t max
     for (;;) {
         const char *reap_error = flux__net_http_reap_concurrent_ready(handles, &pending);
         if (reap_error != NULL) return reap_error;
-        if (pending == 64) {
+        if (pending == (size_t)max_concurrent) {
             if (!flux__worker_wait_any_done(handles, pending)) {
                 flux__worker_cancel_children();
                 const char *batch_error = flux__net_http_join_concurrent_batch(handles, pending);
@@ -5947,6 +5948,13 @@ static const char *flux__net_http_serve_concurrent(int64_t listener, int64_t max
         }
         handles[pending++] = started.v0;
     }
+}
+static const char *flux__net_http_serve_concurrent(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+    return flux__net_http_serve_concurrent_impl(listener, max_head_bytes, max_body_bytes, INT64_C(64), request_callback, header_callback, body_callback);
+}
+static const char *flux__net_http_serve_concurrent_limit(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, int64_t max_concurrent, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+    if (max_concurrent < 1 || max_concurrent > 64) return "http.serveConcurrentLimit maxConcurrent must be between 1 and 64";
+    return flux__net_http_serve_concurrent_impl(listener, max_head_bytes, max_body_bytes, max_concurrent, request_callback, header_callback, body_callback);
 }
 "#);
         }
@@ -31573,22 +31581,37 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "serve" | "serveOnce" | "serveConcurrent" => {
-                if args.len() != 6 {
+            "serve" | "serveOnce" | "serveConcurrent" | "serveConcurrentLimit" => {
+                let limited_concurrency = name == "serveConcurrentLimit";
+                let expected_args = if limited_concurrency { 7 } else { 6 };
+                if args.len() != expected_args {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
                 let listener = emit_expr(&args[0], env, signatures)?;
                 let max_head_bytes = emit_expr(&args[1], env, signatures)?;
                 let max_body_bytes = emit_expr(&args[2], env, signatures)?;
-                let request_callback = emit_expr(&args[3], env, signatures)?;
-                let header_callback = emit_expr(&args[4], env, signatures)?;
-                let body_callback = emit_expr(&args[5], env, signatures)?;
-                let helper = match name {
-                    "serve" => "flux__net_http_serve",
-                    "serveConcurrent" => "flux__net_http_serve_concurrent",
-                    _ => "flux__net_http_serve_once",
-                };
-                return Ok((
+                let callback_index = if limited_concurrency { 4 } else { 3 };
+                let request_callback = emit_expr(&args[callback_index], env, signatures)?;
+                let header_callback = emit_expr(&args[callback_index + 1], env, signatures)?;
+                let body_callback = emit_expr(&args[callback_index + 2], env, signatures)?;
+                let code = if limited_concurrency {
+                    let max_concurrent = emit_expr(&args[3], env, signatures)?;
+                    format!(
+                        "flux__net_http_serve_concurrent_limit({}, {}, {}, {}, {}, {}, {})",
+                        listener.code,
+                        max_head_bytes.code,
+                        max_body_bytes.code,
+                        max_concurrent.code,
+                        request_callback.code,
+                        header_callback.code,
+                        body_callback.code
+                    )
+                } else {
+                    let helper = match name {
+                        "serve" => "flux__net_http_serve",
+                        "serveConcurrent" => "flux__net_http_serve_concurrent",
+                        _ => "flux__net_http_serve_once",
+                    };
                     format!(
                         "{helper}({}, {}, {}, {}, {}, {})",
                         listener.code,
@@ -31597,10 +31620,9 @@ fn emit_qualified_call(
                         request_callback.code,
                         header_callback.code,
                         body_callback.code
-                    ),
-                    vec![Type::Error],
-                    None,
-                ));
+                    )
+                };
+                return Ok((code, vec![Type::Error], None));
             }
             "receiveResponseHeadWithHeaders" => {
                 if args.len() != 4 {

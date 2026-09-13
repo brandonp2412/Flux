@@ -3476,6 +3476,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn http_serve_concurrent_limit_bounds_inflight_workers() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn main() -> i64 {
+    let _serveError: error = http.serveConcurrentLimit(1, 4096, 1024, 8, request, header, body)
+    return 0
+}
+"#;
+    check_source(source).expect("bounded concurrent HTTP server should typecheck");
+    let generated = compile_to_c(source).expect("bounded concurrent HTTP server should lower");
+    assert!(generated.contains(
+        "flux__net_http_serve_concurrent_limit(INT64_C(1), INT64_C(4096), INT64_C(1024), INT64_C(8)"
+    ));
+    assert!(generated.contains("if (pending == (size_t)max_concurrent)"));
+    assert!(generated.contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64"));
+
+    let invalid = check_source(&source.replace(
+        "http.serveConcurrentLimit(1, 4096, 1024, 8, request, header, body)",
+        "http.serveConcurrentLimit(1, 4096, 1024, 0, request, header, body)",
+    ))
+    .expect_err("bounded concurrent HTTP server must reject a zero constant limit");
+    assert!(
+        invalid
+            .message
+            .contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64")
+    );
+}
+
+#[test]
 fn worker_cancellation_interrupts_blocking_http_server_and_client_io() {
     let serve_source = r#"
 fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
