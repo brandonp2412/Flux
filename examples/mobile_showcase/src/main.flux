@@ -60,6 +60,7 @@ view HorseTinder {
         textAlign: "center"
         alignX: "end"
         alignY: "center"
+        translateX: 156
         padding: 4
         minHeight: 26
         maxHeight: 26
