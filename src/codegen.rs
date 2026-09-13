@@ -6371,13 +6371,10 @@ fn emit_android_native_application(
                 ),
             ));
         }
-        if !matches!(
-            element.kind.as_str(),
-            "Text" | "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
-        ) {
+        if !typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Android app backend currently renders Text, Button, TextInput, Image, Toggle, and Radio elements",
+                "Android app backend can render only built-in native view elements",
             ));
         }
     }
@@ -6618,7 +6615,7 @@ fn emit_android_native_application(
         let element_id = stable_android_element_id(&view.name, &element.name);
         out.push_str("    {\n");
         let class_name = match element.kind.as_str() {
-            "Text" => "android/widget/TextView",
+            "Text" | "Nav" | "Chart" | "Card" | "Header" | "Content" => "android/widget/TextView",
             "Button" => "android/widget/Button",
             "TextInput" => "app/flux/runtime/FluxActivity$FluxEditText",
             "Image" => "android/widget/ImageView",
@@ -6752,7 +6749,8 @@ fn emit_android_native_application(
                 None
             };
             let text_property = match element.kind.as_str() {
-                "Toggle" | "Radio" => "label",
+                "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                "Card" => "title",
                 _ => "text",
             };
             let text = if rich_text.is_some() {
@@ -9894,13 +9892,10 @@ fn emit_linux_gtk_application(
         .unwrap_or(i64::from(bootstrap_height));
 
     for element in &view.elements {
-        if !matches!(
-            element.kind.as_str(),
-            "Text" | "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
-        ) {
+        if !typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Linux app backend currently renders Text, Button, TextInput, Image, Toggle, and Radio elements",
+                "Linux app backend can render only built-in native view elements",
             ));
         }
     }
@@ -11219,6 +11214,23 @@ fn emit_linux_gtk_application(
                     ));
                 }
             }
+            "Nav" | "Chart" | "Card" | "Header" | "Content" => {
+                let text_property = match element.kind.as_str() {
+                    "Nav" | "Chart" | "Content" => "label",
+                    "Card" => "title",
+                    "Header" => "text",
+                    _ => unreachable!("semantic text element kind"),
+                };
+                let text = match view_property(element, text_property) {
+                    None => c_string(&element.name),
+                    Some(property) => ui_expr_c(&property.value, view, signatures)?,
+                };
+                out.push_str(&format!("    {variable} = gtk_label_new({text});\n"));
+                out.push_str(&format!(
+                    "    gtk_widget_add_css_class({variable}, \"flux-text\");\n    gtk_widget_add_css_class({variable}, \"flux-{}\");\n    gtk_widget_set_halign({variable}, GTK_ALIGN_START);\n    gtk_label_set_wrap(GTK_LABEL({variable}), TRUE);\n",
+                    element.kind.to_ascii_lowercase()
+                ));
+            }
             "Button" => {
                 let text = match view_property(element, "text") {
                     None => c_string(&element.name),
@@ -12047,6 +12059,11 @@ fn ui_property_is_refreshable(element_kind: &str, property_name: &str) -> bool {
             | ("Toggle", "checked")
             | ("Radio", "label")
             | ("Radio", "selected")
+            | ("Nav", "label")
+            | ("Chart", "label")
+            | ("Content", "label")
+            | ("Card", "title")
+            | ("Header", "text")
     )
 }
 
@@ -12215,6 +12232,9 @@ fn android_ui_element_needs_refresh(
         "Image" => &["source", "alt", "fit", "can_shrink"],
         "Toggle" => &["label", "checked"],
         "Radio" => &["label", "selected"],
+        "Nav" | "Chart" | "Content" => &["label"],
+        "Card" => &["title"],
+        "Header" => &["text"],
         _ => &[],
     };
     common
@@ -12902,11 +12922,12 @@ fn emit_android_ui_refresh(
         }
 
         match element.kind.as_str() {
-            "Text" | "Button" | "Toggle" | "Radio" => {
-                let text_property = if matches!(element.kind.as_str(), "Toggle" | "Radio") {
-                    "label"
-                } else {
-                    "text"
+            "Text" | "Button" | "Toggle" | "Radio" | "Nav" | "Chart" | "Card" | "Header"
+            | "Content" => {
+                let text_property = match element.kind.as_str() {
+                    "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
+                    "Card" => "title",
+                    _ => "text",
                 };
                 if android_ui_property_needs_refresh(element, text_property, &runtime_names)
                     && let Some(property) = view_property(element, text_property)
@@ -14341,6 +14362,20 @@ fn emit_ui_refresh(
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
                         "    if ({widget} != NULL) gtk_widget_set_sensitive({widget}, {value});\n"
+                    ));
+                }
+            }
+            "Nav" | "Chart" | "Card" | "Header" | "Content" => {
+                let text_property = match element.kind.as_str() {
+                    "Nav" | "Chart" | "Content" => "label",
+                    "Card" => "title",
+                    "Header" => "text",
+                    _ => unreachable!("semantic text element kind"),
+                };
+                if let Some(property) = view_property(element, text_property) {
+                    let value = ui_expr_c(&property.value, view, signatures)?;
+                    out.push_str(&format!(
+                        "    if ({widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), {value});\n"
                     ));
                 }
             }

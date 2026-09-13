@@ -25030,6 +25030,75 @@ app Status
 }
 
 #[test]
+fn semantic_ui_controls_lower_to_native_linux_and_android_text_surfaces() {
+    let source = r#"
+view Dashboard {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto
+    state message: str = "Ready"
+    Nav navigation at 1,1
+        label: message
+    Chart chart at 2,1
+        label: message
+    Card card at 3,1
+        title: message
+    Header header at 4,1
+        text: message
+    Content content at 5,1
+        label: message
+    Button action at 6,1
+        text: "Update"
+        onPress: message => "Updated"
+}
+app Dashboard
+"#;
+
+    check_source(source).expect("semantic native controls should typecheck");
+
+    let linux = compile_to_c(source).expect("semantic controls should lower on Linux");
+    for class_name in [
+        "flux-nav",
+        "flux-chart",
+        "flux-card",
+        "flux-header",
+        "flux-content",
+    ] {
+        assert!(
+            linux.contains(class_name),
+            "missing Linux semantic class {class_name}"
+        );
+    }
+    assert!(
+        linux.matches("gtk_label_set_text(GTK_LABEL(").count() >= 5,
+        "state-driven semantic text should refresh native GTK labels"
+    );
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("semantic control fixture should analyze");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("semantic controls should lower on Android");
+    assert!(
+        android
+            .matches("FindClass(env, \"android/widget/TextView\")")
+            .count()
+            >= 5,
+        "semantic controls should use native Android TextView surfaces"
+    );
+    assert!(
+        android
+            .matches("flux__android_utf8_string(env, flux__ui_state_message)")
+            .count()
+            >= 10,
+        "semantic control text should be emitted for initial construction and in-place refresh"
+    );
+}
+
+#[test]
 fn app_i64_view_state_keeps_required_self_division_zero_guard() {
     let source = r#"
 view Counter {
