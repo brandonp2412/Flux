@@ -945,13 +945,13 @@ Web is a supported target, not the implementation substrate for native apps.
 # Milestone 22 — Testing
 
 - [x] Bootstrap `flux test`: direct `.flux` tests or sorted package `tests/*.flux` programs compile through the ordinary checker/native backend and pass only on a successful real process exit; GUI `app` tests are rejected in this headless integration slice.
-- [ ] Unit tests.
-- [x] Bootstrap integration tests use ordinary headless `fn main() -> i64` Flux programs; `flux new` scaffolds `tests/smoke.flux` so a new package is immediately testable. Richer assertions/fixtures and package-source test imports remain follow-up work rather than hidden test-only language magic.
+- [x] Unit tests. Package `tests/*.flux` programs now analyze in the package's real manifest/module context and may import source under test through the reserved root-contained `pkg:self/<module.flux>` namespace. Unit tests therefore exercise ordinary typed package code, dependencies, constants, native link metadata, and the normal native backend without test-only declarations, reflection, or a second runtime; direct standalone `.flux` tests remain supported.
+- [x] Bootstrap integration tests use ordinary headless `fn main() -> i64` Flux programs; `flux new` scaffolds `tests/smoke.flux` so a new package is immediately testable. Richer assertions/fixtures remain follow-up work rather than hidden test-only language magic.
 - [ ] UI tests.
 - [ ] Golden/screenshot tests.
 - [ ] Accessibility tests.
 - [ ] Platform end-to-end tests.
-- [ ] Deterministic test clocks/timers.
+- [x] Deterministic test clocks/timers. `flux test --deterministic-time` runs time-aware tests against a compiler-owned virtual clock with a fixed Unix epoch and monotonic zero point; blocking sleeps/deadlines advance virtual time immediately, and `time.after` / `time.every` use the same virtual deadlines so tests can wake structured timer workers without wall-clock delay. The private test-runner activation leaves ordinary builds/tests on native clocks and is covered together with package-unit imports by a real native test-runner regression.
 - [x] Dependency/interface fakes based on functions/interfaces rather than mocking class hierarchies: first-class function values provide lightweight single-capability injection, while ordinary interface values accept small fake implementations for grouped capabilities. `docs/testing.md` documents both patterns, and compiler regression coverage verifies the fake path uses normal typed native lowering without proxy objects, vtables, reflection, or heap allocation.
 - [x] Source-level coverage through `flux test --coverage`: opt-in LLVM instrumentation is merged across executed tests and mapped back to original `.flux` source lines rather than generated C/stdin locations; ordinary test binaries remain uninstrumented and `flux doctor` reports the required coverage tools.
 - [x] Benchmarks: the checked-in Flux/Rust/C native performance harness covers compute, collections, interface dispatch, and dynamic calls/control flow with output equivalence, runtime/code-size reporting, a checked-Rust threshold, and a push/PR CI performance gate.

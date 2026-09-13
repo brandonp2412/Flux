@@ -1,6 +1,12 @@
 # Testing Flux programs
 
-Flux testing uses the same compiler, type system, native backend, and error model as ordinary programs. The current bootstrap `flux test` runner executes headless `.flux` programs and treats a zero process exit as success. Package tests are discovered from `tests/*.flux`; dedicated in-language unit-test declarations and UI/golden test APIs remain roadmap work.
+Flux testing uses the same compiler, type system, native backend, and error model as ordinary programs. `flux test` executes headless `.flux` programs and treats a zero process exit as success. Package tests are discovered from `tests/*.flux` and are analyzed in the package's real manifest/module context. A package test can import code under test with `import "pkg:self/src/module.flux"`; the reserved `self` package name is resolved inside that package root and cannot escape it. Unit tests therefore stay ordinary Flux programs rather than introducing test-only declaration syntax or a parallel runtime. UI/golden test APIs remain roadmap work.
+
+## Deterministic time
+
+Pass `--deterministic-time` to `flux test` when a test depends on clocks or structured timers. The test process starts with monotonic time at `0` and Unix time at `946684800000` (2000-01-01T00:00:00Z). `time.sleep` / `time.sleepMillis` and `time.sleepUntil` / `time.sleepUntilMonotonic` advance virtual time immediately instead of waiting for wall time. `time.after` and `time.every` use deadlines on the same virtual clock, so advancing time wakes due timer workers; normal builds and tests without the flag continue to use the native platform clocks and sleeps.
+
+The deterministic clock is compiler-owned test infrastructure selected by the `flux test` runner through a test-build macro injected into generated native C only for that invocation. Ordinary builds compile the test-clock selector to false rather than performing a runtime environment lookup. Flux application source does not gain a mutable clock object, and unreachable time support still tree-shakes normally.
 
 ## Dependency fakes without mock objects
 

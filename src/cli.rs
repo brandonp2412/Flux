@@ -160,6 +160,7 @@ struct SplitSymbolsOptions {
 struct TestOptions {
     mode: BuildMode,
     coverage: bool,
+    deterministic_time: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1518,6 +1519,10 @@ fn project_name_from_path(target: &Path) -> String {
 
 fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
     let tests = discover_test_targets(target)?;
+    let package_target = (!target.is_file()
+        || target.file_name().and_then(|value| value.to_str()) == Some("flux.toml"))
+    .then_some(target);
+    let native_package = native_package_config_for_target(target)?;
     let coverage_dir = options.coverage.then(coverage_data_dir);
     if let Some(directory) = &coverage_dir {
         command_first_line("llvm-profdata", &["--version"]).map_err(|message| {
@@ -1544,7 +1549,13 @@ fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
         })?;
     }
 
-    let result = run_tests_inner(&tests, options, coverage_dir.as_deref());
+    let result = run_tests_inner(
+        &tests,
+        options,
+        coverage_dir.as_deref(),
+        package_target,
+        native_package.as_ref(),
+    );
     for index in 0..tests.len() {
         let _ = fs::remove_file(test_binary_path(index));
     }
@@ -1558,13 +1569,18 @@ fn run_tests_inner(
     tests: &[PathBuf],
     options: TestOptions,
     coverage_dir: Option<&Path>,
+    package_target: Option<&Path>,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
 ) -> Result<(), CliError> {
     let mut passed = 0usize;
     let mut binaries = Vec::new();
     let mut raw_profiles = Vec::new();
     let mut generated_sources = Vec::new();
     for (index, test) in tests.iter().enumerate() {
-        let analysis = match fluxc::project::analyze(test) {
+        let analysis = match package_target.map_or_else(
+            || fluxc::project::analyze(test),
+            |package| fluxc::project::analyze_package_test(package, test),
+        ) {
             Ok(analysis) => analysis,
             Err(diagnostics) => {
                 let (_, sources) = fluxc::project::check_with_sources(test);
@@ -1579,7 +1595,7 @@ fn run_tests_inner(
                 test.display()
             )));
         }
-        let generated = match analysis.emit_c() {
+        let mut generated = match analysis.emit_c() {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 eprintln!("test {} ... FAILED", test.display());
@@ -1587,18 +1603,20 @@ fn run_tests_inner(
                 return Err(CliError::Reported);
             }
         };
+        if options.deterministic_time {
+            generated.insert_str(0, "#define FLUX_DETERMINISTIC_TEST_CLOCK 1\n");
+        }
         let binary = test_binary_path(index);
-        let native_package = native_package_config_for_target(test)?;
         if options.coverage {
             build_native_instrumented(
                 &generated,
                 &binary,
                 options.mode,
                 NativeInstrumentation::Coverage,
-                native_package.as_ref(),
+                native_package,
             )?;
         } else {
-            build_native(&generated, &binary, options.mode, native_package.as_ref())?;
+            build_native(&generated, &binary, options.mode, native_package)?;
         }
         let raw_profile =
             coverage_dir.map(|directory| directory.join(format!("test-{index}.profraw")));
@@ -3684,6 +3702,7 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
     let mut mode = BuildMode::Debug;
     let mut mode_seen = false;
     let mut coverage = false;
+    let mut deterministic_time = false;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -3705,14 +3724,25 @@ fn test_options(args: &[String]) -> Result<TestOptions, String> {
                 coverage = true;
                 index += 1;
             }
+            "--deterministic-time" => {
+                if deterministic_time {
+                    return Err("'--deterministic-time' may only be specified once".to_string());
+                }
+                deterministic_time = true;
+                index += 1;
+            }
             flag => {
                 return Err(format!(
-                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>' or '--coverage'"
+                    "unknown test option '{flag}'; expected '--mode <debug|profile|release>', '--coverage', or '--deterministic-time'"
                 ));
             }
         }
     }
-    Ok(TestOptions { mode, coverage })
+    Ok(TestOptions {
+        mode,
+        coverage,
+        deterministic_time,
+    })
 }
 
 fn package_options(args: &[String]) -> Result<PackageOptions, String> {
@@ -7008,7 +7038,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} check <file.flux|package-dir|flux.toml> [--json] | {command} analyze <file.flux|package-dir|flux.toml> [--json] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         "--format directory|tar.gz|container|systemd",
@@ -7044,8 +7074,19 @@ mod tests {
         .expect("test options should parse");
         assert!(options.coverage);
         assert_eq!(options.mode, BuildMode::Profile);
+        assert!(!options.deterministic_time);
+        let deterministic = test_options(&["--deterministic-time".to_string()])
+            .expect("deterministic test time should parse");
+        assert!(deterministic.deterministic_time);
         assert!(test_options(&["-o".to_string(), "test-bin".to_string()]).is_err());
         assert!(test_options(&["--coverage".to_string(), "--coverage".to_string()]).is_err());
+        assert!(
+            test_options(&[
+                "--deterministic-time".to_string(),
+                "--deterministic-time".to_string(),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

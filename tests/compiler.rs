@@ -7528,6 +7528,7 @@ fn main() -> i64 {
     assert!(generated.contains("CLOCK_REALTIME"));
     assert!(generated.contains("CLOCK_MONOTONIC"));
     assert!(generated.contains("nanosleep(&remaining, &remaining)"));
+    assert!(generated.contains("flux__time_test_clock_enabled"));
     assert!(
         generated.contains("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part)")
     );
@@ -7582,6 +7583,14 @@ fn main() -> i64 {
     return 0
 }
 "#;
+    let utc_only = r#"
+fn main() -> i64 {
+    return time.utcYear(0)
+}
+"#;
+    let utc_only_generated = compile_to_c(utc_only).expect("UTC-only time should lower natively");
+    assert!(!utc_only_generated.contains("flux__time_test_clock_enabled"));
+
     let unused_generated = compile_to_c(unused).expect("dead time calls should still lower");
     assert!(!unused_generated.contains("#include <time.h>"));
     assert!(!unused_generated.contains("flux__time_clock_millis"));
@@ -22436,6 +22445,74 @@ fn flux_test_propagates_native_nonzero_exit_status() {
     let _ = fs::remove_file(&path);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("exited with 7"));
+}
+
+#[test]
+fn flux_test_runs_package_unit_tests_with_deterministic_time() {
+    let root = std::env::temp_dir().join(format!("flux-package-unit-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("unit-test package source directory should exist");
+    fs::create_dir_all(root.join("tests")).expect("unit-test package tests directory should exist");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"unit-fixture\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("unit-test package manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        "fn main() -> i64 {\n    return 0\n}\n",
+    )
+    .expect("unit-test package entry should be writable");
+    fs::write(
+        root.join("src/lib.flux"),
+        "pub fn answer() -> i64 {\n    return 42\n}\n",
+    )
+    .expect("unit-test package module should be writable");
+    fs::write(
+        root.join("tests/unit.flux"),
+        r#"import "pkg:self/src/lib.flux"
+fn fired() -> void {
+    print(99)
+}
+fn main() -> i64 {
+    if answer() != 42:
+        return 1
+    if time.monotonicMillis() != 0:
+        return 2
+    if time.unixMillis() != 946684800000:
+        return 3
+    let (handle, startError) = time.after(10, fired)
+    if startError != nil:
+        return 4
+    time.sleepMillis(10)
+    if time.monotonicMillis() != 10:
+        return 5
+    if time.unixMillis() != 946684800010:
+        return 6
+    let joinError: error = worker.join(handle)
+    if joinError != nil:
+        return 7
+    return 0
+}
+"#,
+    )
+    .expect("unit-test source should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("test")
+        .arg(&root)
+        .arg("--deterministic-time")
+        .output()
+        .expect("package unit test should run");
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        output.status.success(),
+        "package unit test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("99"), "timer callback should run: {stdout}");
+    assert!(stdout.contains("1 passed; 0 failed"));
 }
 
 #[test]

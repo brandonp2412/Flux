@@ -5489,11 +5489,34 @@ static const char *flux__channel_close(int64_t handle) { if (handle <= 0) return
 "#);
     }
 
+    if runtime_usage.contains("flux__time_unix_millis(")
+        || runtime_usage.contains("flux__time_monotonic_millis(")
+        || runtime_usage.contains("flux__time_sleep_millis(")
+        || runtime_usage.contains("flux__time_sleep_until_monotonic(")
+        || runtime_usage.contains("flux__time_start_timer(")
+    {
+        out.push_str("#ifndef FLUX_DETERMINISTIC_TEST_CLOCK\n#define FLUX_DETERMINISTIC_TEST_CLOCK 0\n#endif\n#define flux__time_test_clock_enabled() (FLUX_DETERMINISTIC_TEST_CLOCK != 0)\n");
+        if uses_workers {
+            out.push_str(r#"static pthread_mutex_t flux__test_clock_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t flux__test_clock_changed = PTHREAD_COND_INITIALIZER;
+static int64_t flux__test_clock_millis = 0;
+static int64_t flux__time_test_clock_read(void) { pthread_mutex_lock(&flux__test_clock_mutex); int64_t value = flux__test_clock_millis; pthread_mutex_unlock(&flux__test_clock_mutex); return value; }
+static void flux__time_test_clock_advance(int64_t duration_ms) { pthread_mutex_lock(&flux__test_clock_mutex); if (duration_ms < 0 || flux__test_clock_millis > INT64_MAX - duration_ms) { pthread_mutex_unlock(&flux__test_clock_mutex); fputs("Flux runtime error: deterministic test clock overflow\n", stderr); abort(); } flux__test_clock_millis += duration_ms; pthread_cond_broadcast(&flux__test_clock_changed); pthread_mutex_unlock(&flux__test_clock_mutex); }
+static bool flux__time_test_clock_wait_until(int64_t deadline_ms) { pthread_mutex_lock(&flux__test_clock_mutex); while (flux__test_clock_millis < deadline_ms && !flux__worker_cancelled()) { struct timespec wake; if (clock_gettime(CLOCK_REALTIME, &wake) != 0) { pthread_mutex_unlock(&flux__test_clock_mutex); return false; } wake.tv_nsec += 50000000L; if (wake.tv_nsec >= 1000000000L) { wake.tv_sec += 1; wake.tv_nsec -= 1000000000L; } pthread_cond_timedwait(&flux__test_clock_changed, &flux__test_clock_mutex, &wake); } bool ready = !flux__worker_cancelled(); pthread_mutex_unlock(&flux__test_clock_mutex); return ready; }
+"#);
+        } else {
+            out.push_str(r#"static int64_t flux__test_clock_millis = 0;
+static inline int64_t flux__time_test_clock_read(void) { return flux__test_clock_millis; }
+static inline void flux__time_test_clock_advance(int64_t duration_ms) { if (duration_ms < 0 || flux__test_clock_millis > INT64_MAX - duration_ms) { fputs("Flux runtime error: deterministic test clock overflow\n", stderr); abort(); } flux__test_clock_millis += duration_ms; }
+"#);
+        }
+    }
+
     if runtime_usage.contains("flux__time_start_timer(") {
-        out.push_str(r#"struct flux__timer_payload { void (*callback)(void); int64_t duration_ms; bool repeat; };
+        out.push_str(r#"struct flux__timer_payload { void (*callback)(void); int64_t duration_ms; int64_t deadline_ms; bool repeat; };
 static bool flux__time_timer_wait(int64_t duration_ms) { while (duration_ms > 0) { if (flux__worker_cancelled()) return false; int64_t chunk_ms = duration_ms > INT64_C(50) ? INT64_C(50) : duration_ms; struct timespec remaining = { .tv_sec = (time_t)(chunk_ms / INT64_C(1000)), .tv_nsec = (long)((chunk_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) { if (flux__worker_cancelled()) return false; continue; } fputs("Flux runtime error: timer sleep failed\n", stderr); abort(); } duration_ms -= chunk_ms; } return !flux__worker_cancelled(); }
-static void flux__time_timer_entry(int64_t raw_payload) { struct flux__timer_payload *payload = (struct flux__timer_payload *)(intptr_t)raw_payload; if (payload == NULL) return; do { if (!flux__time_timer_wait(payload->duration_ms)) break; payload->callback(); } while (payload->repeat && !flux__worker_cancelled()); free(payload); }
-static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms, void (*callback)(void), bool repeat) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (callback == NULL) { result.v1 = "timer callback is invalid"; return result; } if (duration_ms < 0 || (repeat && duration_ms == 0)) { result.v1 = repeat ? "time.every durationMs must be positive" : "time.after durationMs must be non-negative"; return result; } struct flux__timer_payload *payload = malloc(sizeof(*payload)); if (payload == NULL) { result.v1 = "timer could not allocate state"; return result; } payload->callback = callback; payload->duration_ms = duration_ms; payload->repeat = repeat; result = flux__worker_start_with(flux__time_timer_entry, (int64_t)(intptr_t)payload); if (result.v1 != NULL) free(payload); return result; }
+static void flux__time_timer_entry(int64_t raw_payload) { struct flux__timer_payload *payload = (struct flux__timer_payload *)(intptr_t)raw_payload; if (payload == NULL) return; do { bool ready = flux__time_test_clock_enabled() ? flux__time_test_clock_wait_until(payload->deadline_ms) : flux__time_timer_wait(payload->duration_ms); if (!ready) break; payload->callback(); if (payload->repeat && flux__time_test_clock_enabled()) { if (payload->deadline_ms > INT64_MAX - payload->duration_ms) { fputs("Flux runtime error: deterministic timer deadline overflow\n", stderr); abort(); } payload->deadline_ms += payload->duration_ms; } } while (payload->repeat && !flux__worker_cancelled()); free(payload); }
+static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms, void (*callback)(void), bool repeat) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (callback == NULL) { result.v1 = "timer callback is invalid"; return result; } if (duration_ms < 0 || (repeat && duration_ms == 0)) { result.v1 = repeat ? "time.every durationMs must be positive" : "time.after durationMs must be non-negative"; return result; } struct flux__timer_payload *payload = malloc(sizeof(*payload)); if (payload == NULL) { result.v1 = "timer could not allocate state"; return result; } payload->callback = callback; payload->duration_ms = duration_ms; payload->deadline_ms = 0; payload->repeat = repeat; if (flux__time_test_clock_enabled()) { int64_t now = flux__time_test_clock_read(); if (now > INT64_MAX - duration_ms) { free(payload); result.v1 = "deterministic timer deadline overflow"; return result; } payload->deadline_ms = now + duration_ms; } result = flux__worker_start_with(flux__time_timer_entry, (int64_t)(intptr_t)payload); if (result.v1 != NULL) free(payload); return result; }
 "#);
     }
 
@@ -5504,26 +5527,26 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         out.push_str("static inline int64_t flux__time_clock_millis(clockid_t clock_id) { struct timespec value; if (clock_gettime(clock_id, &value) != 0) { fputs(\"Flux runtime error: clock query failed\\n\", stderr); abort(); } if (value.tv_sec > (time_t)(INT64_MAX / INT64_C(1000)) || value.tv_sec < (time_t)(INT64_MIN / INT64_C(1000))) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t whole = (int64_t)value.tv_sec * INT64_C(1000); int64_t fraction = (int64_t)(value.tv_nsec / 1000000L); if (__builtin_add_overflow(whole, fraction, &whole)) { fputs(\"Flux runtime error: clock value exceeds i64 milliseconds\\n\", stderr); abort(); } return whole; }\n");
     }
     if runtime_usage.contains("flux__time_unix_millis(") {
-        out.push_str("static inline int64_t flux__time_unix_millis(void) { return flux__time_clock_millis(CLOCK_REALTIME); }\n");
+        out.push_str("static inline int64_t flux__time_unix_millis(void) { if (!flux__time_test_clock_enabled()) return flux__time_clock_millis(CLOCK_REALTIME); int64_t offset = flux__time_test_clock_read(); if (offset > INT64_MAX - INT64_C(946684800000)) { fputs(\"Flux runtime error: deterministic test clock exceeds Unix i64 range\\n\", stderr); abort(); } return INT64_C(946684800000) + offset; }\n");
     }
     if runtime_usage.contains("flux__time_monotonic_millis(") {
-        out.push_str("static inline int64_t flux__time_monotonic_millis(void) { return flux__time_clock_millis(CLOCK_MONOTONIC); }\n");
+        out.push_str("static inline int64_t flux__time_monotonic_millis(void) { return flux__time_test_clock_enabled() ? flux__time_test_clock_read() : flux__time_clock_millis(CLOCK_MONOTONIC); }\n");
     }
     let worker_aware_time_sleep = uses_workers;
     if runtime_usage.contains("flux__time_sleep_millis(")
         || runtime_usage.contains("flux__time_sleep_until_monotonic(")
     {
         if worker_aware_time_sleep {
-            out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } if (flux__worker_current_id > 0) { while (duration_ms > 0) { if (flux__worker_cancelled()) return; int64_t chunk_ms = duration_ms > INT64_C(50) ? INT64_C(50) : duration_ms; struct timespec remaining = { .tv_sec = (time_t)(chunk_ms / INT64_C(1000)), .tv_nsec = (long)((chunk_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } duration_ms -= chunk_ms; } return; } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
+            out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } if (flux__time_test_clock_enabled()) { flux__time_test_clock_advance(duration_ms); return; } if (flux__worker_current_id > 0) { while (duration_ms > 0) { if (flux__worker_cancelled()) return; int64_t chunk_ms = duration_ms > INT64_C(50) ? INT64_C(50) : duration_ms; struct timespec remaining = { .tv_sec = (time_t)(chunk_ms / INT64_C(1000)), .tv_nsec = (long)((chunk_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } duration_ms -= chunk_ms; } return; } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
         } else {
-            out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
+            out.push_str("static inline void flux__time_sleep_millis(int64_t duration_ms) { if (duration_ms < 0) { fputs(\"Flux runtime error: time.sleepMillis durationMs must be non-negative\\n\", stderr); abort(); } if (flux__time_test_clock_enabled()) { flux__time_test_clock_advance(duration_ms); return; } struct timespec remaining = { .tv_sec = (time_t)(duration_ms / INT64_C(1000)), .tv_nsec = (long)((duration_ms % INT64_C(1000)) * INT64_C(1000000)) }; while (nanosleep(&remaining, &remaining) != 0) { if (errno == EINTR) continue; fputs(\"Flux runtime error: sleep failed\\n\", stderr); abort(); } }\n");
         }
     }
     if runtime_usage.contains("flux__time_sleep_until_monotonic(") {
         if worker_aware_time_sleep {
-            out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { for (;;) { if (flux__worker_cancelled()) return; int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
+            out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { if (flux__time_test_clock_enabled()) { int64_t now = flux__time_test_clock_read(); if (deadline_ms > now) flux__time_test_clock_advance(deadline_ms - now); return; } for (;;) { if (flux__worker_cancelled()) return; int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
         } else {
-            out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { for (;;) { int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
+            out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { if (flux__time_test_clock_enabled()) { int64_t now = flux__time_test_clock_read(); if (deadline_ms > now) flux__time_test_clock_advance(deadline_ms - now); return; } for (;;) { int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
         }
     }
     if runtime_usage.contains("flux__time_utc_part(") {

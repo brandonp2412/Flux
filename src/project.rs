@@ -436,6 +436,61 @@ pub fn analyze_with_overlays(
     analyze_with_overlays_report(load_report_with_overlays(entry, overlays)?)
 }
 
+pub fn analyze_package_test(
+    package_target: &Path,
+    test_entry: &Path,
+) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
+    let manifest_path = if package_target.is_dir() {
+        package_target.join("flux.toml")
+    } else if package_target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        package_target.to_path_buf()
+    } else {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            "package unit tests require a package directory or flux.toml target",
+        )]);
+    };
+    let manifest = read_manifest(&manifest_path)?;
+    validate_lockfile(&manifest)?;
+    let package_root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent")
+        .to_path_buf();
+    let test_entry = canonical_source(test_entry, "test source")?;
+    if !test_entry.starts_with(&package_root) {
+        return Err(vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            "package test source must remain inside the package root",
+        )]);
+    }
+    let mut loader = Loader {
+        loaded: HashSet::new(),
+        stack: Vec::new(),
+        program: Program::default(),
+        sources: Vec::new(),
+        diagnostics: Vec::new(),
+        package_constants: HashMap::new(),
+        module_root: package_root.clone(),
+        package_scopes: vec![PackageScope {
+            name: manifest.name,
+            root: package_root,
+            dependencies: manifest.dependencies,
+            constants: manifest.constants,
+        }],
+        overlays: HashMap::new(),
+        parse_cache: None,
+    };
+    loader.load_file(&test_entry, None);
+    analyze_with_overlays_report(ProjectLoadReport {
+        program: loader.program,
+        sources: loader.sources,
+        diagnostics: loader.diagnostics,
+        package_constants: loader.package_constants,
+        translations: manifest.translations,
+    })
+}
+
 fn analyze_with_overlays_and_parse_cache(
     entry: &Path,
     overlays: &HashMap<PathBuf, String>,
@@ -2441,6 +2496,21 @@ impl Loader<'_> {
                 "package module paths must be normalized relative '.flux' paths",
             ));
             return None;
+        }
+        if dependency_name == "self" {
+            let resolved = current_package.root.join(module_path);
+            if fs::canonicalize(&resolved)
+                .ok()
+                .is_some_and(|path| !path.starts_with(&current_package.root))
+            {
+                self.diagnostics.push(Diagnostic::new(
+                    DiagnosticStage::Parse,
+                    span,
+                    "package self-imports must remain inside the package root",
+                ));
+                return None;
+            }
+            return Some(resolved);
         }
         let Some(dependency) = current_package.dependencies.get(dependency_name) else {
             self.diagnostics.push(Diagnostic::new(
