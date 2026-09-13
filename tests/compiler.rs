@@ -23329,6 +23329,167 @@ fn package_import_namespace_loads_declared_path_dependencies() {
 }
 
 #[test]
+fn package_platform_modules_select_native_implementations_behind_stable_imports() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-platform-modules-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dependency = root.join("dep");
+    for directory in [
+        app.join("src"),
+        app.join("platform/android"),
+        dependency.join("src"),
+        dependency.join("platform/android"),
+    ] {
+        fs::create_dir_all(directory).expect("platform package directory should be writable");
+    }
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"platform-app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n\n[platform.android]\nmodules = [\"src/local.flux=platform/android/local.flux\"]\n",
+    )
+    .expect("app platform manifest should be writable");
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"platform-dep\"\nentry = \"src/lib.flux\"\n\n[platform.android]\nmodules = [\"src/lib.flux=platform/android/lib.flux\"]\n",
+    )
+    .expect("dependency platform manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"local.flux\"\nimport \"pkg:dep/src/lib.flux\"\nfn main() -> i64 { localValue() + dependencyValue() }\n",
+    )
+    .expect("app entry should be writable");
+    fs::write(
+        app.join("src/local.flux"),
+        "pub fn localValue() -> i64 { 1 }\n",
+    )
+    .expect("portable app module should be writable");
+    fs::write(
+        app.join("platform/android/local.flux"),
+        "pub fn localValue() -> i64 { 10 }\n",
+    )
+    .expect("Android app module should be writable");
+    fs::write(
+        dependency.join("src/lib.flux"),
+        "pub fn dependencyValue() -> i64 { 2 }\n",
+    )
+    .expect("portable dependency module should be writable");
+    fs::write(
+        dependency.join("platform/android/lib.flux"),
+        "pub fn dependencyValue() -> i64 { 20 }\n",
+    )
+    .expect("Android dependency module should be writable");
+    fluxc::project::write_lockfile(&app).expect("platform package lockfile should be writable");
+
+    let linux = fluxc::project::analyze(&app).expect("Linux platform package should analyze");
+    let linux_sources = linux
+        .sources
+        .iter()
+        .map(|source| (source.module_name.as_str(), source.path.as_path()))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        linux_sources.get("platform-app::src::local"),
+        Some(&app.join("src/local.flux").canonicalize().unwrap().as_path())
+    );
+    assert_eq!(
+        linux_sources.get("platform-dep::src::lib"),
+        Some(
+            &dependency
+                .join("src/lib.flux")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
+    );
+
+    let android = fluxc::project::analyze_for_target(&app, fluxc::codegen::NativeTarget::Android)
+        .expect("Android platform package should analyze");
+    let android_sources = android
+        .sources
+        .iter()
+        .map(|source| (source.module_name.as_str(), source.path.as_path()))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        android_sources.get("platform-app::src::local"),
+        Some(
+            &app.join("platform/android/local.flux")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
+    );
+    assert_eq!(
+        android_sources.get("platform-dep::src::lib"),
+        Some(
+            &dependency
+                .join("platform/android/lib.flux")
+                .canonicalize()
+                .unwrap()
+                .as_path()
+        )
+    );
+    assert!(
+        android
+            .sources
+            .iter()
+            .all(|source| source.path != app.join("src/local.flux"))
+    );
+    android
+        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .expect("selected Android modules should lower natively");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn package_platform_module_manifest_rejects_unsafe_paths_and_duplicates() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-platform-errors-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("platform package should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    let manifest = root.join("flux.toml");
+    for (modules, expected) in [
+        (
+            "[\"../api.flux=src/android.flux\"]",
+            "normalized package-relative '.flux' paths",
+        ),
+        (
+            "[\"src/api.flux=/tmp/android.flux\"]",
+            "normalized package-relative '.flux' paths",
+        ),
+        (
+            "[\"src/api.txt=src/android.flux\"]",
+            "normalized package-relative '.flux' paths",
+        ),
+        (
+            "[\"src/api.flux=src/a.flux\", \"src/api.flux=src/b.flux\"]",
+            "mapped more than once",
+        ),
+    ] {
+        fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"platform-errors\"\nentry = \"src/main.flux\"\n\n[platform.android]\nmodules = {modules}\n"
+            ),
+        )
+        .expect("invalid platform manifest should be writable");
+        let errors = fluxc::project::read_manifest(&manifest)
+            .expect_err("invalid platform module mapping must fail");
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "expected '{expected}', got {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     let root = std::env::temp_dir().join(format!("flux-package-lockfile-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

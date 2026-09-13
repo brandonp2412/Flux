@@ -146,8 +146,12 @@ impl ProjectAnalysisCache {
         }
 
         self.misses += 1;
-        let analysis =
-            analyze_with_overlays_and_parse_cache(target, overlays, &mut self.module_parses)?;
+        let analysis = analyze_with_overlays_and_parse_cache(
+            target,
+            overlays,
+            &mut self.module_parses,
+            codegen::NativeTarget::Linux,
+        )?;
         self.entries.insert(
             key.clone(),
             CachedProjectAnalysis {
@@ -208,6 +212,25 @@ pub struct NativePackageConfig {
     pub search_paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlatformPackageConfig {
+    pub linux_modules: BTreeMap<PathBuf, PathBuf>,
+    pub android_modules: BTreeMap<PathBuf, PathBuf>,
+}
+
+impl PlatformPackageConfig {
+    fn modules_for(&self, target: codegen::NativeTarget) -> &BTreeMap<PathBuf, PathBuf> {
+        match target {
+            codegen::NativeTarget::Linux => &self.linux_modules,
+            codegen::NativeTarget::Android => &self.android_modules,
+        }
+    }
+
+    fn implementation_for(&self, target: codegen::NativeTarget, module: &Path) -> Option<&PathBuf> {
+        self.modules_for(target).get(module)
+    }
+}
+
 pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 pub const PACKAGE_LOCK_FORMAT_VERSION: u32 = 1;
 
@@ -238,6 +261,7 @@ pub struct PackageManifest {
     pub constants: BTreeMap<String, typecheck::ConstantValue>,
     pub translations: BTreeMap<String, BTreeMap<String, String>>,
     pub native: NativePackageConfig,
+    pub platform: PlatformPackageConfig,
     pub android: AndroidPackageConfig,
 }
 
@@ -336,16 +360,25 @@ fn load_report_with_overlays(
     target: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    load_report_with_overlays_and_parse_cache(target, overlays, None)
+    load_report_with_overlays_for_target(target, overlays, codegen::NativeTarget::Linux)
+}
+
+fn load_report_with_overlays_for_target(
+    target: &Path,
+    overlays: &HashMap<PathBuf, String>,
+    native_target: codegen::NativeTarget,
+) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
+    load_report_with_overlays_and_parse_cache(target, overlays, None, native_target)
 }
 
 fn load_report_with_overlays_and_parse_cache(
     target: &Path,
     overlays: &HashMap<PathBuf, String>,
     parse_cache: Option<&mut ModuleParseCache>,
+    native_target: codegen::NativeTarget,
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
-    let (entry, module_root, package_name, dependencies, constants, translations) =
-        resolve_project_target(target)?;
+    let (entry, module_root, package_name, dependencies, constants, translations, platform) =
+        resolve_project_target(target, native_target)?;
     let package_scopes = package_name
         .as_ref()
         .map(|name| {
@@ -354,6 +387,7 @@ fn load_report_with_overlays_and_parse_cache(
                 root: module_root.clone(),
                 dependencies,
                 constants,
+                platform,
             }]
         })
         .unwrap_or_default();
@@ -366,6 +400,7 @@ fn load_report_with_overlays_and_parse_cache(
         package_constants: HashMap::new(),
         module_root,
         package_scopes,
+        native_target,
         overlays: overlays.clone(),
         parse_cache,
     };
@@ -383,6 +418,17 @@ pub fn analyze(entry: &Path) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
     analyze_with_overlays(entry, &HashMap::new())
 }
 
+pub fn analyze_for_target(
+    entry: &Path,
+    native_target: codegen::NativeTarget,
+) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
+    analyze_with_overlays_report(load_report_with_overlays_for_target(
+        entry,
+        &HashMap::new(),
+        native_target,
+    )?)
+}
+
 pub fn analyze_with_overlays(
     entry: &Path,
     overlays: &HashMap<PathBuf, String>,
@@ -394,11 +440,13 @@ fn analyze_with_overlays_and_parse_cache(
     entry: &Path,
     overlays: &HashMap<PathBuf, String>,
     parse_cache: &mut ModuleParseCache,
+    native_target: codegen::NativeTarget,
 ) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
     analyze_with_overlays_report(load_report_with_overlays_and_parse_cache(
         entry,
         overlays,
         Some(parse_cache),
+        native_target,
     )?)
 }
 
@@ -456,7 +504,8 @@ pub fn compile_to_c_header(entry: &Path) -> Result<String, Diagnostic> {
 }
 
 pub fn resolve_entry(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
-    resolve_project_target(target).map(|(entry, _, _, _, _, _)| entry)
+    resolve_project_target(target, codegen::NativeTarget::Linux)
+        .map(|(entry, _, _, _, _, _, _)| entry)
 }
 
 pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -467,6 +516,7 @@ pub fn development_status_path(target: &Path) -> Result<PathBuf, Vec<Diagnostic>
 
 fn resolve_project_target(
     target: &Path,
+    native_target: codegen::NativeTarget,
 ) -> Result<
     (
         PathBuf,
@@ -475,6 +525,7 @@ fn resolve_project_target(
         BTreeMap<String, PackageDependency>,
         BTreeMap<String, typecheck::ConstantValue>,
         BTreeMap<String, BTreeMap<String, String>>,
+        PlatformPackageConfig,
     ),
     Vec<Diagnostic>,
 > {
@@ -491,13 +542,23 @@ fn resolve_project_target(
             .parent()
             .expect("canonical manifest path has a parent")
             .to_path_buf();
+        let entry_relative = manifest
+            .entry
+            .strip_prefix(&root)
+            .expect("package entry is inside its package root");
+        let entry = manifest
+            .platform
+            .implementation_for(native_target, entry_relative)
+            .map(|implementation| root.join(implementation))
+            .unwrap_or_else(|| manifest.entry.clone());
         return Ok((
-            manifest.entry,
+            entry,
             root,
             Some(manifest.name),
             manifest.dependencies,
             manifest.constants,
             manifest.translations,
+            manifest.platform,
         ));
     }
     let entry = canonical_source(target, "entry source")?;
@@ -512,6 +573,7 @@ fn resolve_project_target(
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        PlatformPackageConfig::default(),
     ))
 }
 
@@ -552,6 +614,8 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut native_plugin = None::<bool>;
     let mut native_libraries = None::<Vec<String>>;
     let mut native_search_paths = None::<Vec<String>>;
+    let mut platform_linux_modules = None::<BTreeMap<PathBuf, PathBuf>>;
+    let mut platform_android_modules = None::<BTreeMap<PathBuf, PathBuf>>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
     let mut constants = BTreeMap::<String, typecheck::ConstantValue>::new();
     let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -575,7 +639,14 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             let table = line[1..line.len() - 1].trim();
             if !matches!(
                 table,
-                "package" | "android" | "native" | "dependencies" | "constants" | "translations"
+                "package"
+                    | "android"
+                    | "native"
+                    | "dependencies"
+                    | "constants"
+                    | "translations"
+                    | "platform.linux"
+                    | "platform.android"
             ) {
                 diagnostics.push(manifest_diagnostic(
                     source_id,
@@ -763,6 +834,48 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 }
                 translations.insert(key.to_string(), localized);
             }
+            Some("platform.linux") | Some("platform.android") => {
+                if key != "modules" {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!(
+                            "unknown [{}] field '{key}'; only 'modules' is supported",
+                            section.as_deref().expect("platform section is present")
+                        ),
+                    ));
+                    continue;
+                }
+                let entries = match parse_manifest_string_array(raw_value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                        continue;
+                    }
+                };
+                let modules = match parse_platform_module_map(entries) {
+                    Ok(modules) => modules,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                        continue;
+                    }
+                };
+                let slot = if section.as_deref() == Some("platform.linux") {
+                    &mut platform_linux_modules
+                } else {
+                    &mut platform_android_modules
+                };
+                if slot.replace(modules).is_some() {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!(
+                            "duplicate [{}] field 'modules'",
+                            section.as_deref().expect("platform section is present")
+                        ),
+                    ));
+                }
+            }
             Some("native") => match key {
                 "plugin" => {
                     let value = match raw_value {
@@ -887,7 +1000,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], or [android]",
+                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], [android], [platform.linux], or [platform.android]",
             )),
         }
     }
@@ -1144,6 +1257,10 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 paths.dedup();
                 paths
             },
+        },
+        platform: PlatformPackageConfig {
+            linux_modules: platform_linux_modules.unwrap_or_default(),
+            android_modules: platform_android_modules.unwrap_or_default(),
         },
     })
 }
@@ -1543,6 +1660,51 @@ fn valid_native_search_path(value: &str) -> bool {
                 std::path::Component::CurDir | std::path::Component::ParentDir
             )
         })
+}
+
+fn valid_platform_module_path(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let path = Path::new(value);
+    !path.is_absolute()
+        && path.extension().and_then(|extension| extension.to_str()) == Some("flux")
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+}
+
+fn parse_platform_module_map(entries: Vec<String>) -> Result<BTreeMap<PathBuf, PathBuf>, String> {
+    let mut modules = BTreeMap::new();
+    for entry in entries {
+        let Some((module, implementation)) = entry.split_once('=') else {
+            return Err(
+                "platform module entries use 'shared/module.flux=platform/module.flux' strings"
+                    .to_string(),
+            );
+        };
+        let module = module.trim();
+        let implementation = implementation.trim();
+        if !valid_platform_module_path(module) || !valid_platform_module_path(implementation) {
+            return Err(format!(
+                "platform module paths must be normalized package-relative '.flux' paths; invalid value '{entry}'"
+            ));
+        }
+        let module = PathBuf::from(module);
+        if modules
+            .insert(module.clone(), PathBuf::from(implementation))
+            .is_some()
+        {
+            return Err(format!(
+                "platform module '{}' is mapped more than once",
+                module.display()
+            ));
+        }
+    }
+    Ok(modules)
 }
 
 fn valid_dependency_name(value: &str) -> bool {
@@ -2023,6 +2185,30 @@ struct PackageScope {
     root: PathBuf,
     dependencies: BTreeMap<String, PackageDependency>,
     constants: BTreeMap<String, typecheck::ConstantValue>,
+    platform: PlatformPackageConfig,
+}
+
+impl PackageScope {
+    fn resolve_module(&self, target: codegen::NativeTarget, requested: &Path) -> PathBuf {
+        let Ok(relative) = requested.strip_prefix(&self.root) else {
+            return requested.to_path_buf();
+        };
+        self.platform
+            .implementation_for(target, relative)
+            .map(|implementation| self.root.join(implementation))
+            .unwrap_or_else(|| requested.to_path_buf())
+    }
+
+    fn logical_module_path(&self, target: codegen::NativeTarget, actual: &Path) -> PathBuf {
+        let relative = actual.strip_prefix(&self.root).unwrap_or(actual);
+        self.platform
+            .modules_for(target)
+            .iter()
+            .find_map(|(logical, implementation)| {
+                (implementation == relative).then(|| logical.clone())
+            })
+            .unwrap_or_else(|| relative.to_path_buf())
+    }
 }
 
 struct Loader<'a> {
@@ -2034,6 +2220,7 @@ struct Loader<'a> {
     package_constants: HashMap<SourceId, BTreeMap<String, typecheck::ConstantValue>>,
     module_root: PathBuf,
     package_scopes: Vec<PackageScope>,
+    native_target: codegen::NativeTarget,
     overlays: HashMap<PathBuf, String>,
     parse_cache: Option<&'a mut ModuleParseCache>,
 }
@@ -2170,7 +2357,11 @@ impl Loader<'_> {
                 continue;
             }
             let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
-            let resolved = parent.join(import_path);
+            let requested = parent.join(import_path);
+            let resolved = current_package
+                .as_ref()
+                .map(|package| package.resolve_module(self.native_target, &requested))
+                .unwrap_or(requested);
             let resolved_canonical = fs::canonicalize(&resolved).ok();
             let package_root = current_package
                 .as_ref()
@@ -2332,13 +2523,19 @@ impl Loader<'_> {
             }
         } else {
             self.package_scopes.push(PackageScope {
-                name: manifest.name,
+                name: manifest.name.clone(),
                 root: dependency_root.clone(),
-                dependencies: manifest.dependencies,
-                constants: manifest.constants,
+                dependencies: manifest.dependencies.clone(),
+                constants: manifest.constants.clone(),
+                platform: manifest.platform.clone(),
             });
         }
-        let resolved = dependency_root.join(module_path);
+        let selected_module = manifest
+            .platform
+            .implementation_for(self.native_target, module_path)
+            .cloned()
+            .unwrap_or_else(|| module_path.to_path_buf());
+        let resolved = dependency_root.join(selected_module);
         if fs::canonicalize(&resolved)
             .ok()
             .is_some_and(|path| !path.starts_with(&dependency_root))
@@ -2358,7 +2555,9 @@ impl Loader<'_> {
         let module_root = package
             .map(|package| package.root.as_path())
             .unwrap_or(self.module_root.as_path());
-        let relative = path.strip_prefix(module_root).unwrap_or(path);
+        let relative = package
+            .map(|package| package.logical_module_path(self.native_target, path))
+            .unwrap_or_else(|| path.strip_prefix(module_root).unwrap_or(path).to_path_buf());
         let mut segments = relative
             .components()
             .filter_map(|component| component.as_os_str().to_str())

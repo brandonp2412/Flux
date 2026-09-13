@@ -21,11 +21,27 @@ The package-format version covers the schema and semantics of `flux.toml`; it is
 
 ## Compatibility policy
 
-Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, `entry`, and optional `assets`), the optional `[dependencies]`, `[constants]`, `[translations]`, and `[native]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules. When present, `assets` names a relative directory inside the package root; package commands preserve its contents under the portable runtime resource root `assets/`.
+Version 1 includes the current `[package]` fields (`format_version`, `name`, optional `version`, `entry`, and optional `assets`), the optional `[dependencies]`, `[constants]`, `[translations]`, `[native]`, and `[platform.<target>]` tables, and the current optional `[android]` configuration surface. Existing version-1 fields keep their meanings and validation rules. When present, `assets` names a relative directory inside the package root; package commands preserve its contents under the portable runtime resource root `assets/`.
 
 `[dependencies]` is an additive version-1 extension. Registry entries use quoted exact/caret/tilde SemVer requirements or `"*"`; local development entries use `{ path = "relative/path" }` and may add `version = "^1.2.3"` (or another supported SemVer requirement) when they must satisfy the same version contract as a registry package; Git development entries use `{ git = "repository-url", rev = "immutable-revision" }`. The manifest parser validates names, source shape, required fields, duplicates, relative local paths, and dependency requirement syntax.
 
 Package imports use the reserved quoted namespace `pkg:<dependency>/<module.flux>`, for example `import "pkg:math/src/lib.flux"`. This is intentionally distinct from ordinary quoted relative imports, so a dependency can never be mistaken for a same-named local source file. Declared local `path` dependencies are loadable now: the dependency must contain its own valid `flux.toml`, imported modules stay inside that dependency root, its ordinary relative imports remain package-local, and loaded source identities use the dependency package's own `[package].name` rather than the caller's dependency alias. When a path dependency declares `version`, Flux applies SemVer precedence and exact/caret/tilde/wildcard matching to the dependency package's `[package].version` before loading imported source. The same resolver deterministically chooses the highest compatible version from a candidate set, ignores build metadata for precedence, and does not admit prerelease candidates for a stable-only requirement. Registry and Git imports remain unavailable until their fetch transports land; the compiler reports that unresolved state instead of falling back to a local path.
+
+## Per-platform package modules
+
+A package can keep one stable import/module contract while selecting a native implementation for a supported target at compile time:
+
+```toml
+[platform.linux]
+modules = ["src/notifications.flux=platform/linux/notifications.flux"]
+
+[platform.android]
+modules = ["src/notifications.flux=platform/android/notifications.flux"]
+```
+
+Each mapping is `logical/module.flux=target/implementation.flux`. Both sides must be normalized package-relative `.flux` paths: absolute paths, `.`/`..` traversal, non-Flux files, and duplicate logical mappings are rejected. Ordinary relative imports and `pkg:<dependency>/...` imports continue to name the logical module; the loader selects the target implementation before type checking/code generation and preserves the logical package/module identity for symbols and generated ABI names. Path dependencies use their own package's platform mappings, so an application does not need to know how a dependency implements the same source-level contract on Linux versus Android. The logical package entry may also be mapped when the target needs a different entry implementation.
+
+Selection is compile-time only. Non-selected implementations are not loaded into the target program, and Flux inserts no runtime target dispatcher, serialized plugin protocol, method channel, or application-authored native bridge. Normal native analysis/build selects Linux mappings; Android application builds select Android mappings before native/JNI lowering. Future native targets must extend this compiler-owned selection model rather than exposing platform implementation objects to application source.
 
 ## Package constants and resources
 

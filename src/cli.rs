@@ -654,13 +654,15 @@ fn build_android_command(
         .path
         .parent()
         .expect("canonical manifest has a parent");
-    let analysis = fluxc::project::analyze(&manifest.path).map_err(|diagnostics| {
-        diagnostics
-            .into_iter()
-            .map(|diagnostic| diagnostic.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
+    let analysis =
+        fluxc::project::analyze_for_target(&manifest.path, fluxc::codegen::NativeTarget::Android)
+            .map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
     if analysis.program.application.is_none() {
         return Err(CliError::Message(
             "Android application builds require an 'app' declaration".to_string(),
@@ -7359,6 +7361,7 @@ mod tests {
                     std::path::PathBuf::from("/tmp/android-native-link/vendor"),
                 ],
             },
+            platform: crate::project::PlatformPackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.androidnativelink".to_string(),
                 version_code: 1,
@@ -7631,6 +7634,7 @@ mod tests {
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
             native: crate::project::NativePackageConfig::default(),
+            platform: crate::project::PlatformPackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,
@@ -7704,6 +7708,7 @@ mod tests {
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
             native: crate::project::NativePackageConfig::default(),
+            platform: crate::project::PlatformPackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 1,
@@ -7782,6 +7787,7 @@ mod tests {
             constants: std::collections::BTreeMap::new(),
             translations: std::collections::BTreeMap::new(),
             native: crate::project::NativePackageConfig::default(),
+            platform: crate::project::PlatformPackageConfig::default(),
             android: crate::project::AndroidPackageConfig {
                 application_id: "app.flux.example".to_string(),
                 version_code: 42,
