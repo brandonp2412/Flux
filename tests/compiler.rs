@@ -2048,7 +2048,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert!(
         String::from_utf8_lossy(&run.stdout)
-            .contains("tcpAcceptMany requires a nonblocking TCP listener")
+            .contains("acceptMany requires a nonblocking TCP listener")
     );
 
     let max_count_error = check_source(
@@ -2634,7 +2634,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("single-request HTTP server helper should lower");
     assert!(generated.contains("flux__net_http_serve_once("));
     assert!(generated.contains("flux__net_http_receive_request_with_text_body_v2("));
-    assert!(generated.contains("http.serveOnce requires a TCP listener"));
+    assert!(generated.contains("HTTP server requires a TCP listener"));
 
     let invalid_limit = check_source(
         "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.serveOnce(1, 0, 1024, request, header, body))\n    return 0\n}\n",
@@ -2713,6 +2713,157 @@ fn main() -> i64 {
         "nil\nPOST\n/one\nHTTP/1.1\nnil\nHost\nexample.test\nContent-Length\n5\nhello\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_serve_is_the_continuous_default_and_handles_multiple_connections() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn main() -> i64 {
+    print(http.serve(1, 4096, 1024, request, header, body))
+    return 0
+}
+"#;
+    check_source(source).expect("canonical HTTP server helper should typecheck");
+    let generated = compile_to_c(source).expect("canonical HTTP server helper should lower");
+    assert!(generated.contains("flux__net_http_serve("));
+    assert!(generated.contains("for (;;)"));
+
+    let probe = TcpListener::bind("127.0.0.1:0").expect("HTTP serve port should allocate");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let root = std::env::temp_dir().join(format!("flux-http-serve-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP serve fixture should be writable");
+    let source_path = root.join("serve.flux");
+    fs::write(
+        &source_path,
+        format!(
+            "fn request(socket: i64, _method: str, _target: str, _version: str) -> void {{\n    print(http.respond(socket, 200, \"text/plain\", \"served\"))\n}}\nfn header(_socket: i64, _name: str, _value: str) -> void {{\n}}\nfn body(_socket: i64, _value: str) -> void {{\n}}\nfn main() -> i64 {{\n    let (listener, listenError) = net.listen(\"127.0.0.1\", {port}, 8)\n    print(listenError)\n    print(http.serve(listener, 4096, 1024, request, header, body))\n    return 0\n}}\n"
+        ),
+    )
+    .expect("HTTP serve Flux source should be writable");
+    let binary = root.join("serve");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP serve Flux binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP serve fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let mut child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("HTTP serve Flux binary should start");
+
+    for target in ["/one", "/two"] {
+        let mut stream = (0..100)
+            .find_map(
+                |_| match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                    Ok(stream) => Some(stream),
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(5));
+                        None
+                    }
+                },
+            )
+            .expect("HTTP serve listener should remain reachable");
+        stream
+            .write_all(format!("GET {target} HTTP/1.1\r\nHost: example.test\r\n\r\n").as_bytes())
+            .expect("HTTP serve request should be writable");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("HTTP serve response should be readable through close");
+        assert!(response.contains("HTTP/1.1 200"));
+        assert!(response.ends_with("served"));
+    }
+
+    child
+        .kill()
+        .expect("continuous HTTP server should be stoppable by its owner process");
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn canonical_short_platform_api_names_typecheck_and_lower() {
+    let headless = r#"
+fn main() -> i64 {
+    let (socket, connectError) = net.connect("127.0.0.1", 80)
+    let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
+    let (accepted, acceptError) = net.accept(listener)
+    time.sleep(0)
+    print(http.request(socket, "GET", "/", "example.test", "text/plain", ""))
+    print(http.respond(socket, 200, "text/plain", "ok"))
+    print(socket)
+    print(connectError)
+    print(accepted)
+    print(acceptError)
+    print(listenError)
+    return 0
+}
+"#;
+    check_source(headless).expect("canonical short headless API names should typecheck");
+    let generated =
+        compile_to_c(headless).expect("canonical short headless API names should lower");
+    for helper in [
+        "flux__net_tcp_connect(",
+        "flux__net_tcp_listen(",
+        "flux__net_tcp_accept(",
+        "flux__time_sleep_millis(",
+        "flux__net_http_send_text_request_v2(",
+        "flux__net_http_send_text_response(",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing lowering helper {helper}"
+        );
+    }
+
+    let application = r#"
+fn text(_value: str) -> void {
+}
+fn selected(_path: str) -> void {
+}
+fn started() -> void {
+    clipboard.write("hello")
+    clipboard.read(text)
+    fileDialog.open(selected)
+    fileDialog.save(selected)
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "short API names"
+}
+app Screen(onStart: started)
+"#;
+    check_source(application).expect("canonical short application API names should typecheck");
+    let generated =
+        compile_to_c(application).expect("canonical short application API names should lower");
+    for helper in [
+        "flux__clipboard_set_text(",
+        "flux__clipboard_read_text(",
+        "flux__file_dialog_open_file(",
+        "flux__file_dialog_save_file(",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing lowering helper {helper}"
+        );
+    }
 }
 
 #[test]
@@ -3862,7 +4013,7 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__net_wait_writable("));
     assert!(generated.contains("void (*callback)(int64_t, const char *)"));
     assert!(generated.contains("O_NONBLOCK"));
-    assert!(generated.contains("poll(&descriptor"));
+    assert!(generated.contains("poll(descriptors, count"));
     assert!(generated.contains("MSG_NOSIGNAL"));
 
     let root = std::env::temp_dir().join(format!("flux-net-text-{}", std::process::id()));

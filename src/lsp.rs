@@ -1201,8 +1201,8 @@ fn add_qualified_namespace_completions(
     if namespace == "net" {
         for (label, detail) in [
             (
-                "tcpConnect",
-                "fn net.tcpConnect(host: str, port: i64) -> (i64, error)",
+                "connect",
+                "fn net.connect(host: str, port: i64) -> (i64, error)",
             ),
             (
                 "udpConnect",
@@ -1213,16 +1213,13 @@ fn add_qualified_namespace_completions(
                 "fn net.udpBind(host: str, port: i64) -> (i64, error)",
             ),
             (
-                "tcpListen",
-                "fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)",
+                "listen",
+                "fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)",
             ),
+            ("accept", "fn net.accept(listener: i64) -> (i64, error)"),
             (
-                "tcpAccept",
-                "fn net.tcpAccept(listener: i64) -> (i64, error)",
-            ),
-            (
-                "tcpAcceptMany",
-                "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "acceptMany",
+                "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             ("localPort", "fn net.localPort(socket: i64) -> (i64, error)"),
             (
@@ -1386,6 +1383,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "serve",
+            3,
+            "fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "serveOnce",
             3,
             "fn http.serveOnce(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
@@ -1407,30 +1411,30 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "sendTextRequest",
+            "request",
             3,
-            "fn http.sendTextRequest(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
+            "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "sendTextRequestWithHeaders",
+            "requestWithHeaders",
             3,
-            "fn http.sendTextRequestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+            "fn http.requestWithHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "sendTextResponse",
+            "respond",
             3,
-            "fn http.sendTextResponse(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+            "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
         );
         push_completion_item(
             items,
             seen,
-            "sendTextResponseWithHeaders",
+            "respondWithHeaders",
             3,
-            "fn http.sendTextResponseWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+            "fn http.respondWithHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
         );
         return true;
     }
@@ -1570,9 +1574,9 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "sleepMillis",
+            "sleep",
             3,
-            "fn time.sleepMillis(durationMs: i64) -> void",
+            "fn time.sleep(durationMs: i64) -> void",
         );
         push_completion_item(
             items,
@@ -1713,16 +1717,16 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
-            "setText",
+            "write",
             3,
-            "fn clipboard.setText(text: str) -> void",
+            "fn clipboard.write(text: str) -> void",
         );
         push_completion_item(
             items,
             seen,
-            "readText",
+            "read",
             3,
-            "fn clipboard.readText(callback: fn(str) -> void) -> void",
+            "fn clipboard.read(callback: fn(str) -> void) -> void",
         );
         return true;
     }
@@ -1760,12 +1764,12 @@ fn add_qualified_namespace_completions(
     if namespace == "fileDialog" {
         for (label, detail) in [
             (
-                "openFile",
-                "fn fileDialog.openFile(callback: fn(str) -> void) -> void",
+                "open",
+                "fn fileDialog.open(callback: fn(str) -> void) -> void",
             ),
             (
-                "saveFile",
-                "fn fileDialog.saveFile(callback: fn(str) -> void) -> void",
+                "save",
+                "fn fileDialog.save(callback: fn(str) -> void) -> void",
             ),
             (
                 "selectDirectory",
@@ -2762,9 +2766,9 @@ fn signature_help_for_document_cached(
         }
         if namespace == "net" {
             match member {
-                "tcpConnect" => {
+                "connect" | "tcpConnect" => {
                     return Some(signature_help_for_builtin(
-                        "net.tcpConnect",
+                        &format!("net.{member}"),
                         &["host: str", "port: i64"],
                         "(i64, error)",
                         active_parameter,
@@ -2778,25 +2782,25 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "tcpListen" => {
+                "listen" | "tcpListen" => {
                     return Some(signature_help_for_builtin(
-                        "net.tcpListen",
+                        &format!("net.{member}"),
                         &["host: str", "port: i64", "backlog: i64"],
                         "(i64, error)",
                         active_parameter,
                     ));
                 }
-                "tcpAccept" => {
+                "accept" | "tcpAccept" => {
                     return Some(signature_help_for_builtin(
-                        "net.tcpAccept",
+                        &format!("net.{member}"),
                         &["listener: i64"],
                         "(i64, error)",
                         active_parameter,
                     ));
                 }
-                "tcpAcceptMany" => {
+                "acceptMany" | "tcpAcceptMany" => {
                     return Some(signature_help_for_builtin(
-                        "net.tcpAcceptMany",
+                        &format!("net.{member}"),
                         &[
                             "listener: i64",
                             "maxCount: i64",
@@ -3054,9 +3058,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "serveOnce" => {
+                "serve" | "serveOnce" => {
                     return Some(signature_help_for_builtin(
-                        "http.serveOnce",
+                        &format!("http.{member}"),
                         &[
                             "listener: i64",
                             "maxHeadBytes: i64",
@@ -3097,9 +3101,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sendTextRequest" => {
+                "request" | "sendTextRequest" => {
                     return Some(signature_help_for_builtin(
-                        "http.sendTextRequest",
+                        &format!("http.{member}"),
                         &[
                             "socket: i64",
                             "method: str",
@@ -3113,9 +3117,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sendTextRequestWithHeaders" => {
+                "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                     return Some(signature_help_for_builtin(
-                        "http.sendTextRequestWithHeaders",
+                        &format!("http.{member}"),
                         &[
                             "socket: i64",
                             "method: str",
@@ -3130,9 +3134,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sendTextResponse" => {
+                "respond" | "sendTextResponse" => {
                     return Some(signature_help_for_builtin(
-                        "http.sendTextResponse",
+                        &format!("http.{member}"),
                         &[
                             "socket: i64",
                             "status: i64",
@@ -3144,9 +3148,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sendTextResponseWithHeaders" => {
+                "respondWithHeaders" | "sendTextResponseWithHeaders" => {
                     return Some(signature_help_for_builtin(
-                        "http.sendTextResponseWithHeaders",
+                        &format!("http.{member}"),
                         &[
                             "socket: i64",
                             "status: i64",
@@ -3368,9 +3372,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "sleepMillis" => {
+                "sleep" | "sleepMillis" => {
                     return Some(signature_help_for_builtin(
-                        "time.sleepMillis",
+                        &format!("time.{member}"),
                         &["durationMs: i64"],
                         "void",
                         active_parameter,
@@ -3547,17 +3551,17 @@ fn signature_help_for_document_cached(
         }
         if namespace == "clipboard" {
             match member {
-                "setText" => {
+                "write" | "setText" => {
                     return Some(signature_help_for_builtin(
-                        "clipboard.setText",
+                        &format!("clipboard.{member}"),
                         &["text: str"],
                         "void",
                         active_parameter,
                     ));
                 }
-                "readText" => {
+                "read" | "readText" => {
                     return Some(signature_help_for_builtin(
-                        "clipboard.readText",
+                        &format!("clipboard.{member}"),
                         &["callback: fn(str) -> void"],
                         "void",
                         active_parameter,
@@ -3617,7 +3621,7 @@ fn signature_help_for_document_cached(
         }
         if namespace == "fileDialog" {
             match member {
-                "openFile" | "saveFile" | "selectDirectory" => {
+                "open" | "openFile" | "save" | "saveFile" | "selectDirectory" => {
                     return Some(signature_help_for_builtin(
                         &format!("fileDialog.{member}"),
                         &["callback: fn(str) -> void"],
@@ -6851,16 +6855,15 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(net_items.contains("fn net.tcpConnect(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.connect(host: str, port: i64) -> (i64, error)"));
         assert!(net_items.contains("fn net.udpConnect(host: str, port: i64) -> (i64, error)"));
         assert!(net_items.contains("fn net.udpBind(host: str, port: i64) -> (i64, error)"));
         assert!(
-            net_items
-                .contains("fn net.tcpListen(host: str, port: i64, backlog: i64) -> (i64, error)")
+            net_items.contains("fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)")
         );
-        assert!(net_items.contains("fn net.tcpAccept(listener: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.accept(listener: i64) -> (i64, error)"));
         assert!(net_items.contains(
-            "fn net.tcpAcceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
         assert!(net_items.contains("fn net.localPort(socket: i64) -> (i64, error)"));
         assert!(
@@ -6972,7 +6975,7 @@ mod tests {
         .to_json();
         assert!(time_items.contains("fn time.unixMillis() -> i64"));
         assert!(time_items.contains("fn time.monotonicMillis() -> i64"));
-        assert!(time_items.contains("fn time.sleepMillis(durationMs: i64) -> void"));
+        assert!(time_items.contains("fn time.sleep(durationMs: i64) -> void"));
         assert!(time_items.contains("fn time.sleepUntilMonotonic(deadlineMillis: i64) -> void"));
         assert!(time_items.contains("fn time.utcUnixMillis(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64"));
         assert!(time_items.contains("fn time.utcYear(unixMillis: i64) -> i64"));
@@ -7062,10 +7065,8 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(clipboard_items.contains("fn clipboard.setText(text: str) -> void"));
-        assert!(
-            clipboard_items.contains("fn clipboard.readText(callback: fn(str) -> void) -> void")
-        );
+        assert!(clipboard_items.contains("fn clipboard.write(text: str) -> void"));
+        assert!(clipboard_items.contains("fn clipboard.read(callback: fn(str) -> void) -> void"));
 
         let file_dialog_line = source
             .lines()
@@ -7082,10 +7083,10 @@ mod tests {
         ))
         .to_json();
         assert!(
-            file_dialog_items.contains("fn fileDialog.openFile(callback: fn(str) -> void) -> void")
+            file_dialog_items.contains("fn fileDialog.open(callback: fn(str) -> void) -> void")
         );
         assert!(
-            file_dialog_items.contains("fn fileDialog.saveFile(callback: fn(str) -> void) -> void")
+            file_dialog_items.contains("fn fileDialog.save(callback: fn(str) -> void) -> void")
         );
         assert!(
             file_dialog_items

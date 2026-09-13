@@ -4389,6 +4389,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     }
     if runtime_usage.contains("flux__net_http_receive_request_with_text_body_v2(")
         || runtime_usage.contains("flux__net_http_serve_once(")
+        || runtime_usage.contains("flux__net_http_serve(")
     {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_http_receive_request_with_text_body_v2(int64_t socket_handle, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
@@ -4591,17 +4592,19 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
 }
 "#);
     }
-    if runtime_usage.contains("flux__net_http_serve_once(") {
+    if runtime_usage.contains("flux__net_http_serve_once(")
+        || runtime_usage.contains("flux__net_http_serve(")
+    {
         out.push_str(r#"static inline const char *flux__net_http_serve_once(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
     if (listener < 0 || listener > INT_MAX) return "invalid TCP listener handle";
     int socket_type = 0;
     socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect TCP listener";
-    if (socket_type != SOCK_STREAM) return "http.serveOnce requires a TCP listener";
+    if (socket_type != SOCK_STREAM) return "HTTP server requires a TCP listener";
     int accepting = 0;
     socklen_t accepting_length = sizeof(accepting);
     if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return "failed to inspect TCP listener state";
-    if (accepting == 0) return "http.serveOnce requires a listening TCP socket";
+    if (accepting == 0) return "HTTP server requires a listening TCP socket";
     int client;
     do { client = accept((int)listener, NULL, NULL); } while (client < 0 && errno == EINTR);
     if (client < 0) return "failed to accept HTTP connection";
@@ -4616,6 +4619,15 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     const char *close_error = close(client) == 0 ? NULL : "failed to close HTTP connection";
     if (received.v1 != NULL) return received.v1;
     return close_error;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_http_serve(") {
+        out.push_str(r#"static inline const char *flux__net_http_serve(int64_t listener, int64_t max_head_bytes, int64_t max_body_bytes, void (*request_callback)(int64_t, const char *, const char *, const char *), void (*header_callback)(int64_t, const char *, const char *), void (*body_callback)(int64_t, const char *)) {
+    for (;;) {
+        const char *error = flux__net_http_serve_once(listener, max_head_bytes, max_body_bytes, request_callback, header_callback, body_callback);
+        if (error != NULL) return error;
+    }
 }
 "#);
     }
@@ -21493,7 +21505,7 @@ fn dead_store_rhs_is_discardable(
                 Some(Type::Named(_)) => true,
                 Some(Type::List(_)) => {
                     let static_len = static_list_length(base, env, signatures).ok().flatten();
-                    match name.as_str() {
+                    match crate::builtin_names::list_member_impl(name) {
                         "length" | "isEmpty" | "isNotEmpty" => true,
                         "first" | "last" => static_len.is_some_and(|len| len > 0),
                         "single" => static_len == Some(1),
@@ -23370,7 +23382,10 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "map" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "map"
+            && args.len() == 2 =>
+        {
             Some(SequenceTransform::Map {
                 list: &args[0],
                 callback: &args[1],
@@ -23380,7 +23395,10 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && (name == "filter" || name == "where") && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "where"
+            && args.len() == 2 =>
+        {
             Some(SequenceTransform::Filter {
                 list: &args[0],
                 callback: &args[1],
@@ -23388,13 +23406,15 @@ fn sequence_transform(expr: &Expr) -> Option<SequenceTransform<'_>> {
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "map" && args.len() == 1 => Some(SequenceTransform::Map {
-            list: input,
-            callback: &args[0],
-        }),
+        } if crate::builtin_names::global_impl(name) == "map" && args.len() == 1 => {
+            Some(SequenceTransform::Map {
+                list: input,
+                callback: &args[0],
+            })
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if (name == "filter" || name == "where") && args.len() == 1 => {
+        } if crate::builtin_names::global_impl(name) == "where" && args.len() == 1 => {
             Some(SequenceTransform::Filter {
                 list: input,
                 callback: &args[0],
@@ -23410,12 +23430,17 @@ fn sequence_chunked(expr: &Expr) -> Option<(&Expr, &Expr)> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "chunked" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "chunked"
+            && args.len() == 2 =>
+        {
             Some((&args[0], &args[1]))
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "chunked" && args.len() == 1 => Some((input, &args[0])),
+        } if crate::builtin_names::global_impl(name) == "chunked" && args.len() == 1 => {
+            Some((input, &args[0]))
+        }
         _ => None,
     }
 }
@@ -23426,10 +23451,15 @@ fn sequence_sorted(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "sorted" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "sorted"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "sorted" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "sorted" && args.is_empty() => Some(input),
         _ => None,
     }
 }
@@ -23440,10 +23470,15 @@ fn sequence_flatten(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "flatten" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "flatten"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "flatten" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "flatten" && args.is_empty() => Some(input),
         _ => None,
     }
 }
@@ -23454,10 +23489,17 @@ fn sequence_distinct(expr: &Expr) -> Option<&Expr> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "distinct" && args.len() == 1 => Some(&args[0]),
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "distinct"
+            && args.len() == 1 =>
+        {
+            Some(&args[0])
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "distinct" && args.is_empty() => Some(input),
+        } if crate::builtin_names::global_impl(name) == "distinct" && args.is_empty() => {
+            Some(input)
+        }
         _ => None,
     }
 }
@@ -23468,12 +23510,17 @@ fn sequence_concat(expr: &Expr) -> Option<(&Expr, &Expr)> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "concat" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "concat"
+            && args.len() == 2 =>
+        {
             Some((&args[0], &args[1]))
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "concat" && args.len() == 1 => Some((input, &args[0])),
+        } if crate::builtin_names::global_impl(name) == "concat" && args.len() == 1 => {
+            Some((input, &args[0]))
+        }
         _ => None,
     }
 }
@@ -24265,7 +24312,10 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "fold" && args.len() == 3 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "fold"
+            && args.len() == 3 =>
+        {
             Some(SequenceReduction::Fold {
                 list: &args[0],
                 initial: &args[1],
@@ -24276,7 +24326,10 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
             name,
             args,
             named_args,
-        } if named_args.is_empty() && name == "reduce" && args.len() == 2 => {
+        } if named_args.is_empty()
+            && crate::builtin_names::global_impl(name) == "reduce"
+            && args.len() == 2 =>
+        {
             Some(SequenceReduction::Reduce {
                 list: &args[0],
                 reducer: &args[1],
@@ -24284,17 +24337,21 @@ fn sequence_reduction(expr: &Expr) -> Option<SequenceReduction<'_>> {
         }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "fold" && args.len() == 2 => Some(SequenceReduction::Fold {
-            list: input,
-            initial: &args[0],
-            reducer: &args[1],
-        }),
+        } if crate::builtin_names::global_impl(name) == "fold" && args.len() == 2 => {
+            Some(SequenceReduction::Fold {
+                list: input,
+                initial: &args[0],
+                reducer: &args[1],
+            })
+        }
         ExprKind::Pipe {
             input, name, args, ..
-        } if name == "reduce" && args.len() == 1 => Some(SequenceReduction::Reduce {
-            list: input,
-            reducer: &args[0],
-        }),
+        } if crate::builtin_names::global_impl(name) == "reduce" && args.len() == 1 => {
+            Some(SequenceReduction::Reduce {
+                list: input,
+                reducer: &args[0],
+            })
+        }
         _ => None,
     }
 }
@@ -24853,6 +24910,16 @@ fn emit_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<EmittedExpr, Diagnostic> {
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let implementation_name = crate::builtin_names::global_impl(name);
+        if implementation_name != name {
+            let mut normalized = expr.clone();
+            if let ExprKind::Call { name, .. } = &mut normalized.kind {
+                *name = implementation_name.to_string();
+            }
+            return emit_expr(&normalized, env, signatures);
+        }
+    }
     if let Some(value) = fold_primitive_expr(expr, env, signatures)? {
         return Ok(EmittedExpr {
             ty: value.ty(),
@@ -25589,7 +25656,7 @@ fn emit_expr(
                 )
             } else if let Type::List(element) = &emitted_base.ty {
                 let element_c = c_type(element, signatures);
-                match name.as_str() {
+                match crate::builtin_names::list_member_impl(name) {
                     "length" => format!("({}).len", emitted_base.code),
                     "isEmpty" => format!("(({}).len == 0)", emitted_base.code),
                     "isNotEmpty" => format!("(({}).len != 0)", emitted_base.code),
@@ -25863,6 +25930,7 @@ fn emit_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    let name = crate::builtin_names::qualified_impl(namespace, name);
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid process call reached code generation"));
@@ -25993,7 +26061,7 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid network call reached code generation"));
         }
         match name {
-            "tcpConnect" => {
+            "connect" | "tcpConnect" => {
                 if args.len() != 2 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26022,7 +26090,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpListen" => {
+            "listen" | "tcpListen" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26038,7 +26106,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpAccept" => {
+            "accept" | "tcpAccept" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26049,7 +26117,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "tcpAcceptMany" => {
+            "acceptMany" | "tcpAcceptMany" => {
                 if args.len() != 3 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -26392,7 +26460,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "serveOnce" => {
+            "serve" | "serveOnce" => {
                 if args.len() != 6 {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26402,9 +26470,14 @@ fn emit_qualified_call(
                 let request_callback = emit_expr(&args[3], env, signatures)?;
                 let header_callback = emit_expr(&args[4], env, signatures)?;
                 let body_callback = emit_expr(&args[5], env, signatures)?;
+                let helper = if name == "serve" {
+                    "flux__net_http_serve"
+                } else {
+                    "flux__net_http_serve_once"
+                };
                 return Ok((
                     format!(
-                        "flux__net_http_serve_once({}, {}, {}, {}, {}, {})",
+                        "{helper}({}, {}, {}, {}, {}, {})",
                         listener.code,
                         max_head_bytes.code,
                         max_body_bytes.code,
@@ -26460,7 +26533,7 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
-            "sendTextRequest" => {
+            "request" | "sendTextRequest" => {
                 if !(6..=7).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26490,7 +26563,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextRequestWithHeaders" => {
+            "requestWithHeaders" | "sendTextRequestWithHeaders" => {
                 if !(7..=8).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26522,7 +26595,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextResponseWithHeaders" => {
+            "respondWithHeaders" | "sendTextResponseWithHeaders" => {
                 if !(5..=6).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26550,7 +26623,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendTextResponse" => {
+            "respond" | "sendTextResponse" => {
                 if !(4..=5).contains(&args.len()) {
                     return Err(diag(span, "invalid HTTP call reached code generation"));
                 }
@@ -26824,7 +26897,7 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
             }
-            "sleepMillis" => {
+            "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
@@ -27099,8 +27172,8 @@ fn emit_qualified_call(
         }
         let value = emit_expr(&args[0], env, signatures)?;
         let helper = match name {
-            "setText" => "flux__clipboard_set_text",
-            "readText" => "flux__clipboard_read_text",
+            "write" | "setText" => "flux__clipboard_set_text",
+            "read" | "readText" => "flux__clipboard_read_text",
             _ => return Err(diag(span, "invalid clipboard call reached code generation")),
         };
         return Ok((format!("{helper}({})", value.code), Vec::new(), None));
@@ -27195,8 +27268,8 @@ fn emit_qualified_call(
         }
         let callback = emit_expr(&args[0], env, signatures)?;
         let helper = match name {
-            "openFile" => "flux__file_dialog_open_file",
-            "saveFile" => "flux__file_dialog_save_file",
+            "open" | "openFile" => "flux__file_dialog_open_file",
+            "save" | "saveFile" => "flux__file_dialog_save_file",
             "selectDirectory" => "flux__file_dialog_select_directory",
             _ => {
                 return Err(diag(
