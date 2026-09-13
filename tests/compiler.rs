@@ -26570,6 +26570,102 @@ fn package_import_namespace_loads_declared_path_dependencies() {
 }
 
 #[test]
+fn registry_lock_and_package_import_use_exact_verified_release() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-registry-package-import-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let remote = root.join("remote");
+    let registry = root.join("registry");
+    let cache = root.join("cache");
+    fs::create_dir_all(app.join("src")).expect("app source directory should be writable");
+    fs::create_dir_all(remote.join("src")).expect("dependency source directory should be writable");
+    fs::create_dir_all(registry.join("remote")).expect("registry directory should be writable");
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nremote = \"^1.0.0\"\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:remote/src/lib.flux\"\nfn main() -> i64 { answer() }\n",
+    )
+    .expect("app source should be writable");
+    fs::write(
+        remote.join("flux.toml"),
+        "[package]\nname = \"remote\"\nversion = \"1.2.3\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(
+        remote.join("src/lib.flux"),
+        "pub fn answer() -> i64 { 42 }\n",
+    )
+    .expect("dependency source should be writable");
+    let archive = root.join("remote-1.2.3.fluxpkg");
+    let hash = fluxc::package_ecosystem::create_fluxpkg(&remote, &archive)
+        .expect("dependency archive should be reproducible");
+    let cached_archive = cache
+        .join("packages/sha256")
+        .join(format!("{hash}.fluxpkg"));
+    fs::create_dir_all(cached_archive.parent().expect("cache archive has parent"))
+        .expect("package cache directory should be writable");
+    fs::copy(&archive, &cached_archive).expect("verified package archive should be cacheable");
+    fs::write(
+        registry.join("remote/1.2.3.toml"),
+        format!(
+            "format_version = 1\npackage = \"remote\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/remote\"\nversion = \"1.2.3\"\nflux = \"*\"\nasset = \"https://github.com/flux-lang/remote/releases/download/v1.2.3/remote.fluxpkg\"\nsha256 = \"{}\"\nyanked = false\n",
+            hash
+        ),
+    )
+    .expect("registry metadata should be writable");
+
+    let lock = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lock")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &registry)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("registry-backed flux lock should run");
+    assert!(
+        lock.status.success(),
+        "registry-backed lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let locked = fs::read_to_string(app.join("flux.lock")).expect("lockfile should be readable");
+    assert!(locked.contains("version = \"1.2.3\""));
+    assert!(locked.contains(&format!("sha256 = \"{hash}\"")));
+    assert!(locked.contains("source = \"registry:https://github.com/flux-lang/remote#1.2.3\""));
+    assert!(locked.contains(
+        "asset = \"https://github.com/flux-lang/remote/releases/download/v1.2.3/remote.fluxpkg\""
+    ));
+
+    let check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &registry)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("registry-backed package check should run");
+    assert!(
+        check.status.success(),
+        "registry-backed package import failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        cache
+            .join("packages/sources")
+            .join(&hash)
+            .join("flux.toml")
+            .is_file(),
+        "ordinary analysis should materialize the exact verified release in the package cache"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_platform_modules_select_native_implementations_behind_stable_imports() {
     let root = std::env::temp_dir().join(format!(
         "flux-package-platform-modules-{}",

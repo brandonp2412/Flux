@@ -487,9 +487,87 @@ pub fn materialize_registry_release(
     extract_fluxpkg(&archive, &release.sha256, destination)
 }
 
+pub fn materialize_cached_registry_release(
+    release: &RegistryRelease,
+    offline: bool,
+) -> io::Result<PathBuf> {
+    let root = package_cache_root()?.join("sources").join(&release.sha256);
+    if root.join("flux.toml").is_file() {
+        let manifest =
+            crate::project::read_manifest(&root.join("flux.toml")).map_err(|diagnostics| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
+        if manifest.name != release.package || manifest.version.as_deref() != Some(&release.version)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "cached package source for {} {} has manifest identity {} {}",
+                    release.package,
+                    release.version,
+                    manifest.name,
+                    manifest.version.as_deref().unwrap_or("<none>")
+                ),
+            ));
+        }
+        return Ok(root);
+    }
+
+    let archive = fetch_registry_release(release, offline)?;
+    match extract_fluxpkg(&archive, &release.sha256, &root) {
+        Ok(path) => path,
+        Err(error)
+            if error.kind() == io::ErrorKind::AlreadyExists && root.join("flux.toml").is_file() =>
+        {
+            root.clone()
+        }
+        Err(error) => return Err(error),
+    };
+    let manifest =
+        crate::project::read_manifest(&root.join("flux.toml")).map_err(|diagnostics| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })?;
+    if manifest.name != release.package || manifest.version.as_deref() != Some(&release.version) {
+        let _ = fs::remove_dir_all(&root);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "registry archive for {} {} has manifest identity {} {}",
+                release.package,
+                release.version,
+                manifest.name,
+                manifest.version.as_deref().unwrap_or("<none>")
+            ),
+        ));
+    }
+    Ok(root)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRegistryGraph {
     pub releases: BTreeMap<String, RegistryRelease>,
+}
+
+pub fn package_has_registry_dependencies(target: &Path) -> io::Result<bool> {
+    let manifest = package_manifest_target(target)?;
+    let mut requirements = BTreeMap::<String, Vec<String>>::new();
+    let mut visited_paths = BTreeSet::new();
+    collect_manifest_registry_requirements(&manifest, &mut visited_paths, &mut requirements)?;
+    Ok(!requirements.is_empty())
 }
 
 pub fn resolve_package_registry_graph(
@@ -558,6 +636,22 @@ pub fn resolve_package_registry_graph(
         io::ErrorKind::InvalidData,
         "registry dependency resolution did not converge",
     ))
+}
+
+pub fn materialize_package_registry_dependencies(
+    target: &Path,
+    provider: &dyn RegistryProvider,
+    offline: bool,
+) -> io::Result<(ResolvedRegistryGraph, BTreeMap<String, PathBuf>)> {
+    let graph = resolve_package_registry_graph(target, provider)?;
+    let mut roots = BTreeMap::new();
+    for release in graph.releases.values() {
+        roots.insert(
+            release.package.clone(),
+            materialize_cached_registry_release(release, offline)?,
+        );
+    }
+    Ok((graph, roots))
 }
 
 pub fn fetch_package_dependencies(
@@ -690,14 +784,7 @@ fn collect_manifest_registry_requirements(
                     requirements,
                 )?;
             }
-            crate::project::PackageDependency::Git { url, rev } => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "Git dependency '{name}' ({url}#{rev}) is not yet supported by flux fetch/vendor"
-                    ),
-                ));
-            }
+            crate::project::PackageDependency::Git { .. } => {}
         }
     }
     Ok(())

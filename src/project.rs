@@ -577,6 +577,45 @@ fn load_report_with_overlays_and_parse_cache(
 ) -> Result<ProjectLoadReport, Vec<Diagnostic>> {
     let (entry, module_root, package_name, dependencies, constants, translations, platform) =
         resolve_project_target(target, native_target)?;
+    let has_registry_dependencies = package_name.is_some()
+        && crate::package_ecosystem::package_has_registry_dependencies(&module_root).map_err(
+            |error| {
+                vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to inspect registry dependencies: {error}"),
+                )]
+            },
+        )?;
+    let (registry_releases, registry_roots) = if has_registry_dependencies {
+        match crate::package_ecosystem::configured_registry_provider(false) {
+            Ok(provider) => {
+                let (graph, roots) =
+                    crate::package_ecosystem::materialize_package_registry_dependencies(
+                        &module_root,
+                        &provider,
+                        false,
+                    )
+                    .map_err(|error| {
+                        vec![Diagnostic::global(
+                            DiagnosticStage::Parse,
+                            format!("failed to materialize registry dependencies: {error}"),
+                        )]
+                    })?;
+                (graph.releases, roots)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (BTreeMap::new(), BTreeMap::new())
+            }
+            Err(error) => {
+                return Err(vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to configure package registry: {error}"),
+                )]);
+            }
+        }
+    } else {
+        (BTreeMap::new(), BTreeMap::new())
+    };
     let package_scopes = package_name
         .as_ref()
         .map(|name| {
@@ -598,6 +637,8 @@ fn load_report_with_overlays_and_parse_cache(
         package_constants: HashMap::new(),
         module_root,
         package_scopes,
+        registry_releases,
+        registry_roots,
         native_target,
         overlays: overlays.clone(),
         parse_cache,
@@ -662,6 +703,45 @@ pub fn analyze_package_test(
             "package test source must remain inside the package root",
         )]);
     }
+    let has_registry_dependencies = crate::package_ecosystem::package_has_registry_dependencies(
+        &package_root,
+    )
+    .map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("failed to inspect registry dependencies: {error}"),
+        )]
+    })?;
+    let (registry_releases, registry_roots) = if has_registry_dependencies {
+        match crate::package_ecosystem::configured_registry_provider(false) {
+            Ok(provider) => {
+                let (graph, roots) =
+                    crate::package_ecosystem::materialize_package_registry_dependencies(
+                        &package_root,
+                        &provider,
+                        false,
+                    )
+                    .map_err(|error| {
+                        vec![Diagnostic::global(
+                            DiagnosticStage::Parse,
+                            format!("failed to materialize registry dependencies: {error}"),
+                        )]
+                    })?;
+                (graph.releases, roots)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (BTreeMap::new(), BTreeMap::new())
+            }
+            Err(error) => {
+                return Err(vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to configure package registry: {error}"),
+                )]);
+            }
+        }
+    } else {
+        (BTreeMap::new(), BTreeMap::new())
+    };
     let mut loader = Loader {
         loaded: HashSet::new(),
         stack: Vec::new(),
@@ -677,6 +757,8 @@ pub fn analyze_package_test(
             constants: manifest.constants,
             platform: manifest.platform,
         }],
+        registry_releases,
+        registry_roots,
         native_target: codegen::NativeTarget::Linux,
         overlays: HashMap::new(),
         parse_cache: None,
@@ -1516,6 +1598,8 @@ struct LockedDependency {
     package: String,
     version: Option<String>,
     source: String,
+    sha256: Option<String>,
+    asset: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2167,6 +2251,64 @@ fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>
         },
     )]);
     collect_locked_dependencies(manifest, "", &mut active, &mut resolved, &mut entries)?;
+
+    if entries
+        .iter()
+        .any(|entry| entry.source.starts_with("registry:"))
+    {
+        let provider = match crate::package_ecosystem::configured_registry_provider(false) {
+            Ok(provider) => Some(provider),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to configure package registry: {error}"),
+                )]);
+            }
+        };
+        if let Some(provider) = provider {
+            let graph =
+                crate::package_ecosystem::resolve_package_registry_graph(&manifest.path, &provider)
+                    .map_err(|error| {
+                        vec![Diagnostic::global(
+                            DiagnosticStage::Parse,
+                            format!("failed to resolve registry dependencies: {error}"),
+                        )]
+                    })?;
+            for entry in entries
+                .iter_mut()
+                .filter(|entry| entry.source.starts_with("registry:"))
+            {
+                let release = graph.releases.get(&entry.package).ok_or_else(|| {
+                    vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!(
+                            "registry resolver did not produce package '{}'",
+                            entry.package
+                        ),
+                    )]
+                })?;
+                entry.version = Some(release.version.clone());
+                entry.source = format!("registry:{}#{}", release.repository, release.version);
+                entry.sha256 = Some(release.sha256.clone());
+                entry.asset = Some(release.asset.clone());
+            }
+            for release in graph.releases.values() {
+                if entries.iter().any(|entry| entry.package == release.package) {
+                    continue;
+                }
+                entries.push(LockedDependency {
+                    id: release.package.clone(),
+                    package: release.package.clone(),
+                    version: Some(release.version.clone()),
+                    source: format!("registry:{}#{}", release.repository, release.version),
+                    sha256: Some(release.sha256.clone()),
+                    asset: Some(release.asset.clone()),
+                });
+            }
+        }
+    }
+
     entries.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut output = format!(
@@ -2181,6 +2323,12 @@ fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>
             output.push_str(&format!("version = {}\n", lock_string(&version)));
         }
         output.push_str(&format!("source = {}\n", lock_string(&entry.source)));
+        if let Some(sha256) = entry.sha256 {
+            output.push_str(&format!("sha256 = {}\n", lock_string(&sha256)));
+        }
+        if let Some(asset) = entry.asset {
+            output.push_str(&format!("asset = {}\n", lock_string(&asset)));
+        }
     }
     Ok(output)
 }
@@ -2219,6 +2367,8 @@ fn collect_locked_dependencies(
                     package: name.clone(),
                     version: None,
                     source: format!("registry:{requirement}"),
+                    sha256: None,
+                    asset: None,
                 });
             }
             PackageDependency::Git { url, rev } => {
@@ -2240,6 +2390,8 @@ fn collect_locked_dependencies(
                     package: name.clone(),
                     version: None,
                     source: format!("git:{url}#{rev}"),
+                    sha256: None,
+                    asset: None,
                 });
             }
             PackageDependency::Path { path, requirement } => {
@@ -2284,6 +2436,8 @@ fn collect_locked_dependencies(
                     package: dependency_manifest.name.clone(),
                     version: dependency_manifest.version.clone(),
                     source: format!("path:{}", lock_path(path)),
+                    sha256: None,
+                    asset: None,
                 });
                 if !active.insert(dependency_root.clone()) {
                     return Err(vec![Diagnostic::global(
@@ -3188,6 +3342,8 @@ struct Loader<'a> {
     package_constants: HashMap<SourceId, BTreeMap<String, typecheck::ConstantValue>>,
     module_root: PathBuf,
     package_scopes: Vec<PackageScope>,
+    registry_releases: BTreeMap<String, crate::package_ecosystem::RegistryRelease>,
+    registry_roots: BTreeMap<String, PathBuf>,
     native_target: codegen::NativeTarget,
     overlays: HashMap<PathBuf, String>,
     parse_cache: Option<&'a mut ModuleParseCache>,
@@ -3445,61 +3601,133 @@ impl Loader<'_> {
             ));
             return None;
         };
-        let PackageDependency::Path { path, requirement } = dependency else {
-            self.diagnostics.push(Diagnostic::new(
-                DiagnosticStage::Parse,
-                span,
-                format!(
-                    "package dependency '{dependency_name}' requires dependency resolution before it can be imported"
-                ),
-            ));
-            return None;
-        };
-
-        let dependency_manifest = current_package.root.join(path).join("flux.toml");
-        let manifest = match read_manifest(&dependency_manifest) {
-            Ok(manifest) => manifest,
-            Err(diagnostics) => {
-                let detail = diagnostics
-                    .first()
-                    .map(|diagnostic| diagnostic.message.as_str())
-                    .unwrap_or("invalid dependency manifest");
-                self.diagnostics.push(Diagnostic::new(
-                    DiagnosticStage::Parse,
-                    span,
-                    format!("failed to load package dependency '{dependency_name}': {detail}"),
-                ));
-                return None;
+        let (manifest, dependency_root) = match dependency {
+            PackageDependency::Path { path, requirement } => {
+                let dependency_manifest = current_package.root.join(path).join("flux.toml");
+                let manifest = match read_manifest(&dependency_manifest) {
+                    Ok(manifest) => manifest,
+                    Err(diagnostics) => {
+                        let detail = diagnostics
+                            .first()
+                            .map(|diagnostic| diagnostic.message.as_str())
+                            .unwrap_or("invalid dependency manifest");
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            span,
+                            format!(
+                                "failed to load package dependency '{dependency_name}': {detail}"
+                            ),
+                        ));
+                        return None;
+                    }
+                };
+                if let Some(requirement) = requirement {
+                    let Some(version) = manifest.version.as_deref() else {
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            span,
+                            format!(
+                                "package dependency '{dependency_name}' requires version '{requirement}', but the path package has no [package].version"
+                            ),
+                        ));
+                        return None;
+                    };
+                    if !semver_requirement_matches(requirement, version) {
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            span,
+                            format!(
+                                "package dependency '{dependency_name}' requires version '{requirement}', but path package '{}' is version '{version}'",
+                                manifest.name
+                            ),
+                        ));
+                        return None;
+                    }
+                }
+                let dependency_root = manifest
+                    .path
+                    .parent()
+                    .expect("canonical manifest path has a parent")
+                    .to_path_buf();
+                (manifest, dependency_root)
             }
-        };
-        if let Some(requirement) = requirement {
-            let Some(version) = manifest.version.as_deref() else {
+            PackageDependency::Registry { requirement } => {
+                let Some(release) = self.registry_releases.get(dependency_name) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!(
+                            "package dependency '{dependency_name}' requires dependency resolution before it can be imported; configure FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL and refresh flux.lock"
+                        ),
+                    ));
+                    return None;
+                };
+                if !semver_requirement_matches(requirement, &release.version) {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!(
+                            "registry dependency '{dependency_name}' requires '{requirement}', but flux.lock resolved '{}'",
+                            release.version
+                        ),
+                    ));
+                    return None;
+                }
+                let Some(dependency_root) = self.registry_roots.get(dependency_name).cloned()
+                else {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!("registry dependency '{dependency_name}' is not materialized in the package cache"),
+                    ));
+                    return None;
+                };
+                let manifest = match read_manifest(&dependency_root.join("flux.toml")) {
+                    Ok(manifest) => manifest,
+                    Err(diagnostics) => {
+                        let detail = diagnostics
+                            .first()
+                            .map(|diagnostic| diagnostic.message.as_str())
+                            .unwrap_or("invalid dependency manifest");
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            span,
+                            format!(
+                                "failed to load registry dependency '{dependency_name}': {detail}"
+                            ),
+                        ));
+                        return None;
+                    }
+                };
+                if manifest.name != release.package
+                    || manifest.version.as_deref() != Some(&release.version)
+                {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!(
+                            "registry dependency '{dependency_name}' materialized as {} {}, expected {} {}",
+                            manifest.name,
+                            manifest.version.as_deref().unwrap_or("<none>"),
+                            release.package,
+                            release.version
+                        ),
+                    ));
+                    return None;
+                }
+                (manifest, dependency_root)
+            }
+            PackageDependency::Git { .. } => {
                 self.diagnostics.push(Diagnostic::new(
                     DiagnosticStage::Parse,
                     span,
                     format!(
-                        "package dependency '{dependency_name}' requires version '{requirement}', but the path package has no [package].version"
-                    ),
-                ));
-                return None;
-            };
-            if !semver_requirement_matches(requirement, version) {
-                self.diagnostics.push(Diagnostic::new(
-                    DiagnosticStage::Parse,
-                    span,
-                    format!(
-                        "package dependency '{dependency_name}' requires version '{requirement}', but path package '{}' is version '{version}'",
-                        manifest.name
+                        "package dependency '{dependency_name}' requires revision-pinned Git transport before it can be imported"
                     ),
                 ));
                 return None;
             }
-        }
-        let dependency_root = manifest
-            .path
-            .parent()
-            .expect("canonical manifest path has a parent")
-            .to_path_buf();
+        };
         if let Some(existing) = self
             .package_scopes
             .iter()
