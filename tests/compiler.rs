@@ -31847,6 +31847,8 @@ fn background(jobId: i64) -> void {
 fn started() -> void {
     print(android.scheduleBackgroundJob(7, 1000))
     android.cancelBackgroundJob(8)
+    print(android.work(9, 1500))
+    android.cancelWork(9)
 }
 view Screen {
     grid columns: 1fr
@@ -31867,7 +31869,10 @@ app Screen(onStart: started, onBackgroundJob: background)
     .expect("Android background jobs should lower directly");
     assert!(generated.contains("static bool flux__android_schedule_background_job"));
     assert!(generated.contains("static void flux__android_cancel_background_job"));
+    assert!(generated.contains("static bool flux__android_enqueue_work"));
+    assert!(generated.contains("static void flux__android_cancel_work"));
     assert!(generated.contains("app/flux/runtime/FluxJobService"));
+    assert!(generated.contains("app/flux/runtime/FluxWorkManagerWorker"));
     assert!(generated.contains("Java_app_flux_runtime_FluxBackgroundRunner_runJob"));
     assert!(generated.contains("flux__fn_background((int64_t)job_id);"));
     assert!(!generated.contains("MethodChannel"));
@@ -31903,6 +31908,30 @@ app Screen(onStart: started)
         "android.scheduleBackgroundJob requires application onBackgroundJob: fn(i64) -> void callback"
     ));
 
+    let missing_work_callback = r#"
+fn started() -> void {
+    print(android.work(7, 1000))
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+    let database =
+        fluxc::semantic::SemanticDatabase::analyze(missing_work_callback, SourceId::UNKNOWN)
+            .expect("WorkManager fixture without callback should analyze before codegen");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("WorkManager work without an application callback must fail");
+    assert!(error.message.contains(
+        "android.enqueueWork requires application onBackgroundJob: fn(i64) -> void callback"
+    ));
+
     let invalid = r#"
 fn badBackground(value: str) -> void {
     print(value)
@@ -31910,6 +31939,8 @@ fn badBackground(value: str) -> void {
 fn main() -> i64 {
     print(android.scheduleBackgroundJob("job", false))
     android.cancelBackgroundJob("job")
+    print(android.work("job", false))
+    android.cancelWork("job")
     return 0
 }
 view Screen {
@@ -31931,6 +31962,12 @@ app Screen(onBackgroundJob: badBackground)
             && error.message.contains("expected i64")
     }));
     assert!(errors.iter().any(|error| {
+        error.message.contains("android.work jobId") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
+        error.message.contains("android.cancelWork jobId") && error.message.contains("expected i64")
+    }));
+    assert!(errors.iter().any(|error| {
         error
             .message
             .contains("application onBackgroundJob callback")
@@ -31944,6 +31981,8 @@ fn background(jobId: i64) -> void {
 fn unused() -> void {
     print(android.scheduleBackgroundJob(7, 1000))
     android.cancelBackgroundJob(7)
+    print(android.work(7, 1000))
+    android.cancelWork(7)
 }
 view Screen {
     grid columns: 1fr
@@ -31962,6 +32001,8 @@ app Screen(onBackgroundJob: background)
     .expect("unreachable Android background job code should tree-shake");
     assert!(!tree_shaken.contains("flux__android_schedule_background_job("));
     assert!(!tree_shaken.contains("flux__android_cancel_background_job("));
+    assert!(!tree_shaken.contains("flux__android_enqueue_work("));
+    assert!(!tree_shaken.contains("flux__android_cancel_work("));
 }
 
 #[test]

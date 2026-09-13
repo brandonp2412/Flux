@@ -7263,6 +7263,8 @@ mod tests {
         assert!(android_items.contains("fn android.finish() -> void"));
         assert!(android_items.contains("fn android.schedule(jobId: i64, delayMs: i64) -> bool"));
         assert!(android_items.contains("fn android.cancelJob(jobId: i64) -> void"));
+        assert!(android_items.contains("fn android.work(jobId: i64, delayMs: i64) -> bool"));
+        assert!(android_items.contains("fn android.cancelWork(jobId: i64) -> void"));
         assert!(android_items.contains("\"label\":\"open\""));
         assert!(android_items.contains("fn android.open(url: str) -> void"));
         assert!(android_items.contains("fn android.settings() -> void"));
@@ -9105,7 +9107,7 @@ mod tests {
     #[test]
     fn signature_help_supports_android_background_jobs() {
         let uri = "file:///tmp/android-background-job-signature.flux";
-        let source = "fn main() -> i64 {\n    print(android.scheduleBackgroundJob(7, 1000))\n    android.cancelBackgroundJob(7)\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(android.scheduleBackgroundJob(7, 1000))\n    android.cancelBackgroundJob(7)\n    print(android.work(8, 2000))\n    android.cancelWork(8)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -9115,6 +9117,14 @@ mod tests {
             (
                 "android.cancelBackgroundJob(",
                 "fn android.cancelJob(jobId: i64) -> void",
+            ),
+            (
+                "android.work(",
+                "fn android.work(jobId: i64, delayMs: i64) -> bool",
+            ),
+            (
+                "android.cancelWork(",
+                "fn android.cancelWork(jobId: i64) -> void",
             ),
         ] {
             let line_index = source

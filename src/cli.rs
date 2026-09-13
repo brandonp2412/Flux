@@ -4376,6 +4376,16 @@ fn android_has_generated_job_service(c_source: &str) -> bool {
         || c_source.contains("flux__android_cancel_background_job(")
 }
 
+fn android_has_generated_work_manager_worker(c_source: &str) -> bool {
+    c_source.contains("flux__android_enqueue_work(")
+        || c_source.contains("flux__android_cancel_work(")
+}
+
+fn android_has_generated_background_runner(c_source: &str) -> bool {
+    android_has_generated_job_service(c_source)
+        || android_has_generated_work_manager_worker(c_source)
+}
+
 fn android_has_generated_secure_storage(c_source: &str) -> bool {
     c_source.contains("flux__android_secure_store(")
         || c_source.contains("flux__android_secure_read(")
@@ -4384,7 +4394,7 @@ fn android_has_generated_secure_storage(c_source: &str) -> bool {
 
 fn android_has_generated_java(c_source: &str) -> bool {
     android_has_generated_activity(c_source)
-        || android_has_generated_job_service(c_source)
+        || android_has_generated_background_runner(c_source)
         || android_has_generated_secure_storage(c_source)
 }
 
@@ -4443,19 +4453,61 @@ public final class FluxJobService extends JobService {
 "#
 }
 
-#[allow(dead_code)]
 fn android_work_manager_worker_java_source() -> &'static str {
     r#"package app.flux.runtime;
 
 import android.content.Context;
+import androidx.work.Configuration;
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
+import java.util.concurrent.TimeUnit;
 
 public final class FluxWorkManagerWorker extends Worker {
     public static final String JOB_ID_KEY = "fluxJobId";
+    private static final String WORK_PREFIX = "flux-job-";
 
     public FluxWorkManagerWorker(Context context, WorkerParameters params) {
         super(context, params);
+    }
+
+    private static String uniqueName(long jobId) {
+        return WORK_PREFIX + Long.toString(jobId);
+    }
+
+    private static WorkManager manager(Context context) {
+        try {
+            return WorkManager.getInstance(context);
+        } catch (IllegalStateException missingInitializer) {
+            WorkManager.initialize(context, new Configuration.Builder().build());
+            return WorkManager.getInstance(context);
+        }
+    }
+
+    public static boolean enqueue(Context context, long jobId, long delayMs) {
+        if (context == null || jobId < 0 || jobId > Integer.MAX_VALUE || delayMs < 0) return false;
+        try {
+            Data input = new Data.Builder().putLong(JOB_ID_KEY, jobId).build();
+            OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(FluxWorkManagerWorker.class)
+                    .setInputData(input)
+                    .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
+                    .build();
+            manager(context).enqueueUniqueWork(uniqueName(jobId), ExistingWorkPolicy.REPLACE, request);
+            return true;
+        } catch (RuntimeException error) {
+            return false;
+        }
+    }
+
+    public static void cancel(Context context, long jobId) {
+        if (context == null || jobId < 0 || jobId > Integer.MAX_VALUE) return;
+        try {
+            manager(context).cancelUniqueWork(uniqueName(jobId));
+        } catch (RuntimeException ignored) {
+        }
     }
 
     @Override
@@ -6295,6 +6347,28 @@ __FLUX_PICKER_METHODS__
         .replace("__FLUX_PICKER_METHODS__", picker_methods.as_str())
 }
 
+fn android_work_manager_classpath() -> Result<Vec<PathBuf>, CliError> {
+    let value = env::var_os("FLUX_ANDROID_WORKMANAGER_CLASSPATH").ok_or_else(|| {
+        CliError::Message(
+            "Android WorkManager builds require FLUX_ANDROID_WORKMANAGER_CLASSPATH to contain WorkManager 2.11.2 and its transitive runtime jars; automatic AndroidX dependency acquisition is not implemented yet"
+                .to_string(),
+        )
+    })?;
+    let paths = env::split_paths(&value).collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Err(CliError::Message(
+            "FLUX_ANDROID_WORKMANAGER_CLASSPATH must contain at least one jar".to_string(),
+        ));
+    }
+    if let Some(path) = paths.iter().find(|path| !path.is_file()) {
+        return Err(CliError::Message(format!(
+            "FLUX_ANDROID_WORKMANAGER_CLASSPATH entry '{}' is not a file",
+            path.display()
+        )));
+    }
+    Ok(paths)
+}
+
 fn compile_android_activity_dex(
     c_source: &str,
     manifest: &fluxc::project::PackageManifest,
@@ -6328,15 +6402,24 @@ fn compile_android_activity_dex(
         })?;
         java_sources.push(java_source);
     }
-    if android_has_generated_job_service(c_source) {
+    if android_has_generated_background_runner(c_source) {
         let runner_source = java_dir.join("FluxBackgroundRunner.java");
         fs::write(&runner_source, android_background_runner_java_source()).map_err(|error| {
             format!("failed to write compiler-generated Android background runner: {error}")
         })?;
         java_sources.push(runner_source);
+    }
+    if android_has_generated_job_service(c_source) {
         let java_source = java_dir.join("FluxJobService.java");
         fs::write(&java_source, android_job_service_java_source()).map_err(|error| {
             format!("failed to write compiler-generated Android job service: {error}")
+        })?;
+        java_sources.push(java_source);
+    }
+    if android_has_generated_work_manager_worker(c_source) {
+        let java_source = java_dir.join("FluxWorkManagerWorker.java");
+        fs::write(&java_source, android_work_manager_worker_java_source()).map_err(|error| {
+            format!("failed to write compiler-generated Android WorkManager worker: {error}")
         })?;
         java_sources.push(java_source);
     }
@@ -6347,10 +6430,19 @@ fn compile_android_activity_dex(
         })?;
         java_sources.push(java_source);
     }
+    let work_manager_classpath = if android_has_generated_work_manager_worker(c_source) {
+        android_work_manager_classpath()?
+    } else {
+        Vec::new()
+    };
+    let mut javac_classpath = vec![toolchain.android_jar.clone()];
+    javac_classpath.extend(work_manager_classpath.iter().cloned());
+    let javac_classpath = env::join_paths(&javac_classpath)
+        .map_err(|error| format!("failed to construct Android javac classpath: {error}"))?;
     let mut javac = Command::new("javac");
     javac
         .args(["-source", "8", "-target", "8", "-classpath"])
-        .arg(&toolchain.android_jar)
+        .arg(&javac_classpath)
         .arg("-d")
         .arg(&classes_dir)
         .args(&java_sources);
@@ -6379,15 +6471,31 @@ fn compile_android_activity_dex(
             )));
         }
     }
+    if android_has_generated_background_runner(c_source) {
+        let class_path = runtime_classes.join("FluxBackgroundRunner.class");
+        if !generated_classes.iter().any(|path| path == &class_path) {
+            return Err(CliError::Message(format!(
+                "javac did not produce compiler-generated Android background class '{}'",
+                class_path.display()
+            )));
+        }
+    }
     if android_has_generated_job_service(c_source) {
-        for class_name in ["FluxBackgroundRunner.class", "FluxJobService.class"] {
-            let class_path = runtime_classes.join(class_name);
-            if !generated_classes.iter().any(|path| path == &class_path) {
-                return Err(CliError::Message(format!(
-                    "javac did not produce compiler-generated Android background class '{}'",
-                    class_path.display()
-                )));
-            }
+        let class_path = runtime_classes.join("FluxJobService.class");
+        if !generated_classes.iter().any(|path| path == &class_path) {
+            return Err(CliError::Message(format!(
+                "javac did not produce compiler-generated Android job service class '{}'",
+                class_path.display()
+            )));
+        }
+    }
+    if android_has_generated_work_manager_worker(c_source) {
+        let class_path = runtime_classes.join("FluxWorkManagerWorker.class");
+        if !generated_classes.iter().any(|path| path == &class_path) {
+            return Err(CliError::Message(format!(
+                "javac did not produce compiler-generated Android WorkManager worker class '{}'",
+                class_path.display()
+            )));
         }
     }
     if android_has_generated_secure_storage(c_source) {
@@ -6406,6 +6514,7 @@ fn compile_android_activity_dex(
         .arg("--output")
         .arg(dex_output);
     d8_command.args(&generated_classes);
+    d8_command.args(&work_manager_classpath);
     run_checked(&mut d8_command, "d8 compiler-generated Android activity")?;
     Ok(())
 }
@@ -8518,6 +8627,23 @@ app OverlayDemo(title: "Overlay")
         let work_manager_worker = android_work_manager_worker_java_source();
         assert!(work_manager_worker.contains("extends Worker"));
         assert!(work_manager_worker.contains("WorkerParameters params"));
+        assert!(
+            work_manager_worker.contains("new Data.Builder().putLong(JOB_ID_KEY, jobId).build()")
+        );
+        assert!(
+            work_manager_worker
+                .contains("new OneTimeWorkRequest.Builder(FluxWorkManagerWorker.class)")
+        );
+        assert!(
+            work_manager_worker.contains(
+                "enqueueUniqueWork(uniqueName(jobId), ExistingWorkPolicy.REPLACE, request)"
+            )
+        );
+        assert!(work_manager_worker.contains("cancelUniqueWork(uniqueName(jobId))"));
+        assert!(
+            work_manager_worker
+                .contains("WorkManager.initialize(context, new Configuration.Builder().build())")
+        );
         assert!(work_manager_worker.contains("getInputData().getLong(JOB_ID_KEY, -1L)"));
         assert!(work_manager_worker.contains("FluxBackgroundRunner.runJob((int) jobId)"));
         assert!(work_manager_worker.contains("return Result.success()"));

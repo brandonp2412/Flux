@@ -1372,6 +1372,17 @@ pub fn emit_c_for_target_with_source_metadata(
             "android.scheduleBackgroundJob requires application onBackgroundJob: fn(i64) -> void callback",
         ));
     }
+    if target == NativeTarget::Android
+        && runtime_usage.contains("flux__android_enqueue_work(")
+        && program.application.as_ref().is_some_and(|application| {
+            application_metadata_function(application, "on_background_job").is_none()
+        })
+    {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "android.enqueueWork requires application onBackgroundJob: fn(i64) -> void callback",
+        ));
+    }
 
     let mut out = String::new();
     emit_runtime_prelude(
@@ -1834,8 +1845,14 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_schedule_background_job(");
     let uses_android_cancel_background_job =
         uses_android && runtime_usage.contains("flux__android_cancel_background_job(");
-    let uses_android_background_jobs =
-        uses_android_schedule_background_job || uses_android_cancel_background_job;
+    let uses_android_enqueue_work =
+        uses_android && runtime_usage.contains("flux__android_enqueue_work(");
+    let uses_android_cancel_work =
+        uses_android && runtime_usage.contains("flux__android_cancel_work(");
+    let uses_android_background_jobs = uses_android_schedule_background_job
+        || uses_android_cancel_background_job
+        || uses_android_enqueue_work
+        || uses_android_cancel_work;
     let uses_android_open_url = uses_android && runtime_usage.contains("flux__android_open_url(");
     let uses_android_open_notification_settings =
         uses_android && runtime_usage.contains("flux__android_open_notification_settings(");
@@ -2052,6 +2069,23 @@ fn emit_runtime_prelude(
             out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
             out.push_str("    jclass service_class = (*env)->FindClass(env, \"app/flux/runtime/FluxJobService\"); if (service_class != NULL) { jmethodID method = (*env)->GetStaticMethodID(env, service_class, \"cancel\", \"(Landroid/content/Context;J)V\"); if (method != NULL) (*env)->CallStaticVoidMethod(env, service_class, method, flux__android_activity->clazz, (jlong)job_id); }\n");
             out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (service_class != NULL) (*env)->DeleteLocalRef(env, service_class); flux__android_release_env(detach);\n}\n");
+        }
+        if uses_android_enqueue_work {
+            out.push_str(
+                "static bool flux__android_enqueue_work(int64_t job_id, int64_t delay_ms) {\n",
+            );
+            out.push_str("    if (job_id < 0 || job_id > INT32_MAX || delay_ms < 0 || flux__android_activity == NULL) return false;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;\n");
+            out.push_str("    jclass worker_class = (*env)->FindClass(env, \"app/flux/runtime/FluxWorkManagerWorker\"); bool enqueued = false;\n");
+            out.push_str("    if (worker_class != NULL) { jmethodID method = (*env)->GetStaticMethodID(env, worker_class, \"enqueue\", \"(Landroid/content/Context;JJ)Z\"); if (method != NULL) enqueued = (*env)->CallStaticBooleanMethod(env, worker_class, method, flux__android_activity->clazz, (jlong)job_id, (jlong)delay_ms) == JNI_TRUE; }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); enqueued = false; } if (worker_class != NULL) (*env)->DeleteLocalRef(env, worker_class); flux__android_release_env(detach); return enqueued;\n}\n");
+        }
+        if uses_android_cancel_work {
+            out.push_str("static void flux__android_cancel_work(int64_t job_id) {\n");
+            out.push_str("    if (job_id < 0 || job_id > INT32_MAX || flux__android_activity == NULL) return;\n");
+            out.push_str("    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return;\n");
+            out.push_str("    jclass worker_class = (*env)->FindClass(env, \"app/flux/runtime/FluxWorkManagerWorker\"); if (worker_class != NULL) { jmethodID method = (*env)->GetStaticMethodID(env, worker_class, \"cancel\", \"(Landroid/content/Context;J)V\"); if (method != NULL) (*env)->CallStaticVoidMethod(env, worker_class, method, flux__android_activity->clazz, (jlong)job_id); }\n");
+            out.push_str("    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (worker_class != NULL) (*env)->DeleteLocalRef(env, worker_class); flux__android_release_env(detach);\n}\n");
         }
     }
     if uses_android_open_url

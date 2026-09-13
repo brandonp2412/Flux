@@ -279,6 +279,8 @@ pub const ANDROID_BINDINGS: &[AndroidBinding] = &[
     binding!("finishActivity", NO_PARAMS, Void),
     binding!("scheduleBackgroundJob", JOB, Bool),
     binding!("cancelBackgroundJob", JOB_ID, Void),
+    binding!("enqueueWork", JOB, Bool),
+    binding!("cancelWork", JOB_ID, Void),
     binding!("openUrl", URL, Void),
     binding!("openAppSettings", NO_PARAMS, Void),
     binding!("openNotificationSettings", NO_PARAMS, Void),
