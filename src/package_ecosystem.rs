@@ -1,10 +1,134 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 pub const PACKAGE_ARCHIVE_FORMAT_VERSION: u32 = 1;
+pub const REGISTRY_INDEX_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryRelease {
+    pub package: String,
+    pub owner: String,
+    pub repository: String,
+    pub version: String,
+    pub flux: String,
+    pub asset: String,
+    pub sha256: String,
+    pub dependencies: BTreeMap<String, String>,
+    pub yanked: bool,
+}
+
+pub trait RegistryProvider {
+    fn versions(&self, package: &str) -> io::Result<Vec<String>>;
+    fn release(&self, package: &str, version: &str) -> io::Result<RegistryRelease>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryRegistryProvider {
+    root: PathBuf,
+}
+
+impl DirectoryRegistryProvider {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl RegistryProvider for DirectoryRegistryProvider {
+    fn versions(&self, package: &str) -> io::Result<Vec<String>> {
+        validate_package_name(package)?;
+        let directory = self.root.join(package);
+        let mut versions = Vec::new();
+        match fs::read_dir(&directory) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+                        continue;
+                    }
+                    let Some(version) = path.file_stem().and_then(|value| value.to_str()) else {
+                        continue;
+                    };
+                    let release = read_registry_release(&path)?;
+                    if release.package != package || release.version != version {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "registry metadata '{}' does not match its package/version path",
+                                path.display()
+                            ),
+                        ));
+                    }
+                    versions.push(version.to_string());
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        }
+        versions.sort();
+        versions.dedup();
+        Ok(versions)
+    }
+
+    fn release(&self, package: &str, version: &str) -> io::Result<RegistryRelease> {
+        validate_package_name(package)?;
+        validate_version(version)?;
+        let path = self.root.join(package).join(format!("{version}.toml"));
+        let release = read_registry_release(&path)?;
+        if release.package != package || release.version != version {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "registry metadata '{}' does not match requested {package} {version}",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(release)
+    }
+}
+
+pub fn resolve_registry_release(
+    provider: &dyn RegistryProvider,
+    package: &str,
+    requirements: &[String],
+) -> io::Result<Option<RegistryRelease>> {
+    validate_package_name(package)?;
+    let versions = provider.versions(package)?;
+    let selected = crate::project::resolve_semver_requirements(
+        requirements.iter().map(String::as_str),
+        versions.iter().map(String::as_str),
+    )
+    .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+    let Some(version) = selected else {
+        return Ok(None);
+    };
+    let release = provider.release(package, &version)?;
+    if release.yanked {
+        let available = versions
+            .iter()
+            .filter_map(|candidate| provider.release(package, candidate).ok())
+            .filter(|candidate| !candidate.yanked)
+            .map(|candidate| candidate.version)
+            .collect::<Vec<_>>();
+        let selected = crate::project::resolve_semver_requirements(
+            requirements.iter().map(String::as_str),
+            available.iter().map(String::as_str),
+        )
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
+        return selected
+            .map(|version| provider.release(package, &version))
+            .transpose();
+    }
+    Ok(Some(release))
+}
 
 pub fn create_fluxpkg(package_root: &Path, output: &Path) -> io::Result<String> {
     let root = fs::canonicalize(package_root)?;
@@ -143,6 +267,128 @@ pub fn verify_cached_fluxpkg(expected_sha256: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+pub fn fetch_registry_release(release: &RegistryRelease, offline: bool) -> io::Result<PathBuf> {
+    match verify_cached_fluxpkg(&release.sha256) {
+        Ok(path) => return Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if offline {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "package {} {} is not available in the verified package cache while offline",
+                release.package, release.version
+            ),
+        ));
+    }
+    let downloads = package_cache_root()?.join("downloads");
+    fs::create_dir_all(&downloads)?;
+    let temporary = downloads.join(format!(
+        ".{}-{}-{}.fluxpkg",
+        release.package,
+        release.version,
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&temporary);
+    let status = Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+        ])
+        .arg(&temporary)
+        .arg(&release.asset)
+        .status()?;
+    if !status.success() {
+        let _ = fs::remove_file(&temporary);
+        return Err(io::Error::other(format!(
+            "failed to download immutable package asset '{}' for {} {}",
+            release.asset, release.package, release.version
+        )));
+    }
+    let cached = cache_fluxpkg(&temporary, &release.sha256);
+    let _ = fs::remove_file(&temporary);
+    cached
+}
+
+pub fn materialize_registry_release(
+    release: &RegistryRelease,
+    destination: &Path,
+    offline: bool,
+) -> io::Result<PathBuf> {
+    let archive = fetch_registry_release(release, offline)?;
+    extract_fluxpkg(&archive, &release.sha256, destination)
+}
+
+pub fn extract_cached_fluxpkg(expected_sha256: &str, destination: &Path) -> io::Result<PathBuf> {
+    let archive = verify_cached_fluxpkg(expected_sha256)?;
+    extract_fluxpkg(&archive, expected_sha256, destination)
+}
+
+pub fn extract_fluxpkg(
+    archive: &Path,
+    expected_sha256: &str,
+    destination: &Path,
+) -> io::Result<PathBuf> {
+    validate_sha256(expected_sha256)?;
+    let actual = sha256_file(archive)?;
+    if actual != expected_sha256 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("package checksum mismatch: expected {expected_sha256}, got {actual}"),
+        ));
+    }
+    validate_fluxpkg_archive(archive)?;
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "package extraction destination '{}' already exists",
+                destination.display()
+            ),
+        ));
+    }
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("package");
+    let temporary = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temporary);
+    fs::create_dir(&temporary)?;
+    let status = Command::new("tar")
+        .args(["--no-same-owner", "--no-same-permissions", "-xzf"])
+        .arg(archive)
+        .arg("-C")
+        .arg(&temporary)
+        .status()?;
+    if !status.success() {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(io::Error::other(format!(
+            "tar failed while extracting package archive '{}'",
+            archive.display()
+        )));
+    }
+    if !temporary.join("flux.toml").is_file() {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "package archive root must contain flux.toml",
+        ));
+    }
+    match fs::rename(&temporary, destination) {
+        Ok(()) => Ok(destination.to_path_buf()),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&temporary);
+            Err(error)
+        }
+    }
+}
+
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -176,6 +422,218 @@ fn validate_sha256(value: &str) -> io::Result<()> {
             "package SHA-256 must be exactly 64 lowercase hexadecimal characters",
         ))
     }
+}
+
+fn validate_package_name(value: &str) -> io::Result<()> {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid registry package name '{value}'"),
+        ))
+    }
+}
+
+fn validate_version(value: &str) -> io::Result<()> {
+    match crate::project::resolve_semver_requirement(value, [value]) {
+        Ok(Some(_)) => Ok(()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid registry package version '{value}'"),
+        )),
+    }
+}
+
+fn validate_fluxpkg_archive(archive: &Path) -> io::Result<()> {
+    let listing = Command::new("tar").arg("-tzf").arg(archive).output()?;
+    if !listing.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid .fluxpkg archive '{}'", archive.display()),
+        ));
+    }
+    let listing = String::from_utf8(listing.stdout).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "package archive paths must be UTF-8",
+        )
+    })?;
+    for entry in listing.lines() {
+        let entry = entry.strip_prefix("./").unwrap_or(entry);
+        if entry.is_empty() {
+            continue;
+        }
+        let path = Path::new(entry);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("package archive contains unsafe path '{entry}'"),
+            ));
+        }
+    }
+    let verbose = Command::new("tar").arg("-tvzf").arg(archive).output()?;
+    if !verbose.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid .fluxpkg archive '{}'", archive.display()),
+        ));
+    }
+    let verbose = String::from_utf8(verbose.stdout).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "package archive metadata must be UTF-8",
+        )
+    })?;
+    if verbose
+        .lines()
+        .any(|line| matches!(line.as_bytes().first(), Some(b'l' | b'h')))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "package archives may not contain symbolic or hard links",
+        ));
+    }
+    Ok(())
+}
+
+pub fn read_registry_release(path: &Path) -> io::Result<RegistryRelease> {
+    let source = fs::read_to_string(path)?;
+    parse_registry_release(&source).map_err(|message| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid registry metadata '{}': {message}", path.display()),
+        )
+    })
+}
+
+pub fn parse_registry_release(source: &str) -> Result<RegistryRelease, String> {
+    let mut section = "release";
+    let mut format_version = None;
+    let mut package = None;
+    let mut owner = None;
+    let mut repository = None;
+    let mut version = None;
+    let mut flux = None;
+    let mut asset = None;
+    let mut sha256 = None;
+    let mut yanked = None;
+    let mut dependencies = BTreeMap::new();
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            if line != "[dependencies]" {
+                return Err(format!("unsupported registry metadata table '{line}'"));
+            }
+            section = "dependencies";
+            continue;
+        }
+        let (key, raw_value) = line
+            .split_once('=')
+            .ok_or_else(|| "registry metadata fields use 'key = value' syntax".to_string())?;
+        let key = key.trim();
+        let raw_value = raw_value.trim();
+        if section == "dependencies" {
+            validate_package_name(key).map_err(|error| error.to_string())?;
+            let requirement = registry_string(raw_value)?;
+            crate::project::resolve_semver_requirement(&requirement, std::iter::empty::<&str>())
+                .map_err(|_| format!("invalid dependency SemVer requirement '{requirement}'"))?;
+            if dependencies.insert(key.to_string(), requirement).is_some() {
+                return Err(format!("duplicate registry dependency '{key}'"));
+            }
+            continue;
+        }
+        match key {
+            "format_version" => {
+                let value = raw_value
+                    .parse::<u32>()
+                    .map_err(|_| "registry format_version must be an integer".to_string())?;
+                set_once(&mut format_version, value, key)?;
+            }
+            "package" => set_once(&mut package, registry_string(raw_value)?, key)?,
+            "owner" => set_once(&mut owner, registry_string(raw_value)?, key)?,
+            "repository" => set_once(&mut repository, registry_string(raw_value)?, key)?,
+            "version" => set_once(&mut version, registry_string(raw_value)?, key)?,
+            "flux" => set_once(&mut flux, registry_string(raw_value)?, key)?,
+            "asset" => set_once(&mut asset, registry_string(raw_value)?, key)?,
+            "sha256" => set_once(&mut sha256, registry_string(raw_value)?, key)?,
+            "yanked" => {
+                let value = match raw_value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("registry yanked must be true or false".to_string()),
+                };
+                set_once(&mut yanked, value, key)?;
+            }
+            _ => return Err(format!("unknown registry metadata field '{key}'")),
+        }
+    }
+    if format_version != Some(REGISTRY_INDEX_FORMAT_VERSION) {
+        return Err(format!(
+            "unsupported registry metadata format {}; expected {}",
+            format_version.map_or_else(|| "<missing>".to_string(), |value| value.to_string()),
+            REGISTRY_INDEX_FORMAT_VERSION
+        ));
+    }
+    let release = RegistryRelease {
+        package: package.ok_or("registry metadata requires package")?,
+        owner: owner.ok_or("registry metadata requires owner")?,
+        repository: repository.ok_or("registry metadata requires repository")?,
+        version: version.ok_or("registry metadata requires version")?,
+        flux: flux.ok_or("registry metadata requires flux")?,
+        asset: asset.ok_or("registry metadata requires asset")?,
+        sha256: sha256.ok_or("registry metadata requires sha256")?,
+        dependencies,
+        yanked: yanked.unwrap_or(false),
+    };
+    validate_package_name(&release.package).map_err(|error| error.to_string())?;
+    validate_version(&release.version).map_err(|error| error.to_string())?;
+    validate_sha256(&release.sha256).map_err(|error| error.to_string())?;
+    if !release.repository.starts_with("https://") || !release.asset.starts_with("https://") {
+        return Err("registry repository and asset URLs must use https://".to_string());
+    }
+    if release.owner.trim().is_empty() {
+        return Err("registry owner must not be empty".to_string());
+    }
+    crate::project::resolve_semver_requirement(&release.flux, std::iter::empty::<&str>())
+        .map_err(|_| format!("invalid Flux compatibility requirement '{}'", release.flux))?;
+    Ok(release)
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, key: &str) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        Err(format!("duplicate registry metadata field '{key}'"))
+    } else {
+        Ok(())
+    }
+}
+
+fn registry_string(value: &str) -> Result<String, String> {
+    if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
+        return Err("registry string values must be quoted".to_string());
+    }
+    let inner = &value[1..value.len() - 1];
+    if inner.contains('"') || inner.contains('\\') || inner.contains('\n') || inner.contains('\r') {
+        return Err(
+            "registry string values may not contain quotes, backslashes, or newlines".to_string(),
+        );
+    }
+    Ok(inner.to_string())
 }
 
 fn reject_symlinks(root: &Path, directory: &Path) -> io::Result<()> {
@@ -344,7 +802,10 @@ impl Sha256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -396,6 +857,7 @@ mod tests {
 
     #[test]
     fn package_cache_is_content_addressed_and_rejects_tampering() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
         let root = temp_root("package-cache");
         let archive = root.join("source.fluxpkg");
         let cache = root.join("cache");
@@ -409,6 +871,103 @@ mod tests {
         fs::write(&stored, b"tampered").unwrap();
         let error = verify_cached_fluxpkg(&hash).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_metadata_resolves_highest_non_yanked_compatible_release() {
+        let root = temp_root("registry-index");
+        let package = root.join("demo");
+        fs::create_dir_all(&package).unwrap();
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for (version, yanked) in [("1.2.0", false), ("1.3.0", true), ("2.0.0", false)] {
+            fs::write(
+                package.join(format!("{version}.toml")),
+                format!(
+                    "format_version = 1\npackage = \"demo\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/demo\"\nversion = \"{version}\"\nflux = \"^0.1.0\"\nasset = \"https://github.com/flux-lang/demo/releases/download/v{version}/demo.fluxpkg\"\nsha256 = \"{hash}\"\nyanked = {yanked}\n\n[dependencies]\nutil = \"^1.0.0\"\n"
+                ),
+            )
+            .unwrap();
+        }
+        let provider = DirectoryRegistryProvider::new(&root);
+        let release = resolve_registry_release(&provider, "demo", &["^1.0.0".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(release.version, "1.2.0");
+        assert_eq!(
+            release.dependencies.get("util"),
+            Some(&"^1.0.0".to_string())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_metadata_rejects_install_hooks_and_unknown_fields() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let error = parse_registry_release(&format!(
+            "format_version = 1\npackage = \"demo\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/demo\"\nversion = \"1.0.0\"\nflux = \"^0.1.0\"\nasset = \"https://github.com/flux-lang/demo/releases/download/v1/demo.fluxpkg\"\nsha256 = \"{hash}\"\ninstall = \"sh setup.sh\"\n"
+        ))
+        .unwrap_err();
+        assert!(error.contains("unknown registry metadata field 'install'"));
+    }
+
+    #[test]
+    fn verified_fluxpkg_extraction_requires_safe_archive_paths_and_manifest() {
+        let root = temp_root("fluxpkg-extract");
+        let package = root.join("package");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nentry = \"src/main.flux\"\n",
+        )
+        .unwrap();
+        fs::write(package.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        let archive = root.join("demo.fluxpkg");
+        let hash = create_fluxpkg(&package, &archive).unwrap();
+        let extracted = root.join("extracted");
+        extract_fluxpkg(&archive, &hash, &extracted).unwrap();
+        assert_eq!(
+            fs::read_to_string(extracted.join("src/main.flux")).unwrap(),
+            "fn main() -> i64 { 0 }\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn offline_registry_materialization_uses_only_verified_cached_content() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let root = temp_root("registry-offline");
+        let package = root.join("package");
+        let cache = root.join("cache");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nentry = \"src/main.flux\"\n",
+        )
+        .unwrap();
+        fs::write(package.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        let archive = root.join("demo.fluxpkg");
+        let hash = create_fluxpkg(&package, &archive).unwrap();
+        unsafe { std::env::set_var("FLUX_PACKAGE_CACHE_DIR", &cache) };
+        cache_fluxpkg(&archive, &hash).unwrap();
+        let release = RegistryRelease {
+            package: "demo".to_string(),
+            owner: "flux-lang".to_string(),
+            repository: "https://github.com/flux-lang/demo".to_string(),
+            version: "1.0.0".to_string(),
+            flux: "^0.1.0".to_string(),
+            asset: "https://invalid.example/should-not-be-read.fluxpkg".to_string(),
+            sha256: hash.clone(),
+            dependencies: BTreeMap::new(),
+            yanked: false,
+        };
+        let destination = root.join("vendor/demo");
+        materialize_registry_release(&release, &destination, true).unwrap();
+        assert!(destination.join("flux.toml").is_file());
+        fs::remove_file(cache.join("sha256").join(format!("{hash}.fluxpkg"))).unwrap();
+        let error = fetch_registry_release(&release, true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
         unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
         let _ = fs::remove_dir_all(root);
     }
