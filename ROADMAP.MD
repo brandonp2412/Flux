@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 560
+- Completed baseline units: 561
 - Reported overall progress: **76%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -905,10 +905,10 @@ Android is the first application-platform target. Android integration must feel 
 
 # Milestone 18 — Web target
 
-Web is a supported target, not the implementation substrate for native apps.
+Web is a supported target, not the implementation substrate for native apps. The default web model should use the browser platform directly: semantic DOM, CSS, browser APIs, and compiler-generated JavaScript where needed. WASM is an optional backend/optimization choice for suitable application code, not Flux's web runtime.
 
-- [x] Bootstrap browser target: `flux build web <file.flux|package-dir|flux.toml> [-o directory]` type-checks an ordinary Flux `app`/root view and emits a directly loadable self-contained `index.html` without a VM, browser framework, canvas widget-emulation layer, or user-authored JavaScript bridge. The current bootstrap backend covers declarative application UI, view state/derived expressions, and direct state-transition events; broader general application-code lowering remains explicitly tracked by the separate WASM/application-code item rather than hiding a second source/runtime model.
-- [ ] WASM application-code backend where appropriate.
+- [x] Bootstrap browser target: `flux build web <file.flux|package-dir|flux.toml> [-o directory]` type-checks an ordinary Flux `app`/root view and emits a directly loadable self-contained `index.html` without a VM, browser framework, canvas widget-emulation layer, or user-authored JavaScript bridge. The current bootstrap backend covers declarative application UI, view state/derived expressions, and direct state-transition events; broader general application-code lowering remains explicitly tracked by the optional WASM/application-code item rather than hiding a second source/runtime model.
+- [x] Optional/automatic WASM lowering for suitable application code: ordinary web apps continue to default to direct DOM/CSS/browser-API integration plus compiler-generated JavaScript, while `--wasm auto` may lower the current pure `i64` application-function slice into an embedded WebAssembly module. `--wasm never` deterministically keeps direct JavaScript lowering and `--wasm always` requires every reachable application function to fit the supported WASM slice or fails explicitly. WASM remains an optional compiler backend inside the self-contained web artifact, not a mandatory Flux web runtime, framework layer, UI renderer, plugin channel, or user-authored JavaScript bridge.
 - [x] DOM/browser-native integration for the current declarative UI surface: Flux built-in elements lower to native semantic DOM controls/containers (`button`, `input`, `img`, `label`+checkbox/radio, `nav`, `figure`, `article`, `header`, `section`, and text nodes) positioned by the compiler-owned grid. Typed view-state transitions attach direct DOM event listeners and refresh the existing nodes in place, with no method-channel/plugin registry/serialized bridge or framework virtual-widget tree.
 - [x] Browser routing/history for the current declarative web backend: typed `browser.path()`, `browser.push(path)`, `browser.replace(path)`, `browser.back()`, and `browser.forward()` lower directly to the browser Location/History APIs. Push/replace and native `popstate` traversal refresh the existing Flux DOM in place, while ordinary UI event callbacks can invoke these operations without a framework router, serialized channel, or user-authored JavaScript bridge.
 - [x] Browser storage for the current declarative web backend: typed `browser.store(key, value)`, `browser.load(key, fallback)`, and `browser.erase(key)` lower directly to `localStorage`; reads provide an explicit fallback for missing/unavailable storage, and UI event callbacks call the browser primitive directly without exposing storage objects, a plugin registry, or application-authored JavaScript glue.

@@ -1264,6 +1264,7 @@ app Demo
             .expect("automatic WASM lowering should emit");
         assert!(automatic.contains("new WebAssembly.Module(fluxWasmBytes)"));
         assert!(automatic.contains("fluxWasm.exports[\"scale\"]"));
+        assert!(automatic.contains("BigInt(Math.trunc(value))"));
         assert!(automatic.contains("<main id=\"flux-root\""));
         assert!(!automatic.contains("canvas"));
 
