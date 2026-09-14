@@ -46193,6 +46193,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_accept("));
     assert!(generated.contains("flux__websocket_read_text("));
     assert!(generated.contains("Sec-WebSocket-Accept"));
+    assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));
+    assert!(generated.contains("WebSocket handshake is missing Sec-WebSocket-Key"));
     assert!(generated.contains("WebSocket text message exceeds maxBytes"));
     assert!(generated.contains("WebSocket continuation frame expected"));
     assert!(generated.contains("WebSocket reserved bits are unsupported"));
