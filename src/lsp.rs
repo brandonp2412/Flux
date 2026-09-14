@@ -1702,6 +1702,8 @@ fn add_qualified_namespace_completions(
             ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
+            ("sync", "fn file.sync(path: str) -> error"),
+            ("syncData", "fn file.syncData(path: str) -> error"),
             (
                 "truncate",
                 "fn file.truncate(path: str, size: i64) -> error",
@@ -1733,6 +1735,10 @@ fn add_qualified_namespace_completions(
             (
                 "rename",
                 "fn file.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "link",
+                "fn file.link(source: str, destination: str) -> error",
             ),
             ("remove", "fn file.remove(path: str) -> error"),
         ] {
@@ -1774,6 +1780,7 @@ fn add_qualified_namespace_completions(
             ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
+            ("sync", "fn directory.sync(path: str) -> error"),
             (
                 "rename",
                 "fn directory.rename(source: str, destination: str) -> error",
@@ -3797,7 +3804,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "copy" | "rename" => {
+                "copy" | "rename" | "link" => {
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["source: str", "destination: str"],
@@ -3805,9 +3812,9 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "remove" => {
+                "remove" | "sync" | "syncData" => {
                     return Some(signature_help_for_builtin(
-                        "file.remove",
+                        &format!("file.{member}"),
                         &["path: str"],
                         "error",
                         active_parameter,
@@ -3835,7 +3842,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "create" | "createAll" | "remove" | "removeAll" => {
+                "create" | "createAll" | "remove" | "removeAll" | "sync" => {
                     return Some(signature_help_for_builtin(
                         &format!("directory.{member}"),
                         &["path: str"],
@@ -7535,6 +7542,8 @@ mod tests {
         assert!(file_items.contains("fn file.permissions(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.write(path: str, text: str) -> error"));
         assert!(file_items.contains("fn file.append(path: str, text: str) -> error"));
+        assert!(file_items.contains("fn file.sync(path: str) -> error"));
+        assert!(file_items.contains("fn file.syncData(path: str) -> error"));
         assert!(file_items.contains("fn file.truncate(path: str, size: i64) -> error"));
         assert!(
             file_items.contains("fn file.setPermissions(path: str, permissions: i64) -> error")
@@ -7545,6 +7554,7 @@ mod tests {
         assert!(file_items.contains("fn file.setGroup(path: str, group: i64) -> error"));
         assert!(file_items.contains("fn file.copy(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
+        assert!(file_items.contains("fn file.link(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
 
         let directory_line = source
@@ -7575,6 +7585,7 @@ mod tests {
         assert!(directory_items.contains("fn directory.permissions(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.create(path: str) -> error"));
         assert!(directory_items.contains("fn directory.createAll(path: str) -> error"));
+        assert!(directory_items.contains("fn directory.sync(path: str) -> error"));
         assert!(
             directory_items.contains("fn directory.rename(source: str, destination: str) -> error")
         );
@@ -9396,9 +9407,52 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_completion_exposes_durability_capabilities() {
+        let uri = "file:///tmp/filesystem-durability-completion.flux";
+        let source = "fn main() -> i64 {\n    file.\n    directory.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (namespace, expected) in [
+            (
+                "file.",
+                [
+                    "fn file.sync(path: str) -> error",
+                    "fn file.syncData(path: str) -> error",
+                    "fn file.link(source: str, destination: str) -> error",
+                ]
+                .as_slice(),
+            ),
+            (
+                "directory.",
+                ["fn directory.sync(path: str) -> error"].as_slice(),
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.trim() == namespace)
+                .expect("filesystem completion line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line_index),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            for detail in expected {
+                assert!(
+                    items.contains(detail),
+                    "missing filesystem completion {detail}: {items}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn signature_help_supports_filesystem_capabilities() {
         let uri = "file:///tmp/filesystem-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(file.exists(\"a\"))\n    print(file.write(\"a\", \"x\"))\n    print(file.append(\"a\", \"x\"))\n    print(file.copy(\"a\", \"b\"))\n    print(file.rename(\"a\", \"b\"))\n    print(file.remove(\"a\"))\n    print(directory.exists(\"a\"))\n    print(directory.create(\"a\"))\n    print(directory.createAll(\"a/b\"))\n    print(directory.remove(\"a\"))\n    print(directory.removeAll(\"a/b\"))\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
+        let source = "fn main() -> i64 {\n    print(file.exists(\"a\"))\n    print(file.write(\"a\", \"x\"))\n    print(file.append(\"a\", \"x\"))\n    print(file.sync(\"a\"))\n    print(file.syncData(\"a\"))\n    print(file.copy(\"a\", \"b\"))\n    print(file.rename(\"a\", \"b\"))\n    print(file.link(\"a\", \"b\"))\n    print(file.remove(\"a\"))\n    print(directory.exists(\"a\"))\n    print(directory.create(\"a\"))\n    print(directory.createAll(\"a/b\"))\n    print(directory.sync(\"a\"))\n    print(directory.remove(\"a\"))\n    print(directory.removeAll(\"a/b\"))\n    print(fs.exists(\"a\"))\n    print(fs.isFile(\"a\"))\n    print(fs.isDirectory(\"a\"))\n    print(fs.createDirectory(\"a\"))\n    print(fs.createDirectories(\"a/b\"))\n    print(fs.removeFile(\"a\"))\n    print(fs.removeDirectory(\"a\"))\n    print(fs.removeDirectories(\"a/b\"))\n    print(fs.writeText(\"a\", \"x\"))\n    print(fs.appendText(\"a\", \"x\"))\n    print(fs.rename(\"a\", \"b\"))\n    print(fs.copyFile(\"a\", \"b\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("file.exists(", "fn file.exists(path: str) -> bool"),
@@ -9410,6 +9464,8 @@ mod tests {
                 "file.append(",
                 "fn file.append(path: str, text: str) -> error",
             ),
+            ("file.sync(", "fn file.sync(path: str) -> error"),
+            ("file.syncData(", "fn file.syncData(path: str) -> error"),
             (
                 "file.copy(",
                 "fn file.copy(source: str, destination: str) -> error",
@@ -9417,6 +9473,10 @@ mod tests {
             (
                 "file.rename(",
                 "fn file.rename(source: str, destination: str) -> error",
+            ),
+            (
+                "file.link(",
+                "fn file.link(source: str, destination: str) -> error",
             ),
             ("file.remove(", "fn file.remove(path: str) -> error"),
             (
@@ -9431,6 +9491,7 @@ mod tests {
                 "directory.createAll(",
                 "fn directory.createAll(path: str) -> error",
             ),
+            ("directory.sync(", "fn directory.sync(path: str) -> error"),
             (
                 "directory.remove(",
                 "fn directory.remove(path: str) -> error",

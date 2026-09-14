@@ -10014,7 +10014,7 @@ fn check_qualified_call(
         match name.as_str() {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
             | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
-            | "allocatedSize" | "remove" => {
+            | "allocatedSize" | "remove" | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -10121,7 +10121,7 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
-            "copy" | "rename" => {
+            "copy" | "rename" | "link" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -10162,7 +10162,7 @@ fn check_qualified_call(
         match name.as_str() {
             "exists" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
             | "group" | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize"
-            | "create" | "createAll" | "remove" | "removeAll" => {
+            | "create" | "createAll" | "remove" | "removeAll" | "sync" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

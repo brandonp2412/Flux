@@ -10412,6 +10412,138 @@ fn main() -> i64 {
 }
 
 #[test]
+fn filesystem_durability_and_hard_links_are_typed_native_and_tree_shaken() {
+    let root =
+        std::env::temp_dir().join(format!("flux-filesystem-durability-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem durability fixture should be writable");
+    let source_file = root.join("source.txt");
+    let linked_file = root.join("linked.txt");
+    fs::write(&source_file, "durable").expect("filesystem durability file should be writable");
+    let path = |value: &std::path::Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    print(file.syncData("{}"))
+    print(file.sync("{}"))
+    print(directory.sync("{}"))
+    print(file.link("{}", "{}"))
+    let (links, linksError) = file.hardLinks("{}")
+    print(links)
+    print(linksError)
+    let (size, sizeError) = file.size("{}")
+    print(size)
+    print(sizeError)
+    print(file.remove("{}"))
+    return 0
+}}
+"#,
+        path(&source_file),
+        path(&source_file),
+        path(&root),
+        path(&source_file),
+        path(&linked_file),
+        path(&source_file),
+        path(&linked_file),
+        path(&linked_file),
+    );
+
+    check_source(&source).expect("filesystem durability APIs should typecheck");
+    let generated = compile_to_c(&source).expect("filesystem durability APIs should lower");
+    for helper in [
+        "flux__fs_file_sync_data",
+        "flux__fs_file_sync",
+        "flux__fs_directory_sync",
+        "flux__fs_file_link",
+    ] {
+        assert!(
+            generated.contains(helper),
+            "missing generated helper {helper}"
+        );
+    }
+
+    let source_path = root.join("durability.flux");
+    fs::write(&source_path, &source).expect("filesystem durability Flux source should be writable");
+    let binary = root.join("durability");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem durability binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem durability build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem durability binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\nnil\nnil\nnil\n2\nnil\n7\nnil\nnil\n"
+    );
+    assert!(!linked_file.exists());
+
+    let unused = r#"
+fn hidden() -> void {
+    print(file.syncData("/tmp/unused-flux-file"))
+    print(file.sync("/tmp/unused-flux-file"))
+    print(directory.sync("/tmp/unused-flux-directory"))
+    print(file.link("/tmp/unused-flux-file", "/tmp/unused-flux-link"))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated =
+        compile_to_c(unused).expect("dead filesystem durability calls should lower");
+    for helper in [
+        "flux__fs_file_sync_data",
+        "flux__fs_file_sync",
+        "flux__fs_directory_sync",
+        "flux__fs_file_link",
+    ] {
+        assert!(
+            !unused_generated.contains(helper),
+            "dead filesystem durability helper should tree-shake: {helper}"
+        );
+    }
+
+    let invalid = r#"
+fn main() -> i64 {
+    file.sync(false)
+    file.syncData(1)
+    file.link("x", false)
+    directory.sync(1)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(invalid).expect_err("invalid filesystem durability calls should fail");
+    for expected in [
+        "file.sync path: expected str",
+        "file.syncData path: expected str",
+        "file.link destination: expected str",
+        "directory.sync path: expected str",
+    ] {
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "missing filesystem durability diagnostic {expected}: {errors:?}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_read_callbacks_are_not_exposed() {
     let source = r#"
 fn consume(_text: str) -> void {
