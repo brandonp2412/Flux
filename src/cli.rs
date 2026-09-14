@@ -9214,7 +9214,9 @@ fn build_native_configured(
         Vec::new()
     };
     let linux_native = native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux;
-    let crypto = linux_native && c_source.contains("#include <openssl/sha.h>");
+    let crypto = linux_native
+        && (c_source.contains("#include <openssl/sha.h>")
+            || c_source.contains("#include <openssl/ssl.h>"));
     let crypto_cflags = if crypto {
         pkg_config_flags("--cflags", "openssl")?
     } else {

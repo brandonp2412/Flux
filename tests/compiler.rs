@@ -9472,6 +9472,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tls_streams_are_typed_verified_and_tree_shaken() {
+    let source = r#"
+fn received(_count: i64, _text: str) -> void {
+}
+fn main() -> i64 {
+    let (client, _clientError) = tls.connect(3, "example.com")
+    let (server, _serverError) = tls.accept(4, "/tmp/cert.pem", "/tmp/key.pem")
+    print(tls.write(client, "hello"))
+    let (_bytes, _readError) = tls.read(server, 4096, received)
+    print(tls.close(client))
+    print(tls.close(server))
+    return 0
+}
+"#;
+    check_source(source).expect("TLS stream APIs should typecheck");
+    let generated = compile_to_c(source).expect("TLS stream APIs should lower natively");
+    assert!(generated.contains("#include <openssl/ssl.h>"));
+    assert!(generated.contains("SSL_CTX_set_default_verify_paths(context)"));
+    assert!(generated.contains("SSL_set1_host(session, server_name)"));
+    assert!(generated.contains("SSL_CTX_use_certificate_chain_file(context, certificate_path)"));
+    assert!(generated.contains("SSL_CTX_check_private_key(context)"));
+    assert!(generated.contains("flux__tls_read("));
+    assert!(generated.contains("flux__tls_write("));
+
+    let invalid = check_source(
+        "fn received(_count: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (_bytes, _failure) = tls.read(1, 0, received)\n    return 0\n}\n",
+    )
+    .expect_err("invalid TLS read bounds must fail statically");
+    assert!(
+        invalid
+            .message
+            .contains("tls.read maxBytes must be between 1 and 65536")
+    );
+
+    let dead = r#"
+fn received(_count: i64, _text: str) -> void {
+}
+fn hidden() -> void {
+    let (_session, _failure) = tls.connect(3, "example.com")
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead TLS calls should lower safely");
+    assert!(!dead_generated.contains("#include <openssl/ssl.h>"));
+    assert!(!dead_generated.contains("flux__tls_connect("));
+}
+
+#[test]
 fn sqlite_interface_is_typed_borrowed_tree_shaken_and_runnable() {
     let root = std::env::temp_dir().join(format!("flux-sqlite-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

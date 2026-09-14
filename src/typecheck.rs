@@ -7336,6 +7336,110 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "tls" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("tls.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "connect" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.connect expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.connect socket")?;
+                let server_name = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &server_name,
+                    "tls.connect serverName",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "accept" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.accept expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.accept socket")?;
+                for (index, label) in [(1, "certificatePath"), (2, "privateKeyPath")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("tls.accept {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "write" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.write expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "tls.write session")?;
+                let text = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &text, "tls.write text")?;
+                return Ok(vec![Type::Error]);
+            }
+            "read" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.read expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "tls.read session")?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &max_bytes, "tls.read maxBytes")?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "tls.read maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[2].span, &expected, &callback, "tls.read callback")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.close expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "tls.close session")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("tls module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "secure" {
         if !named_args.is_empty() {
             return Err(diag(

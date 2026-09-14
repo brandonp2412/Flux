@@ -1714,6 +1714,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
+    if runtime_usage.contains("flux__tls_") {
+        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <limits.h>\n#include <openssl/ssl.h>\n#include <openssl/x509_vfy.h>\n#endif\n");
+    }
     if runtime_usage.contains("flux__crypto_") {
         out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <openssl/crypto.h>\n#include <openssl/evp.h>\n#include <openssl/hmac.h>\n#include <openssl/rand.h>\n#include <openssl/sha.h>\n#endif\n");
     }
@@ -4548,6 +4551,110 @@ done:
     }
     return NULL;
 }
+"#);
+    }
+
+    if runtime_usage.contains("flux__tls_") {
+        out.push_str(r#"struct flux__tls_i64_error { int64_t v0; const char *v1; };
+static inline struct flux__tls_i64_error flux__tls_result(int64_t value, const char *error) { struct flux__tls_i64_error result = { .v0 = value, .v1 = error }; return result; }
+#if defined(__linux__) && !defined(__ANDROID__)
+#define FLUX__TLS_MAX_SESSIONS 256
+struct flux__tls_slot { SSL_CTX *context; SSL *session; uint32_t generation; };
+static struct flux__tls_slot flux__tls_slots[FLUX__TLS_MAX_SESSIONS];
+static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) {
+    if (handle <= 0) return NULL;
+    uint64_t raw = (uint64_t)handle;
+    uint32_t slot_id = (uint32_t)(raw & UINT64_C(0xffffffff));
+    uint32_t generation = (uint32_t)(raw >> 32);
+    if (slot_id == 0 || slot_id > FLUX__TLS_MAX_SESSIONS || generation == 0) return NULL;
+    struct flux__tls_slot *slot = &flux__tls_slots[slot_id - 1];
+    return slot->session != NULL && slot->generation == generation ? slot : NULL;
+}
+static inline struct flux__tls_i64_error flux__tls_register(SSL_CTX *context, SSL *session) {
+    for (uint32_t index = 0; index < FLUX__TLS_MAX_SESSIONS; index += 1) {
+        struct flux__tls_slot *slot = &flux__tls_slots[index];
+        if (slot->session != NULL) continue;
+        uint32_t generation = (slot->generation % UINT32_C(0x7ffffffe)) + UINT32_C(1);
+        slot->context = context; slot->session = session; slot->generation = generation;
+        uint64_t handle = ((uint64_t)generation << 32) | (uint64_t)(index + 1);
+        return flux__tls_result((int64_t)handle, NULL);
+    }
+    return flux__tls_result(-1, "too many open TLS sessions");
+}
+static inline struct flux__tls_i64_error flux__tls_connect(int64_t socket, const char *server_name) {
+    if (socket < 0 || socket > INT_MAX) return flux__tls_result(-1, "tls.connect received an invalid socket");
+    if (server_name == NULL || server_name[0] == '\0') return flux__tls_result(-1, "tls.connect serverName must not be empty");
+    SSL_CTX *context = SSL_CTX_new(TLS_client_method());
+    if (context == NULL) return flux__tls_result(-1, "tls.connect could not create TLS context");
+    if (SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.connect could not require TLS 1.2+"); }
+    SSL_CTX_set_verify(context, SSL_VERIFY_PEER, NULL);
+    if (SSL_CTX_set_default_verify_paths(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.connect could not load system trust roots"); }
+    SSL *session = SSL_new(context);
+    if (session == NULL) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.connect could not create TLS session"); }
+    SSL_set_mode(session, SSL_MODE_AUTO_RETRY);
+    if (SSL_set_fd(session, (int)socket) != 1 || SSL_set_tlsext_host_name(session, server_name) != 1 || SSL_set1_host(session, server_name) != 1) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "tls.connect could not configure peer verification"); }
+    if (SSL_connect(session) != 1 || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "tls.connect handshake or certificate verification failed"); }
+    struct flux__tls_i64_error registered = flux__tls_register(context, session);
+    if (registered.v1 != NULL) { SSL_free(session); SSL_CTX_free(context); }
+    return registered;
+}
+static inline struct flux__tls_i64_error flux__tls_accept(int64_t socket, const char *certificate_path, const char *private_key_path) {
+    if (socket < 0 || socket > INT_MAX) return flux__tls_result(-1, "tls.accept received an invalid socket");
+    SSL_CTX *context = SSL_CTX_new(TLS_server_method());
+    if (context == NULL) return flux__tls_result(-1, "tls.accept could not create TLS context");
+    if (SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.accept could not require TLS 1.2+"); }
+    if (SSL_CTX_use_certificate_chain_file(context, certificate_path) != 1 || SSL_CTX_use_PrivateKey_file(context, private_key_path, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.accept could not load certificate/private key"); }
+    SSL *session = SSL_new(context);
+    if (session == NULL) { SSL_CTX_free(context); return flux__tls_result(-1, "tls.accept could not create TLS session"); }
+    SSL_set_mode(session, SSL_MODE_AUTO_RETRY);
+    if (SSL_set_fd(session, (int)socket) != 1 || SSL_accept(session) != 1) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "tls.accept handshake failed"); }
+    struct flux__tls_i64_error registered = flux__tls_register(context, session);
+    if (registered.v1 != NULL) { SSL_free(session); SSL_CTX_free(context); }
+    return registered;
+}
+static inline const char *flux__tls_write(int64_t handle, const char *text) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) return "tls.write received an invalid or closed session";
+    size_t length = strlen(text), offset = 0;
+    while (offset < length) {
+        size_t remaining = length - offset;
+        int chunk = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        int written = SSL_write(slot->session, text + offset, chunk);
+        if (written <= 0) return "tls.write failed";
+        offset += (size_t)written;
+    }
+    return NULL;
+}
+static inline struct flux__tls_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) return flux__tls_result(-1, "tls.read received an invalid or closed session");
+    if (max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "tls.read maxBytes must be between 1 and 65536");
+    if (callback == NULL) return flux__tls_result(-1, "tls.read callback is invalid");
+    char *buffer = malloc((size_t)max_bytes + 1);
+    if (buffer == NULL) return flux__tls_result(-1, "tls.read could not allocate bounded receive buffer");
+    int received = SSL_read(slot->session, buffer, (int)max_bytes);
+    if (received <= 0) {
+        int ssl_error = SSL_get_error(slot->session, received);
+        free(buffer);
+        if (received == 0 && ssl_error == SSL_ERROR_ZERO_RETURN) return flux__tls_result(0, NULL);
+        return flux__tls_result(-1, "tls.read failed");
+    }
+    if (memchr(buffer, '\0', (size_t)received) != NULL) { free(buffer); return flux__tls_result(-1, "tls.read received NUL-containing data unsupported by str"); }
+    buffer[received] = '\0'; callback((int64_t)received, buffer); free(buffer); return flux__tls_result((int64_t)received, NULL);
+}
+static inline const char *flux__tls_close(int64_t handle) {
+    struct flux__tls_slot *slot = flux__tls_slot_for(handle);
+    if (slot == NULL) return "tls.close received an invalid or already closed session";
+    SSL_shutdown(slot->session);
+    SSL_free(slot->session); SSL_CTX_free(slot->context); slot->session = NULL; slot->context = NULL; return NULL;
+}
+#else
+static inline struct flux__tls_i64_error flux__tls_connect(int64_t socket, const char *server_name) { (void)socket; (void)server_name; return flux__tls_result(-1, "TLS is unavailable on this target"); }
+static inline struct flux__tls_i64_error flux__tls_accept(int64_t socket, const char *certificate_path, const char *private_key_path) { (void)socket; (void)certificate_path; (void)private_key_path; return flux__tls_result(-1, "TLS is unavailable on this target"); }
+static inline const char *flux__tls_write(int64_t handle, const char *text) { (void)handle; (void)text; return "TLS is unavailable on this target"; }
+static inline struct flux__tls_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { (void)handle; (void)max_bytes; (void)callback; return flux__tls_result(-1, "TLS is unavailable on this target"); }
+static inline const char *flux__tls_close(int64_t handle) { (void)handle; return "TLS is unavailable on this target"; }
+#endif
 "#);
     }
 
@@ -32322,6 +32429,66 @@ fn emit_qualified_call(
                 ));
             }
             _ => return Err(diag(span, "unknown crypto call reached code generation")),
+        }
+    }
+    if namespace == "tls" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid TLS call reached code generation"));
+        }
+        match name {
+            "connect" => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let server = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__tls_connect({}, {})", socket.code, server.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__tls_i64_error".to_string()),
+                ));
+            }
+            "accept" => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let cert = emit_expr(&args[1], env, signatures)?;
+                let key = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_accept({}, {}, {})",
+                        socket.code, cert.code, key.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__tls_i64_error".to_string()),
+                ));
+            }
+            "write" => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let text = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__tls_write({}, {})", session.code, text.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "read" => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_read({}, {}, {})",
+                        session.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__tls_i64_error".to_string()),
+                ));
+            }
+            "close" => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__tls_close({})", session.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown TLS call reached code generation")),
         }
     }
     if namespace == "secure" {
