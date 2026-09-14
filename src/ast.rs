@@ -903,6 +903,7 @@ pub struct StructLiteralField {
 pub enum UnaryOp {
     Neg,
     Not,
+    Borrow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

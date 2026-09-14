@@ -6882,6 +6882,24 @@ pub fn type_of_expr(
                     require_type(expr.span, &Type::Bool, &ty, "unary '!'")?;
                     Ok(Type::Bool)
                 }
+                UnaryOp::Borrow => {
+                    if !matches!(inner.kind, ExprKind::Var(_)) {
+                        return Err(diag(
+                            expr.span,
+                            "borrow currently requires a named non-copy binding",
+                        )
+                        .with_note(
+                            "bind the owner first, then borrow that binding so its inferred lifetime can be tracked",
+                        ));
+                    }
+                    if !matches!(signatures.canonical_type(&ty), Type::List(_)) {
+                        return Err(diag(
+                            expr.span,
+                            "borrow currently supports concrete list bindings",
+                        ));
+                    }
+                    Ok(ty)
+                }
             }
         }
         ExprKind::Binary { left, op, right } => {
@@ -11555,6 +11573,10 @@ fn evaluate_default_expr(
                     &Type::Bool,
                     &actual.ty(),
                 )),
+                (UnaryOp::Borrow, _) => Err(diag(
+                    expr.span,
+                    "borrow expressions are not compile-time constants",
+                )),
             }
         }
         ExprKind::Binary { left, op, right } => {
@@ -11748,6 +11770,10 @@ fn evaluate_constant_expr(
                     "unary '!'",
                     &Type::Bool,
                     &actual.ty(),
+                )),
+                (UnaryOp::Borrow, _) => Err(diag(
+                    expr.span,
+                    "borrow expressions are not compile-time constants",
                 )),
             }
         }

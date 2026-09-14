@@ -355,6 +355,7 @@ fn web_function_expr_js(
             let operator = match op {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "!",
+                UnaryOp::Borrow => "",
             };
             format!(
                 "({operator}{})",
@@ -1037,6 +1038,7 @@ fn expr_js(
             let operator = match op {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "!",
+                UnaryOp::Borrow => "",
             };
             format!(
                 "({operator}{})",

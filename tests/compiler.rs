@@ -12441,6 +12441,152 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_list_borrow_tracks_inferred_lifetime_without_moving_owner() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let view: i64[] = borrow values
+    print(values[0])
+    print(view[1])
+    let destination: i64[] = values
+    print(destination[2])
+    return 0
+}
+"#;
+
+    check_source(source).expect("an explicit immutable borrow must leave its owner usable");
+    compile_to_c(source).expect("explicit immutable borrows should lower as list descriptors");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1213))
+        .expect("explicit borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let lifetime = graph
+        .borrow_lifetimes()
+        .iter()
+        .find(|lifetime| lifetime.borrower == "view" && lifetime.source == "values")
+        .expect("the explicit borrow must retain owner provenance");
+    assert!(!lifetime.active_before.is_empty());
+    assert!(!lifetime.starts.is_empty());
+    assert!(!lifetime.ends.is_empty());
+}
+
+#[test]
+fn explicit_list_borrow_blocks_owner_move_until_last_use() {
+    let live = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let view: i64[] = borrow values
+    let destination: i64[] = values
+    print(view[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("an owner move while an explicit borrow is live must fail");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot move non-copy binding 'values' while borrowed view 'view' is still live")
+    }));
+
+    let dead = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let view: i64[] = borrow values
+    print(view[0])
+    let destination: i64[] = values
+    print(destination[0])
+    return 0
+}
+"#;
+    check_source(dead).expect("the owner move should become valid after the explicit borrow dies");
+}
+
+#[test]
+fn explicit_list_reborrow_preserves_original_owner_provenance() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    let first: i64[] = borrow values
+    let second: i64[] = borrow first
+    let destination: i64[] = values
+    print(second[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(source)
+        .expect_err("a transitive explicit reborrow must keep the original owner live");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot move non-copy binding 'values' while borrowed view 'second' is still live")
+    }));
+}
+
+#[test]
+fn explicit_borrow_rejects_temporaries_copy_values_and_moved_owners() {
+    let temporary = r#"
+fn main() -> i64 {
+    let view: i64[] = borrow [10, 20]
+    print(view[0])
+    return 0
+}
+"#;
+    let error = check_source(temporary).expect_err("temporary storage must not be borrowed");
+    assert!(error
+        .message
+        .contains("borrow currently requires a named non-copy binding"));
+
+    let copy = r#"
+fn main() -> i64 {
+    let value: i64 = 10
+    let alias: i64 = borrow value
+    return alias
+}
+"#;
+    let error = check_source(copy).expect_err("copy values do not need an ownership borrow");
+    assert!(error
+        .message
+        .contains("borrow currently supports concrete list bindings"));
+
+    let optional = r#"
+fn main() -> i64 {
+    let values: i64[]? = [10, 20]
+    let view: i64[]? = borrow values
+    if let present = view:
+        print(present[0])
+    return 0
+}
+"#;
+    let error = check_source(optional)
+        .expect_err("optional list descriptors need their own explicit borrow provenance before borrowing");
+    assert!(error
+        .message
+        .contains("borrow currently supports concrete list bindings"));
+
+    let moved = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20]
+    let destination: i64[] = values
+    let view: i64[] = borrow values
+    print(destination[0])
+    print(view[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(moved).expect_err("a moved owner cannot be borrowed later");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("use of moved non-copy binding 'values'")),
+        "borrowing a moved owner should report its moved-state read: {errors:?}"
+    );
+}
+
+#[test]
 fn rejects_moving_list_owner_while_zero_copy_view_is_live() {
     let live_slice = r#"
 fn main() -> i64 {

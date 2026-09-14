@@ -4974,6 +4974,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "unsafe"
             | "async"
             | "await"
+            | "borrow"
             | "true"
             | "false"
             | "nil"
@@ -4997,6 +4998,7 @@ enum TokenKind {
     None,
     Fn,
     Await,
+    Borrow,
     Let,
     If,
     Else,
@@ -5668,6 +5670,7 @@ fn lex_expression(input: &str, line: usize, column: usize) -> Result<Vec<Token>,
                 "none" => TokenKind::None,
                 "fn" => TokenKind::Fn,
                 "await" => TokenKind::Await,
+                "borrow" => TokenKind::Borrow,
                 "let" => TokenKind::Let,
                 "if" => TokenKind::If,
                 "else" => TokenKind::Else,
@@ -5816,6 +5819,27 @@ impl ExprParser<'_> {
                 line: self.line,
                 span,
                 kind: ExprKind::Await(Box::new(awaited)),
+            });
+        }
+        if matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Borrow)
+        ) {
+            let borrow_span = self.tokens[self.index].span;
+            self.index += 1;
+            let borrowed = self.parse_unary()?;
+            let span = SourceSpan::new(
+                self.line,
+                borrow_span.column,
+                borrowed.span.column + borrowed.span.length - borrow_span.column,
+            );
+            return Ok(Expr {
+                line: self.line,
+                span,
+                kind: ExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    expr: Box::new(borrowed),
+                },
             });
         }
         if matches!(
