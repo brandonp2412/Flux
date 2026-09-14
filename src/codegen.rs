@@ -1724,7 +1724,6 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__preferences_")
         || runtime_usage.contains("flux__tls_")
         || runtime_usage.contains("flux__websocket_")
-        || runtime_usage.contains("flux__websocket_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -6498,6 +6497,34 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
 static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; return NULL; }
 static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = strlen(value); if (length > 65536) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
 static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
+"#);
+    }
+    if runtime_usage.contains("flux__websocket_") {
+        out.push_str(r#"static inline struct flux__net_i64_error flux__websocket_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
+static inline int flux__websocket_read_all(int socket_handle, void *target, size_t length) { size_t offset = 0; while (offset < length) { ssize_t received; do { received = recv(socket_handle, (unsigned char *)target + offset, length - offset, 0); } while (received < 0 && errno == EINTR); if (received <= 0) return 0; offset += (size_t)received; } return 1; }
+static inline int flux__websocket_write_all(int socket_handle, const void *source, size_t length) { size_t offset = 0; while (offset < length) { ssize_t written; do { written = send(socket_handle, (const unsigned char *)source + offset, length - offset, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written <= 0) return 0; offset += (size_t)written; } return 1; }
+static inline struct flux__net_i64_error flux__websocket_accept(int64_t socket_handle) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__websocket_result(-1, "invalid WebSocket socket");
+    char request[65537]; size_t length = 0;
+    while (length < 65536) { if (!flux__websocket_read_all((int)socket_handle, request + length, 1)) return flux__websocket_result(-1, "failed to receive WebSocket handshake"); length += 1; request[length] = '\0'; if (length >= 4 && memcmp(request + length - 4, "\r\n\r\n", 4) == 0) break; }
+    if (length == 65536 && memcmp(request + length - 4, "\r\n\r\n", 4) != 0) return flux__websocket_result(-1, "WebSocket handshake exceeds 65536 bytes");
+    char *line = strstr(request, "\r\n"); if (line == NULL || strncmp(request, "GET ", 4) != 0) return flux__websocket_result(-1, "malformed WebSocket handshake");
+    char *key = NULL; char *cursor = line + 2;
+    while (cursor < request + length - 2 && !(cursor[0] == '\r' && cursor[1] == '\n')) { char *next = strstr(cursor, "\r\n"); if (next == NULL) return flux__websocket_result(-1, "malformed WebSocket headers"); if ((size_t)(next - cursor) > 18 && strncasecmp(cursor, "Sec-WebSocket-Key:", 18) == 0) { key = cursor + 18; while (*key == ' ' || *key == '\t') key += 1; *next = '\0'; } cursor = next + 2; }
+    if (key == NULL || key[0] == '\0') return flux__websocket_result(-1, "WebSocket handshake is missing Sec-WebSocket-Key");
+    char input[256]; int written = snprintf(input, sizeof(input), "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key); if (written < 0 || (size_t)written >= sizeof(input)) return flux__websocket_result(-1, "WebSocket handshake key is too long");
+    unsigned char digest[SHA_DIGEST_LENGTH]; SHA1((const unsigned char *)input, (size_t)written, digest);
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; char encoded[32]; size_t encoded_length = 0; for (size_t index = 0; index < sizeof(digest); index += 3) { unsigned value = (unsigned)digest[index] << 16; if (index + 1 < sizeof(digest)) value |= (unsigned)digest[index + 1] << 8; if (index + 2 < sizeof(digest)) value |= digest[index + 2]; encoded[encoded_length++] = alphabet[(value >> 18) & 63]; encoded[encoded_length++] = alphabet[(value >> 12) & 63]; encoded[encoded_length++] = index + 1 < sizeof(digest) ? alphabet[(value >> 6) & 63] : '='; encoded[encoded_length++] = index + 2 < sizeof(digest) ? alphabet[value & 63] : '='; } encoded[encoded_length] = '\0';
+    char response[256]; int response_length = snprintf(response, sizeof(response), "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", encoded); if (response_length < 0 || (size_t)response_length >= sizeof(response) || !flux__websocket_write_all((int)socket_handle, response, (size_t)response_length)) return flux__websocket_result(-1, "failed to send WebSocket handshake");
+    return flux__websocket_result(socket_handle, NULL);
+}
+static inline struct flux__net_i64_error flux__websocket_read_text(int64_t session, int64_t max_bytes, void (*callback)(const char *)) {
+    if (session < 0 || session > INT_MAX || max_bytes < 1 || max_bytes > 65536 || callback == NULL) return flux__websocket_result(-1, "invalid WebSocket read arguments");
+    unsigned char header[2]; if (!flux__websocket_read_all((int)session, header, 2)) return flux__websocket_result(-1, "failed to receive WebSocket frame"); unsigned opcode = header[0] & 15; if (opcode == 8) return flux__websocket_result(0, "WebSocket peer closed"); if (opcode != 1 || !(header[0] & 128) || !(header[1] & 128)) return flux__websocket_result(-1, "unsupported WebSocket frame");
+    uint64_t length = header[1] & 127; if (length == 126) { unsigned char extended[2]; if (!flux__websocket_read_all((int)session, extended, 2)) return flux__websocket_result(-1, "failed to receive WebSocket frame length"); length = ((uint64_t)extended[0] << 8) | extended[1]; } else if (length == 127) return flux__websocket_result(-1, "WebSocket frames larger than 65536 bytes are unsupported"); if (length > (uint64_t)max_bytes) return flux__websocket_result(-1, "WebSocket text frame exceeds maxBytes"); unsigned char mask[4]; if (!flux__websocket_read_all((int)session, mask, 4)) return flux__websocket_result(-1, "failed to receive WebSocket mask"); char payload[65537]; if (!flux__websocket_read_all((int)session, payload, (size_t)length)) return flux__websocket_result(-1, "failed to receive WebSocket payload"); for (size_t index = 0; index < (size_t)length; index += 1) payload[index] ^= (char)mask[index % 4]; payload[length] = '\0'; if (memchr(payload, '\0', (size_t)length) != NULL) return flux__websocket_result(-1, "WebSocket text frame contains a NUL byte"); callback(payload); return flux__websocket_result((int64_t)length, NULL);
+}
+static inline const char *flux__websocket_write_text(int64_t session, const char *value) { if (session < 0 || session > INT_MAX || value == NULL) return "invalid WebSocket write arguments"; size_t length = strlen(value); if (length > 65536) return "WebSocket text frame exceeds 65536 bytes"; unsigned char header[10]; size_t header_length = 0; header[header_length++] = 0x81; if (length < 126) header[header_length++] = (unsigned char)length; else { header[header_length++] = 126; header[header_length++] = (unsigned char)(length >> 8); header[header_length++] = (unsigned char)length; } if (!flux__websocket_write_all((int)session, header, header_length) || !flux__websocket_write_all((int)session, value, length)) return "failed to send WebSocket text frame"; return NULL; }
+static inline const char *flux__websocket_close(int64_t session) { if (session < 0 || session > INT_MAX) return "invalid WebSocket session"; unsigned char frame[2] = { 0x88, 0 }; if (!flux__websocket_write_all((int)session, frame, 2)) return "failed to send WebSocket close frame"; return close((int)session) == 0 ? NULL : "failed to close WebSocket session"; }
 "#);
     }
     if runtime_usage.contains("flux__str_length(") {
@@ -33011,6 +33038,52 @@ fn emit_qualified_call(
                 return Ok((format!("flux__tls_close({})", session.code), vec![Type::Error], None));
             }
             _ => return Err(diag(span, "invalid TLS call reached code generation")),
+        }
+    }
+    if namespace == "websocket" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid websocket call reached code generation"));
+        }
+        match name {
+            "accept" if args.len() == 1 => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__websocket_accept({})", socket.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "readText" if args.len() == 3 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__websocket_read_text({}, {}, {})",
+                        session.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "writeText" if args.len() == 2 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__websocket_write_text({}, {})", session.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "close" if args.len() == 1 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__websocket_close({})", session.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "invalid websocket call reached code generation")),
         }
     }
     if namespace == "str" {

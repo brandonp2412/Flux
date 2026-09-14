@@ -45923,3 +45923,54 @@ fn main() -> i64 {
     assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
     assert!(generated.contains(".v0 = offset"));
 }
+
+#[test]
+fn websocket_server_surface_lowers_to_bounded_native_frames() {
+    let source = r#"
+fn onText(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let (session, acceptError) = websocket.accept(1)
+    if acceptError != nil:
+        return 1
+    let (_bytes, readError) = websocket.readText(session, 1024, onText)
+    if readError != nil:
+        return 2
+    let writeError: error = websocket.writeText(session, "ok")
+    if writeError != nil:
+        return 3
+    let closeError: error = websocket.close(session)
+    if closeError != nil:
+        return 4
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket server surface should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket server surface should lower");
+    assert!(generated.contains("flux__websocket_accept("));
+    assert!(generated.contains("flux__websocket_read_text("));
+    assert!(generated.contains("Sec-WebSocket-Accept"));
+    assert!(generated.contains("WebSocket text frame exceeds maxBytes"));
+    assert!(generated.contains("flux__websocket_write_text("));
+    assert!(generated.contains("flux__websocket_close("));
+
+    let root = std::env::temp_dir().join(format!("flux-websocket-build-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket source should be writable");
+    let binary = root.join("websocket-server");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}

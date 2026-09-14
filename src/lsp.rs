@@ -1244,6 +1244,17 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "websocket" {
+        for (label, detail) in [
+            ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
+            ("readText", "fn websocket.readText(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"),
+            ("writeText", "fn websocket.writeText(session: i64, value: str) -> error"),
+            ("close", "fn websocket.close(session: i64) -> error"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "str" {
         push_completion_item(items, seen, "length", 3, "fn str.length(value: str) -> i64");
         push_completion_item(
@@ -3798,6 +3809,16 @@ fn signature_help_for_document_cached(
                 "read" => ("tls.read", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
                 "write" => ("tls.write", vec!["session: i64", "value: str"], "error"),
                 "close" => ("tls.close", vec!["session: i64"], "error"),
+                _ => return None,
+            };
+            return Some(signature_help_for_builtin(label, &parameters, returns, active_parameter));
+        }
+        if namespace == "websocket" {
+            let (label, parameters, returns) = match member {
+                "accept" => ("websocket.accept", vec!["socket: i64"], "(i64, error)"),
+                "readText" => ("websocket.readText", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
+                "writeText" => ("websocket.writeText", vec!["session: i64", "value: str"], "error"),
+                "close" => ("websocket.close", vec!["session: i64"], "error"),
                 _ => return None,
             };
             return Some(signature_help_for_builtin(label, &parameters, returns, active_parameter));
