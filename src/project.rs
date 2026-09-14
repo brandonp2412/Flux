@@ -393,6 +393,12 @@ pub struct AndroidPackageConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LinuxPackageConfig {
+    pub uri_schemes: Vec<String>,
+    pub file_associations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NativePackageConfig {
     pub plugin: bool,
     pub libraries: Vec<String>,
@@ -453,6 +459,7 @@ pub struct PackageManifest {
     pub native: NativePackageConfig,
     pub platform: PlatformPackageConfig,
     pub android: AndroidPackageConfig,
+    pub linux: LinuxPackageConfig,
     /// Relative package directories participating in this package's workspace.
     /// The manifest package itself remains the workspace root package.
     pub workspace_members: Vec<PathBuf>,
@@ -1085,6 +1092,8 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut android_deep_links = None::<Vec<String>>;
     let mut android_keystore = None::<String>;
     let mut android_key_alias = None::<String>;
+    let mut linux_uri_schemes = None::<Vec<String>>;
+    let mut linux_file_associations = None::<Vec<String>>;
     let mut native_plugin = None::<bool>;
     let mut native_libraries = None::<Vec<String>>;
     let mut native_search_paths = None::<Vec<String>>;
@@ -1118,6 +1127,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                 "package"
                     | "workspace"
                     | "android"
+                    | "linux"
                     | "native"
                     | "dependencies"
                     | "constants"
@@ -1428,6 +1438,34 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                     format!("unknown [native] field '{key}'"),
                 )),
             },
+            Some("linux") => match key {
+                "uri_schemes" | "file_associations" => {
+                    let value = match parse_manifest_string_array(raw_value) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                            continue;
+                        }
+                    };
+                    let slot = if key == "uri_schemes" {
+                        &mut linux_uri_schemes
+                    } else {
+                        &mut linux_file_associations
+                    };
+                    if slot.replace(value).is_some() {
+                        diagnostics.push(manifest_diagnostic(
+                            source_id,
+                            line_number,
+                            format!("duplicate [linux] field '{key}'"),
+                        ));
+                    }
+                }
+                _ => diagnostics.push(manifest_diagnostic(
+                    source_id,
+                    line_number,
+                    format!("unknown [linux] field '{key}'; expected 'uri_schemes' or 'file_associations'"),
+                )),
+            },
             Some("android") => match key {
                 "application_id" | "keystore" | "key_alias" => {
                     let value = match parse_manifest_string(raw_value) {
@@ -1503,7 +1541,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             _ => diagnostics.push(manifest_diagnostic(
                 source_id,
                 line_number,
-                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], [android], [platform.linux], [platform.android], or [platform.windows]",
+                "manifest fields must be declared inside [package], [dependencies], [constants], [translations], [native], [linux], [android], [platform.linux], [platform.android], or [platform.windows]",
             )),
         }
     }
@@ -1584,6 +1622,26 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                     format!(
                         "[android].deep_links entries must be absolute URI prefixes such as 'https://example.com/app' or 'flux://open'; invalid value '{deep_link}'"
                     ),
+                ));
+            }
+        }
+    }
+    if let Some(schemes) = linux_uri_schemes.as_ref() {
+        for scheme in schemes {
+            if !valid_desktop_uri_scheme(scheme) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("[linux].uri_schemes entries must be valid URI schemes; invalid value '{scheme}'"),
+                ));
+            }
+        }
+    }
+    if let Some(associations) = linux_file_associations.as_ref() {
+        for association in associations {
+            if !valid_mime_type(association) {
+                diagnostics.push(Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("[linux].file_associations entries must be MIME types such as 'text/plain'; invalid value '{association}'"),
                 ));
             }
         }
@@ -1788,6 +1846,20 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             },
             keystore,
             key_alias: android_key_alias,
+        },
+        linux: LinuxPackageConfig {
+            uri_schemes: {
+                let mut values = linux_uri_schemes.unwrap_or_default();
+                values.sort();
+                values.dedup();
+                values
+            },
+            file_associations: {
+                let mut values = linux_file_associations.unwrap_or_default();
+                values.sort();
+                values.dedup();
+                values
+            },
         },
         name,
         version,
@@ -4082,6 +4154,22 @@ fn valid_android_deep_link(value: &str) -> bool {
     }
     let authority = rest.split('/').next().unwrap_or_default();
     !authority.is_empty() && !authority.contains('@')
+}
+
+fn valid_desktop_uri_scheme(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+}
+
+fn valid_mime_type(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && kind.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        && subtype.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'*'))
 }
 
 fn valid_android_permission(value: &str) -> bool {

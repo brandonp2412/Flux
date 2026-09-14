@@ -2716,7 +2716,35 @@ fn build_package_directory(
         let _ = fs::remove_dir_all(output);
         return Err(error);
     }
+    if native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
+        && (!manifest.linux.uri_schemes.is_empty()
+            || !manifest.linux.file_associations.is_empty())
+    {
+        let applications = output.join("share/applications");
+        fs::create_dir_all(&applications).map_err(|error| {
+            format!("failed to create desktop metadata directory: {error}")
+        })?;
+        let desktop = linux_desktop_entry(
+            &manifest.name,
+            &manifest.linux.uri_schemes,
+            &manifest.linux.file_associations,
+        );
+        fs::write(applications.join(format!("{}.desktop", manifest.name)), desktop)
+            .map_err(|error| format!("failed to write desktop metadata: {error}"))?;
+    }
     Ok(())
+}
+
+fn linux_desktop_entry(name: &str, uri_schemes: &[String], file_associations: &[String]) -> String {
+    let mut mime_types = uri_schemes
+        .iter()
+        .map(|scheme| format!("x-scheme-handler/{scheme};"))
+        .collect::<Vec<_>>();
+    mime_types.extend(file_associations.iter().map(|mime| format!("{mime};")));
+    format!(
+        "[Desktop Entry]\nType=Application\nName={name}\nExec={name} %U\nTerminal=false\nMimeType={}\nCategories=Utility;\n",
+        mime_types.join("")
+    )
 }
 
 fn build_static_executable(
@@ -10034,6 +10062,7 @@ mod tests {
         github_repository_parts, json_string, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
+        linux_desktop_entry,
         profile_report_addresses, publish_registry_package_command, registry_publish_options,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
@@ -10888,6 +10917,7 @@ app OverlayDemo(title: "Overlay")
     #[test]
     fn android_native_link_args_include_manifest_native_package() {
         let manifest = crate::project::PackageManifest {
+            linux: crate::project::LinuxPackageConfig::default(),
             format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "android-native-link".to_string(),
             version: Some("1.0.0".to_string()),
@@ -11263,6 +11293,7 @@ app OverlayDemo(title: "Overlay")
         );
 
         let mut manifest = crate::project::PackageManifest {
+            linux: crate::project::LinuxPackageConfig::default(),
             format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "example".to_string(),
             version: None,
@@ -11364,6 +11395,7 @@ app OverlayDemo(title: "Overlay")
         std::fs::write(source.join("horses/profile.txt"), "neigh\n")
             .expect("asset should be writable");
         let manifest = crate::project::PackageManifest {
+            linux: crate::project::LinuxPackageConfig::default(),
             format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "example".to_string(),
             version: None,
@@ -11444,6 +11476,7 @@ app OverlayDemo(title: "Overlay")
     #[test]
     fn android_manifest_adds_vibrate_permission_only_when_needed() {
         let manifest = crate::project::PackageManifest {
+            linux: crate::project::LinuxPackageConfig::default(),
             format_version: crate::project::PACKAGE_FORMAT_VERSION,
             name: "example".to_string(),
             version: Some("1.0.0".to_string()),
@@ -12145,5 +12178,18 @@ app OverlayDemo(title: "Overlay")
                 },
             ]
         );
+    }
+
+    #[test]
+    fn linux_desktop_entry_declares_uri_and_mime_handlers() {
+        let entry = linux_desktop_entry(
+            "flux-demo",
+            &["flux".to_string(), "web+flux".to_string()],
+            &["text/plain".to_string()],
+        );
+        assert!(entry.contains("Exec=flux-demo %U"));
+        assert!(entry.contains("x-scheme-handler/flux;"));
+        assert!(entry.contains("x-scheme-handler/web+flux;"));
+        assert!(entry.contains("text/plain;"));
     }
 }

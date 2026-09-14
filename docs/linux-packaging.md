@@ -55,7 +55,7 @@ Use `flux doctor` on the build host to verify the native compiler and GTK develo
 
 For conventional system-wide packaging, install the executable under `/usr/bin` or `/usr/libexec/<app>` according to the distribution's policy. Per-user installers should prefer the XDG user locations rather than writing system directories without the package manager.
 
-A graphical application can provide a standard freedesktop desktop entry under `share/applications` and icons under the matching `share/icons/hicolor/<size>x<size>/apps` directories. Use the same stable application identity configured by the package/application metadata when choosing desktop-entry and icon names. Flux does not currently synthesize `.desktop` files or icon pyramids; those are packaging inputs owned by the application until resource/desktop-metadata support lands in the compiler.
+A graphical application can provide a standard freedesktop desktop entry under `share/applications` and icons under the matching `share/icons/hicolor/<size>x<size>/apps` directories. A package may declare `[linux].uri_schemes = ["flux"]` and `[linux].file_associations = ["text/plain"]`; `flux package --format directory` then emits `<package>/share/applications/<package>.desktop` with URI-handler and MIME associations and an `Exec=<package> %U` forwarding contract. Flux still does not synthesize icon pyramids, and typed route decoding remains above the raw URL delivery callback.
 
 ## Archives and distro packages
 

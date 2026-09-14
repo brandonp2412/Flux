@@ -26942,6 +26942,42 @@ fn package_manifest_accepts_and_validates_android_configuration() {
 }
 
 #[test]
+fn package_manifest_accepts_linux_desktop_associations() {
+    let root = std::env::temp_dir().join(format!("flux-linux-manifest-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary Linux package should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"desktop-app\"\nentry = \"src/main.flux\"\n\n[linux]\nuri_schemes = [\"flux\", \"web+flux\"]\nfile_associations = [\"text/plain\", \"application/x-flux\"]\n",
+    )
+    .expect("Linux manifest should be writable");
+    let parsed = fluxc::project::read_manifest(&manifest).expect("Linux metadata should parse");
+    assert_eq!(parsed.linux.uri_schemes, vec!["flux", "web+flux"]);
+    assert_eq!(
+        parsed.linux.file_associations,
+        vec!["application/x-flux", "text/plain"]
+    );
+
+    fs::write(
+        &manifest,
+        "[package]\nname = \"desktop-app\"\nentry = \"src/main.flux\"\n\n[linux]\nuri_schemes = [\"bad scheme\"]\nfile_associations = [\"text\"]\n",
+    )
+    .expect("invalid Linux manifest should be writable");
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("invalid Linux metadata must fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("valid URI schemes")));
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("MIME types")));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn project_imports_compile_transitively_through_cli() {
     let root = std::env::temp_dir().join(format!("flux-project-imports-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

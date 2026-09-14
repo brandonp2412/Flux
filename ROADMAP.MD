@@ -708,7 +708,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Nested navigation where genuinely needed.
 - [ ] Deep links.
   - [x] Bootstrap native deep-link/open-URL delivery now shares the typed application `onOpenUrl: fn(str) -> void` callback across current application backends: Android declared deep links deliver launch and subsequent `singleTop` intents through the compiler-owned Activity/JNI path, while Linux opts its native `GtkApplication` into `G_APPLICATION_HANDLES_OPEN`, converts each `GFile` activation to a URI, activates the existing app window only when needed, and dispatches the borrowed URI synchronously without a user bridge or routing object.
-  - [ ] Desktop package URI-scheme/file-association declarations and generated launcher metadata, plus typed route decoding layered above raw URL delivery.
+  - [x] Desktop package URI-scheme/file-association declarations and generated launcher metadata: `[linux].uri_schemes` and `[linux].file_associations` are strictly validated/deduplicated, and Linux directory packages emit a freedesktop `.desktop` entry with `x-scheme-handler/*` and MIME associations plus `%U` document/URI forwarding. Typed route decoding layered above raw URL delivery remains pending.
 - [ ] Dialog/sheet navigation semantics.
 - [x] Browser history integration for the web target: `browser.path`, `browser.push`, `browser.replace`, `browser.back`, and `browser.forward` lower to the native History API, while `popstate` refreshes the compiled view and regression coverage verifies the generated behavior without a user bridge.
 - [x] Android predictive back.
