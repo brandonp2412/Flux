@@ -463,7 +463,7 @@ fn collect_expr_pattern_symbols(
                 collect_expr_pattern_symbols(arg, symbols, signatures);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_expr_pattern_symbols(item, symbols, signatures);
             }

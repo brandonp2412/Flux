@@ -44464,6 +44464,47 @@ fn main() -> i64 {
 }
 
 #[test]
+fn map_literals_are_typed_and_lowered_with_stable_key_value_storage() {
+    let source = r#"
+fn consume(_values: map<i64, str>) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return consume({1: "one", 2: "two"})
+}
+"#;
+    check_source(source).expect("map literal should typecheck");
+    let generated = compile_to_c(source).expect("map literal should lower natively");
+    assert!(generated.contains("struct flux__map"));
+    assert!(generated.contains(".keys"));
+    assert!(generated.contains(".values"));
+    let formatted = fluxc::formatter::format_source(source).expect("map literal should format");
+    assert!(formatted.contains("map<i64, str>"));
+    assert!(formatted.contains("{1: \"one\", 2: \"two\"}"));
+}
+
+#[test]
+fn map_literals_reject_duplicate_keys_and_mixed_types() {
+    let duplicate = r#"
+fn main() -> i64 {
+    let values: map<i64, str> = {1: "one", 1: "again"}
+    return 0
+}
+"#;
+    let duplicate_error = check_source(duplicate).expect_err("duplicate map keys must fail");
+    assert!(duplicate_error.message.contains("duplicate key"));
+
+    let mixed = r#"
+fn main() -> i64 {
+    let values: map<i64, str> = {1: "one", true: "bad"}
+    return 0
+}
+"#;
+    let mixed_error = check_source(mixed).expect_err("mixed map keys must fail");
+    assert!(mixed_error.message.contains("map key"));
+}
+
+#[test]
 fn linux_reload_preserves_compatible_primitive_view_state() {
     let source = r#"
 view Screen {

@@ -756,6 +756,11 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(item, source_id);
             }
         }
+        ExprKind::Map(items) => {
+            for item in items {
+                attach_expr_source(item, source_id);
+            }
+        }
         ExprKind::ListSpread {
             value, spread_span, ..
         } => {
@@ -1152,6 +1157,11 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
             }
         }
         ExprKind::List(items) | ExprKind::Set(items) => {
+            for item in items {
+                shift_expr_columns(item, offset);
+            }
+        }
+        ExprKind::Map(items) => {
             for item in items {
                 shift_expr_columns(item, offset);
             }
@@ -4898,6 +4908,7 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
     let mut in_string = false;
     let mut escaped = false;
     let mut depth = 0usize;
+    let mut angle_depth = 0usize;
 
     for (index, byte) in bytes.iter().copied().enumerate() {
         if escaped {
@@ -4918,7 +4929,14 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
         match byte {
             b'(' | b'{' | b'[' => depth += 1,
             b')' | b'}' | b']' => depth = depth.saturating_sub(1),
-            b',' if depth == 0 => {
+            b'<'
+                if input[..index].trim_end().ends_with("map")
+                    || input[..index].trim_end().ends_with("set") =>
+            {
+                angle_depth += 1;
+            }
+            b'>' if angle_depth > 0 => angle_depth -= 1,
+            b',' if depth == 0 && angle_depth == 0 => {
                 parts.push((&input[start..index], start));
                 start = index + 1;
             }
@@ -7107,6 +7125,39 @@ impl ExprParser<'_> {
     }
 
     fn parse_set_literal(&mut self, open_span: SourceSpan) -> Result<Expr, Diagnostic> {
+        if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+            let checkpoint = self.index;
+            let key = self.parse_conditional()?;
+            if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Colon)) {
+                self.index += 1;
+                let mut entries = vec![key, self.parse_conditional()?];
+                while matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Comma)) {
+                    self.index += 1;
+                    if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+                        break;
+                    }
+                    let key = self.parse_conditional()?;
+                    if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Colon)) {
+                        return Err(diag(self.line, "expected ':' in map literal"));
+                    }
+                    self.index += 1;
+                    let value = self.parse_conditional()?;
+                    entries.push(key);
+                    entries.push(value);
+                }
+                let close = self.tokens.get(self.index).cloned().ok_or_else(|| diag(self.line, "expected '}' after map literal"))?;
+                if !matches!(close.kind, TokenKind::RBrace) {
+                    return Err(diag(self.line, "expected '}' after map literal"));
+                }
+                self.index += 1;
+                return Ok(Expr {
+                    line: self.line,
+                    span: SourceSpan::new(self.line, open_span.column, close.span.column + close.span.length - open_span.column),
+                    kind: ExprKind::Map(entries),
+                });
+            }
+            self.index = checkpoint;
+        }
         let mut items = Vec::new();
         if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
             loop {

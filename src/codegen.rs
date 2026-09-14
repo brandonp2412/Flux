@@ -544,11 +544,12 @@ fn ffi_header_type_supported_inner(
             Type::Void
             | Type::List(_)
             | Type::Set(_)
+            | Type::Map(_, _)
             | Type::Optional(_)
             | Type::Record(_)
             | Type::Function { .. } => false,
         },
-        Type::Void | Type::List(_) | Type::Set(_) | Type::Record(_) | Type::Function { .. } => false,
+        Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Record(_) | Type::Function { .. } => false,
     }
 }
 
@@ -588,7 +589,8 @@ fn c_header_optional_types(
             | Type::Void
             | Type::Named(_)
             | Type::List(_)
-            | Type::Set(_) => {}
+            | Type::Set(_)
+            | Type::Map(_, _) => {}
         }
     }
 
@@ -733,7 +735,7 @@ fn emit_c_header_function_type_typedefs(
                     collect_nested_function_types(&field.ty, signatures, types, visiting);
                 }
             }
-            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) | Type::Set(_) => {}
+            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) => {}
         }
     }
 
@@ -6518,8 +6520,12 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         || uses_list_slice
         || uses_list_unchecked
         || uses_list_stride;
+    let uses_map = runtime_usage.contains("struct flux__map");
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    }
+    if uses_map {
+        out.push_str("struct flux__map { struct flux__list keys; struct flux__list values; };\n");
     }
     if uses_worker_wait_any {
         out.push_str("static struct flux__worker_i64_error flux__worker_wait_any(struct flux__list handles) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (handles.len == 0) { result.v1 = \"worker.waitAny requires at least one handle\"; return result; } ptrdiff_t stride = handles.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : handles.stride; pthread_mutex_lock(&flux__worker_mutex); for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = handle > 0 ? flux__worker_find_locked(handle) : NULL; if (handle <= 0) { result.v1 = \"worker.waitAny received an invalid handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state == NULL) { result.v1 = \"worker.waitAny received an unknown or already joined handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->parent_id != flux__worker_current_id) { result.v1 = \"worker.waitAny handle is outside the current worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->joining) { result.v1 = \"worker.waitAny cannot observe a handle already being joined\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } } for (;;) { for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { result.v1 = \"worker.waitAny handle disappeared before completion\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->done) { result.v0 = handle; pthread_mutex_unlock(&flux__worker_mutex); return result; } } struct flux__worker_state *current = flux__worker_find_locked(flux__worker_current_id); if (current != NULL && current->cancel_requested) { result.v1 = \"worker.waitAny cancelled by worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex); } }\n");
@@ -17177,7 +17183,7 @@ fn expr_contains_await(expr: &Expr) -> bool {
         ExprKind::Pipe { input, args, .. } => {
             expr_contains_await(input) || args.iter().any(expr_contains_await)
         }
-        ExprKind::List(items) | ExprKind::Set(items) => items.iter().any(expr_contains_await),
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => items.iter().any(expr_contains_await),
         ExprKind::ListIf {
             condition,
             value,
@@ -19023,6 +19029,10 @@ fn collect_interface_names_from_type(
         Type::List(element) | Type::Set(element) | Type::Optional(element) => {
             collect_interface_names_from_type(&element, signatures, reachable, pending);
         }
+        Type::Map(key, value) => {
+            collect_interface_names_from_type(&key, signatures, reachable, pending);
+            collect_interface_names_from_type(&value, signatures, reachable, pending);
+        }
         Type::Record(fields) => {
             for field in fields {
                 collect_interface_names_from_type(&field.ty, signatures, reachable, pending);
@@ -19091,7 +19101,7 @@ fn collect_interface_names_from_expr(
                 collect_interface_names_from_expr(arg, signatures, reachable, pending);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_interface_names_from_expr(item, signatures, reachable, pending);
             }
@@ -19302,7 +19312,7 @@ fn collect_enum_variant_refs_from_expr(
                 collect_enum_variant_refs_from_expr(arg, signatures, variants);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_enum_variant_refs_from_expr(item, signatures, variants);
             }
@@ -19674,6 +19684,10 @@ fn collect_value_type_names_from_type(
         Type::List(element) | Type::Set(element) | Type::Optional(element) => {
             collect_value_type_names_from_type(&element, signatures, known, reachable, pending)
         }
+        Type::Map(key, value) => {
+            collect_value_type_names_from_type(&key, signatures, known, reachable, pending);
+            collect_value_type_names_from_type(&value, signatures, known, reachable, pending);
+        }
         Type::Record(fields) => {
             for field in fields {
                 collect_value_type_names_from_type(
@@ -19773,7 +19787,7 @@ fn collect_value_type_names_from_expr(
                 collect_value_type_names_from_expr(arg, signatures, known, reachable, pending);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_value_type_names_from_expr(item, signatures, known, reachable, pending);
             }
@@ -20029,6 +20043,10 @@ impl InterfacePackFacts {
             Type::List(element) | Type::Set(element) | Type::Optional(element) => {
                 self.mark_open_type(&element, signatures)
             }
+            Type::Map(key, value) => {
+                self.mark_open_type(&key, signatures);
+                self.mark_open_type(&value, signatures);
+            }
             Type::Record(fields) => {
                 for field in fields {
                     self.mark_open_type(&field.ty, signatures);
@@ -20124,7 +20142,7 @@ fn collect_interface_pack_facts_from_expr(
                 collect_interface_pack_facts_from_expr(arg, env, signatures, facts);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_interface_pack_facts_from_expr(item, env, signatures, facts);
             }
@@ -20572,7 +20590,7 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_interface_dispatch_refs_from_expr(
                     item,
@@ -20950,7 +20968,7 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(arg, known, references);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_named_function_refs_from_expr(item, known, references);
             }
@@ -21255,7 +21273,7 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
                 }
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_function_helpers_from_expr(item, functions);
             }
@@ -31007,6 +31025,34 @@ fn emit_expr(
         });
     }
     let emitted = match &expr.kind {
+        ExprKind::Map(items) => {
+            let result_ty = type_of_expr(expr, env, signatures)?;
+            let Type::Map(key, value) = &result_ty else { unreachable!() };
+            let key_c = c_type(key, signatures);
+            let value_c = c_type(value, signatures);
+            let mut keys = Vec::new();
+            let mut values = Vec::new();
+            let mut seen = HashSet::new();
+            for pair in items.chunks_exact(2) {
+                let constant = typecheck::constant_primitive_value(&pair[0], signatures)
+                    .expect("map keys are compile-time checked");
+                let duplicate_key = format!("{}:{:?}", constant.ty().name(), constant);
+                if !seen.insert(duplicate_key) {
+                    return Err(diag(pair[0].span, "map literal contains a duplicate key"));
+                }
+                keys.push(emit_expr(&pair[0], env, signatures)?.code);
+                values.push(emit_expr(&pair[1], env, signatures)?.code);
+            }
+            let len = keys.len();
+            EmittedExpr {
+                code: format!(
+                    "((struct flux__map){{ .keys = (struct flux__list){{ .data = (void *)({key_c}[]){{ {} }}, .len = {len}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *)({value_c}[]){{ {} }}, .len = {len}, .stride = sizeof({value_c}) }} }})",
+                    keys.join(", "),
+                    values.join(", ")
+                ),
+                ty: result_ty,
+            }
+        }
         ExprKind::Int(value) => EmittedExpr {
             code: format!("INT64_C({value})"),
             ty: Type::I64,
@@ -31499,6 +31545,7 @@ fn emit_expr(
                 }
                 Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
                 Type::Set(_) => return Err(diag(expr.span, "cannot print a set directly")),
+                Type::Map(_, _) => return Err(diag(expr.span, "cannot print a map directly")),
                 Type::Record(_) => return Err(diag(expr.span, "cannot print a record directly")),
                 Type::Optional(_) => {
                     return Err(diag(
@@ -34884,6 +34931,10 @@ fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
             collect_record_type(&inner, signatures, records);
         }
+        Type::Map(key, value) => {
+            collect_record_type(&key, signatures, records);
+            collect_record_type(&value, signatures, records);
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(&returns) {
                 collect_record_type(ty, signatures, records);
@@ -35000,6 +35051,7 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
         Type::List(_) | Type::Set(_) => "struct flux__list".to_string(),
+        Type::Map(_, _) => "struct flux__map".to_string(),
         Type::Record(fields) => {
             let record = Type::Record(fields);
             format!("struct {}", record_c_name(&record, signatures))
@@ -35047,6 +35099,7 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
         Type::Set(element) => format!("set_{}", type_mangle(&element, signatures)),
+        Type::Map(key, value) => format!("map_{}_{}", type_mangle(&key, signatures), type_mangle(&value, signatures)),
         Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
         Type::Record(fields) => {
             let fields = fields
@@ -35554,7 +35607,7 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_update_helpers_from_expr(item, signatures, emitted, helpers);
             }

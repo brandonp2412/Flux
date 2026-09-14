@@ -191,6 +191,10 @@ impl Signatures {
                 .unwrap_or_else(|| ty.clone()),
             Type::List(element) => Type::List(Box::new(self.canonical_type(element))),
             Type::Set(element) => Type::Set(Box::new(self.canonical_type(element))),
+            Type::Map(key, value) => Type::Map(
+                Box::new(self.canonical_type(key)),
+                Box::new(self.canonical_type(value)),
+            ),
             Type::Optional(inner) => Type::Optional(Box::new(self.canonical_type(inner))),
             Type::Record(fields) => Type::Record(
                 fields
@@ -227,6 +231,7 @@ impl Signatures {
             | Type::Named(_)
             | Type::List(_)
             | Type::Set(_)
+            | Type::Map(_, _)
             | Type::Optional(_)
             | Type::Function { .. } => false,
         }
@@ -235,7 +240,7 @@ impl Signatures {
     fn is_copy_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
-            Type::Void | Type::List(_) | Type::Set(_) => false,
+            Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) => false,
             Type::Optional(inner) => self.is_copy_type_inner(&inner, visiting),
             Type::Record(fields) => fields
                 .iter()
@@ -275,7 +280,7 @@ impl Signatures {
     fn is_send_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Error => true,
-            Type::Str | Type::Void | Type::List(_) | Type::Set(_) => false,
+            Type::Str | Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) => false,
             Type::Optional(inner) => self.is_send_type_inner(&inner, visiting),
             Type::Record(fields) => fields
                 .iter()
@@ -3701,7 +3706,7 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 }
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_expr_reads(item, reads);
             }
@@ -5737,6 +5742,49 @@ pub fn type_of_expr(
                 },
             };
             type_of_expr(&call, env, signatures)
+        }
+        ExprKind::Map(items) => {
+            if items.is_empty() || items.len() % 2 != 0 {
+                return Err(diag(expr.span, "map literals require one or more key:value pairs"));
+            }
+            let primitive = |item: &Expr| -> Result<Type, Diagnostic> {
+                if !matches!(
+                    item.kind,
+                    ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
+                ) {
+                    return Err(diag(item.span, "map literals currently accept only scalar expressions"));
+                }
+                if constant_primitive_value(item, signatures).is_none() {
+                    return Err(diag(item.span, "map literal entries must currently be compile-time primitive values"));
+                }
+                let ty = type_of_expr(item, env, signatures)?;
+                if !matches!(ty, Type::I64 | Type::Bool | Type::Str) {
+                    return Err(diag(item.span, "map keys and values must be i64, bool, or str"));
+                }
+                Ok(ty)
+            };
+            let key_ty = primitive(&items[0])?;
+            let value_ty = primitive(&items[1])?;
+            let mut seen_keys = HashSet::new();
+            seen_keys.insert(format!(
+                "{}:{:?}",
+                constant_primitive_value(&items[0], signatures)
+                    .expect("map keys are compile-time checked")
+                    .ty()
+                    .name(),
+                constant_primitive_value(&items[0], signatures)
+                    .expect("map keys are compile-time checked")
+            ));
+            for pair in items.chunks_exact(2).skip(1) {
+                let key = constant_primitive_value(&pair[0], signatures)
+                    .expect("map keys are compile-time checked");
+                if !seen_keys.insert(format!("{}:{:?}", key.ty().name(), key)) {
+                    return Err(diag(pair[0].span, "map literal contains a duplicate key"));
+                }
+                require_type(pair[0].span, &key_ty, &primitive(&pair[0])?, "map key")?;
+                require_type(pair[1].span, &value_ty, &primitive(&pair[1])?, "map value")?;
+            }
+            Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)))
         }
         ExprKind::List(items) | ExprKind::Set(items) => {
             let is_set = matches!(&expr.kind, ExprKind::Set(_));
@@ -11709,6 +11757,7 @@ fn evaluate_default_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::Set(_)
+        | ExprKind::Map(_)
         | ExprKind::ListSpread { .. }
         | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
@@ -11904,6 +11953,7 @@ fn evaluate_constant_expr(
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
         | ExprKind::Set(_)
+        | ExprKind::Map(_)
         | ExprKind::ListSpread { .. }
         | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
@@ -12524,6 +12574,10 @@ fn require_publicly_nameable_type(
         Type::List(element) | Type::Set(element) => {
             require_publicly_nameable_type(span, element, signatures)
         }
+        Type::Map(key, value) => {
+            require_publicly_nameable_type(span, key, signatures)?;
+            require_publicly_nameable_type(span, value, signatures)
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(returns) {
                 require_publicly_nameable_type(span, ty, signatures)?;
@@ -12553,6 +12607,10 @@ fn require_known_type(
     if let Type::List(element) | Type::Set(element) | Type::Optional(element) = ty {
         require_known_type(span, element, signatures)?;
     }
+    if let Type::Map(key, value) = ty {
+        require_known_type(span, key, signatures)?;
+        require_known_type(span, value, signatures)?;
+    }
     if let Type::Record(fields) = ty {
         for field in fields {
             require_known_type(span, &field.ty, signatures)?;
@@ -12567,6 +12625,10 @@ fn require_known_type(
             Err(diag(span, &format!("unknown type '{name}'")))
         }
         Type::List(element) | Type::Set(element) => require_known_type(span, &element, signatures),
+        Type::Map(key, value) => {
+            require_known_type(span, &key, signatures)?;
+            require_known_type(span, &value, signatures)
+        }
         Type::Record(fields) => {
             let mut names = HashSet::new();
             let mut saw_named = false;

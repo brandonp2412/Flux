@@ -53,6 +53,9 @@ pub enum ControlFlowValueKind {
     List {
         items: Vec<ControlFlowValueId>,
     },
+    Map {
+        entries: Vec<(ControlFlowValueId, ControlFlowValueId)>,
+    },
     ListSpread {
         value: ControlFlowValueId,
     },
@@ -1992,6 +1995,19 @@ impl<'a> ControlFlowBuilder<'a> {
             ExprKind::List(items) | ExprKind::Set(items) => ControlFlowValueKind::List {
                 items: self.lower_expr_arguments(producer, items),
             },
+            ExprKind::Map(items) => ControlFlowValueKind::Map {
+                entries: items
+                    .chunks_exact(2)
+                    .map(|pair| {
+                        (
+                            self.lower_scalar_expr(producer, &pair[0])
+                                .unwrap_or(ControlFlowValueId(0)),
+                            self.lower_scalar_expr(producer, &pair[1])
+                                .unwrap_or(ControlFlowValueId(0)),
+                        )
+                    })
+                    .collect(),
+            },
             ExprKind::ListSpread { value, .. } => self
                 .lower_scalar_expr(producer, value)
                 .map_or(ControlFlowValueKind::Opaque, |value| {
@@ -2911,7 +2927,7 @@ fn record_expr_types(
                 }
             }
         }
-        ExprKind::List(items) | ExprKind::Set(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 record_expr_types(item, env, signatures, evaluations);
             }
@@ -3292,6 +3308,12 @@ fn collect_value_uses(
             ControlFlowValueKind::List { items } => {
                 for item in items {
                     push_value_use(&mut uses, value.id, *item, ControlFlowValueUseKind::Eager);
+                }
+            }
+            ControlFlowValueKind::Map { entries } => {
+                for (key, mapped_value) in entries {
+                    push_value_use(&mut uses, value.id, *key, ControlFlowValueUseKind::Eager);
+                    push_value_use(&mut uses, value.id, *mapped_value, ControlFlowValueUseKind::Eager);
                 }
             }
             ControlFlowValueKind::ListIf {
@@ -3765,6 +3787,9 @@ fn ir_value_is_discardable(
         ControlFlowValueKind::Literal | ControlFlowValueKind::AnonymousFunction { .. } => true,
         ControlFlowValueKind::NameRead { .. } => signatures.is_copy_type(&value.ty),
         ControlFlowValueKind::List { items } => items.iter().all(|item| child(*item, visiting)),
+        ControlFlowValueKind::Map { entries } => entries
+            .iter()
+            .all(|(key, value)| child(*key, visiting) && child(*value, visiting)),
         ControlFlowValueKind::ListSpread { value }
         | ControlFlowValueKind::ListOptional { value } => child(*value, visiting),
         ControlFlowValueKind::ListIf {

@@ -10,6 +10,7 @@ pub enum Type {
     Named(String),
     List(Box<Type>),
     Set(Box<Type>),
+    Map(Box<Type>, Box<Type>),
     Optional(Box<Type>),
     Record(Vec<RecordTypeField>),
     Function {
@@ -72,6 +73,16 @@ impl Type {
         if let Some(inner) = input.strip_prefix("set<").and_then(|value| value.strip_suffix('>')) {
             return Some(Self::Set(Box::new(Self::parse(inner)?)));
         }
+        if let Some(inner) = input.strip_prefix("map<").and_then(|value| value.strip_suffix('>')) {
+            let parts = split_type_commas(inner);
+            if parts.len() != 2 {
+                return None;
+            }
+            return Some(Self::Map(
+                Box::new(Self::parse(parts[0])?),
+                Box::new(Self::parse(parts[1])?),
+            ));
+        }
         if let Some(inner) = input
             .strip_prefix('(')
             .and_then(|value| value.strip_suffix(')'))
@@ -133,6 +144,7 @@ impl Type {
             Self::Named(name) => name.clone(),
             Self::List(element) => format!("{}[]", element.name()),
             Self::Set(element) => format!("set<{}>", element.name()),
+            Self::Map(key, value) => format!("map<{}, {}>", key.name(), value.name()),
             Self::Optional(inner) => format!("{}?", inner.name()),
             Self::Record(fields) => {
                 let rendered = fields
@@ -194,6 +206,8 @@ fn split_type_commas(input: &str) -> Vec<&str> {
         match byte {
             b'(' => depth += 1,
             b')' => depth = depth.saturating_sub(1),
+            b'<' => depth += 1,
+            b'>' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => {
                 parts.push(input[start..index].trim());
                 start = index + 1;
@@ -802,6 +816,7 @@ pub enum ExprKind {
     },
     List(Vec<Expr>),
     Set(Vec<Expr>),
+    Map(Vec<Expr>),
     ListSpread {
         value: Box<Expr>,
         spread_span: SourceSpan,

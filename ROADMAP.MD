@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 563
+- Completed baseline units: 564
 - Reported overall progress: **76%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -264,7 +264,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 
 - [x] List literals with homogeneous static element typing and concrete `T[]` source spelling (no source generics).
 - [x] Set literals with typed `set<T>` syntax for homogeneous compile-time primitive values, duplicate elimination, deterministic insertion-order iteration, formatting, and native lowering.
-- [ ] Map literals.
+- [x] Map literals with typed `map<K, V>` syntax for homogeneous compile-time primitive key/value pairs, duplicate-key diagnostics, deterministic source order, and native paired key/value storage. Runtime map operations and map patterns remain separate follow-up items.
 - [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
 - [x] Optional-aware spread analogous to Dart `...?`: optional list sources are evaluated once, contribute zero elements when absent, preserve ordinary spread ordering/overflow checks when present, format canonically, and lower allocation-free through the existing stack-backed list builder.
 - [x] Null/optional-aware collection elements use `?element` inside list literals: the expression must be a concrete Copy optional, is evaluated exactly once, appends its payload only when present, rejects bare `none`/non-optionals/type mismatches statically, formats canonically, participates in semantic/typed-IR traversal, and lowers through the existing overflow-checked stack-backed list builder with no allocation or runtime null assertion.
