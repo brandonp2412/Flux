@@ -46199,6 +46199,8 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket continuation frame expected"));
     assert!(generated.contains("WebSocket reserved bits are unsupported"));
     assert!(generated.contains("failed to send WebSocket pong"));
+    assert!(generated.contains("failed to acknowledge WebSocket close"));
+    assert!(generated.contains("invalid WebSocket close payload"));
     assert!(generated.contains("flux__websocket_write_text("));
     assert!(generated.contains("flux__websocket_close("));
 

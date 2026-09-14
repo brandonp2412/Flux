@@ -6612,9 +6612,9 @@ static inline struct flux__net_i64_error flux__websocket_read_text(int64_t sessi
     unsigned char frame_payload[65536]; char payload[65537]; size_t total = 0; bool started = false;
     for (;;) {
         struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload)); if (result.v1 != NULL) return result;
-        if (frame.opcode == 8) return flux__websocket_result(0, "WebSocket peer closed");
-        if (frame.opcode == 9 || frame.opcode == 10) {
+        if (frame.opcode == 8 || frame.opcode == 9 || frame.opcode == 10) {
             if (!frame.final || frame.length > 125) return flux__websocket_result(-1, "invalid WebSocket control frame");
+            if (frame.opcode == 8) { if (frame.length == 1) return flux__websocket_result(-1, "invalid WebSocket close payload"); unsigned char close_header[2] = { 0x88, (unsigned char)frame.length }; if (!flux__websocket_write_all((int)session, close_header, 2) || !flux__websocket_write_all((int)session, frame_payload, (size_t)frame.length)) return flux__websocket_result(-1, "failed to acknowledge WebSocket close"); return flux__websocket_result(0, "WebSocket peer closed"); }
             if (frame.opcode == 9) { unsigned char pong[2] = { 0x8A, (unsigned char)frame.length }; if (!flux__websocket_write_all((int)session, pong, 2) || !flux__websocket_write_all((int)session, frame_payload, (size_t)frame.length)) return flux__websocket_result(-1, "failed to send WebSocket pong"); }
             continue;
         }
