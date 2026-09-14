@@ -1728,6 +1728,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <sqlite3.h>\n");
     }
     if runtime_usage.contains("flux__crypto_sha256(")
+        || runtime_usage.contains("flux__crypto_sha512(")
         || runtime_usage.contains("flux__crypto_hmac_sha256(")
     {
         out.push_str("#include <openssl/sha.h>\n#include <openssl/hmac.h>\n");
@@ -6358,6 +6359,24 @@ static const char *flux__preferences_remove(const char *key) {
         if (written != 2) return "SHA-256 formatting failed";
     }
     encoded[SHA256_DIGEST_LENGTH * 2] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__crypto_sha512(") {
+        out.push_str(r#"static inline const char *flux__crypto_sha512(const char *value, void (*callback)(const char *)) {
+    if (value == NULL || callback == NULL) return "invalid crypto.sha512 arguments";
+    size_t length = strlen(value);
+    if (length > 65536) return "crypto.sha512 input exceeds 65536 bytes";
+    unsigned char digest[SHA512_DIGEST_LENGTH];
+    if (SHA512((const unsigned char *)value, length, digest) == NULL) return "SHA-512 failed";
+    char encoded[SHA512_DIGEST_LENGTH * 2 + 1];
+    for (size_t index = 0; index < SHA512_DIGEST_LENGTH; index += 1) {
+        int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+        if (written != 2) return "SHA-512 formatting failed";
+    }
+    encoded[SHA512_DIGEST_LENGTH * 2] = '\0';
     callback(encoded);
     return NULL;
 }
@@ -32803,18 +32822,19 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || !matches!(name, "sha256" | "hmacSha256") {
+        if !named_args.is_empty() || !matches!(name, "sha256" | "sha512" | "hmacSha256") {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let expected_args = if name == "sha256" { 2 } else { 3 };
+        let expected_args = if matches!(name, "sha256" | "sha512") { 2 } else { 3 };
         if args.len() != expected_args {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let value_index = if name == "sha256" { 0 } else { 1 };
+        let value_index = if matches!(name, "sha256" | "sha512") { 0 } else { 1 };
         let value = emit_expr(&args[value_index], env, signatures)?;
-        if name == "sha256" {
+        if matches!(name, "sha256" | "sha512") {
             let callback = emit_expr(&args[1], env, signatures)?;
-            return Ok((format!("flux__crypto_sha256({}, {})", value.code, callback.code), vec![Type::Error], None));
+            let helper = if name == "sha256" { "flux__crypto_sha256" } else { "flux__crypto_sha512" };
+            return Ok((format!("{helper}({}, {})", value.code, callback.code), vec![Type::Error], None));
         }
         let key = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[2], env, signatures)?;

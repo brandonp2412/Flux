@@ -15681,6 +15681,8 @@ fn show(value: str) -> void {
 fn main() -> i64 {
     let failure: error = crypto.sha256("abc", show)
     print(failure)
+    let sha512_failure: error = crypto.sha512("abc", show)
+    print(sha512_failure)
     let hmac_failure: error = crypto.hmacSha256("key", "The quick brown fox jumps over the lazy dog", show)
     print(hmac_failure)
     return 0
@@ -15691,6 +15693,8 @@ fn main() -> i64 {
     assert!(generated.contains("#include <openssl/sha.h>"));
     assert!(generated.contains("SHA256((const unsigned char *)value"));
     assert!(generated.contains("crypto.sha256 input exceeds 65536 bytes"));
+    assert!(generated.contains("flux__crypto_sha512("));
+    assert!(generated.contains("crypto.sha512 input exceeds 65536 bytes"));
     assert!(generated.contains("flux__crypto_hmac_sha256("));
     assert!(generated.contains("HMAC-SHA-256"));
 
@@ -15714,7 +15718,7 @@ fn main() -> i64 {
         .output()
         .expect("crypto binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\nf7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\nnil\n");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\nddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\nnil\nf7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\nnil\n");
     let _ = fs::remove_dir_all(&root);
 }
 
