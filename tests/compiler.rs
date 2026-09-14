@@ -10595,23 +10595,17 @@ fn main() -> i64 {
 }
 
 #[test]
-fn filesystem_read_callbacks_are_not_exposed() {
+fn filesystem_read_callbacks_use_the_bounded_file_api() {
     let source = r#"
 fn consume(_text: str) -> void {
 }
 fn main() -> i64 {
-    let (_bytes, _readError) = file.read("x", 64, consume)
+    let _readError: error = file.read("x", 64, consume)
     let (_legacyBytes, _legacyError) = fs.readText("x", 64, consume)
     return 0
 }
 "#;
-    let errors =
-        check_source_all(source).expect_err("callback-shaped file reads should be rejected");
-    assert!(
-        errors
-            .iter()
-            .any(|error| { error.message.contains("file module has no function 'read'") })
-    );
+    let errors = check_source_all(source).expect_err("legacy callback-shaped file reads should fail");
     assert!(errors.iter().any(|error| {
         error
             .message
