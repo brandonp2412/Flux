@@ -670,7 +670,7 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     for keyword in COMPLETION_KEYWORDS {
         push_completion_item(&mut items, &mut seen, keyword, 14, "Flux keyword");
     }
-    for builtin in ["i64", "bool", "str", "error", "void"] {
+    for builtin in ["i64", "bool", "str", "error", "void", "set"] {
         push_completion_item(&mut items, &mut seen, builtin, 22, "built-in Flux type");
     }
     push_completion_item(&mut items, &mut seen, "print", 3, "fn print(value) -> void");
@@ -5088,7 +5088,7 @@ fn semantic_identifier_kind(
     if is_flux_keyword(word) {
         return SemanticTokenKind::Keyword;
     }
-    if matches!(word, "i64" | "bool" | "str" | "error" | "void") {
+    if matches!(word, "i64" | "bool" | "str" | "error" | "void" | "set") {
         return SemanticTokenKind::Type;
     }
     if word == "print" {
@@ -11242,6 +11242,7 @@ mod tests {
         assert!(json.contains("\"label\":\"unsafe\""));
         assert!(json.contains("\"label\":\"route\""));
         assert!(json.contains("\"label\":\"i64\""));
+        assert!(json.contains("\"label\":\"set\""));
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
