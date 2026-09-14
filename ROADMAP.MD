@@ -263,7 +263,7 @@ Dart's `..` cascade is useful because it avoids repeating a target. Flux should 
 ## Collection literals and control flow
 
 - [x] List literals with homogeneous static element typing and concrete `T[]` source spelling (no source generics).
-- [ ] Set literals.
+- [x] Set literals with typed `set<T>` syntax for homogeneous compile-time primitive values, duplicate elimination, deterministic insertion-order iteration, formatting, and native lowering.
 - [ ] Map literals.
 - [x] Spread elements in list literals with `...source`; spread sources must have the exact surrounding `T[]` type, are evaluated once in source order, preserve strided-view semantics, and lower into one overflow-checked stack-backed result buffer.
 - [x] Optional-aware spread analogous to Dart `...?`: optional list sources are evaluated once, contribute zero elements when absent, preserve ordinary spread ordering/overflow checks when present, format canonically, and lower allocation-free through the existing stack-backed list builder.

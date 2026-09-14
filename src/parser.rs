@@ -751,7 +751,7 @@ fn attach_expr_source(expr: &mut Expr, source_id: SourceId) {
                 attach_expr_source(arg, source_id);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 attach_expr_source(item, source_id);
             }
@@ -1151,7 +1151,7 @@ fn shift_expr_columns(expr: &mut Expr, offset: usize) {
                 shift_expr_columns(arg, offset);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 shift_expr_columns(item, offset);
             }
@@ -6573,6 +6573,7 @@ impl ExprParser<'_> {
             }),
             TokenKind::Fn => self.parse_anonymous_function(token_span),
             TokenKind::LBracket => self.parse_list_literal(token_span),
+            TokenKind::LBrace => self.parse_set_literal(token_span),
             TokenKind::Ident(name) => {
                 if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
@@ -7102,6 +7103,30 @@ impl ExprParser<'_> {
                 close.column + close.length - open_span.column,
             ),
             kind: ExprKind::List(items),
+        })
+    }
+
+    fn parse_set_literal(&mut self, open_span: SourceSpan) -> Result<Expr, Diagnostic> {
+        let mut items = Vec::new();
+        if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+            loop {
+                items.push(self.parse_conditional()?);
+                match self.tokens.get(self.index).map(|token| &token.kind) {
+                    Some(TokenKind::Comma) => {
+                        self.index += 1;
+                        if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) { break; }
+                    }
+                    Some(TokenKind::RBrace) => break,
+                    _ => return Err(diag(self.line, "expected ',' or '}' in set literal")),
+                }
+            }
+        }
+        let close = self.tokens.get(self.index).cloned().ok_or_else(|| diag(self.line, "expected '}' after set literal"))?;
+        self.index += 1;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(self.line, open_span.column, close.span.column + close.span.length - open_span.column),
+            kind: ExprKind::Set(items),
         })
     }
 

@@ -190,6 +190,7 @@ impl Signatures {
                 .map(|target| self.canonical_type(target))
                 .unwrap_or_else(|| ty.clone()),
             Type::List(element) => Type::List(Box::new(self.canonical_type(element))),
+            Type::Set(element) => Type::Set(Box::new(self.canonical_type(element))),
             Type::Optional(inner) => Type::Optional(Box::new(self.canonical_type(inner))),
             Type::Record(fields) => Type::Record(
                 fields
@@ -225,6 +226,7 @@ impl Signatures {
             Type::Void
             | Type::Named(_)
             | Type::List(_)
+            | Type::Set(_)
             | Type::Optional(_)
             | Type::Function { .. } => false,
         }
@@ -233,7 +235,7 @@ impl Signatures {
     fn is_copy_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Str | Type::Error => true,
-            Type::Void | Type::List(_) => false,
+            Type::Void | Type::List(_) | Type::Set(_) => false,
             Type::Optional(inner) => self.is_copy_type_inner(&inner, visiting),
             Type::Record(fields) => fields
                 .iter()
@@ -273,7 +275,7 @@ impl Signatures {
     fn is_send_type_inner(&self, ty: &Type, visiting: &mut HashSet<String>) -> bool {
         match self.canonical_type(ty) {
             Type::I64 | Type::Bool | Type::Error => true,
-            Type::Str | Type::Void | Type::List(_) => false,
+            Type::Str | Type::Void | Type::List(_) | Type::Set(_) => false,
             Type::Optional(inner) => self.is_send_type_inner(&inner, visiting),
             Type::Record(fields) => fields
                 .iter()
@@ -3699,7 +3701,7 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
                 }
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_expr_reads(item, reads);
             }
@@ -4680,11 +4682,14 @@ fn check_block_all(
             } => {
                 let element_type = match type_of_expr(iterable, env, signatures) {
                     Ok(iterable_type) => match signatures.canonical_type(&iterable_type) {
-                        Type::List(element) => Some(*element),
+                        Type::List(element) | Type::Set(element) => Some(*element),
                         actual => {
                             diagnostics.push(diag(
                                 iterable.span,
-                                &format!("for-loop source must be a list, got {}", actual.name()),
+                                &format!(
+                                    "for-loop source must be a list or set, got {}",
+                                    actual.name()
+                                ),
                             ));
                             None
                         }
@@ -5733,14 +5738,31 @@ pub fn type_of_expr(
             };
             type_of_expr(&call, env, signatures)
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
+            let is_set = matches!(&expr.kind, ExprKind::Set(_));
             let Some(first) = items.first() else {
                 return Err(diag(
                     expr.span,
-                    "empty list literals cannot infer an element type yet",
+                    if is_set {
+                        "empty set literals cannot infer an element type yet"
+                    } else {
+                        "empty list literals cannot infer an element type yet"
+                    },
                 ));
             };
             let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
+                if is_set && !matches!(&item.kind, ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Call { .. } | ExprKind::QualifiedCall { .. }) {
+                    return Err(diag(
+                        item.span,
+                        "set literals currently accept only scalar expressions without spread, optional, or conditional items",
+                    ));
+                }
+                if is_set && constant_primitive_value(item, signatures).is_none() {
+                    return Err(diag(
+                        item.span,
+                        "set literal elements must currently be compile-time primitive values",
+                    ));
+                }
                 match &item.kind {
                     ExprKind::ListSpread {
                         value, optional, ..
@@ -5871,7 +5893,17 @@ pub fn type_of_expr(
                 let actual = item_element_type(item)?;
                 require_type(item.span, &element_ty, &actual, "list element")?;
             }
-            Ok(Type::List(Box::new(element_ty)))
+            Ok(if is_set {
+                if !matches!(element_ty, Type::I64 | Type::Bool | Type::Str) {
+                    return Err(diag(
+                        first.span,
+                        "set elements must currently have type i64, bool, or str",
+                    ));
+                }
+                Type::Set(Box::new(element_ty))
+            } else {
+                Type::List(Box::new(element_ty))
+            })
         }
         ExprKind::ListSpread { .. } => Err(diag(
             expr.span,
@@ -11676,6 +11708,7 @@ fn evaluate_default_expr(
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
+        | ExprKind::Set(_)
         | ExprKind::ListSpread { .. }
         | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
@@ -11870,6 +11903,7 @@ fn evaluate_constant_expr(
         | ExprKind::ShellCall { .. }
         | ExprKind::Pipe { .. }
         | ExprKind::List(_)
+        | ExprKind::Set(_)
         | ExprKind::ListSpread { .. }
         | ExprKind::ListOptional { .. }
         | ExprKind::ListIf { .. }
@@ -12487,7 +12521,9 @@ fn require_publicly_nameable_type(
             }
             Ok(())
         }
-        Type::List(element) => require_publicly_nameable_type(span, element, signatures),
+        Type::List(element) | Type::Set(element) => {
+            require_publicly_nameable_type(span, element, signatures)
+        }
         Type::Function { params, returns } => {
             for ty in params.iter().chain(returns) {
                 require_publicly_nameable_type(span, ty, signatures)?;
@@ -12514,7 +12550,7 @@ fn require_known_type(
     if let Type::Named(name) = ty {
         require_visible_named_type(span, name, signatures)?;
     }
-    if let Type::List(element) | Type::Optional(element) = ty {
+    if let Type::List(element) | Type::Set(element) | Type::Optional(element) = ty {
         require_known_type(span, element, signatures)?;
     }
     if let Type::Record(fields) = ty {
@@ -12530,7 +12566,7 @@ fn require_known_type(
         {
             Err(diag(span, &format!("unknown type '{name}'")))
         }
-        Type::List(element) => require_known_type(span, &element, signatures),
+        Type::List(element) | Type::Set(element) => require_known_type(span, &element, signatures),
         Type::Record(fields) => {
             let mut names = HashSet::new();
             let mut saw_named = false;

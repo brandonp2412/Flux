@@ -1125,6 +1125,14 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ExprKind::Set(items) => format!(
+            "{{{}}}",
+            items
+                .iter()
+                .map(|item| format_expr(item, 0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ExprKind::ListSpread {
             value, optional, ..
         } => format!(

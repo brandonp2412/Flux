@@ -543,11 +543,12 @@ fn ffi_header_type_supported_inner(
             }
             Type::Void
             | Type::List(_)
+            | Type::Set(_)
             | Type::Optional(_)
             | Type::Record(_)
             | Type::Function { .. } => false,
         },
-        Type::Void | Type::List(_) | Type::Record(_) | Type::Function { .. } => false,
+        Type::Void | Type::List(_) | Type::Set(_) | Type::Record(_) | Type::Function { .. } => false,
     }
 }
 
@@ -586,7 +587,8 @@ fn c_header_optional_types(
             | Type::Error
             | Type::Void
             | Type::Named(_)
-            | Type::List(_) => {}
+            | Type::List(_)
+            | Type::Set(_) => {}
         }
     }
 
@@ -731,7 +733,7 @@ fn emit_c_header_function_type_typedefs(
                     collect_nested_function_types(&field.ty, signatures, types, visiting);
                 }
             }
-            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) => {}
+            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) | Type::Set(_) => {}
         }
     }
 
@@ -17175,7 +17177,7 @@ fn expr_contains_await(expr: &Expr) -> bool {
         ExprKind::Pipe { input, args, .. } => {
             expr_contains_await(input) || args.iter().any(expr_contains_await)
         }
-        ExprKind::List(items) => items.iter().any(expr_contains_await),
+        ExprKind::List(items) | ExprKind::Set(items) => items.iter().any(expr_contains_await),
         ExprKind::ListIf {
             condition,
             value,
@@ -19018,7 +19020,7 @@ fn collect_interface_names_from_type(
         Type::Named(name) => {
             enqueue_interface_name(&name, signatures, reachable, pending);
         }
-        Type::List(element) | Type::Optional(element) => {
+        Type::List(element) | Type::Set(element) | Type::Optional(element) => {
             collect_interface_names_from_type(&element, signatures, reachable, pending);
         }
         Type::Record(fields) => {
@@ -19089,7 +19091,7 @@ fn collect_interface_names_from_expr(
                 collect_interface_names_from_expr(arg, signatures, reachable, pending);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_interface_names_from_expr(item, signatures, reachable, pending);
             }
@@ -19300,7 +19302,7 @@ fn collect_enum_variant_refs_from_expr(
                 collect_enum_variant_refs_from_expr(arg, signatures, variants);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_enum_variant_refs_from_expr(item, signatures, variants);
             }
@@ -19669,7 +19671,7 @@ fn collect_value_type_names_from_type(
 ) {
     match signatures.canonical_type(ty) {
         Type::Named(name) => enqueue_value_type_name(&name, known, reachable, pending),
-        Type::List(element) | Type::Optional(element) => {
+        Type::List(element) | Type::Set(element) | Type::Optional(element) => {
             collect_value_type_names_from_type(&element, signatures, known, reachable, pending)
         }
         Type::Record(fields) => {
@@ -19771,7 +19773,7 @@ fn collect_value_type_names_from_expr(
                 collect_value_type_names_from_expr(arg, signatures, known, reachable, pending);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_value_type_names_from_expr(item, signatures, known, reachable, pending);
             }
@@ -20024,7 +20026,7 @@ impl InterfacePackFacts {
             Type::Named(name) if signatures.interface(&name).is_some() => {
                 self.open_interfaces.insert(name);
             }
-            Type::List(element) | Type::Optional(element) => {
+            Type::List(element) | Type::Set(element) | Type::Optional(element) => {
                 self.mark_open_type(&element, signatures)
             }
             Type::Record(fields) => {
@@ -20122,7 +20124,7 @@ fn collect_interface_pack_facts_from_expr(
                 collect_interface_pack_facts_from_expr(arg, env, signatures, facts);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_interface_pack_facts_from_expr(item, env, signatures, facts);
             }
@@ -20570,7 +20572,7 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_interface_dispatch_refs_from_expr(
                     item,
@@ -20948,7 +20950,7 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(arg, known, references);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_named_function_refs_from_expr(item, known, references);
             }
@@ -21253,7 +21255,7 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
                 }
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_function_helpers_from_expr(item, functions);
             }
@@ -28698,10 +28700,10 @@ fn emit_block(
                 ..
             } => {
                 let source = emit_expr(iterable, env, signatures)?;
-                let Type::List(element) = signatures.canonical_type(&source.ty) else {
+                let (Type::List(element) | Type::Set(element)) = signatures.canonical_type(&source.ty) else {
                     return Err(diag(
                         stmt.span,
-                        "for-loop code generation requires a list source",
+                        "for-loop code generation requires a list or set source",
                     ));
                 };
                 let source_name = format!("flux__iter_source_{}", *temp_counter);
@@ -31202,7 +31204,8 @@ fn emit_expr(
             };
             return emit_expr(&call, env, signatures);
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
+            let is_set = matches!(&expr.kind, ExprKind::Set(_));
             if items.iter().any(|item| {
                 matches!(
                     item.kind,
@@ -31217,12 +31220,23 @@ fn emit_expr(
                 ));
             }
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let Type::List(element) = &result_ty else {
-                unreachable!()
+            let element = match &result_ty {
+                Type::List(element) | Type::Set(element) => element,
+                _ => unreachable!(),
             };
             let mut rendered = Vec::with_capacity(items.len());
+            let mut seen = HashSet::new();
             for item in items {
-                rendered.push(emit_expr(item, env, signatures)?.code);
+                let emitted = emit_expr(item, env, signatures)?;
+                if is_set {
+                    let constant = typecheck::constant_primitive_value(item, signatures)
+                        .expect("set literal elements are compile-time checked");
+                    let key = format!("{}:{:?}", constant.ty().name(), constant);
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                }
+                rendered.push(emitted.code);
             }
             let element_c = c_type(element, signatures);
             EmittedExpr {
@@ -31484,6 +31498,7 @@ fn emit_expr(
                     ));
                 }
                 Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
+                Type::Set(_) => return Err(diag(expr.span, "cannot print a set directly")),
                 Type::Record(_) => return Err(diag(expr.span, "cannot print a record directly")),
                 Type::Optional(_) => {
                     return Err(diag(
@@ -34866,7 +34881,7 @@ fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet
             }
             records.insert(Type::Record(fields));
         }
-        Type::List(inner) | Type::Optional(inner) => {
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
             collect_record_type(&inner, signatures, records);
         }
         Type::Function { params, returns } => {
@@ -34984,13 +34999,13 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             format!("struct {}", interface_c_name(&name))
         }
         Type::Named(name) => format!("struct {}", struct_c_name(&name)),
-        Type::List(_) => "struct flux__list".to_string(),
+        Type::List(_) | Type::Set(_) => "struct flux__list".to_string(),
         Type::Record(fields) => {
             let record = Type::Record(fields);
             format!("struct {}", record_c_name(&record, signatures))
         }
         Type::Optional(inner) => {
-            if matches!(signatures.canonical_type(&inner), Type::List(_)) {
+            if matches!(signatures.canonical_type(&inner), Type::List(_) | Type::Set(_)) {
                 "struct flux__optional_list".to_string()
             } else {
                 format!("struct flux__optional_{}", type_mangle(&inner, signatures))
@@ -35031,6 +35046,7 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Void => "void".to_string(),
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
+        Type::Set(element) => format!("set_{}", type_mangle(&element, signatures)),
         Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
         Type::Record(fields) => {
             let fields = fields
@@ -35538,7 +35554,7 @@ fn collect_update_helpers_from_expr(
                 collect_update_helpers_from_expr(arg, signatures, emitted, helpers);
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 collect_update_helpers_from_expr(item, signatures, emitted, helpers);
             }

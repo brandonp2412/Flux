@@ -12141,7 +12141,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("for-loop source must be a list, got i64")
+            .contains("for-loop source must be a list or set, got i64")
     );
 
     let indexed_range = r#"
@@ -44423,6 +44423,44 @@ fn main() -> i64 {
         .expect("mutable binding should be indexed");
     assert_eq!(mutable.kind, fluxc::semantic::SymbolKind::MutableBinding);
     assert_eq!(mutable.ty, Some(fluxc::ast::Type::I64));
+}
+
+#[test]
+fn set_literals_are_typed_and_deduplicate_compile_time_values() {
+    let source = r#"
+fn consume(_values: set<i64>) -> i64 {
+    return 0
+}
+fn main() -> i64 {
+    return consume({1, 2, 1, 3})
+}
+"#;
+    let program = fluxc::parser::parse(source).expect("set literal source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("set literal should typecheck");
+    let generated = fluxc::codegen::emit_c(&program, &signatures)
+        .expect("set literal should lower to native C");
+    assert!(generated.contains("struct flux__list"));
+    assert!(generated.contains("INT64_C(1), INT64_C(2), INT64_C(3)"));
+    assert!(!generated.contains("INT64_C(1), INT64_C(2), INT64_C(1), INT64_C(3)"));
+}
+
+#[test]
+fn set_literals_support_deterministic_iteration() {
+    let source = r#"
+fn main() -> i64 {
+    let values: set<i64> = {2, 4, 2}
+    for index, value in values:
+        print(index + value)
+    return 0
+}
+"#;
+    check_source(source).expect("set iteration should typecheck");
+    let generated = compile_to_c(source).expect("set iteration should lower natively");
+    assert!(generated.contains("flux_list_at_unchecked(flux__iter_source_"));
+    assert!(generated.contains("int64_t flux__local_index = 0"));
+    let formatted = fluxc::formatter::format_source(source).expect("set iteration should format");
+    assert!(formatted.contains("let values: set<i64> = {2, 4, 2}"));
+    assert!(formatted.contains("for index, value in values:"));
 }
 
 #[test]

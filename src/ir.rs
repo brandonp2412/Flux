@@ -1989,7 +1989,7 @@ impl<'a> ControlFlowBuilder<'a> {
                     }
                 }
             }
-            ExprKind::List(items) => ControlFlowValueKind::List {
+            ExprKind::List(items) | ExprKind::Set(items) => ControlFlowValueKind::List {
                 items: self.lower_expr_arguments(producer, items),
             },
             ExprKind::ListSpread { value, .. } => self
@@ -2911,7 +2911,7 @@ fn record_expr_types(
                 }
             }
         }
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Set(items) => {
             for item in items {
                 record_expr_types(item, env, signatures, evaluations);
             }

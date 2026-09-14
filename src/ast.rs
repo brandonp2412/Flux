@@ -9,6 +9,7 @@ pub enum Type {
     Void,
     Named(String),
     List(Box<Type>),
+    Set(Box<Type>),
     Optional(Box<Type>),
     Record(Vec<RecordTypeField>),
     Function {
@@ -67,6 +68,9 @@ impl Type {
         }
         if let Some(inner) = input.strip_suffix("[]") {
             return Some(Self::List(Box::new(Self::parse(inner)?)));
+        }
+        if let Some(inner) = input.strip_prefix("set<").and_then(|value| value.strip_suffix('>')) {
+            return Some(Self::Set(Box::new(Self::parse(inner)?)));
         }
         if let Some(inner) = input
             .strip_prefix('(')
@@ -128,6 +132,7 @@ impl Type {
             Self::Void => "void".to_string(),
             Self::Named(name) => name.clone(),
             Self::List(element) => format!("{}[]", element.name()),
+            Self::Set(element) => format!("set<{}>", element.name()),
             Self::Optional(inner) => format!("{}?", inner.name()),
             Self::Record(fields) => {
                 let rendered = fields
@@ -796,6 +801,7 @@ pub enum ExprKind {
         optional: bool,
     },
     List(Vec<Expr>),
+    Set(Vec<Expr>),
     ListSpread {
         value: Box<Expr>,
         spread_span: SourceSpan,
