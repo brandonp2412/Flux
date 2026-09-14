@@ -119,7 +119,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
-    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)"));
+    assert!(
+        generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)")
+    );
     assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
     assert!(
         generated
@@ -132,7 +134,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_SIZE"));
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
-    assert!(generated.contains("static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"));
+    assert!(generated.contains(
+        "static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"
+    ));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_click_2"));
     assert!(generated.contains("flux__win_click_3"));
@@ -464,7 +468,9 @@ view Screen {
     state background: str = "#102030"
     state border: str = "outline"
     state borderWidth: i64 = 2
+    state edgeWidth: i64 = 3
     state rounding: i64 = 12
+    state cornerRadius: i64 = 6
     state raised: bool = false
     grid columns: 1fr
     grid rows: auto auto
@@ -474,8 +480,20 @@ view Screen {
         backgroundColor: background
         borderColor: border
         borderWidth: borderWidth
+        borderTopColor: "danger"
+        borderEndColor: "success"
+        borderBottomColor: "warning"
+        borderStartColor: border
+        borderTopWidth: edgeWidth
+        borderEndWidth: 4
+        borderBottomWidth: 5
+        borderStartWidth: borderWidth
         borderStyle: "dashed"
         radius: rounding
+        radiusTopLeft: cornerRadius
+        radiusTopRight: 10
+        radiusBottomRight: 8
+        radiusBottomLeft: 4
         textAlign: "center"
         minWidth: 180
         minHeight: 44
@@ -503,21 +521,29 @@ app Screen(title: "Styled Windows")
     assert!(generated.contains("GetSysColor(COLOR_HIGHLIGHT)"));
     assert!(generated.contains("CreateSolidBrush(next)"));
     assert!(generated.contains("static int flux__win_border_style_value"));
-    assert!(generated.contains("CreateRoundRectRgn"));
+    assert!(generated.contains("CreateEllipticRgn"));
+    assert!(generated.contains("CombineRgn(region, region, square, RGN_DIFF)"));
     assert!(generated.contains("RoundRect(dc"));
+    assert!(generated.contains("flux__win_draw_edge"));
     assert!(generated.contains("PS_DASH"));
+    assert!(generated.contains(
+        "flux__win_border_start_color_title = flux__win_border_color(flux__ui_state_border)"
+    ));
     assert!(
-        generated.contains(
-            "flux__win_border_color_title = flux__win_border_color(flux__ui_state_border)"
-        )
+        generated.contains("flux__win_border_top_width_value_title = flux__ui_state_edgeWidth")
     );
-    assert!(generated.contains("flux__win_border_width_value_title = flux__ui_state_borderWidth"));
-    assert!(generated.contains("flux__win_radius_value_title = flux__ui_state_rounding"));
+    assert!(
+        generated.contains("flux__win_border_start_width_value_title = flux__ui_state_borderWidth")
+    );
+    assert!(
+        generated.contains("flux__win_radius_top_left_value_title = flux__ui_state_cornerRadius")
+    );
+    assert!(generated.contains("flux__win_radius_top_right_value_title = INT64_C(10)"));
     assert!(
         generated
             .contains("flux__win_border_style_title = flux__win_border_style_value(\"dashed\")")
     );
-    assert!(generated.contains("flux__win_apply_radius(flux__ui_title, flux__win_radius_title)"));
+    assert!(generated.contains("flux__win_apply_radius(flux__ui_title, flux__win_radius_top_left_title, flux__win_radius_top_right_title, flux__win_radius_bottom_right_title, flux__win_radius_bottom_left_title)"));
     assert!(generated.contains("flux__win_style_proc_title"));
     assert!(
         generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORBTN:")
@@ -27882,10 +27908,7 @@ fn git_transitive_registry_requirements_share_the_global_solver() {
     fs::copy(&archive, &cached_archive).expect("registry archive should be cacheable");
 
     let fallback_hash = "1".repeat(64);
-    for (version, sha256) in [
-        ("1.2.5", hash.as_str()),
-        ("1.4.0", fallback_hash.as_str()),
-    ] {
+    for (version, sha256) in [("1.2.5", hash.as_str()), ("1.4.0", fallback_hash.as_str())] {
         fs::write(
             registry.join(format!("{version}.toml")),
             format!(
