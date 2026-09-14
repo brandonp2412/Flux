@@ -1556,6 +1556,20 @@ fn add_qualified_namespace_completions(
             3,
             "fn worker.join(handle: i64) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "done",
+            3,
+            "fn worker.done(handle: i64) -> (bool, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "waitAny",
+            3,
+            "fn worker.waitAny(handles: i64[]) -> (i64, error)",
+        );
         push_completion_item(items, seen, "joinAll", 3, "fn worker.joinAll() -> error");
         push_completion_item(
             items,
@@ -3541,6 +3555,22 @@ fn signature_help_for_document_cached(
                         "worker.join",
                         &["handle: i64"],
                         "error",
+                        active_parameter,
+                    ));
+                }
+                "done" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.done",
+                        &["handle: i64"],
+                        "(bool, error)",
+                        active_parameter,
+                    ));
+                }
+                "waitAny" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.waitAny",
+                        &["handles: i64[]"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -9129,13 +9159,15 @@ mod tests {
             )
         );
         assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
+        assert!(completion_items.contains("fn worker.done(handle: i64) -> (bool, error)"));
+        assert!(completion_items.contains("fn worker.waitAny(handles: i64[]) -> (i64, error)"));
         assert!(completion_items.contains("fn worker.joinAll() -> error"));
         assert!(completion_items.contains("fn worker.cancel(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.cancelAll() -> void"));
         assert!(completion_items.contains("fn worker.cancelled() -> bool"));
 
         let uri = "file:///tmp/worker-signatures.flux";
-        let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    print(worker.cancel(withHandle))\n    worker.cancelChildren()\n    print(worker.cancelled())\n    print(worker.joinChildren())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
+        let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    let handles: i64[] = [handle, withHandle]\n    let (completed, waitError) = worker.waitAny(handles)\n    print(waitError)\n    let (isDone, doneError) = worker.done(completed)\n    print(isDone)\n    print(doneError)\n    print(worker.cancel(withHandle))\n    worker.cancelChildren()\n    print(worker.cancelled())\n    print(worker.joinChildren())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -9145,6 +9177,14 @@ mod tests {
             (
                 "worker.startWith(",
                 "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)",
+            ),
+            (
+                "worker.waitAny(",
+                "fn worker.waitAny(handles: i64[]) -> (i64, error)",
+            ),
+            (
+                "worker.done(",
+                "fn worker.done(handle: i64) -> (bool, error)",
             ),
             ("worker.cancel(", "fn worker.cancel(handle: i64) -> error"),
             ("worker.cancelChildren(", "fn worker.cancelAll() -> void"),

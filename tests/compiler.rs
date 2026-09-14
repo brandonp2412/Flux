@@ -7441,6 +7441,126 @@ fn main() -> i64 {
 }
 
 #[test]
+fn worker_completion_observation_is_typed_native_and_runnable() {
+    let source = r#"
+fn slow() -> void {
+    time.sleep(200)
+}
+fn fast() -> void {
+    time.sleep(20)
+}
+fn main() -> i64 {
+    let (slowHandle, slowError) = worker.start(slow)
+    if slowError != nil:
+        return 1
+    let (fastHandle, fastError) = worker.start(fast)
+    if fastError != nil:
+        return 2
+    let handles: i64[] = [slowHandle, fastHandle]
+    let (completed, waitError) = worker.waitAny(handles)
+    if waitError != nil:
+        return 3
+    if completed != fastHandle:
+        return 4
+    let (fastDone, doneError) = worker.done(fastHandle)
+    if doneError != nil:
+        return 5
+    if fastDone == false:
+        return 6
+    let fastJoinError: error = worker.join(fastHandle)
+    if fastJoinError != nil:
+        return 7
+    let slowJoinError: error = worker.join(slowHandle)
+    if slowJoinError != nil:
+        return 8
+    let empty: i64[] = handles[0:0]
+    let (_emptyHandle, emptyError) = worker.waitAny(empty)
+    if emptyError == nil:
+        return 9
+    return 0
+}
+"#;
+
+    check_source(source).expect("worker completion observation should typecheck");
+    let generated =
+        compile_to_c(source).expect("worker completion observation should lower natively");
+    assert!(generated.contains("flux__worker_done_result"));
+    assert!(generated.contains("flux__worker_wait_any"));
+    assert!(generated.contains("static pthread_cond_t flux__worker_changed"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-worker-completion-observation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("worker completion fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("worker completion source should be writable");
+    let binary = root.join("worker-completion");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("worker completion binary should build");
+    assert!(
+        built.status.success(),
+        "worker completion build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("worker completion binary should run");
+    assert!(
+        run.status.success(),
+        "worker completion binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let invalid_done = r#"
+fn main() -> i64 {
+    let (_done, _error) = worker.done(false)
+    return 0
+}
+"#;
+    let error = check_source(invalid_done).expect_err("worker.done should require an i64 handle");
+    assert!(error.message.contains("worker.done handle: expected i64"));
+
+    let invalid_wait = r#"
+fn main() -> i64 {
+    let handles: bool[] = [true]
+    let (_completed, _error) = worker.waitAny(handles)
+    return 0
+}
+"#;
+    let error = check_source(invalid_wait).expect_err("worker.waitAny should require i64 handles");
+    assert!(
+        error
+            .message
+            .contains("worker.waitAny handles: expected i64[]")
+    );
+
+    let dead = r#"
+fn hidden() -> void {
+    let handles: i64[] = [1]
+    let (_completed, _error) = worker.waitAny(handles)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    check_source(dead).expect("dead worker completion fixture should typecheck");
+    let dead_generated =
+        compile_to_c(dead).expect("dead worker completion helpers should tree-shake");
+    assert!(!dead_generated.contains("flux__worker_wait_any"));
+    assert!(!dead_generated.contains("static pthread_cond_t flux__worker_changed"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn worker_handles_cannot_escape_their_structured_scope() {
     let source = r#"
 fn target() -> void {

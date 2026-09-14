@@ -1664,6 +1664,8 @@ fn emit_runtime_prelude(
 ) {
     let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(")
         || runtime_usage.contains("flux__net_http_serve_concurrent_limit(");
+    let uses_worker_completion_wait =
+        uses_http_concurrent || runtime_usage.contains("flux__worker_wait_any(");
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
         || uses_http_concurrent;
@@ -5802,9 +5804,10 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
 
     if uses_workers {
         out.push_str("struct flux__worker_i64_error { int64_t v0; const char *v1; };\n");
+        out.push_str("struct flux__worker_bool_error { bool v0; const char *v1; };\n");
         out.push_str("struct flux__worker_state { int64_t id; int64_t parent_id; pthread_t thread; void (*entry)(void); void (*entry_i64)(int64_t); int64_t argument; bool has_argument; bool joining; bool joined; bool done; bool cancel_requested; bool heap_owned; const char *scope_error; struct flux__worker_state *next; };\n");
         out.push_str("static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
-        if uses_http_concurrent {
+        if uses_worker_completion_wait {
             out.push_str(
                 "static pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER;\n",
             );
@@ -5826,6 +5829,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static struct flux__worker_i64_error flux__worker_start_with(void (*entry)(int64_t), int64_t argument) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL) { result.v1 = \"worker.startWith received an invalid work function\"; return result; } return flux__worker_start_common(NULL, entry, argument, true, NULL, \"worker.startWith could not allocate worker state\", \"worker.startWith failed to create a native thread\"); }\n");
         out.push_str("static struct flux__worker_i64_error flux__worker_start_with_state(void (*entry)(int64_t), int64_t argument, struct flux__worker_state *state) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (entry == NULL || state == NULL) { result.v1 = \"compiler-owned worker state is invalid\"; return result; } return flux__worker_start_common(NULL, entry, argument, true, state, \"compiler-owned worker state is unavailable\", \"worker.startWith failed to create a native thread\"); }\n");
         out.push_str("static const char *flux__worker_join(int64_t handle) { if (handle <= 0) return \"worker.join received an invalid handle\"; pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join received an unknown or already joined handle\"; } if (state->parent_id != flux__worker_current_id) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join handle is outside the current worker scope\"; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join is already waiting for this handle\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.join failed to join the native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *scope_error = state->scope_error; bool heap_owned = state->heap_owned; struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); if (heap_owned) free(state); return scope_error; }\n");
+        out.push_str("static struct flux__worker_bool_error flux__worker_done_result(int64_t handle) { struct flux__worker_bool_error result = { .v0 = false, .v1 = NULL }; if (handle <= 0) { result.v1 = \"worker.done received an invalid handle\"; return result; } pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) result.v1 = \"worker.done received an unknown or already joined handle\"; else if (state->parent_id != flux__worker_current_id) result.v1 = \"worker.done handle is outside the current worker scope\"; else result.v0 = state->done; pthread_mutex_unlock(&flux__worker_mutex); return result; }\n");
         out.push_str("static const char *flux__worker_join_tree(int64_t handle) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return NULL; } if (state->joining) { pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren found a descendant already being joined\"; } state->joining = true; bool already_joined = state->joined; pthread_mutex_unlock(&flux__worker_mutex); if (!already_joined && pthread_join(state->thread, NULL) != 0) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return \"worker.joinChildren failed to join a descendant native thread\"; } pthread_mutex_lock(&flux__worker_mutex); state->joined = true; const char *first_error = state->scope_error; bool heap_owned = state->heap_owned; pthread_mutex_unlock(&flux__worker_mutex); while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != handle) child = child->next; if (child == NULL) { struct flux__worker_state **cursor = &flux__worker_head; while (*cursor != NULL && *cursor != state) cursor = &(*cursor)->next; if (*cursor == state) *cursor = state->next; pthread_mutex_unlock(&flux__worker_mutex); if (heap_owned) free(state); return first_error; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL && first_error == NULL) first_error = error; if (error != NULL) { pthread_mutex_lock(&flux__worker_mutex); bool child_still_registered = flux__worker_find_locked(child_id) != NULL; pthread_mutex_unlock(&flux__worker_mutex); if (child_still_registered) { pthread_mutex_lock(&flux__worker_mutex); state->joining = false; pthread_mutex_unlock(&flux__worker_mutex); return first_error; } } } }\n");
         out.push_str("static const char *flux__worker_join_children(void) { int64_t parent_id = flux__worker_current_id; const char *first_error = NULL; while (true) { pthread_mutex_lock(&flux__worker_mutex); struct flux__worker_state *child = flux__worker_head; while (child != NULL && child->parent_id != parent_id) child = child->next; if (child == NULL) { pthread_mutex_unlock(&flux__worker_mutex); return first_error; } int64_t child_id = child->id; pthread_mutex_unlock(&flux__worker_mutex); const char *error = flux__worker_join_tree(child_id); if (error != NULL && first_error == NULL) first_error = error; if (error != NULL) { pthread_mutex_lock(&flux__worker_mutex); bool child_still_registered = flux__worker_find_locked(child_id) != NULL; pthread_mutex_unlock(&flux__worker_mutex); if (child_still_registered) return first_error; } } }\n");
         out.push_str("static int64_t flux__async_scope_create(void) { pthread_mutex_lock(&flux__worker_mutex); if (flux__worker_next_scope_id == INT64_MIN) { pthread_mutex_unlock(&flux__worker_mutex); fputs(\"Flux runtime error: async worker scope space exhausted\\n\", stderr); abort(); } int64_t scope_id = flux__worker_next_scope_id; flux__worker_next_scope_id -= INT64_C(1); pthread_mutex_unlock(&flux__worker_mutex); return scope_id; }\n");
@@ -6423,6 +6427,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         || uses_list_stride;
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    }
+    if runtime_usage.contains("flux__worker_wait_any(") {
+        out.push_str("static struct flux__worker_i64_error flux__worker_wait_any(struct flux__list handles) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (handles.len == 0) { result.v1 = \"worker.waitAny requires at least one handle\"; return result; } ptrdiff_t stride = handles.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : handles.stride; pthread_mutex_lock(&flux__worker_mutex); for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = handle > 0 ? flux__worker_find_locked(handle) : NULL; if (handle <= 0) { result.v1 = \"worker.waitAny received an invalid handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state == NULL) { result.v1 = \"worker.waitAny received an unknown or already joined handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->parent_id != flux__worker_current_id) { result.v1 = \"worker.waitAny handle is outside the current worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->joining) { result.v1 = \"worker.waitAny cannot observe a handle already being joined\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } } for (;;) { for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { result.v1 = \"worker.waitAny handle disappeared before completion\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->done) { result.v0 = handle; pthread_mutex_unlock(&flux__worker_mutex); return result; } } struct flux__worker_state *current = flux__worker_find_locked(flux__worker_current_id); if (current != NULL && current->cancel_requested) { result.v1 = \"worker.waitAny cancelled by worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex); } }\n");
     }
     if runtime_usage.contains("struct flux__optional_list") {
         out.push_str("struct flux__optional_list { bool has_value; struct flux__list value; };\n");
@@ -32039,6 +32046,28 @@ fn emit_qualified_call(
                     format!("flux__worker_join({})", handle.code),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "done" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                let handle = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__worker_done_result({})", handle.code),
+                    vec![Type::Bool, Type::Error],
+                    Some("flux__worker_bool_error".to_string()),
+                ));
+            }
+            "waitAny" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid worker call reached code generation"));
+                }
+                let handles = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__worker_wait_any({})", handles.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__worker_i64_error".to_string()),
                 ));
             }
             "joinChildren" => {
