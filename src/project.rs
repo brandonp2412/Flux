@@ -453,6 +453,9 @@ pub struct PackageManifest {
     pub native: NativePackageConfig,
     pub platform: PlatformPackageConfig,
     pub android: AndroidPackageConfig,
+    /// Relative package directories participating in this package's workspace.
+    /// The manifest package itself remains the workspace root package.
+    pub workspace_members: Vec<PathBuf>,
 }
 
 fn cache_target_key(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
@@ -1088,6 +1091,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
     let mut platform_linux_modules = None::<BTreeMap<PathBuf, PathBuf>>;
     let mut platform_android_modules = None::<BTreeMap<PathBuf, PathBuf>>;
     let mut platform_windows_modules = None::<BTreeMap<PathBuf, PathBuf>>;
+    let mut workspace_members = None::<Vec<String>>;
     let mut dependencies = BTreeMap::<String, PackageDependency>::new();
     let mut constants = BTreeMap::<String, typecheck::ConstantValue>::new();
     let mut translations = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -1112,6 +1116,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             if !matches!(
                 table,
                 "package"
+                    | "workspace"
                     | "android"
                     | "native"
                     | "dependencies"
@@ -1215,6 +1220,30 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
                         source_id,
                         line_number,
                         format!("duplicate [dependencies] entry '{key}'"),
+                    ));
+                }
+            }
+            Some("workspace") => {
+                if key != "members" {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        format!("unknown [workspace] field '{key}'; only 'members' is supported"),
+                    ));
+                    continue;
+                }
+                let value = match parse_manifest_string_array(raw_value) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        diagnostics.push(manifest_diagnostic(source_id, line_number, message));
+                        continue;
+                    }
+                };
+                if workspace_members.replace(value).is_some() {
+                    diagnostics.push(manifest_diagnostic(
+                        source_id,
+                        line_number,
+                        "duplicate [workspace] field 'members'",
                     ));
                 }
             }
@@ -1636,6 +1665,61 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             "[package].assets must be a relative directory path",
         ));
     }
+    let workspace_members = workspace_members.unwrap_or_default();
+    let mut canonical_workspace_members = Vec::with_capacity(workspace_members.len());
+    let mut workspace_member_names = HashSet::new();
+    for member in workspace_members {
+        let member_path = Path::new(&member);
+        if member.is_empty() || member_path.is_absolute() {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                "[workspace].members entries must be non-empty relative directories",
+            ));
+            continue;
+        }
+        let canonical_member = match canonical_source(&canonical_manifest.parent().unwrap().join(member_path), "workspace member") {
+            Ok(path) => path,
+            Err(member_diagnostics) => {
+                diagnostics.extend(member_diagnostics);
+                continue;
+            }
+        };
+        if !canonical_member.starts_with(
+            canonical_manifest
+                .parent()
+                .expect("canonical manifest has a parent"),
+        ) {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                "[workspace].members entries must remain inside the workspace root",
+            ));
+            continue;
+        }
+        if !canonical_member.is_dir() {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("workspace member '{}' must be a directory", member_path.display()),
+            ));
+            continue;
+        }
+        let member_manifest = canonical_member.join("flux.toml");
+        if !member_manifest.is_file() {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("workspace member '{}' must contain flux.toml", member_path.display()),
+            ));
+            continue;
+        }
+        if !workspace_member_names.insert(canonical_member.clone()) {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("[workspace].members repeats '{}', including through path normalization", member_path.display()),
+            ));
+            continue;
+        }
+        canonical_workspace_members.push(canonical_member);
+    }
+    canonical_workspace_members.sort();
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -1737,7 +1821,56 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             android_modules: platform_android_modules.unwrap_or_default(),
             windows_modules: platform_windows_modules.unwrap_or_default(),
         },
+        workspace_members: canonical_workspace_members,
     })
+}
+
+/// Read the packages declared by a workspace root in deterministic order.
+/// Workspace members are explicit package identities; they are not implicitly
+/// available to source imports or dependency resolution.
+pub fn read_workspace_members(
+    root: &PackageManifest,
+) -> Result<Vec<PackageManifest>, Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+    let mut names = HashSet::from([root.name.clone()]);
+    let mut members = Vec::with_capacity(root.workspace_members.len());
+    for member_root in &root.workspace_members {
+        let manifest_path = member_root.join("flux.toml");
+        let member = match read_manifest(&manifest_path) {
+            Ok(member) => member,
+            Err(member_diagnostics) => {
+                diagnostics.extend(member_diagnostics);
+                continue;
+            }
+        };
+        if !names.insert(member.name.clone()) {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!(
+                    "workspace member '{}' duplicates package identity '{}'; member names must be unique",
+                    member_root.display(),
+                    member.name
+                ),
+            ));
+            continue;
+        }
+        if !member.workspace_members.is_empty() {
+            diagnostics.push(Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!(
+                    "workspace member '{}' cannot declare a nested [workspace] table",
+                    member_root.display()
+                ),
+            ));
+            continue;
+        }
+        members.push(member);
+    }
+    if diagnostics.is_empty() {
+        Ok(members)
+    } else {
+        Err(diagnostics)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10577,6 +10577,7 @@ app OverlayDemo(title: "Overlay")
                 keystore: None,
                 key_alias: None,
             },
+            workspace_members: Vec::new(),
         };
 
         assert_eq!(
@@ -10942,6 +10943,7 @@ app OverlayDemo(title: "Overlay")
                 keystore: None,
                 key_alias: None,
             },
+            workspace_members: Vec::new(),
         };
         assert!(
             validate_android_publish_manifest(&manifest)
@@ -11041,6 +11043,7 @@ app OverlayDemo(title: "Overlay")
                 keystore: None,
                 key_alias: None,
             },
+            workspace_members: Vec::new(),
         };
 
         assert!(matches!(stage_package_assets(&manifest, &output), Ok(true)));
@@ -11120,6 +11123,7 @@ app OverlayDemo(title: "Overlay")
                 keystore: None,
                 key_alias: None,
             },
+            workspace_members: Vec::new(),
         };
 
         let plain = android_manifest_xml(

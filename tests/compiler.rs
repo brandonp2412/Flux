@@ -26229,6 +26229,53 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
 }
 
 #[test]
+fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions() {
+    let root = std::env::temp_dir().join(format!("flux-workspace-manifest-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for member in ["apps/one", "libs/two"] {
+        fs::create_dir_all(root.join(member).join("src"))
+            .expect("workspace member should be writable");
+        fs::write(root.join(member).join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+            .expect("workspace member entry should be writable");
+    }
+    fs::create_dir_all(root.join("src")).expect("workspace root should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("workspace root entry should be writable");
+    let manifest = root.join("flux.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"workspace-root\"\nentry = \"src/main.flux\"\n\n[workspace]\nmembers = [\"libs/two\", \"apps/one\"]\n",
+    )
+    .expect("workspace manifest should be writable");
+    for (path, name) in [("apps/one", "one"), ("libs/two", "two")] {
+        fs::write(
+            root.join(path).join("flux.toml"),
+            format!("[package]\nname = \"{name}\"\nentry = \"src/main.flux\"\n"),
+        )
+        .expect("member manifest should be writable");
+    }
+
+    let parsed = fluxc::project::read_manifest(&manifest).expect("workspace should parse");
+    assert_eq!(parsed.workspace_members.len(), 2);
+    let members = fluxc::project::read_workspace_members(&parsed)
+        .expect("workspace members should load");
+    assert_eq!(
+        members.iter().map(|member| member.name.as_str()).collect::<Vec<_>>(),
+        vec!["one", "two"]
+    );
+
+    fs::write(
+        root.join("libs/two/flux.toml"),
+        "[package]\nname = \"one\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("duplicate member manifest should be writable");
+    let errors = fluxc::project::read_workspace_members(&parsed)
+        .expect_err("workspace member identities must be unique");
+    assert!(errors.iter().any(|error| error.message.contains("duplicates package identity")));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn package_manifest_resolves_portable_asset_directory() {
     let root = std::env::temp_dir().join(format!("flux-package-assets-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
