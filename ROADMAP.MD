@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 148 checkbox items
+- Current net scope growth after the baseline: 149 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -427,7 +427,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
   - [x] General bounded borrowed URI decomposition through compiler-owned `uri.parse(value, callback)`: arbitrary valid schemes are split into scheme, authority, path, query, and fragment components, with whitespace/control rejection, 65536-byte input bounds, exact callback typing, tree-shaking without socket support, and LSP completion/signature help. Components remain callback-scoped borrowed strings; owned URI values, normalization, and IDNA remain pending.
 - [x] HTTP primitives: compiler-owned bounded HTTP/1.0/1.1 request/response head parsing, validated header callbacks, text request/response framing, fixed-length/chunked/close-delimited body handling, custom header fields, and HTTP(S) URL decomposition are implemented as tree-shakeable native primitives over the socket layer. The ordinary owned `fetch` API, TLS, binary bodies, redirects, and higher-level client/server models remain tracked separately rather than being implied by this low-level primitive contract.
 - [ ] TLS integration.
-  - [x] Linux/server verified TLS client sessions: `tls.wrap(socket, serverName, caFile) -> (i64, error)` performs OpenSSL certificate-chain and hostname verification, while bounded `tls.read`, `tls.write`, and `tls.close` expose explicit errors and callback-scoped text without platform objects; session/socket cleanup and unreachable helper emission are compiler-owned. Async/nonblocking scheduling, server certificates, resumption, and mobile providers remain pending.
+  - [x] Linux/server verified TLS sessions: `tls.wrap(socket, serverName, caFile) -> (i64, error)` performs OpenSSL certificate-chain and hostname verification, while `tls.listen(socket, certificate, key)` validates a PEM server certificate/key and completes a server handshake. Bounded `tls.read`, `tls.write`, and `tls.close` expose explicit errors and callback-scoped text without platform objects; session/socket cleanup and unreachable helper emission are compiler-owned. Async/nonblocking scheduling, resumption, and mobile providers remain pending.
 - [ ] WebSocket support.
 - [ ] Cryptographic primitives through audited platform/native libraries.
   - [x] Linux/server `crypto.sha256(value, callback) -> error` uses the platform OpenSSL/libcrypto SHA-256 implementation, bounds input to 65536 bytes, lends lowercase hexadecimal output only for the exact callback scope, returns explicit errors, and tree-shakes when unreachable; broader primitive/provider coverage remains pending.

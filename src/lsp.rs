@@ -1227,6 +1227,7 @@ fn add_qualified_namespace_completions(
     if namespace == "tls" {
         for (label, detail) in [
             ("wrap", "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)"),
+            ("listen", "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)"),
             ("read", "fn tls.read(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"),
             ("write", "fn tls.write(session: i64, value: str) -> error"),
             ("close", "fn tls.close(session: i64) -> error"),
@@ -3703,6 +3704,7 @@ fn signature_help_for_document_cached(
         if namespace == "tls" {
             let (label, parameters, returns) = match member {
                 "wrap" => ("tls.wrap", vec!["socket: i64", "serverName: str", "caFile: str"], "(i64, error)"),
+                "listen" => ("tls.listen", vec!["socket: i64", "certificate: str", "key: str"], "(i64, error)"),
                 "read" => ("tls.read", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
                 "write" => ("tls.write", vec!["session: i64", "value: str"], "error"),
                 "close" => ("tls.close", vec!["session: i64"], "error"),

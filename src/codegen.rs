@@ -6475,6 +6475,16 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
+static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle, const char *certificate, const char *key) {
+    if (socket_handle < 0 || socket_handle > INT_MAX || certificate == NULL || certificate[0] == '\0' || key == NULL || key[0] == '\0') return flux__tls_result(-1, "invalid TLS server arguments");
+    SSL_CTX *context = SSL_CTX_new(TLS_server_method());
+    if (context == NULL) return flux__tls_result(-1, "failed to create TLS server context");
+    if (SSL_CTX_use_certificate_file(context, certificate, SSL_FILETYPE_PEM) != 1 || SSL_CTX_use_PrivateKey_file(context, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load or validate TLS server certificate"); }
+    SSL *session = SSL_new(context);
+    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || SSL_accept(session) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS server handshake failed"); }
+    for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; return flux__tls_result((int64_t)index + 1, NULL); }
+    SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
+}
 static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; return NULL; }
 static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = strlen(value); if (length > 65536) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
 static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
@@ -32937,6 +32947,12 @@ fn emit_qualified_call(
                 let server_name = emit_expr(&args[1], env, signatures)?;
                 let ca_file = emit_expr(&args[2], env, signatures)?;
                 return Ok((format!("flux__tls_wrap({}, {}, {})", socket.code, server_name.code, ca_file.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+            }
+            "listen" if args.len() == 3 => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let certificate = emit_expr(&args[1], env, signatures)?;
+                let key = emit_expr(&args[2], env, signatures)?;
+                return Ok((format!("flux__tls_listen({}, {}, {})", socket.code, certificate.code, key.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
             }
             "read" if args.len() == 3 => {
                 let session = emit_expr(&args[0], env, signatures)?;

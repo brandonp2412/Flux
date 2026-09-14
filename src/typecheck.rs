@@ -7520,6 +7520,18 @@ fn check_qualified_call(
                 require_type(args[2].span, &Type::Str, &ca_file, "tls.wrap caFile")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "listen" => {
+                if args.len() != 3 {
+                    return Err(diag(span, &format!("tls.listen expects 3 arguments, got {}", args.len())));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.listen socket")?;
+                let certificate = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &certificate, "tls.listen certificate")?;
+                let key = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &key, "tls.listen key")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "read" => {
                 if args.len() != 3 {
                     return Err(diag(span, &format!("tls.read expects 3 arguments, got {}", args.len())));

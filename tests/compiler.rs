@@ -15738,15 +15738,19 @@ fn show(value: str) -> void {
 fn main() -> i64 {
     let (socket, connect_error) = net.connect("example.com", 443)
     let (session, tls_error) = tls.wrap(socket, "example.com", "")
+    let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     let (received, read_error) = tls.read(session, 1024, show)
     let close_error: error = tls.close(session)
+    let server_close_error: error = tls.close(server_session)
     print(connect_error)
     print(tls_error)
     print(write_error)
     print(received)
     print(read_error)
     print(close_error)
+    print(server_error)
+    print(server_close_error)
     return 0
 }
 "#;
