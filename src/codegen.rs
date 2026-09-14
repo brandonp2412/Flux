@@ -1875,6 +1875,8 @@ fn emit_runtime_prelude(
         || uses_locale_resources;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_frame_timeline = runtime_usage.contains("flux__frame_timeline(");
+    let uses_windows_process_id = runtime_usage.contains("flux__windows_process_id(");
+    let uses_windows_uptime_millis = runtime_usage.contains("flux__windows_uptime_millis(");
     let uses_windows_message_box = runtime_usage.contains("flux__windows_message_box(");
     let uses_windows_open = runtime_usage.contains("flux__windows_open(");
     let uses_windows_beep = runtime_usage.contains("flux__windows_beep(");
@@ -3131,6 +3133,12 @@ fn emit_runtime_prelude(
     {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
+    }
+    if uses_windows_process_id && uses_windows {
+        out.push_str("static int64_t flux__windows_process_id(void) { return (int64_t)GetCurrentProcessId(); }\n");
+    }
+    if uses_windows_uptime_millis && uses_windows {
+        out.push_str("static int64_t flux__windows_uptime_millis(void) { ULONGLONG value = GetTickCount64(); return value > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)value; }\n");
     }
     if uses_windows_message_box && uses_windows {
         out.push_str("static int64_t flux__windows_message_box(const char *title, const char *message) { wchar_t *wide_title = flux__windows_utf8_to_wide(title); wchar_t *wide_message = flux__windows_utf8_to_wide(message); if (wide_title == NULL || wide_message == NULL) { free(wide_title); free(wide_message); return 0; } int result = MessageBoxW(flux__windows_active_window, wide_message, wide_title, MB_OK | MB_ICONINFORMATION); free(wide_title); free(wide_message); return (int64_t)result; }\n");
