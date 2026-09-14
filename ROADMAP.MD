@@ -896,7 +896,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Menus/tray/clipboard/file dialogs: the existing portable `menu.show`, `tray.show`, `clipboard.write`/`clipboard.read`, and `fileDialog.open`/`save`/`folder` APIs now lower directly to compiler-owned Win32 menu, notification-area, Unicode clipboard, and native common/folder dialog APIs. Reachable features select only their required Windows system libraries, callbacks receive temporary compiler-owned UTF-8 values without exposing Win32 handles or user-written bridge code, and the same source APIs remain native on Linux while Android rejects desktop-only surfaces explicitly.
 - [x] Windows bitmap `Image` sources load through compiler-owned Win32 bitmap controls with refresh-time handle cleanup; `asset://` sources resolve safely beneath the staged executable-adjacent `assets/` directory with traversal rejection.
 - [x] Windows static Flux color styling now validates hex/semantic colors and lowers Text/background brushes through native `WM_CTLCOLORSTATIC`/`WM_CTLCOLORBTN` handling with compiler-owned brush cleanup; dynamic styling remains part of the broader backend follow-up.
-- [x] Generated Windows GUI C is syntax-validated against the available Wine Win32 headers (`-fshort-wchar`) in compiler regression coverage; execution on a native Windows GUI host remains the final backend validation gate.
+- [x] Generated Windows GUI C is syntax-validated against the available Wine Win32 headers (`-fshort-wchar`) and linked into a Windows executable with `winegcc`/Wine import libraries in compiler regression coverage; interactive execution on a native Windows GUI host remains the final backend validation gate.
 - [ ] Multi-window.
 - [ ] MSIX/store packaging.
 

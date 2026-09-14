@@ -226,6 +226,24 @@ app Screen(title: "Windows syntax")
         .arg(&c_path)
         .output()
         .expect("Clang should run for Windows syntax validation");
+    if Command::new("winegcc").arg("--version").output().is_ok() {
+        let binary = root.join("generated.exe");
+        let link = Command::new("winegcc")
+            .args(["-m64", "-I"])
+            .arg(&header_root)
+            .args(["-o"])
+            .arg(&binary)
+            .arg(&c_path)
+            .args(["-luser32", "-lgdi32"])
+            .output()
+            .expect("winegcc should run for Windows executable validation");
+        assert!(
+            link.status.success(),
+            "generated Windows C failed Wine executable linking:\n{}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        assert!(binary.is_file(), "Wine linker should produce a Windows executable");
+    }
     let _ = fs::remove_dir_all(&root);
     assert!(
         result.status.success(),
