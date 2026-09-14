@@ -1345,7 +1345,7 @@ pub fn emit_c_for_target_with_source_metadata(
         ));
     }
     if target == NativeTarget::Android
-        && (runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__crypto_"))
+        && (runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__crypto_") || runtime_usage.contains("flux__websocket_"))
     {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1722,6 +1722,8 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__net_")
         || runtime_usage.contains("flux__preferences_")
         || runtime_usage.contains("flux__tls_")
+        || runtime_usage.contains("flux__websocket_")
+        || runtime_usage.contains("flux__websocket_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -1742,6 +1744,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__crypto_hmac_sha256(")
         || runtime_usage.contains("flux__crypto_hmac_sha512(")
         || runtime_usage.contains("flux__tls_")
+        || runtime_usage.contains("flux__websocket_")
     {
         out.push_str("#include <openssl/sha.h>\n#include <openssl/hmac.h>\n");
     }
@@ -1842,7 +1845,7 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <fcntl.h>\n");
     }
-    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__tls_") {
+    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__websocket_") {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
