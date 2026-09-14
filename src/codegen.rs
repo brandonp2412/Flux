@@ -16987,11 +16987,14 @@ fn async_coalescing_await_plan(function: &Function) -> Option<AsyncCoalescingAwa
         .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
         .collect::<Vec<_>>();
     statement_indices.first()?;
+    let mut saw_coalescing = false;
     for &statement_index in &statement_indices {
-        let await_expr = coalescing_assignment_await_expr(&function.body[statement_index])?;
+        let stmt = &function.body[statement_index];
+        let await_expr = continuation_await_expr(stmt)?;
         direct_await_call(await_expr)?;
+        saw_coalescing |= coalescing_assignment_await_expr(stmt).is_some();
     }
-    Some(AsyncCoalescingAwaitPlan { statement_indices })
+    saw_coalescing.then_some(AsyncCoalescingAwaitPlan { statement_indices })
 }
 
 fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
@@ -24424,43 +24427,44 @@ fn emit_async_coalescing_sequence(
             context,
         )?;
         let stmt = &function.body[statement_index];
-        let StmtKind::Assign {
+        if let StmtKind::Assign {
             name,
             coalescing: true,
             ..
         } = &stmt.kind
-        else {
-            return Err(diag(
-                stmt.span,
-                "async coalescing continuation plan no longer points at a coalescing assignment",
-            ));
-        };
-        let Some(target_ty) = env.get(name).map(|ty| signatures.canonical_type(ty)) else {
-            return Err(diag(
-                stmt.span,
-                "async coalescing continuation target disappeared after type checking",
-            ));
-        };
-        if !matches!(target_ty, Type::Optional(_)) || !mutable.contains(name) {
-            return Err(diag(
-                stmt.span,
-                "async coalescing continuation target contract changed after type checking",
-            ));
+        {
+            let Some(target_ty) = env.get(name).map(|ty| signatures.canonical_type(ty)) else {
+                return Err(diag(
+                    stmt.span,
+                    "async coalescing continuation target disappeared after type checking",
+                ));
+            };
+            if !matches!(target_ty, Type::Optional(_)) || !mutable.contains(name) {
+                return Err(diag(
+                    stmt.span,
+                    "async coalescing continuation target contract changed after type checking",
+                ));
+            }
+            out.push_str(&format!("{pad}if (!{}.has_value) {{\n", local_c_name(name)));
+            emit_source_line(out, stmt.span, context.source_paths);
+            emit_async_suspend(
+                out,
+                "                ",
+                stmt,
+                order + 1,
+                function,
+                plan,
+                env,
+                signatures,
+            )?;
+            out.push_str(&format!("{pad}}}\n"));
+            segment_start = statement_index + 1;
+            continue;
         }
-        out.push_str(&format!("{pad}if (!{}.has_value) {{\n", local_c_name(name)));
+
         emit_source_line(out, stmt.span, context.source_paths);
-        emit_async_suspend(
-            out,
-            "                ",
-            stmt,
-            order + 1,
-            function,
-            plan,
-            env,
-            signatures,
-        )?;
-        out.push_str(&format!("{pad}}}\n"));
-        segment_start = statement_index + 1;
+        emit_async_suspend(out, pad, stmt, order + 1, function, plan, env, signatures)?;
+        return Ok(());
     }
 
     emit_block(

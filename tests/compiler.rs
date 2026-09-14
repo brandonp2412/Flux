@@ -41277,6 +41277,82 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_assignment_can_precede_later_direct_awaits() {
+    let source = r#"
+async fn fallback(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn mixed(leftInitial: i64?, rightInitial: i64?) -> i64 {
+    var left: i64? = leftInitial
+    var right: i64? = rightInitial
+    left ??= await fallback(4)
+    let first: i64 = await addOne(left ?? 0)
+    right ??= await fallback(6)
+    let second: i64 = await addOne(right ?? 0)
+    return first + second
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let leftPresent: i64? = 2
+    let rightPresent: i64? = 3
+    let filled: i64 = await mixed(missing, missing)
+    let kept: i64 = await mixed(leftPresent, rightPresent)
+    return filled + kept
+}
+"#;
+
+    check_source(source).expect("mixed conditional and direct awaits should typecheck");
+    let generated = compile_to_c(source)
+        .expect("conditional suspension before later awaits should use continuation states");
+    assert!(generated.contains("flux__async_resume_mixed"));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(4), flux__async_resume_mixed, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_fallback(INT64_C(6), flux__async_resume_mixed, flux__task)"
+    ));
+    assert!(generated.contains("flux__async_start_cont_addOne"));
+    assert!(!generated.contains("flux__async_body_mixed("));
+    assert!(!generated.contains("flux__async_await_fallback(flux__async_start_fallback"));
+    assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-mixed-awaits-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mixed async fixture directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-mixed-awaits");
+    fs::write(&source_path, source).expect("mixed async source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("mixed async fixture should build");
+    assert!(
+        built.status.success(),
+        "mixed async build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("mixed async fixture should run");
+    assert_eq!(output.status.code(), Some(19));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "4\n6\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_coalescing_assignment_preserves_copy_locals_between_suspensions() {
     let source = r#"
 async fn fallback(value: i64) -> i64 {
