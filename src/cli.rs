@@ -775,6 +775,69 @@ fn run() -> Result<(), CliError> {
             }
             Ok(())
         }
+        "emit-apple-bindings" => {
+            let path = require_target(&args)?;
+            let manifest_path = if path.is_dir() {
+                path.join("flux.toml")
+            } else if path.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+                path.to_path_buf()
+            } else {
+                return Err(CliError::Message(
+                    "Apple bindings require a manifest-backed package directory or flux.toml"
+                        .to_string(),
+                ));
+            };
+            let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
+            let sources = validate_project(&manifest.path)?;
+            let header = match fluxc::project::compile_to_c_header(&manifest.path) {
+                Ok(header) => header,
+                Err(diagnostic) => {
+                    report_diagnostics(&manifest.path, &[diagnostic], &sources);
+                    return Err(CliError::Reported);
+                }
+            };
+            let module = apple_module_name(&manifest.name);
+            let package_root = manifest
+                .path
+                .parent()
+                .expect("canonical manifest has a parent");
+            let output = output_path(&args[2..])?.unwrap_or_else(|| {
+                package_root
+                    .join("dist")
+                    .join(format!("{}-apple-bindings", manifest.name))
+            });
+            if output.exists() {
+                return Err(CliError::Message(format!(
+                    "Apple binding output '{}' already exists; remove it or choose another path with -o",
+                    output.display()
+                )));
+            }
+            fs::create_dir_all(&output).map_err(|error| {
+                format!(
+                    "failed to create Apple binding output '{}': {error}",
+                    output.display()
+                )
+            })?;
+            let header_path = output.join(format!("{module}.h"));
+            let module_map_path = output.join("module.modulemap");
+            if let Err(error) = fs::write(&header_path, header)
+                .and_then(|_| fs::write(&module_map_path, apple_module_map(&module)))
+            {
+                let _ = fs::remove_dir_all(&output);
+                return Err(CliError::Message(format!(
+                    "failed to write Apple bindings '{}': {error}",
+                    output.display()
+                )));
+            }
+            println!("Apple bindings: {}", output.display());
+            Ok(())
+        }
         "build" => {
             if args.get(1).is_some_and(|value| value == "web") {
                 return build_web_command(&args[2..]);
@@ -5199,6 +5262,31 @@ fn output_path(args: &[String]) -> Result<Option<PathBuf>, String> {
     Err("output syntax is '-o <path>'".to_string())
 }
 
+fn apple_module_name(package_name: &str) -> String {
+    let mut module = String::from("Flux_");
+    let mut previous_separator = false;
+    for ch in package_name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            module.push(ch);
+            previous_separator = false;
+        } else if !previous_separator {
+            module.push('_');
+            previous_separator = true;
+        }
+    }
+    while module.ends_with('_') && module.len() > "Flux_".len() {
+        module.pop();
+    }
+    if module == "Flux_" {
+        module.push_str("Package");
+    }
+    module
+}
+
+fn apple_module_map(module: &str) -> String {
+    format!("module {module} {{\n    header \"{module}.h\"\n    export *\n}}\n")
+}
+
 fn android_build_options(
     args: &[String],
     default_mode: BuildMode,
@@ -9418,7 +9506,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -9471,7 +9559,8 @@ mod tests {
         android_background_runner_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
-        android_work_manager_worker_java_source, build_native_configured,
+        android_work_manager_worker_java_source, apple_module_map, apple_module_name,
+        build_native_configured,
         build_native_instrumented, build_options, compile_web_html, debug_options,
         demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
         github_repository_parts, json_string, native_build_cache_path_configured,
@@ -10026,6 +10115,51 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(forced.1, crate::web::WasmPolicy::Always);
         assert!(
             super::web_build_options(&["--wasm".to_string(), "sometimes".to_string()]).is_err()
+        );
+    }
+
+    #[test]
+    fn apple_bindings_use_a_stable_clang_module_surface() {
+        assert_eq!(apple_module_name("demo-app"), "Flux_demo_app");
+        assert_eq!(apple_module_name("123.demo"), "Flux_123_demo");
+        assert_eq!(
+            apple_module_map("Flux_demo_app"),
+            "module Flux_demo_app {\n    header \"Flux_demo_app.h\"\n    export *\n}\n"
+        );
+
+        let root =
+            std::env::temp_dir().join(format!("flux-apple-bindings-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("Apple binding test directory should be writable");
+        let module = "Flux_demo";
+        let header = crate::compile_to_c_header(
+            "pub fn answer(value: i64) -> i64 {\n    return value\n}\nfn main() -> i64 {\n    return answer(0)\n}\n",
+        )
+        .expect("ABI-safe Flux source should emit a header");
+        std::fs::write(root.join(format!("{module}.h")), header)
+            .expect("Apple binding header should be writable");
+        std::fs::write(root.join("module.modulemap"), apple_module_map(module))
+            .expect("Apple module map should be writable");
+        std::fs::write(
+            root.join("consumer.m"),
+            format!("@import {module};\nint main(void) {{ return 0; }}\n"),
+        )
+        .expect("Objective-C consumer should be writable");
+        let status = std::process::Command::new("clang")
+            .args(["-fmodules", "-fsyntax-only", "-x", "objective-c"])
+            .arg(format!(
+                "-fmodules-cache-path={}",
+                root.join("modules").display()
+            ))
+            .arg("-I")
+            .arg(&root)
+            .arg(root.join("consumer.m"))
+            .status()
+            .expect("clang should validate generated Apple bindings");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            status.success(),
+            "generated Clang module should import from Objective-C"
         );
     }
 
