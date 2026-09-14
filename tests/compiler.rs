@@ -7717,6 +7717,9 @@ fn main() -> i64 {
     let (handle, startError) = worker.start(work)
     if startError != nil:
         return 1
+    let failureBeforeJoin: error = worker.failure(handle)
+    if failureBeforeJoin != nil:
+        return 3
     let joinError: error = worker.join(handle)
     if joinError != nil:
         return 2
@@ -7730,6 +7733,7 @@ fn main() -> i64 {
     assert!(generated.contains("#include <pthread.h>"));
     assert!(generated.contains("static struct flux__worker_i64_error flux__worker_start"));
     assert!(generated.contains("static const char *flux__worker_join"));
+    assert!(generated.contains("static const char *flux__worker_failure"));
     assert!(generated.contains("pthread_create(&state->thread"));
     assert!(generated.contains("pthread_join(state->thread"));
 

@@ -869,9 +869,11 @@ fn main() -> i64 {
 }
 ```
 
-`worker.start` accepts exactly `fn() -> void`; `worker.startWith` accepts `fn(i64) -> void` plus one scalar argument. Both return an opaque `i64` handle plus an explicit Flux `error`. `worker.join` waits for one direct child once, while `worker.joinAll()` joins the current scope. Unknown, invalid, already-joined, or out-of-scope handles fail rather than becoming unchecked native thread operations.
+`worker.start` accepts exactly `fn() -> void`; `worker.startWith` accepts `fn(i64) -> void` plus one scalar argument. Both return an opaque `i64` handle plus an explicit Flux `error`. `worker.done(handle)` reports completion, and `worker.failure(handle)` reads the child scope's propagated failure before the handle is joined. `worker.join` waits for one direct child once, while `worker.joinAll()` joins the current scope. Unknown, invalid, already-joined, or out-of-scope handles fail rather than becoming unchecked native thread operations.
 
 Cancellation is explicit and cooperative. `worker.cancel(handle)` requests cancellation of one child subtree, `worker.cancelAll()` requests cancellation of every unfinished child in the current scope, and `worker.cancelled()` exposes the current worker's cancellation state as a `bool`. Cancellation propagates to descendants, and leaving a worker scope cancels unfinished children before joining them. Blocking channel operations, worker sleeps/timers, socket readiness, and compiler-owned HTTP/network waits observe cancellation so workers do not require unsafe native thread termination. The compiler-owned registry, pthread support, cancellation helpers, and dependent runtime pieces are emitted only when reachable.
+
+`worker.failure(handle)` reads the compiler-propagated scope failure for a still-registered, current-scope handle without consuming it; call it before `worker.join(handle)` when a coordinator needs to inspect failure state separately from cleanup. Invalid, joined, or out-of-scope handles return explicit errors.
 
 Because ordinary stored closures still cannot capture outer locals, this bootstrap cannot smuggle borrowed local storage across a thread boundary. General owned argument/result transfer, ownership-safe stored closures, and the remaining `async`/`await` suspension shapes remain separate concurrency work.
 

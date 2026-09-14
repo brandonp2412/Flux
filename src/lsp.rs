@@ -1643,6 +1643,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "failure",
+            3,
+            "fn worker.failure(handle: i64) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "waitAny",
             3,
             "fn worker.waitAny(handles: i64[]) -> (i64, error)",
@@ -3661,6 +3668,14 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "failure" => {
+                    return Some(signature_help_for_builtin(
+                        "worker.failure",
+                        &["handle: i64"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "waitAny" | "joinAny" => {
                     return Some(signature_help_for_builtin(
                         &format!("worker.{implementation_member}"),
@@ -5008,7 +5023,7 @@ fn tokenize_semantic_line(
             let word = &line[start..index];
             let kind = semantic_identifier_kind(
                 word,
-                source,
+                &source,
                 source_id,
                 line_index + 1,
                 start + 1,
@@ -8550,7 +8565,7 @@ mod tests {
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(
                 uri,
-                source,
+                &source,
                 &documents,
                 line_index,
                 cursor,
@@ -8587,7 +8602,7 @@ mod tests {
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(
                 uri,
-                source,
+                &source,
                 &documents,
                 line_index,
                 cursor,
@@ -9397,6 +9412,7 @@ mod tests {
         );
         assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.done(handle: i64) -> (bool, error)"));
+        assert!(completion_items.contains("fn worker.failure(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.waitAny(handles: i64[]) -> (i64, error)"));
         assert!(completion_items.contains("fn worker.joinAny(handles: i64[]) -> (i64, error)"));
         assert!(completion_items.contains("fn worker.joinAll() -> error"));
@@ -9406,6 +9422,10 @@ mod tests {
 
         let uri = "file:///tmp/worker-signatures.flux";
         let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    let handles: i64[] = [handle, withHandle]\n    let (completed, waitError) = worker.waitAny(handles)\n    print(waitError)\n    let (joined, joinAnyError) = worker.joinAny(handles)\n    print(joined)\n    print(joinAnyError)\n    let (isDone, doneError) = worker.done(completed)\n    print(isDone)\n    print(doneError)\n    print(worker.cancel(withHandle))\n    worker.cancelChildren()\n    print(worker.cancelled())\n    print(worker.joinChildren())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
+        let source = source.replace(
+            "    print(doneError)\n",
+            "    print(doneError)\n    print(worker.failure(completed))\n",
+        );
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -9428,6 +9448,7 @@ mod tests {
                 "worker.done(",
                 "fn worker.done(handle: i64) -> (bool, error)",
             ),
+            ("worker.failure(", "fn worker.failure(handle: i64) -> error"),
             ("worker.cancel(", "fn worker.cancel(handle: i64) -> error"),
             ("worker.cancelChildren(", "fn worker.cancelAll() -> void"),
             ("worker.cancelled(", "fn worker.cancelled() -> bool"),
@@ -9442,7 +9463,7 @@ mod tests {
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(
                 uri,
-                source,
+                &source,
                 &documents,
                 line_index,
                 cursor,
