@@ -26978,6 +26978,37 @@ fn package_manifest_accepts_linux_desktop_associations() {
 }
 
 #[test]
+fn linux_directory_package_emits_desktop_metadata() {
+    let root = std::env::temp_dir().join(format!("flux-linux-package-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("temporary package should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("entry should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"desktop-app\"\nentry = \"src/main.flux\"\n\n[linux]\nuri_schemes = [\"flux\"]\nfile_associations = [\"text/plain\"]\n",
+    )
+    .expect("manifest should be writable");
+    let output_dir = root.join("dist");
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .args(["package", root.to_str().unwrap(), "-o"])
+        .arg(&output_dir)
+        .output()
+        .expect("package command should run");
+    assert!(
+        output.status.success(),
+        "package failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let desktop = fs::read_to_string(output_dir.join("share/applications/desktop-app.desktop"))
+        .expect("package should contain desktop metadata");
+    assert!(desktop.contains("Exec=desktop-app %U"));
+    assert!(desktop.contains("x-scheme-handler/flux;"));
+    assert!(desktop.contains("text/plain;"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn project_imports_compile_transitively_through_cli() {
     let root = std::env::temp_dir().join(format!("flux-project-imports-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
