@@ -10688,6 +10688,17 @@ fn emit_windows_native_application(
     );
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
+    let uses_key_events = view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "on_key").is_some());
+    let uses_passive_keyboard_activation = view.elements.iter().any(|element| {
+        !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+            && view_property(element, "on_tap").is_some()
+    });
+    if uses_key_events {
+        out.push_str("static const char *flux__win_key_name(WPARAM key, char utf8[8]) { switch (key) { case VK_RETURN: return \"Enter\"; case VK_ESCAPE: return \"Escape\"; case VK_TAB: return \"Tab\"; case VK_BACK: return \"Backspace\"; case VK_DELETE: return \"Delete\"; case VK_LEFT: return \"ArrowLeft\"; case VK_RIGHT: return \"ArrowRight\"; case VK_UP: return \"ArrowUp\"; case VK_DOWN: return \"ArrowDown\"; case VK_HOME: return \"Home\"; case VK_END: return \"End\"; case VK_PRIOR: return \"PageUp\"; case VK_NEXT: return \"PageDown\"; case VK_SPACE: return \" \"; default: break; } BYTE keyboard_state[256]; if (!GetKeyboardState(keyboard_state)) return \"Unknown\"; WCHAR wide[4] = {0}; UINT scan = MapVirtualKeyW((UINT)key, MAPVK_VK_TO_VSC); int count = ToUnicode((UINT)key, scan, keyboard_state, wide, 3, 0); if (count <= 0) return \"Unknown\"; int length = WideCharToMultiByte(CP_UTF8, 0, wide, count, utf8, 7, NULL, NULL); if (length <= 0) return \"Unknown\"; utf8[length] = '\\0'; return utf8; }\n");
+    }
     for (index, element) in view.elements.iter().enumerate() {
         let action_name = match element.kind.as_str() {
             "Button" => "on_press",
@@ -10795,6 +10806,70 @@ fn emit_windows_native_application(
                 out.push_str(&format!("static WNDPROC flux__win_input_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_input_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_KEYDOWN && wparam == VK_RETURN) {{ flux__win_submit_{index}(hwnd); return 0; }} return CallWindowProcA(flux__win_input_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
             }
         }
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        let focus_action = view_property(element, "on_focus");
+        let blur_action = view_property(element, "on_blur");
+        if focus_action.is_none() && blur_action.is_none() {
+            continue;
+        }
+        let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
+            if let Some(transition) = &action.transition {
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                return Ok(format!(
+                    "{} = {next}; flux__win_refresh();",
+                    ui_state_c_name(&transition.state)
+                ));
+            }
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows focus events require a named fn() -> void callback or state transition",
+                ));
+            };
+            Ok(format!(
+                "{}(); flux__win_refresh();",
+                function_c_name(function)
+            ))
+        };
+        let focus_body = match focus_action {
+            Some(action) => event_body(action)?,
+            None => String::new(),
+        };
+        let blur_body = match blur_action {
+            Some(action) => event_body(action)?,
+            None => String::new(),
+        };
+        out.push_str(&format!("static WNDPROC flux__win_focus_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_focus_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_SETFOCUS) {{ {focus_body} }} else if (message == WM_KILLFOCUS) {{ {blur_body} }} return CallWindowProcA(flux__win_focus_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
+    if uses_key_events || uses_passive_keyboard_activation {
+        out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || message->message != WM_KEYDOWN) return false; HWND focused = GetFocus(); if (focused == NULL) return false; char utf8[8] = {0};\n");
+        for (index, element) in view.elements.iter().enumerate() {
+            let variable = ui_widget_c_name(&element.name);
+            let on_key = view_property(element, "on_key");
+            let passive_tap = !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
+                && view_property(element, "on_tap").is_some();
+            if on_key.is_none() && !passive_tap {
+                continue;
+            }
+            out.push_str(&format!("if (focused == {variable}) {{ "));
+            if let Some(action) = on_key {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap Windows onKey requires a named fn(str) -> void callback",
+                    ));
+                };
+                out.push_str(&format!("const char *key = flux__win_key_name(message->wParam, utf8); {}(key); flux__win_refresh(); ", function_c_name(function)));
+                if passive_tap {
+                    out.push_str("if (message->wParam == VK_RETURN || message->wParam == VK_SPACE) return true; ");
+                }
+            } else if passive_tap {
+                out.push_str(&format!("if (message->wParam == VK_RETURN || message->wParam == VK_SPACE) {{ flux__win_tap_{index}(); return true; }} "));
+            }
+            out.push_str("return false; }\n");
+        }
+        out.push_str("return false; }\n");
     }
     let gap = i64::from(view.grid.gap.unwrap_or(12));
     let padding = i64::from(view.grid.padding.unwrap_or(20));
@@ -11062,6 +11137,25 @@ fn emit_windows_native_application(
             }
             _ => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT"),
         };
+        let autofocus = match view_property(element, "autofocus") {
+            Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                diag(
+                    property.value.span,
+                    "autofocus must be a compile-time bool value",
+                )
+            })?,
+            None => false,
+        };
+        let implicitly_focusable = view_property(element, "on_key").is_some()
+            || view_property(element, "on_tap").is_some()
+            || autofocus;
+        let mut style = style.to_string();
+        if implicitly_focusable
+            && view_property(element, "focusable").is_none()
+            && !style.contains("WS_TABSTOP")
+        {
+            style.push_str(" | WS_TABSTOP");
+        }
         let id = if matches!(
             element.kind.as_str(),
             "Button" | "TextInput" | "Toggle" | "Radio"
@@ -11131,6 +11225,11 @@ fn emit_windows_native_application(
                 }
             }
         }
+        if view_property(element, "on_focus").is_some()
+            || view_property(element, "on_blur").is_some()
+        {
+            out.push_str(&format!("SetLastError(0); flux__win_focus_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_focus_proc_{index}); if (flux__win_focus_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
     }
     out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }");
     if view.elements.iter().any(|element| element.kind == "Text") {
@@ -11140,7 +11239,24 @@ fn emit_windows_native_application(
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }
-    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } int exit_code = result < 0 ? 1 : (int)message.wParam;");
+    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window);");
+    if let Some(element) = view.elements.iter().find(|element| {
+        view_property(element, "autofocus")
+            .and_then(|property| static_expr_bool(&property.value, signatures))
+            == Some(true)
+    }) {
+        out.push_str(&format!(
+            " if ({} != NULL) SetFocus({});",
+            ui_widget_c_name(&element.name),
+            ui_widget_c_name(&element.name)
+        ));
+    }
+    let key_dispatch = if uses_key_events || uses_passive_keyboard_activation {
+        " if (flux__win_dispatch_key(&message)) continue;"
+    } else {
+        ""
+    };
+    out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) {{{key_dispatch} if (IsDialogMessageA(flux__windows_active_window, &message)) continue; TranslateMessage(&message); DispatchMessageA(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_delete_fonts();");
     }

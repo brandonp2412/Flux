@@ -285,6 +285,67 @@ app Screen(title: "Accessible Windows")
 }
 
 #[test]
+fn windows_backend_uses_native_keyboard_focus_and_autofocus_semantics() {
+    let source = r#"
+fn activated() -> void {
+    print("activated")
+}
+fn keyed(key: str) -> void {
+    print(key)
+}
+fn focused() -> void {
+    print("focused")
+}
+fn blurred() -> void {
+    print("blurred")
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text title at 1,1
+        text: "Keyboard target"
+        onTap: activated
+        onKey: keyed
+        onFocus: focused
+        onBlur: blurred
+        autofocus: true
+    Card details at 2,1
+        title: "Details"
+        onTap: activated
+    Button next at 3,1
+        text: "Next"
+        onPress: activated
+}
+app Screen(title: "Keyboard Windows")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows keyboard source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows keyboard source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows keyboard source should lower to native Win32 C");
+
+    assert!(generated.contains("static const char *flux__win_key_name"));
+    assert!(generated.contains("ToUnicode((UINT)key"));
+    assert!(generated.contains("case VK_LEFT: return \"ArrowLeft\""));
+    assert!(generated.contains("static bool flux__win_dispatch_key(const MSG *message)"));
+    assert!(generated.contains("focused == flux__ui_title"));
+    assert!(generated.contains("flux__win_tap_1(); return true;"));
+    assert!(generated.contains("WM_SETFOCUS"));
+    assert!(generated.contains("WM_KILLFOCUS"));
+    assert!(generated.contains("flux__win_focus_proc_0"));
+    assert!(generated.contains("SS_LEFT | SS_NOTIFY | WS_TABSTOP"));
+    assert!(generated.contains("if (flux__ui_title != NULL) SetFocus(flux__ui_title);"));
+    assert!(generated.contains("IsDialogMessageA(flux__windows_active_window, &message)"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
 fn windows_text_input_supports_controlled_state_submit_and_native_edit_options() {
     let source = r#"
 fn submitted(value: str) -> void {
