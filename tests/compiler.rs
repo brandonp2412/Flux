@@ -72,7 +72,7 @@ fn main() -> i64 {
 
 #[test]
 fn windows_backend_emits_native_win32_window_controls_and_click_dispatch() {
-    let source = r#"
+    let source = r##"
 view Screen {
     state active: bool = false
     state query: str = ""
@@ -80,6 +80,8 @@ view Screen {
     grid rows: auto auto auto auto auto
     Text title at 1,1
         text: query
+        color: "#1f2328"
+        backgroundColor: "surfaceRaised"
         visible: active
     TextInput input at 2,1
         text: query
@@ -98,7 +100,7 @@ view Screen {
         onPress: active => !active
 }
 app Screen(title: "Native Flux", width: 640, height: 480)
-"#;
+"##;
     let program = fluxc::parser::parse(source).expect("Windows application source should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("Windows application should typecheck");
@@ -137,6 +139,11 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("flux__win_click_2"));
     assert!(generated.contains("flux__win_click_3"));
     assert!(generated.contains("flux__win_click_4"));
+    assert!(generated.contains("static const COLORREF flux__win_color_title_color = RGB(31, 35, 40);"));
+    assert!(generated.contains("static const COLORREF flux__win_color_title_background_color = RGB(255, 255, 255);"));
+    assert!(generated.contains("case WM_CTLCOLORSTATIC"));
+    assert!(generated.contains("SetTextColor(dc, flux__win_color_title_color)"));
+    assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
 }

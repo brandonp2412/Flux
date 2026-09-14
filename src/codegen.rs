@@ -10745,6 +10745,45 @@ fn emit_windows_native_application(
                 element.name
             ));
         }
+        for property_name in ["background_color", "color"] {
+            if property_name == "color" && element.kind != "Text" {
+                continue;
+            }
+            if let Some(property) = view_property(element, property_name) {
+                let value = static_expr_str(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        &format!("{property_name} must be a compile-time string on Windows"),
+                    )
+                })?;
+                let color = windows_colorref(&value).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        &format!("{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"),
+                    )
+                })?;
+                out.push_str(&format!(
+                    "static HBRUSH flux__win_brush_{}_{} = NULL;\nstatic const COLORREF flux__win_color_{}_{} = {};\n",
+                    element.name, property_name, element.name, property_name, color
+                ));
+            }
+        }
+    }
+    let styled_elements = view.elements.iter().filter(|element| {
+        view_property(element, "background_color").is_some()
+            || (element.kind == "Text" && view_property(element, "color").is_some())
+    });
+    if styled_elements.clone().next().is_some() {
+        out.push_str("static void flux__win_delete_brushes(void) {\n");
+        for element in styled_elements.clone() {
+            if view_property(element, "background_color").is_some() {
+                out.push_str(&format!(
+                    "if (flux__win_brush_{}_background_color != NULL) {{ DeleteObject(flux__win_brush_{}_background_color); flux__win_brush_{}_background_color = NULL; }}\n",
+                    element.name, element.name, element.name
+                ));
+            }
+        }
+        out.push_str("}\n");
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("static void flux__win_apply_fonts(void) {\n");
@@ -11133,7 +11172,28 @@ fn emit_windows_native_application(
         }
     }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
-    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_COMMAND: switch (LOWORD(wparam)) {\n");
+    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
+    for element in view.elements.iter().filter(|element| {
+        view_property(element, "background_color").is_some()
+            || (element.kind == "Text" && view_property(element, "color").is_some())
+    }) {
+        out.push_str(&format!(
+            "if (control == {}) {{",
+            ui_widget_c_name(&element.name)
+        ));
+        if let Some(property) = view_property(element, "color") {
+            let value = static_expr_str(&property.value, signatures).expect("validated Windows text color");
+            let color = windows_colorref(&value).expect("validated Windows text color");
+            out.push_str(&format!(" SetTextColor(dc, flux__win_color_{}_color);", element.name));
+            let _ = color;
+        }
+        if view_property(element, "background_color").is_some() {
+            out.push_str(&format!(" if (flux__win_brush_{}_background_color == NULL) flux__win_brush_{}_background_color = CreateSolidBrush(flux__win_color_{}_background_color); return (LRESULT)flux__win_brush_{}_background_color; }}\n", element.name, element.name, element.name, element.name));
+        } else {
+            out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
+        }
+    }
+    out.push_str("return (LRESULT)GetSysColorBrush(COLOR_WINDOW); } break; case WM_COMMAND: switch (LOWORD(wparam)) {\n");
     for (index, element) in view.elements.iter().enumerate() {
         let click_action = match element.kind.as_str() {
             "Button" => view_property(element, "on_press"),
@@ -11397,6 +11457,12 @@ fn emit_windows_native_application(
     out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) {{{key_dispatch} if (IsDialogMessageA(flux__windows_active_window, &message)) continue; TranslateMessage(&message); DispatchMessageA(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_delete_fonts();");
+    }
+    if view.elements.iter().any(|element| {
+        view_property(element, "background_color").is_some()
+            || (element.kind == "Text" && view_property(element, "color").is_some())
+    }) {
+        out.push_str(" flux__win_delete_brushes();");
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");
@@ -15638,6 +15704,28 @@ fn parse_hex_rgba(value: &str) -> Option<(u16, u16, u16, Option<u16>)> {
         u16::from(blue) * 257,
         alpha.map(|value| u16::from(value) * 257),
     ))
+}
+
+fn windows_colorref(value: &str) -> Option<String> {
+    let (red, green, blue) = match value {
+        "surface" => (248, 249, 250),
+        "surfaceRaised" => (255, 255, 255),
+        "text" => (31, 35, 40),
+        "textMuted" => (87, 96, 106),
+        "accent" => (9, 105, 218),
+        "onAccent" => (255, 255, 255),
+        "outline" => (208, 215, 222),
+        "danger" => (207, 34, 46),
+        "success" => (26, 127, 55),
+        "warning" => (154, 103, 0),
+        "shadow" => (31, 35, 40),
+        "transparent" => (255, 255, 255),
+        _ => {
+            let (red, green, blue, _) = parse_hex_rgba(value)?;
+            (red / 257, green / 257, blue / 257)
+        }
+    };
+    Some(format!("RGB({}, {}, {})", red, green, blue))
 }
 
 fn static_expr_bool(expr: &Expr, signatures: &Signatures) -> Option<bool> {
