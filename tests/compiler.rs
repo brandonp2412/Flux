@@ -7793,6 +7793,40 @@ fn main() -> i64 {
             .contains("worker.join handle: expected i64")
     );
 
+    let invalid_failure = r#"
+fn main() -> i64 {
+    let failure: error = worker.failure(0)
+    if failure == nil:
+        return 1
+    return 0
+}
+"#;
+    let invalid_failure_path = root.join("invalid-failure.flux");
+    fs::write(&invalid_failure_path, invalid_failure)
+        .expect("invalid worker failure source should be writable");
+    let invalid_failure_binary = root.join("invalid-failure");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&invalid_failure_path)
+        .arg("-o")
+        .arg(&invalid_failure_binary)
+        .output()
+        .expect("invalid worker failure binary should build");
+    assert!(
+        built.status.success(),
+        "invalid worker failure build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&invalid_failure_binary)
+        .output()
+        .expect("invalid worker failure binary should run");
+    assert!(
+        run.status.success(),
+        "invalid worker failure binary failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
     let dead = r#"
 fn work() -> void {
     print(1)
