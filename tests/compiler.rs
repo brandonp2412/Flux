@@ -46249,6 +46249,8 @@ fn main() -> i64 {
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
+    assert!(generated.contains("flux__websocket_write_control"));
+    assert!(generated.contains("failed to create WebSocket control mask"));
 }
 
 #[test]
