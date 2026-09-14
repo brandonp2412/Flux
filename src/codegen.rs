@@ -10522,10 +10522,17 @@ fn emit_windows_native_application(
         }
     }
     let uses_images = view.elements.iter().any(|element| element.kind == "Image");
-    let uses_native_colors = view.elements.iter().any(|element| {
-        view_property(element, "background_color").is_some()
-            || (element.kind == "Text" && view_property(element, "color").is_some())
+    let uses_native_decorations = view.elements.iter().any(|element| {
+        view_property(element, "border_color").is_some()
+            || view_property(element, "border_width").is_some()
+            || view_property(element, "border_style").is_some()
+            || view_property(element, "radius").is_some()
     });
+    let uses_native_colors = uses_native_decorations
+        || view.elements.iter().any(|element| {
+            view_property(element, "background_color").is_some()
+                || (element.kind == "Text" && view_property(element, "color").is_some())
+        });
     let uses_accessibility = view.elements.iter().any(|element| {
         element.kind == "Image"
             || view_property(element, "accessibility_label").is_some()
@@ -10581,6 +10588,34 @@ static void flux__win_set_background(HBRUSH *brush, COLORREF *color, bool *trans
 }
 static COLORREF flux__win_text_color(const char *value) {
     COLORREF color = 0; bool transparent = false; if (!flux__win_parse_ui_color(value, &color, &transparent) || transparent) { fputs("Flux runtime error: Text.color must use an opaque '#RRGGBB', '#RRGGBBAA', or semantic Flux color token\n", stderr); abort(); } return color;
+}
+"#);
+    }
+    if uses_native_decorations {
+        out.push_str(r#"static int flux__win_border_style_value(const char *value) {
+    if (value == NULL || strcmp(value, "solid") == 0) return 1;
+    if (strcmp(value, "none") == 0) return 0;
+    if (strcmp(value, "dashed") == 0) return 2;
+    if (strcmp(value, "dotted") == 0) return 3;
+    if (strcmp(value, "double") == 0) return 4;
+    fputs("Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\n", stderr); abort();
+}
+static COLORREF flux__win_border_color(const char *value) {
+    COLORREF color = 0; bool transparent = false; if (!flux__win_parse_ui_color(value, &color, &transparent) || transparent) { fputs("Flux runtime error: borderColor must use an opaque '#RRGGBB', '#RRGGBBAA', or semantic Flux color token\n", stderr); abort(); } return color;
+}
+static void flux__win_apply_radius(HWND control, int radius) {
+    if (control == NULL) return; if (radius <= 0) { SetWindowRgn(control, NULL, TRUE); return; }
+    RECT rect = {0}; if (!GetClientRect(control, &rect)) return; int diameter = radius > INT32_MAX / 2 ? INT32_MAX : radius * 2;
+    HRGN region = CreateRoundRectRgn(0, 0, rect.right + 1, rect.bottom + 1, diameter, diameter); if (region == NULL) return;
+    if (!SetWindowRgn(control, region, TRUE)) DeleteObject(region);
+}
+static void flux__win_draw_border(HWND control, COLORREF color, int width, int style, int radius) {
+    if (control == NULL || width <= 0 || style == 0) return; HDC dc = GetDC(control); if (dc == NULL) return; RECT rect = {0};
+    if (!GetClientRect(control, &rect)) { ReleaseDC(control, dc); return; } int pen_style = style == 2 ? PS_DASH : style == 3 ? PS_DOT : PS_SOLID;
+    HPEN pen = CreatePen(pen_style, width, color); if (pen == NULL) { ReleaseDC(control, dc); return; } HGDIOBJ previous_pen = SelectObject(dc, pen); HGDIOBJ previous_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+    int diameter = radius > INT32_MAX / 2 ? INT32_MAX : radius * 2; if (radius > 0) RoundRect(dc, 0, 0, rect.right, rect.bottom, diameter, diameter); else Rectangle(dc, 0, 0, rect.right, rect.bottom);
+    if (style == 4 && rect.right > width * 3 && rect.bottom > width * 3) { int inset = width * 2; if (radius > 0) RoundRect(dc, inset, inset, rect.right - inset, rect.bottom - inset, diameter, diameter); else Rectangle(dc, inset, inset, rect.right - inset, rect.bottom - inset); }
+    SelectObject(dc, previous_brush); SelectObject(dc, previous_pen); DeleteObject(pen); ReleaseDC(control, dc);
 }
 "#);
     }
@@ -10807,6 +10842,28 @@ static void flux__win_image_draw(HDC dc, const RECT *rect, HBITMAP bitmap, int f
             out.push_str(&format!(
                 "static COLORREF flux__win_foreground_{} = CLR_INVALID;\nstatic COLORREF flux__win_background_{} = CLR_INVALID;\nstatic HBRUSH flux__win_background_brush_{} = NULL;\nstatic bool flux__win_background_transparent_{} = false;\n",
                 element.name, element.name, element.name, element.name
+            ));
+        }
+        if view_property(element, "border_color").is_some()
+            || view_property(element, "border_width").is_some()
+            || view_property(element, "border_style").is_some()
+            || view_property(element, "radius").is_some()
+        {
+            out.push_str(&format!(
+                "static WNDPROC flux__win_style_orig_{0} = NULL;\nstatic COLORREF flux__win_border_color_{0} = CLR_INVALID;\nstatic int flux__win_border_width_{0} = 0;\nstatic int flux__win_border_style_{0} = 1;\nstatic int flux__win_radius_{0} = 0;\n",
+                element.name
+            ));
+        }
+    }
+    for element in &view.elements {
+        if view_property(element, "border_color").is_some()
+            || view_property(element, "border_width").is_some()
+            || view_property(element, "border_style").is_some()
+            || view_property(element, "radius").is_some()
+        {
+            out.push_str(&format!(
+                "static LRESULT CALLBACK flux__win_style_proc_{0}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcA(flux__win_style_orig_{0}, hwnd, message, wparam, lparam); if (message == WM_SIZE) flux__win_apply_radius(hwnd, flux__win_radius_{0}); if (message == WM_PAINT) flux__win_draw_border(hwnd, flux__win_border_color_{0}, flux__win_border_width_{0}, flux__win_border_style_{0}, flux__win_radius_{0}); return result; }}\n",
+                element.name
             ));
         }
     }
@@ -11181,6 +11238,29 @@ static void flux__win_image_draw(HDC dc, const RECT *rect, HBITMAP bitmap, int f
         if let Some(property) = view_property(element, "background_color") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!("flux__win_set_background(&flux__win_background_brush_{0}, &flux__win_background_{0}, &flux__win_background_transparent_{0}, {value}); if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE);\n", element.name));
+        }
+        if view_property(element, "border_color").is_some()
+            || view_property(element, "border_width").is_some()
+            || view_property(element, "border_style").is_some()
+            || view_property(element, "radius").is_some()
+        {
+            let border_color = view_property(element, "border_color")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| c_string("outline"));
+            let border_width = view_property(element, "border_width")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "INT64_C(0)".to_string());
+            let border_style = view_property(element, "border_style")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| c_string("solid"));
+            let radius = view_property(element, "radius")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "INT64_C(0)".to_string());
+            out.push_str(&format!("int64_t flux__win_border_width_value_{0} = {border_width}; if (flux__win_border_width_value_{0} < 0 || flux__win_border_width_value_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int64_t flux__win_radius_value_{0} = {radius}; if (flux__win_radius_value_{0} < 0 || flux__win_radius_value_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} flux__win_border_color_{0} = flux__win_border_color({border_color}); flux__win_border_width_{0} = flux__win_scale(flux__win_border_width_value_{0}); flux__win_border_style_{0} = flux__win_border_style_value({border_style}); flux__win_radius_{0} = flux__win_scale(flux__win_radius_value_{0}); flux__win_apply_radius({variable}, flux__win_radius_{0}); if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE);\n", element.name));
         }
         if let Some(property) = view_property(element, "accessibility_label") {
             let value = ui_expr_c(&property.value, view, signatures)?;
@@ -11607,6 +11687,13 @@ static void flux__win_image_draw(HDC dc, const RECT *rect, HBITMAP bitmap, int f
             || view_property(element, "on_blur").is_some()
         {
             out.push_str(&format!("SetLastError(0); flux__win_focus_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_focus_proc_{index}); if (flux__win_focus_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "border_color").is_some()
+            || view_property(element, "border_width").is_some()
+            || view_property(element, "border_style").is_some()
+            || view_property(element, "radius").is_some()
+        {
+            out.push_str(&format!("SetLastError(0); flux__win_style_orig_{0} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_style_proc_{0}); if (flux__win_style_orig_{0} == NULL && GetLastError() != 0) return 1;\n", element.name));
         }
     }
     out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }");

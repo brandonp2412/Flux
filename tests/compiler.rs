@@ -462,6 +462,9 @@ fn windows_backend_lowers_native_colors_alignment_and_minimum_layout() {
 view Screen {
     state foreground: str = "accent"
     state background: str = "#102030"
+    state border: str = "outline"
+    state borderWidth: i64 = 2
+    state rounding: i64 = 12
     state raised: bool = false
     grid columns: 1fr
     grid rows: auto auto
@@ -469,6 +472,10 @@ view Screen {
         text: "Styled"
         color: foreground
         backgroundColor: background
+        borderColor: border
+        borderWidth: borderWidth
+        borderStyle: "dashed"
+        radius: rounding
         textAlign: "center"
         minWidth: 180
         minHeight: 44
@@ -495,6 +502,23 @@ app Screen(title: "Styled Windows")
     assert!(generated.contains("static bool flux__win_parse_ui_color"));
     assert!(generated.contains("GetSysColor(COLOR_HIGHLIGHT)"));
     assert!(generated.contains("CreateSolidBrush(next)"));
+    assert!(generated.contains("static int flux__win_border_style_value"));
+    assert!(generated.contains("CreateRoundRectRgn"));
+    assert!(generated.contains("RoundRect(dc"));
+    assert!(generated.contains("PS_DASH"));
+    assert!(
+        generated.contains(
+            "flux__win_border_color_title = flux__win_border_color(flux__ui_state_border)"
+        )
+    );
+    assert!(generated.contains("flux__win_border_width_value_title = flux__ui_state_borderWidth"));
+    assert!(generated.contains("flux__win_radius_value_title = flux__ui_state_rounding"));
+    assert!(
+        generated
+            .contains("flux__win_border_style_title = flux__win_border_style_value(\"dashed\")")
+    );
+    assert!(generated.contains("flux__win_apply_radius(flux__ui_title, flux__win_radius_title)"));
+    assert!(generated.contains("flux__win_style_proc_title"));
     assert!(
         generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORBTN:")
     );
