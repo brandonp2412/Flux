@@ -181,6 +181,60 @@ app Screen(title: "Image")
 }
 
 #[test]
+fn windows_backend_validates_against_available_wine_headers() {
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if !header_root.join("windows.h").is_file() || Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Cross target"
+}
+app Screen(title: "Windows syntax")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows cross-target source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows cross-target source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows cross-target source should lower");
+    let root = std::env::temp_dir().join(format!(
+        "flux-windows-syntax-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("Windows syntax test directory should be writable");
+    let c_path = root.join("generated.c");
+    fs::write(&c_path, generated).expect("generated Windows C should be writable");
+    let result = Command::new("clang")
+        .args([
+            "-fsyntax-only",
+            "-std=c17",
+            "-fshort-wchar",
+            "-I",
+            header_root.to_str().expect("Wine header path should be UTF-8"),
+        ])
+        .arg(&c_path)
+        .output()
+        .expect("Clang should run for Windows syntax validation");
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        result.status.success(),
+        "generated Windows C failed Win32-header syntax validation:\n{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn windows_platform_bindings_lower_directly_and_reject_other_targets() {
     let source = r#"
 fn main() -> i64 {
