@@ -26232,7 +26232,7 @@ fn package_manifest_resolves_entry_and_builds_from_directory_or_manifest() {
 fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions() {
     let root = std::env::temp_dir().join(format!("flux-workspace-manifest-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    for member in ["apps/one", "libs/two"] {
+    for member in ["apps/one", "libs/two", "libs/shared"] {
         fs::create_dir_all(root.join(member).join("src"))
             .expect("workspace member should be writable");
         fs::write(root.join(member).join("src/main.flux"), "fn main() -> i64 { 0 }\n")
@@ -26244,29 +26244,58 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
     let manifest = root.join("flux.toml");
     fs::write(
         &manifest,
-        "[package]\nname = \"workspace-root\"\nentry = \"src/main.flux\"\n\n[workspace]\nmembers = [\"libs/two\", \"apps/one\"]\n",
+        "[package]\nname = \"workspace-root\"\nentry = \"src/main.flux\"\n\n[workspace]\nmembers = [\"libs/two\", \"apps/one\", \"libs/shared\"]\n",
     )
     .expect("workspace manifest should be writable");
-    for (path, name) in [("apps/one", "one"), ("libs/two", "two")] {
+    for (path, name) in [
+        ("apps/one", "one"),
+        ("libs/two", "two"),
+        ("libs/shared", "shared"),
+    ] {
+        let dependencies = if path == "apps/one" {
+            "\n[dependencies]\nshared = { path = \"../../libs/shared\" }\n"
+        } else {
+            ""
+        };
         fs::write(
             root.join(path).join("flux.toml"),
-            format!("[package]\nname = \"{name}\"\nentry = \"src/main.flux\"\n"),
+            format!("[package]\nname = \"{name}\"\nentry = \"src/main.flux\"\n{dependencies}"),
         )
         .expect("member manifest should be writable");
     }
 
     let parsed = fluxc::project::read_manifest(&manifest).expect("workspace should parse");
-    assert_eq!(parsed.workspace_members.len(), 2);
+    assert_eq!(parsed.workspace_members.len(), 3);
     let members = fluxc::project::read_workspace_members(&parsed)
         .expect("workspace members should load");
     assert_eq!(
         members.iter().map(|member| member.name.as_str()).collect::<Vec<_>>(),
-        vec!["one", "two"]
+        vec!["one", "shared", "two"]
     );
+    let lock = fluxc::project::write_lockfile(&root).expect("workspace lock should write");
+    let lock_source = fs::read_to_string(lock).expect("workspace lock should be readable");
+    assert!(lock_source.contains("id = \"one/shared\""));
+    fluxc::project::ensure_lockfile(&root, true).expect("root should replay workspace lock");
+    fluxc::project::ensure_lockfile(&root.join("apps/one"), true)
+        .expect("member should replay the root workspace lock");
+    let build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&root)
+        .output()
+        .expect("workspace build should run");
+    assert!(
+        build.status.success(),
+        "workspace build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    for package in [root.join("src/main"), root.join("apps/one/src/main"), root.join("libs/two/src/main"), root.join("libs/shared/src/main")] {
+        assert!(package.is_file(), "workspace package binary should exist: {}", package.display());
+        let _ = fs::remove_file(package);
+    }
 
     fs::write(
         root.join("libs/two/flux.toml"),
-        "[package]\nname = \"one\"\nentry = \"src/main.flux\"\n",
+        "[package]\nname = \"one\"\nentry = \"src/main.flux\"\n\n[dependencies]\nshared = { path = \"../../libs/shared\" }\n",
     )
     .expect("duplicate member manifest should be writable");
     let errors = fluxc::project::read_workspace_members(&parsed)

@@ -677,7 +677,7 @@ fn run() -> Result<(), CliError> {
             let source_id = fluxc::SourceId::from_name(resolved.to_string_lossy().as_ref());
             let (diagnostics, sources) = match fluxc::project::ensure_lockfile(path, options.locked)
             {
-                Ok(_) => fluxc::project::check_with_sources(path),
+                Ok(_) => check_workspace_with_sources(path),
                 Err(diagnostics) => (diagnostics, Vec::new()),
             };
             if diagnostics.is_empty() {
@@ -883,52 +883,7 @@ fn run() -> Result<(), CliError> {
             }
             let path = require_target(&args)?;
             let options = build_options(&args[2..], BuildMode::Release)?;
-            fluxc::project::ensure_lockfile(path, options.locked).map_err(|diagnostics| {
-                diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.message)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })?;
-            let native_package = native_package_config_for_target(path)?;
-            let sources = validate_project(path)?;
-            let codegen_target = options.native_target.codegen_target();
-            let generated = match fluxc::project::analyze_for_target(path, codegen_target).and_then(
-                |analysis| {
-                    analysis
-                        .emit_c_for_target(codegen_target)
-                        .map_err(|error| vec![error])
-                },
-            ) {
-                Ok(generated) => generated,
-                Err(diagnostics) => {
-                    report_diagnostics(path, &diagnostics, &sources);
-                    return Err(CliError::Reported);
-                }
-            };
-            let output = if let Some(output) = options.output {
-                output
-            } else {
-                let entry = fluxc::project::resolve_entry(path).map_err(|diagnostics| {
-                    diagnostics
-                        .into_iter()
-                        .map(|diagnostic| diagnostic.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })?;
-                default_binary_path(&entry)
-            };
-            build_native_configured(
-                &generated,
-                &output,
-                options.mode,
-                NativeInstrumentation::None,
-                &options.native_target,
-                native_package.as_ref(),
-                false,
-            )?;
-            println!("built ({}): {}", options.mode.name(), output.display());
-            Ok(())
+            build_workspace_targets(path, options)
         }
         "package" => {
             if args.get(1).is_some_and(|value| value == "web") {
@@ -2622,6 +2577,85 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
     Ok(())
 }
 
+fn build_workspace_targets(target: &Path, options: BuildOptions) -> Result<(), CliError> {
+    let targets = fluxc::project::workspace_package_targets(target).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    if targets.len() > 1 && options.output.is_some() {
+        return Err(CliError::Message(
+            "workspace builds cannot use a single explicit '-o' output; each package uses its default dist path"
+                .to_string(),
+        ));
+    }
+    for package in targets {
+        fluxc::project::ensure_lockfile(&package, options.locked).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        build_native_target(
+            &package,
+            options.output.clone(),
+            options.mode,
+            options.native_target.clone(),
+        )?;
+    }
+    Ok(())
+}
+
+fn build_native_target(
+    path: &Path,
+    explicit_output: Option<PathBuf>,
+    mode: BuildMode,
+    native_target: NativeTargetOptions,
+) -> Result<(), CliError> {
+    let native_package = native_package_config_for_target(path)?;
+    let sources = validate_project(path)?;
+    let codegen_target = native_target.codegen_target();
+    let generated = match fluxc::project::analyze_for_target(path, codegen_target).and_then(
+        |analysis| {
+            analysis
+                .emit_c_for_target(codegen_target)
+                .map_err(|error| vec![error])
+        },
+    ) {
+        Ok(generated) => generated,
+        Err(diagnostics) => {
+            report_diagnostics(path, &diagnostics, &sources);
+            return Err(CliError::Reported);
+        }
+    };
+    let output = if let Some(output) = explicit_output {
+        output
+    } else {
+        let entry = fluxc::project::resolve_entry(path).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+        default_binary_path(&entry)
+    };
+    build_native_configured(
+        &generated,
+        &output,
+        mode,
+        NativeInstrumentation::None,
+        &native_target,
+        native_package.as_ref(),
+        false,
+    )?;
+    println!("built ({}): {}", mode.name(), output.display());
+    Ok(())
+}
+
 fn build_package_directory(
     manifest: &fluxc::project::PackageManifest,
     generated: &str,
@@ -2902,7 +2936,7 @@ fn project_name_from_path(target: &Path) -> String {
     }
 }
 
-fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
+fn run_tests_single(target: &Path, options: TestOptions) -> Result<(), CliError> {
     let tests = discover_test_targets(target)?;
     let package_target = (!target.is_file()
         || target.file_name().and_then(|value| value.to_str()) == Some("flux.toml"))
@@ -2948,6 +2982,31 @@ fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
         let _ = fs::remove_dir_all(directory);
     }
     result
+}
+
+fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
+    let workspace_targets = fluxc::project::workspace_package_targets(target)
+        .map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+    if workspace_targets.len() > 1 {
+        for package in workspace_targets {
+            fluxc::project::ensure_lockfile(&package, options.locked).map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
+            run_tests_single(&package, options)?;
+        }
+        return Ok(());
+    }
+    run_tests_single(target, options)
 }
 
 fn run_tests_inner(
@@ -4805,6 +4864,23 @@ fn validate_project(path: &Path) -> Result<Vec<fluxc::project::ProjectSource>, C
     }
     report_diagnostics(path, &diagnostics, &sources);
     Err(CliError::Reported)
+}
+
+fn check_workspace_with_sources(
+    target: &Path,
+) -> (Vec<Diagnostic>, Vec<fluxc::project::ProjectSource>) {
+    let targets = match fluxc::project::workspace_package_targets(target) {
+        Ok(targets) => targets,
+        Err(diagnostics) => return (diagnostics, Vec::new()),
+    };
+    let mut diagnostics = Vec::new();
+    let mut sources = Vec::new();
+    for package in targets {
+        let (package_diagnostics, package_sources) = fluxc::project::check_with_sources(&package);
+        diagnostics.extend(package_diagnostics);
+        sources.extend(package_sources);
+    }
+    (diagnostics, sources)
 }
 
 fn report_diagnostics(

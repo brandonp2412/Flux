@@ -1873,6 +1873,25 @@ pub fn read_workspace_members(
     }
 }
 
+/// Return the root package followed by its explicitly declared workspace
+/// members. Direct source-file projects return only the supplied source.
+pub fn workspace_package_targets(target: &Path) -> Result<Vec<PathBuf>, Vec<Diagnostic>> {
+    if !target.is_dir()
+        && target.file_name().and_then(|name| name.to_str()) != Some("flux.toml")
+    {
+        return Ok(vec![target.to_path_buf()]);
+    }
+    let manifest = read_package_manifest_target(target, "workspace discovery")?;
+    let root = workspace_root_manifest(&manifest)?;
+    let mut targets = vec![root.path.clone()];
+    for member in read_workspace_members(&root)? {
+        targets.push(member.path);
+    }
+    targets.sort();
+    targets.dedup();
+    Ok(targets)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LockedDependency {
     id: String,
@@ -1922,6 +1941,31 @@ fn read_package_manifest_target(
         )]);
     };
     read_manifest(&manifest_path)
+}
+
+fn workspace_root_manifest(
+    manifest: &PackageManifest,
+) -> Result<PackageManifest, Vec<Diagnostic>> {
+    let package_root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    let mut ancestor = package_root.parent();
+    while let Some(directory) = ancestor {
+        let candidate = directory.join("flux.toml");
+        if candidate.is_file() {
+            let candidate_manifest = read_manifest(&candidate)?;
+            if candidate_manifest
+                .workspace_members
+                .iter()
+                .any(|member| member == package_root)
+            {
+                return Ok(candidate_manifest);
+            }
+        }
+        ancestor = directory.parent();
+    }
+    Ok(manifest.clone())
 }
 
 pub fn add_dependency(
@@ -2142,8 +2186,9 @@ fn render_package_dependency(dependency: &PackageDependency) -> String {
 
 pub fn write_lockfile(target: &Path) -> Result<PathBuf, Vec<Diagnostic>> {
     let manifest = read_package_manifest_target(target, "lock")?;
-    let rendered = render_lockfile(&manifest)?;
-    let root = manifest
+    let lock_manifest = workspace_root_manifest(&manifest)?;
+    let rendered = render_lockfile(&lock_manifest)?;
+    let root = lock_manifest
         .path
         .parent()
         .expect("canonical manifest path has a parent");
@@ -2165,15 +2210,22 @@ pub fn ensure_lockfile(target: &Path, locked: bool) -> Result<Option<PathBuf>, V
         return Ok(None);
     }
     let manifest = read_package_manifest_target(target, "dependency resolution")?;
-    if manifest.dependencies.is_empty() {
+    let lock_manifest = workspace_root_manifest(&manifest)?;
+    if lock_manifest.dependencies.is_empty()
+        && lock_manifest.workspace_members.iter().all(|member| {
+            read_manifest(&member.join("flux.toml"))
+                .map(|manifest| manifest.dependencies.is_empty())
+                .unwrap_or(false)
+        })
+    {
         return Ok(None);
     }
-    let root = manifest
+    let root = lock_manifest
         .path
         .parent()
         .expect("canonical manifest path has a parent");
     let lock_path = root.join("flux.lock");
-    match validate_lockfile(&manifest) {
+    match validate_lockfile(&lock_manifest) {
         Ok(()) => Ok(Some(lock_path)),
         Err(diagnostics) if locked => Err(diagnostics),
         Err(diagnostics)
@@ -2500,10 +2552,17 @@ fn lockfile_has_exact_registry_entries(path: &Path) -> bool {
 }
 
 fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> {
-    if manifest.dependencies.is_empty() {
+    let lock_manifest = workspace_root_manifest(manifest)?;
+    let has_workspace_dependencies = !lock_manifest.dependencies.is_empty()
+        || lock_manifest.workspace_members.iter().any(|member| {
+            read_manifest(&member.join("flux.toml"))
+                .map(|manifest| !manifest.dependencies.is_empty())
+                .unwrap_or(false)
+        });
+    if !has_workspace_dependencies {
         return Ok(());
     }
-    let root = manifest
+    let root = lock_manifest
         .path
         .parent()
         .expect("canonical manifest path has a parent");
@@ -2517,7 +2576,7 @@ fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> 
             ),
         )]
     })?;
-    validate_lockfile_source(manifest, &actual).map_err(|message| {
+    validate_lockfile_source(&lock_manifest, &actual).map_err(|message| {
         vec![Diagnostic::global(
             DiagnosticStage::Parse,
             format!(
@@ -2530,6 +2589,14 @@ fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> 
 }
 
 fn collect_manifest_lock_entries(
+    manifest: &PackageManifest,
+    resolve_git: bool,
+) -> Result<Vec<LockedDependency>, Vec<Diagnostic>> {
+    let lock_manifest = workspace_root_manifest(manifest)?;
+    collect_workspace_lock_entries(&lock_manifest, resolve_git)
+}
+
+fn collect_workspace_lock_entries(
     manifest: &PackageManifest,
     resolve_git: bool,
 ) -> Result<Vec<LockedDependency>, Vec<Diagnostic>> {
@@ -2558,6 +2625,40 @@ fn collect_manifest_lock_entries(
         &mut entries,
         resolve_git,
     )?;
+    for member in read_workspace_members(manifest)? {
+        let member_prefix = member.name.clone();
+        let member_root = member
+            .path
+            .parent()
+            .expect("canonical member manifest has a parent")
+            .to_path_buf();
+        if !active.insert(member_root.clone()) {
+            return Err(vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!(
+                    "workspace member '{}' repeats an active package root",
+                    member_root.display()
+                ),
+            )]);
+        }
+        resolved.insert(
+            member.name.clone(),
+            ResolvedDependency {
+                source: ResolvedDependencySource::Path(member_root.clone()),
+                version: member.version.clone(),
+                requirement: None,
+                via: format!("workspace:{member_prefix}"),
+            },
+        );
+        collect_locked_dependencies(
+            &member,
+            &member_prefix,
+            &mut active,
+            &mut resolved,
+            &mut entries,
+            resolve_git,
+        )?;
+    }
     Ok(entries)
 }
 
