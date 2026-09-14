@@ -7116,6 +7116,24 @@ static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t 
     if runtime_usage.contains("flux__fs_directory_rename(") {
         out.push_str("static inline const char *flux__fs_directory_rename(const char *source, const char *destination) { struct stat info; if (stat(source, &info) != 0 || !S_ISDIR(info.st_mode)) return \"path is not a directory\"; return rename(source, destination) == 0 ? NULL : \"failed to rename directory\"; }\n");
     }
+    if runtime_usage.contains("flux__fs_file_link(") {
+        out.push_str("static inline const char *flux__fs_file_link(const char *source, const char *destination) { struct stat info; if (stat(source, &info) != 0 || !S_ISREG(info.st_mode)) return \"path is not a file\"; return link(source, destination) == 0 ? NULL : \"failed to create file link\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_sync(")
+        || runtime_usage.contains("flux__fs_file_sync_data(")
+        || runtime_usage.contains("flux__fs_directory_sync(")
+    {
+        out.push_str("static inline const char *flux__fs_sync_path(const char *path, bool expect_directory, bool data_only) { struct stat info; if (stat(path, &info) != 0) return \"failed to inspect sync target\"; if (expect_directory ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) return expect_directory ? \"path is not a directory\" : \"path is not a file\"; int descriptor = open(path, O_RDONLY); if (descriptor < 0) return \"failed to open sync target\"; int result = data_only ? fdatasync(descriptor) : fsync(descriptor); int close_result = close(descriptor); if (result != 0) return data_only ? \"failed to sync file data\" : \"failed to sync path\"; return close_result == 0 ? NULL : \"failed to close sync target\"; }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_sync(") {
+        out.push_str("static inline const char *flux__fs_file_sync(const char *path) { return flux__fs_sync_path(path, false, false); }\n");
+    }
+    if runtime_usage.contains("flux__fs_file_sync_data(") {
+        out.push_str("static inline const char *flux__fs_file_sync_data(const char *path) { return flux__fs_sync_path(path, false, true); }\n");
+    }
+    if runtime_usage.contains("flux__fs_directory_sync(") {
+        out.push_str("static inline const char *flux__fs_directory_sync(const char *path) { return flux__fs_sync_path(path, true, false); }\n");
+    }
     if runtime_usage.contains("flux__fs_file_truncate(") {
         out.push_str("static inline const char *flux__fs_file_truncate(const char *path, int64_t size) { if (size < 0) return \"file size must be non-negative\"; struct stat info; if (stat(path, &info) != 0 || !S_ISREG(info.st_mode)) return \"path is not a file\"; off_t native_size = (off_t)size; if ((int64_t)native_size != size) return \"file size exceeds platform range\"; return truncate(path, native_size) == 0 ? NULL : \"failed to truncate file\"; }\n");
     }
@@ -35680,7 +35698,7 @@ fn emit_qualified_call(
         match name {
             "exists" | "size" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
             | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
-            | "allocatedSize" | "remove" => {
+            | "allocatedSize" | "remove" | "sync" | "syncData" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid file call reached code generation"));
                 }
@@ -35747,6 +35765,8 @@ fn emit_qualified_call(
                         vec![Type::I64, Type::Error],
                         Some("flux__fs_i64_error".to_string()),
                     ),
+                    "sync" => ("flux__fs_file_sync", vec![Type::Error], None),
+                    "syncData" => ("flux__fs_file_sync_data", vec![Type::Error], None),
                     _ => ("flux__fs_remove_file", vec![Type::Error], None),
                 };
                 return Ok((format!("{helper}({})", path.code), returns, multi_value_tag));
@@ -35790,10 +35810,11 @@ fn emit_qualified_call(
                 }
                 let source = emit_expr(&args[0], env, signatures)?;
                 let destination = emit_expr(&args[1], env, signatures)?;
-                let helper = if name == "copy" {
-                    "flux__fs_copy_file"
-                } else {
-                    "flux__fs_rename"
+                let helper = match name {
+                    "copy" => "flux__fs_copy_file",
+                    "rename" => "flux__fs_rename",
+                    "link" => "flux__fs_file_link",
+                    _ => unreachable!(),
                 };
                 return Ok((
                     format!("{helper}({}, {})", source.code, destination.code),
@@ -35931,6 +35952,7 @@ fn emit_qualified_call(
             "createAll" => ("flux__fs_create_directories", vec![Type::Error], None),
             "remove" => ("flux__fs_remove_directory", vec![Type::Error], None),
             "removeAll" => ("flux__fs_remove_directories", vec![Type::Error], None),
+            "sync" => ("flux__fs_directory_sync", vec![Type::Error], None),
             _ => return Err(diag(span, "unknown directory call reached code generation")),
         };
         return Ok((format!("{helper}({})", path.code), returns, multi_value_tag));
