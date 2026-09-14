@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 128 checkbox items
+- Current net scope growth after the baseline: 129 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -725,6 +725,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] State restoration.
   - [x] Current Linux and Android application paths provide bounded callback-based restoration: Android uses native instance-state storage, while Linux persists `onSaveState` output atomically under an application-ID-keyed state path (or `FLUX_APP_STATE_PATH`) and invokes `onRestoreState` before `onStart`; malformed/oversized records are discarded and no platform/controller object is exposed. Windows, portable configuration-change semantics, and richer restoration context remain pending.
   - [x] Web application primitive view state is automatically restored per application through guarded `sessionStorage` JSON and persisted after each refresh; malformed entries and type-mismatched values fall back to declared initial state without exposing storage objects to Flux. Native Windows and broader portable restoration semantics remain pending.
+  - [x] Windows native applications now persist bounded callback state through compiler-owned Win32 file APIs keyed by application ID (or `FLUX_APP_STATE_PATH`), restore before `onStart`, save during `WM_DESTROY`, validate `FLXW`/16 MiB limits, and replace state atomically; broader portable configuration-change semantics remain pending.
 
 # Milestone 14 — Styling, themes, responsive UI, and animation
 

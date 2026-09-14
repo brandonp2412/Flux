@@ -34018,6 +34018,46 @@ app Screen(onSaveState: badSave, onRestoreState: badRestore)
 }
 
 #[test]
+fn windows_application_state_restoration_uses_bounded_atomic_storage() {
+    let source = r#"
+fn saveState() -> str {
+    return "saved-state"
+}
+
+fn restoreState(value: str) -> void {
+    print(value)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+app Screen(id: "com.example.state", onSaveState: saveState, onRestoreState: restoreState)
+"#;
+    check_source(source).expect("Windows state callbacks should typecheck");
+    let program = fluxc::parser::parse(source).expect("Windows state source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows state source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows state callbacks should lower to native Win32 C");
+    assert!(generated.contains("FLUX_APP_STATE_PATH"));
+    assert!(generated.contains("FLXW"));
+    assert!(generated.contains("CreateFileA"));
+    assert!(generated.contains("MoveFileExA"));
+    assert!(generated.contains("flux__fn_restoreState(state)"));
+    assert!(generated.contains("flux__win_restore_app_state();"));
+    assert!(generated.contains("flux__win_save_app_state();"));
+    assert!(generated.contains("flux__fn_saveState()"));
+    assert!(generated.contains("%s\\\\%s.state"));
+    assert!(generated.contains("com.example.state"));
+}
+
+#[test]
 fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
     let cases = [
         ("onConfigurationChanged", "fn callback() -> void {\n}\n"),

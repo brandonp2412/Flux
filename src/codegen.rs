@@ -10614,6 +10614,11 @@ fn emit_windows_native_application(
         .unwrap_or(i64::from(bootstrap_height));
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
+    let application_id = application_metadata_string(application, "id", signatures)
+        .unwrap_or_else(|| "app.flux.bootstrap".to_string());
+    let on_save_state = application_metadata_function(application, "on_save_state");
+    let on_restore_state = application_metadata_function(application, "on_restore_state");
+    let on_exit = application_metadata_function(application, "on_exit");
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
@@ -10685,6 +10690,24 @@ fn emit_windows_native_application(
         out.push_str(&format!(
             "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
         ));
+    }
+    if on_save_state.is_some() || on_restore_state.is_some() {
+        out.push_str(&format!(
+            "static const char *flux__win_app_state_path(void) {{ static char path[4096]; char root[2048]; DWORD length = GetEnvironmentVariableA(\"FLUX_APP_STATE_PATH\", path, (DWORD)sizeof(path)); if (length > 0 && length < sizeof(path)) return path; length = GetEnvironmentVariableA(\"LOCALAPPDATA\", root, (DWORD)sizeof(root)); if (length == 0 || length >= sizeof(root)) length = GetEnvironmentVariableA(\"TEMP\", root, (DWORD)sizeof(root)); if (length == 0 || length >= sizeof(root)) return NULL; char directory[4096]; int directory_length = snprintf(directory, sizeof(directory), \"%s\\\\Flux\", root); if (directory_length <= 0 || (size_t)directory_length >= sizeof(directory)) return NULL; CreateDirectoryA(directory, NULL); int path_length = snprintf(path, sizeof(path), \"%s\\\\%s.state\", directory, {}); return path_length > 0 && (size_t)path_length < sizeof(path) ? path : NULL; }}\n",
+            c_string(&application_id)
+        ));
+        if let Some(function) = on_save_state {
+            out.push_str(&format!(
+                "static void flux__win_save_app_state(void) {{ const char *path = flux__win_app_state_path(); if (path == NULL) return; const char *state = {}(); if (state == NULL) return; size_t length = strlen(state); if (length > (size_t)16 * 1024 * 1024) return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; HANDLE file = CreateFileA(temporary, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (file == INVALID_HANDLE_VALUE) return; unsigned char magic[4] = {{'F','L','X','W'}}; uint64_t size = (uint64_t)length; DWORD count = 0; BOOL ok = WriteFile(file, magic, (DWORD)sizeof(magic), &count, NULL) && count == sizeof(magic) && WriteFile(file, &size, (DWORD)sizeof(size), &count, NULL) && count == sizeof(size) && (length == 0 || (length <= UINT32_MAX && WriteFile(file, state, (DWORD)length, &count, NULL) && count == (DWORD)length)); CloseHandle(file); if (!ok) {{ DeleteFileA(temporary); return; }} if (!MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) DeleteFileA(temporary); }}\n",
+                function_c_name(function)
+            ));
+        }
+        if let Some(function) = on_restore_state {
+            out.push_str(&format!(
+                "static void flux__win_restore_app_state(void) {{ const char *path = flux__win_app_state_path(); if (path == NULL) return; HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); if (file == INVALID_HANDLE_VALUE) return; LARGE_INTEGER file_size; if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart < 12 || file_size.QuadPart > (LONGLONG)16 * 1024 * 1024 + 12) {{ CloseHandle(file); DeleteFileA(path); return; }} size_t total = (size_t)file_size.QuadPart; unsigned char *record = (unsigned char *)malloc(total); if (record == NULL) {{ CloseHandle(file); return; }} DWORD count = 0; BOOL ok = ReadFile(file, record, (DWORD)total, &count, NULL) && count == (DWORD)total; CloseHandle(file); if (!ok || memcmp(record, \"FLXW\", 4) != 0) {{ free(record); DeleteFileA(path); return; }} uint64_t size = 0; memcpy(&size, record + 4, sizeof(size)); if (size > (uint64_t)16 * 1024 * 1024 || size + 12 != total) {{ free(record); DeleteFileA(path); return; }} char *state = (char *)malloc((size_t)size + 1); if (state == NULL) {{ free(record); return; }} memcpy(state, record + 12, (size_t)size); state[size] = '\\0'; {}(state); free(state); free(record); DeleteFileA(path); }}\n",
+                function_c_name(function)
+            ));
+        }
     }
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
@@ -11136,7 +11159,18 @@ fn emit_windows_native_application(
     } else {
         ""
     };
-    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n"));
+    let save_callback = if on_save_state.is_some() {
+        "flux__win_save_app_state();"
+    } else {
+        ""
+    };
+    let exit_callback = on_exit
+        .map(|function| format!("{}();", function_c_name(function)))
+        .unwrap_or_default();
+    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
+        save = save_callback,
+        exit = exit_callback,
+    ));
     let accessibility_init = if uses_accessibility {
         " flux__win_accessibility_init();"
     } else {
@@ -11314,6 +11348,9 @@ fn emit_windows_native_application(
         out.push_str(" flux__win_apply_fonts();");
     }
     out.push_str(" flux__win_refresh();\n");
+    if on_restore_state.is_some() {
+        out.push_str("flux__win_restore_app_state();\n");
+    }
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }
