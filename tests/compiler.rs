@@ -34022,14 +34022,6 @@ fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
     let cases = [
         ("onConfigurationChanged", "fn callback() -> void {\n}\n"),
         ("onLowMemory", "fn callback() -> void {\n}\n"),
-        (
-            "onSaveState",
-            "fn callback() -> str {\n    return \"saved\"\n}\n",
-        ),
-        (
-            "onRestoreState",
-            "fn callback(value: str) -> void {\n    print(value)\n}\n",
-        ),
     ];
 
     for (field, callback) in cases {
@@ -34047,6 +34039,78 @@ fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
             error.message
         );
     }
+}
+
+#[test]
+fn linux_application_state_restoration_uses_bounded_atomic_storage() {
+    let source = r#"
+fn saveState() -> str {
+    return "saved-state"
+}
+
+fn restoreState(value: str) -> void {
+    print(value)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+
+app Screen(onSaveState: saveState, onRestoreState: restoreState)
+"#;
+    check_source(source).expect("Linux state callbacks should typecheck");
+    let generated = compile_to_c(source).expect("Linux state callbacks should lower");
+    assert!(generated.contains("FLUX_APP_STATE_PATH"));
+    assert!(generated.contains("FLXA"));
+    assert!(generated.contains("flux__fn_saveState()"));
+    assert!(generated.contains("flux__fn_restoreState(state)"));
+    assert!(generated.contains("rename(temporary, path)"));
+    assert!(generated.contains("size > (uint64_t)16 * 1024 * 1024"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-linux-state-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("state restoration compile directory should be writable");
+    let c_path = root.join("generated.c");
+    let binary = root.join("state-app");
+    fs::write(&c_path, generated).expect("generated Linux application C should be writable");
+    let cflags = String::from_utf8(
+        Command::new("pkg-config")
+            .args(["--cflags", "gtk4"])
+            .output()
+            .expect("pkg-config should run")
+            .stdout,
+    )
+    .expect("GTK cflags should be UTF-8");
+    let libs = String::from_utf8(
+        Command::new("pkg-config")
+            .args(["--libs", "gtk4"])
+            .output()
+            .expect("pkg-config should run")
+            .stdout,
+    )
+    .expect("GTK libs should be UTF-8");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fwrapv"])
+        .args(cflags.split_whitespace())
+        .arg(&c_path)
+        .args(libs.split_whitespace())
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("Clang should compile Linux state restoration code");
+    assert!(
+        compile.status.success(),
+        "Linux state restoration generated C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

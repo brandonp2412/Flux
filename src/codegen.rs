@@ -11355,12 +11355,7 @@ fn emit_linux_gtk_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    for field_name in [
-        "onConfigurationChanged",
-        "onLowMemory",
-        "onSaveState",
-        "onRestoreState",
-    ] {
+    for field_name in ["onConfigurationChanged", "onLowMemory"] {
         if let Some(field) = application
             .metadata
             .iter()
@@ -11395,6 +11390,10 @@ fn emit_linux_gtk_application(
         .unwrap_or(i64::from(bootstrap_width));
     let initial_window_height = application_metadata_i64(application, "height", signatures)
         .unwrap_or(i64::from(bootstrap_height));
+    let application_id = application_metadata_string(application, "id", signatures)
+        .unwrap_or_else(|| "app.flux.bootstrap".to_string());
+    let on_save_state = application_metadata_function(application, "on_save_state");
+    let on_restore_state = application_metadata_function(application, "on_restore_state");
 
     for element in &view.elements {
         if !typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&element.kind.as_str()) {
@@ -11535,6 +11534,25 @@ fn emit_linux_gtk_application(
         }
     }
     out.push_str(" if (!adopted) free(value); } else { free(name); fclose(file); remove(path); return; } free(name); } fclose(file); remove(path); }\n");
+    if on_save_state.is_some() || on_restore_state.is_some() {
+        out.push_str("#include <sys/stat.h>\n");
+        out.push_str(&format!(
+            "static const char *flux__ui_app_state_path(void) {{ const char *override_path = getenv(\"FLUX_APP_STATE_PATH\"); if (override_path != NULL && override_path[0] != '\\0') return override_path; static char path[4096]; const char *root = getenv(\"XDG_STATE_HOME\"); const char *home = getenv(\"HOME\"); char directory[4096]; if (root != NULL && root[0] != '\\0') {{ int written = snprintf(directory, sizeof(directory), \"%s/flux\", root); if (written <= 0 || (size_t)written >= sizeof(directory)) return NULL; mkdir(root, 0700); }} else {{ if (home == NULL || home[0] == '\\0') return NULL; int written = snprintf(directory, sizeof(directory), \"%s/.local/state/flux\", home); if (written <= 0 || (size_t)written >= sizeof(directory)) return NULL; char parent[4096]; int parent_written = snprintf(parent, sizeof(parent), \"%s/.local\", home); if (parent_written > 0 && (size_t)parent_written < sizeof(parent)) {{ mkdir(parent, 0700); int state_written = snprintf(parent, sizeof(parent), \"%s/.local/state\", home); if (state_written > 0 && (size_t)state_written < sizeof(parent)) mkdir(parent, 0700); }} }} mkdir(directory, 0700); int written = snprintf(path, sizeof(path), \"%s/%s.state\", directory, {}); return written > 0 && (size_t)written < sizeof(path) ? path : NULL; }}\n",
+            c_string(&application_id)
+        ));
+        if let Some(function) = on_save_state {
+            out.push_str(&format!(
+                "static void flux__ui_save_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; const char *state = {}(); if (state == NULL) return; size_t length = strlen(state); if (length > (size_t)16 * 1024 * 1024) return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {{'F','L','X','A'}}; uint64_t size = (uint64_t)length; if (fwrite(magic, sizeof(magic), 1, file) != 1 || fwrite(&size, sizeof(size), 1, file) != 1 || (length != 0 && fwrite(state, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} if (fclose(file) != 0) {{ remove(temporary); return; }} if (rename(temporary, path) != 0) remove(temporary); }}\n",
+                function_c_name(function)
+            ));
+        }
+        if let Some(function) = on_restore_state {
+            out.push_str(&format!(
+                "static void flux__restore_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint64_t size = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXA\", 4) != 0 || fread(&size, sizeof(size), 1, file) != 1 || size > (uint64_t)16 * 1024 * 1024) {{ fclose(file); remove(path); return; }} char *state = malloc((size_t)size + 1); if (state == NULL || (size != 0 && fread(state, 1, (size_t)size, file) != (size_t)size)) {{ free(state); fclose(file); remove(path); return; }} state[size] = '\\0'; fclose(file); {}(state); free(state); remove(path); }}\n",
+                function_c_name(function)
+            ));
+        }
+    }
     out.push_str("static volatile sig_atomic_t flux__ui_reload_requested = 0; static void flux__ui_reload_signal(int signal_number) { (void)signal_number; flux__ui_reload_requested = 1; } static gboolean flux__ui_reload_poll(gpointer data) { (void)data; if (!flux__ui_reload_requested) return G_SOURCE_CONTINUE; flux__ui_save_reload_state(); GApplication *application = g_application_get_default(); if (application != NULL) g_application_quit(application); return G_SOURCE_REMOVE; }\n");
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
@@ -11994,8 +12012,11 @@ fn emit_linux_gtk_application(
     out.push('\n');
     let on_stop = application_metadata_function(application, "on_stop");
     let on_exit = application_metadata_function(application, "on_exit");
-    if on_stop.is_some() || on_exit.is_some() {
+    if on_stop.is_some() || on_exit.is_some() || on_save_state.is_some() {
         out.push_str("static void flux__ui_shutdown(GtkApplication *application, gpointer data) { (void)application; (void)data;\n");
+        if on_save_state.is_some() {
+            out.push_str("    flux__ui_save_app_state();\n");
+        }
         if let Some(function) = on_stop {
             out.push_str(&format!("    {}();\n", function_c_name(function)));
         }
@@ -12024,6 +12045,9 @@ fn emit_linux_gtk_application(
     }
     out.push_str("static void flux__ui_activate(GtkApplication *application, gpointer data) {\n");
     out.push_str("    (void)data;\n");
+    if on_restore_state.is_some() {
+        out.push_str("    flux__restore_app_state();\n");
+    }
     out.push_str("    flux__ui_restore_reload_state();\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("    {}();\n", function_c_name(function)));
@@ -13304,8 +13328,6 @@ fn emit_linux_gtk_application(
         out.push_str(&format!("        {}(uri);\n", function_c_name(function)));
         out.push_str("        g_free(uri);\n    }\n}\n\n");
     }
-    let application_id = application_metadata_string(application, "id", signatures)
-        .unwrap_or_else(|| "app.flux.bootstrap".to_string());
     let application_flags = if on_open_url.is_some() {
         "G_APPLICATION_HANDLES_OPEN"
     } else {
