@@ -44600,6 +44600,50 @@ fn main() -> i64 {
 "#;
     let error = check_source(wrong_key).expect_err("map indexing must check key types");
     assert!(error.message.contains("map key"));
+
+    let optional_source = r#"
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 1}
+    let maybe: map<str, i64>? = values
+    let present: i64? = maybe?["one"]
+    print(present ?? -1)
+    return 0
+}
+"#;
+    check_source(optional_source).expect("optional map indexing should typecheck");
+    let optional_generated =
+        compile_to_c(optional_source).expect("optional map indexing should lower natively");
+    assert!(optional_generated.contains("struct flux__optional_map"));
+    assert!(optional_generated.contains(".has_value && true"));
+    let optional_root = std::env::temp_dir().join(format!(
+        "flux-optional-map-index-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&optional_root);
+    fs::create_dir_all(&optional_root).expect("optional map fixture should be writable");
+    let optional_c = optional_root.join("optional_map_index.c");
+    let optional_exe = optional_root.join("optional_map_index");
+    fs::write(&optional_c, optional_generated)
+        .expect("generated optional map C should be writable");
+    let optional_compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&optional_c)
+        .arg("-o")
+        .arg(&optional_exe)
+        .output()
+        .expect("clang should compile optional map indexing");
+    assert!(
+        optional_compile.status.success(),
+        "optional map index C should compile: {}",
+        String::from_utf8_lossy(&optional_compile.stderr)
+    );
+    let optional_output = Command::new(&optional_exe)
+        .output()
+        .expect("optional map index program should run");
+    assert!(optional_output.status.success());
+    assert_eq!(String::from_utf8_lossy(&optional_output.stdout), "1\n");
+    let _ = fs::remove_dir_all(&optional_root);
 }
 
 #[test]

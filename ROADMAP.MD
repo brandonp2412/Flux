@@ -400,7 +400,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Maps.
   - [x] Bootstrap typed `map<K, V>` literals with primitive compile-time keys/values, deterministic insertion-order storage, duplicate-key diagnostics, formatter support, and native paired key/value lowering.
   - [x] Map match arms with compile-time scalar keys, typed value bindings, native linear lookup, guards, and required wildcard fallback coverage.
-  - [x] Optional keyed lookup through `map[key]`, including exact key typing, missing-key results as `value?`, native string/scalar equality, and allocation-free linear lookup.
+  - [x] Optional keyed lookup through `map[key]` and `map?[key]`, including exact key typing, missing-key results as `value?`, absent-map short-circuiting, native string/scalar equality, and allocation-free linear lookup.
   - [x] Map iteration through `for key, value in map`, preserving insertion order and binding keys/values directly from native storage.
 - [ ] Sets.
 - [ ] Byte buffers.

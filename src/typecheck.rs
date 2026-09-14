@@ -6052,17 +6052,29 @@ pub fn type_of_expr(
         } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
             let index_ty = type_of_expr(index, env, signatures)?;
-            if !*optional {
-                if let Type::Map(key, value) = &base_ty {
-                    require_type(index.span, key, &index_ty, "map key")?;
-                    if !matches!(value.as_ref(), Type::I64 | Type::Bool | Type::Str) {
-                        return Err(diag(
-                            expr.span,
-                            "map indexing currently requires an i64, bool, or str value",
-                        ));
-                    }
-                    return Ok(Type::Optional(value.clone()));
+            let map_ty = if *optional {
+                match base_ty.clone() {
+                    Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                        Type::Map(key, value) => Some((key, value)),
+                        _ => None,
+                    },
+                    _ => None,
                 }
+            } else {
+                match base_ty.clone() {
+                    Type::Map(key, value) => Some((key, value)),
+                    _ => None,
+                }
+            };
+            if let Some((key, value)) = map_ty {
+                require_type(index.span, &key, &index_ty, "map key")?;
+                if !matches!(value.as_ref(), Type::I64 | Type::Bool | Type::Str) {
+                    return Err(diag(
+                        expr.span,
+                        "map indexing currently requires an i64, bool, or str value",
+                    ));
+                }
+                return Ok(Type::Optional(value));
             }
             require_type(index.span, &Type::I64, &index_ty, "list index")?;
             if *optional {
@@ -12755,7 +12767,8 @@ fn require_known_type(
                 | Type::Str
                 | Type::Error
                 | Type::Function { .. }
-                | Type::List(_) => Ok(()),
+                | Type::List(_)
+                | Type::Map(_, _) => Ok(()),
                 Type::Named(name)
                     if (signatures.struct_type(name).is_some()
                         || signatures.enum_type(name).is_some()

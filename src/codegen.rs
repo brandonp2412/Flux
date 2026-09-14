@@ -6536,6 +6536,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("struct flux__optional_list") {
         out.push_str("struct flux__optional_list { bool has_value; struct flux__list value; };\n");
     }
+    if runtime_usage.contains("struct flux__optional_map") {
+        out.push_str("struct flux__optional_map { bool has_value; struct flux__map value; };\n");
+    }
     if runtime_usage.contains("flux__net_send_text_parts(") {
         out.push_str(r#"static inline const char *flux__net_send_text_parts(int64_t socket_handle, struct flux__list parts) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
@@ -31483,10 +31486,21 @@ fn emit_expr(
         } => {
             let base_value = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
-            if !*optional && matches!(signatures.canonical_type(&base_value.ty), Type::Map(_, _)) {
-                let Type::Map(key, value) = signatures.canonical_type(&base_value.ty) else {
-                    unreachable!();
-                };
+            let map_info = if *optional {
+                match signatures.canonical_type(&base_value.ty) {
+                    Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                        Type::Map(key, value) => Some((key, value, true)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            } else {
+                match signatures.canonical_type(&base_value.ty) {
+                    Type::Map(key, value) => Some((key, value, false)),
+                    _ => None,
+                }
+            };
+            if let Some((key, value, optional_base)) = map_info {
                 let index_value = emit_expr(index, env, signatures)?;
                 let result_c = c_type(&result_ty, signatures);
                 let key_c = c_type(&key, signatures);
@@ -31495,15 +31509,25 @@ fn emit_expr(
                 let base_name = format!("flux__map_index_base_{}_{}", expr.span.line, expr.span.column);
                 let key_name = format!("flux__map_index_key_{}_{}", expr.span.line, expr.span.column);
                 let result_name = format!("flux__map_index_result_{}_{}", expr.span.line, expr.span.column);
+                let map_source = if optional_base {
+                    format!("{base_name}.value")
+                } else {
+                    base_name.clone()
+                };
                 let equality = match signatures.canonical_type(&key) {
-                    Type::Str => format!("strcmp({key_name}, *((const char **)flux_list_at_unchecked({base_name}.keys, flux__map_index_i, sizeof({key_c})))) == 0"),
-                    Type::Bool | Type::I64 => format!("{key_name} == *(({key_c} *)flux_list_at_unchecked({base_name}.keys, flux__map_index_i, sizeof({key_c})))"),
+                    Type::Str => format!("strcmp({key_name}, *((const char **)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))) == 0"),
+                    Type::Bool | Type::I64 => format!("{key_name} == *(({key_c} *)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))"),
                     _ => return Err(diag(expr.span, "map indexing currently requires an i64, bool, or str key")),
                 };
-                let value_read = format!("*((({value_c} *)flux_list_at_unchecked({base_name}.values, flux__map_index_i, sizeof({value_c}))))");
+                let value_read = format!("*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))");
+                let map_present = if optional_base {
+                    format!("{base_name}.has_value && ")
+                } else {
+                    String::new()
+                };
                 return Ok(EmittedExpr {
                     code: format!(
-                        "__extension__ ({{ {base_c} {base_name} = {}; {key_c} {key_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; for (size_t flux__map_index_i = 0; flux__map_index_i < {base_name}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} {result_name}; }})",
+                        "__extension__ ({{ {base_c} {base_name} = {}; {key_c} {key_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; if ({map_present}true) {{ for (size_t flux__map_index_i = 0; flux__map_index_i < {map_source}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} }} {result_name}; }})",
                         base_value.code, index_value.code
                     ),
                     ty: result_ty,
@@ -35231,6 +35255,8 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
         Type::Optional(inner) => {
             if matches!(signatures.canonical_type(&inner), Type::List(_) | Type::Set(_)) {
                 "struct flux__optional_list".to_string()
+            } else if matches!(signatures.canonical_type(&inner), Type::Map(_, _)) {
+                "struct flux__optional_map".to_string()
             } else {
                 format!("struct flux__optional_{}", type_mangle(&inner, signatures))
             }
