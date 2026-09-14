@@ -1216,6 +1216,10 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "crypto" {
+        push_completion_item(items, seen, "sha256", 3, "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error");
+        return true;
+    }
     if namespace == "str" {
         push_completion_item(items, seen, "length", 3, "fn str.length(value: str) -> i64");
         push_completion_item(
@@ -3640,6 +3644,14 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "crypto" && member == "sha256" {
+            return Some(signature_help_for_builtin(
+                "crypto.sha256",
+                &["value: str", "callback: fn(str) -> void"],
+                "error",
+                active_parameter,
+            ));
         }
         if namespace == "process" {
             match member {

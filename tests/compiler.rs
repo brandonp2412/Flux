@@ -15672,6 +15672,49 @@ fn main() -> i64 {
 }
 
 #[test]
+fn crypto_sha256_uses_a_bounded_audited_native_digest() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let failure: error = crypto.sha256("abc", show)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("crypto.sha256 should typecheck");
+    let generated = compile_to_c(source).expect("crypto.sha256 should lower natively");
+    assert!(generated.contains("#include <openssl/sha.h>"));
+    assert!(generated.contains("SHA256((const unsigned char *)value"));
+    assert!(generated.contains("crypto.sha256 input exceeds 65536 bytes"));
+
+    let root = std::env::temp_dir().join(format!("flux-crypto-sha256-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("crypto fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("crypto source should be writable");
+    let binary = root.join("crypto-sha256");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("crypto binary should build");
+    assert!(
+        built.status.success(),
+        "crypto build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("crypto binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {

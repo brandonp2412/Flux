@@ -1727,6 +1727,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
+    if runtime_usage.contains("flux__crypto_sha256(") {
+        out.push_str("#include <openssl/sha.h>\n");
+    }
     if uses_workers
         || runtime_usage.contains("flux__channel_")
         || runtime_usage.contains("flux__async_task_")
@@ -6339,6 +6342,24 @@ static const char *flux__preferences_remove(const char *key) {
 }
 "#,
         );
+    }
+    if runtime_usage.contains("flux__crypto_sha256(") {
+        out.push_str(r#"static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
+    if (value == NULL || callback == NULL) return "invalid crypto.sha256 arguments";
+    size_t length = strlen(value);
+    if (length > 65536) return "crypto.sha256 input exceeds 65536 bytes";
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    if (SHA256((const unsigned char *)value, length, digest) == NULL) return "SHA-256 failed";
+    char encoded[SHA256_DIGEST_LENGTH * 2 + 1];
+    for (size_t index = 0; index < SHA256_DIGEST_LENGTH; index += 1) {
+        int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+        if (written != 2) return "SHA-256 formatting failed";
+    }
+    encoded[SHA256_DIGEST_LENGTH * 2] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
     }
     if runtime_usage.contains("flux__str_length(") {
         out.push_str("static inline int64_t flux__str_length(const char *value) { if (value == NULL) { fputs(\"Flux runtime error: null string value\\n\", stderr); abort(); } const unsigned char *cursor = (const unsigned char *)value; uint64_t count = 0; while (*cursor != 0) { unsigned char lead = *cursor; size_t width = 0; uint32_t codepoint = 0; if (lead < 0x80u) { width = 1; codepoint = lead; } else if (lead >= 0xC2u && lead <= 0xDFu) { width = 2; codepoint = (uint32_t)(lead & 0x1Fu); } else if (lead >= 0xE0u && lead <= 0xEFu) { width = 3; codepoint = (uint32_t)(lead & 0x0Fu); } else if (lead >= 0xF0u && lead <= 0xF4u) { width = 4; codepoint = (uint32_t)(lead & 0x07u); } else { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } for (size_t index = 1; index < width; ++index) { unsigned char continuation = cursor[index]; if ((continuation & 0xC0u) != 0x80u) { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } codepoint = (codepoint << 6) | (uint32_t)(continuation & 0x3Fu); } if ((width == 3 && codepoint < 0x800u) || (width == 4 && codepoint < 0x10000u) || codepoint > 0x10FFFFu || (codepoint >= 0xD800u && codepoint <= 0xDFFFu)) { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } cursor += width; if (count == UINT64_MAX) { fputs(\"Flux runtime error: string length exceeds i64 range\\n\", stderr); abort(); } count += 1; } if (count > (uint64_t)INT64_MAX) { fputs(\"Flux runtime error: string length exceeds i64 range\\n\", stderr); abort(); } return (int64_t)count; }\n");
@@ -32758,6 +32779,14 @@ fn emit_qualified_call(
             vec![Type::Error],
             None,
         ));
+    }
+    if namespace == "crypto" {
+        if !named_args.is_empty() || name != "sha256" || args.len() != 2 {
+            return Err(diag(span, "invalid crypto.sha256 call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        let callback = emit_expr(&args[1], env, signatures)?;
+        return Ok((format!("flux__crypto_sha256({}, {})", value.code, callback.code), vec![Type::Error], None));
     }
     if namespace == "str" {
         if !named_args.is_empty() {

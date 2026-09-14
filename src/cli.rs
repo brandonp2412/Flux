@@ -9631,10 +9631,15 @@ fn build_native_configured(
     } else {
         Vec::new()
     };
+    let crypto = c_source.contains("#include <openssl/sha.h>");
+    let crypto_cflags = if crypto { pkg_config_flags("--cflags", "openssl")? } else { Vec::new() };
+    let crypto_libs = if crypto { pkg_config_flags("--libs", "openssl")? } else { Vec::new() };
     let mut native_cflags = gtk_cflags;
     native_cflags.extend(sqlite_cflags);
+    native_cflags.extend(crypto_cflags);
     let mut native_libs = gtk_libs;
     native_libs.extend(sqlite_libs);
+    native_libs.extend(crypto_libs);
     if native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows {
         native_libs.extend(
             windows_native_system_libraries(c_source)

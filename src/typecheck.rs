@@ -7482,6 +7482,20 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "crypto" {
+        if !named_args.is_empty() || name != "sha256" {
+            return Err(diag(span, &format!("crypto.{name} accepts positional arguments only and only sha256 is available")));
+        }
+        if args.len() != 2 {
+            return Err(diag(span, &format!("crypto.sha256 expects 2 arguments, got {}", args.len())));
+        }
+        let value = type_of_expr(&args[0], env, signatures)?;
+        require_type(args[0].span, &Type::Str, &value, "crypto.sha256 value")?;
+        let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+        let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
+        require_type(args[1].span, &expected, &callback, "crypto.sha256 callback")?;
+        return Ok(vec![Type::Error]);
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(
