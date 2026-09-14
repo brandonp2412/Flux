@@ -5485,9 +5485,17 @@ fn command_first_line(command: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn emit_llvm_from_c(c_source: &str) -> Result<String, String> {
+    let mut cflags = Vec::new();
+    if c_source.contains("#include <gtk/gtk.h>") {
+        cflags.extend(pkg_config_flags("--cflags", "gtk4")?);
+    }
+    if c_source.contains("#include <sqlite3.h>") {
+        cflags.extend(pkg_config_flags("--cflags", "sqlite3")?);
+    }
     let mut command = Command::new("clang");
     command
         .args(["-S", "-emit-llvm", "-std=c17", "-fwrapv", "-x", "c", "-o", "-", "-"])
+        .args(&cflags)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
