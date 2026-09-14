@@ -34016,6 +34016,75 @@ fn emit_qualified_call(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
+    if namespace == "android" && name == "keyboard" {
+        if !named_args.is_empty() || args.len() != 1 {
+            return Err(diag(
+                span,
+                "invalid android.keyboard call reached code generation",
+            ));
+        }
+        let visible = emit_expr(&args[0], env, signatures)?;
+        return Ok((
+            format!(
+                "(({}) ? flux__android_show_keyboard() : flux__android_hide_keyboard())",
+                visible.code
+            ),
+            Vec::new(),
+            None,
+        ));
+    }
+    if namespace == "net" && name == "blocking" {
+        if !named_args.is_empty() || args.len() != 2 {
+            return Err(diag(
+                span,
+                "invalid net.blocking call reached code generation",
+            ));
+        }
+        let socket = emit_expr(&args[0], env, signatures)?;
+        let enabled = emit_expr(&args[1], env, signatures)?;
+        return Ok((
+            format!(
+                "flux__net_set_nonblocking({}, !({}))",
+                socket.code, enabled.code
+            ),
+            vec![Type::Error],
+            None,
+        ));
+    }
+    let names = named_args
+        .iter()
+        .map(|arg| arg.name.as_str())
+        .collect::<Vec<_>>();
+    if let Some(plan) =
+        crate::builtin_names::qualified_call_plan(namespace, name, args.len(), &names)
+    {
+        let mut rewritten_args = Vec::with_capacity(plan.args.len());
+        for source in &plan.args {
+            match source {
+                crate::builtin_names::QualifiedArgSource::Positional(index) => {
+                    rewritten_args.push(args[*index].clone());
+                }
+                crate::builtin_names::QualifiedArgSource::Named(argument_name) => {
+                    let argument = named_args
+                        .iter()
+                        .find(|argument| argument.name == *argument_name)
+                        .ok_or_else(|| {
+                            diag(span, "invalid compact builtin call reached code generation")
+                        })?;
+                    rewritten_args.push(argument.value.clone());
+                }
+            }
+        }
+        return emit_qualified_call(
+            span,
+            namespace,
+            plan.implementation,
+            &rewritten_args,
+            &[],
+            env,
+            signatures,
+        );
+    }
     let name = crate::builtin_names::qualified_impl(namespace, name);
     if namespace == "preferences" {
         if !named_args.is_empty() {

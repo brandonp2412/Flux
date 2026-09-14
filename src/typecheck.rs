@@ -7382,6 +7382,81 @@ pub(crate) fn value_types_of_expr(
     }
 }
 
+fn compact_builtin_call(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Option<Expr>, Diagnostic> {
+    let ExprKind::QualifiedCall {
+        namespace,
+        name,
+        args,
+        named_args,
+        ..
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    let names = named_args
+        .iter()
+        .map(|arg| arg.name.as_str())
+        .collect::<Vec<_>>();
+    let Some(plan) = crate::builtin_names::qualified_call_plan(namespace, name, args.len(), &names)
+    else {
+        return Ok(None);
+    };
+    for marker in &plan.markers {
+        let argument = named_args
+            .iter()
+            .find(|argument| argument.name == *marker)
+            .expect("compact builtin marker must exist in named arguments");
+        let actual = type_of_expr(&argument.value, env, signatures)?;
+        require_type(
+            argument.value.span,
+            &Type::Bool,
+            &actual,
+            &format!("{namespace}.{name} {marker}"),
+        )?;
+        if !matches!(
+            constant_primitive_value(&argument.value, signatures),
+            Some(ConstantValue::Bool(true))
+        ) {
+            return Err(diag(
+                argument.value.span,
+                &format!("{namespace}.{name} {marker} must be the constant true"),
+            ));
+        }
+    }
+    let mut rewritten_args = Vec::with_capacity(plan.args.len());
+    for source in &plan.args {
+        match source {
+            crate::builtin_names::QualifiedArgSource::Positional(index) => {
+                rewritten_args.push(args[*index].clone());
+            }
+            crate::builtin_names::QualifiedArgSource::Named(argument_name) => {
+                let argument = named_args
+                    .iter()
+                    .find(|argument| argument.name == *argument_name)
+                    .expect("compact builtin argument must exist in named arguments");
+                rewritten_args.push(argument.value.clone());
+            }
+        }
+    }
+    let mut normalized = expr.clone();
+    if let ExprKind::QualifiedCall {
+        name,
+        args,
+        named_args,
+        ..
+    } = &mut normalized.kind
+    {
+        *name = plan.implementation.to_string();
+        *args = rewritten_args;
+        named_args.clear();
+    }
+    Ok(Some(normalized))
+}
+
 fn check_qualified_call(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -7399,6 +7474,37 @@ fn check_qualified_call(
         return Err(diag(expr.span, "expected a qualified call"));
     };
     let span = expr.span;
+    if namespace == "android" && name == "keyboard" {
+        if !named_args.is_empty() || args.len() != 1 {
+            return Err(diag(
+                span,
+                &format!(
+                    "android.keyboard expects 1 positional argument, got {} positional and {} named",
+                    args.len(),
+                    named_args.len()
+                ),
+            ));
+        }
+        let actual = type_of_expr(&args[0], env, signatures)?;
+        require_type(
+            args[0].span,
+            &Type::Bool,
+            &actual,
+            "android.keyboard visible",
+        )?;
+        return Ok(Vec::new());
+    }
+    if let Some(normalized) = compact_builtin_call(expr, env, signatures)? {
+        let implementation_name = match &normalized.kind {
+            ExprKind::QualifiedCall { name, .. } => name.as_str(),
+            _ => unreachable!(),
+        };
+        let implementation = format!("{namespace}.{implementation_name}");
+        let canonical = format!("{namespace}.{name}");
+        return check_qualified_call(&normalized, env, signatures).map_err(|diagnostic| {
+            rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
+        });
+    }
     let implementation_name = crate::builtin_names::qualified_impl(namespace, name.as_str());
     if implementation_name != name {
         let mut normalized = expr.clone();
