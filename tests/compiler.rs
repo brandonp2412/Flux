@@ -15718,7 +15718,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("list match requires a list value, got i64")
+            .contains("collection match requires a list or map value, got i64")
     );
 
     let missing_length = r#"
@@ -44502,6 +44502,39 @@ fn main() -> i64 {
 "#;
     let mixed_error = check_source(mixed).expect_err("mixed map keys must fail");
     assert!(mixed_error.message.contains("map key"));
+}
+
+#[test]
+fn map_patterns_bind_values_and_require_a_wildcard_fallback() {
+    let source = r#"
+fn main() -> i64 {
+    let values: map<i64, str> = {1: "one"}
+    match values:
+        {1: matched}:
+            print matched
+        _:
+            print "missing"
+    return 0
+}
+"#;
+    check_source(source).expect("map pattern should typecheck");
+    let generated = compile_to_c(source).expect("map pattern should lower natively");
+    assert!(generated.contains("flux__map_match_"));
+    assert!(generated.contains("flux_list_at_unchecked"));
+    let formatted = fluxc::formatter::format_source(source).expect("map pattern should format");
+    assert!(formatted.contains("{1: matched}:"));
+
+    let missing_fallback = r#"
+fn main() -> i64 {
+    let values: map<i64, str> = {1: "one"}
+    match values:
+        {1: matched}:
+            print matched
+    return 0
+}
+"#;
+    let error = check_source(missing_fallback).expect_err("map matches need a fallback");
+    assert!(error.message.contains("non-exhaustive map match"));
 }
 
 #[test]

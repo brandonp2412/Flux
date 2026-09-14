@@ -28909,6 +28909,22 @@ fn emit_block(
             }
             StmtKind::ListMatch { value, arms } => {
                 let value = emit_expr(value, env, signatures)?;
+                if let Type::Map(key, mapped_value) = &value.ty {
+                    return emit_map_match(
+                        out,
+                        &pad,
+                        &value.code,
+                        key,
+                        mapped_value,
+                        arms,
+                        depth,
+                        env,
+                        mutable,
+                        signatures,
+                        temp_counter,
+                        context,
+                    );
+                }
                 let Type::List(element) = &value.ty else {
                     return Err(diag(
                         stmt.span,
@@ -29030,6 +29046,100 @@ struct EmittedExpr {
     ty: Type,
 }
 
+fn emit_map_match(
+    out: &mut String,
+    pad: &str,
+    source_code: &str,
+    key_ty: &Type,
+    value_ty: &Type,
+    arms: &[crate::ast::ListMatchArm],
+    depth: usize,
+    env: &HashMap<String, Type>,
+    mutable: &HashSet<String>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<(), Diagnostic> {
+    let map_name = format!("flux__map_match_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!("{pad}struct flux__map {map_name} = {source_code};\n"));
+    let matched = format!("flux__map_match_done_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!("{pad}bool {matched} = false;\n"));
+    let key_c = c_type(key_ty, signatures);
+    let value_c = c_type(value_ty, signatures);
+    for arm in arms {
+        let ListMatchPattern::Map { entries, .. } = &arm.pattern else {
+            if !matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+                return Err(diag(arm.span, "map match requires map patterns or '_'"));
+            }
+            out.push_str(&format!("{pad}if (!{matched}) {{\n"));
+            let mut nested = env.clone();
+            let mut nested_mutable = mutable.clone();
+            if let Some(guard) = &arm.guard {
+                let guard = emit_expr(guard, &nested, signatures)?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
+                out.push_str(&format!("{pad}        {matched} = true;\n"));
+                emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+                out.push_str(&format!("{pad}    }}\n"));
+            } else {
+                out.push_str(&format!("{pad}    {matched} = true;\n"));
+                emit_block(out, &arm.body, depth + 1, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            }
+            out.push_str(&format!("{pad}}}\n"));
+            continue;
+        };
+        let arm_match = format!("flux__map_arm_match_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!("{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"));
+        let dead = context.dead_definition_names.get(&source_span_key(arm.span));
+        let mut binding_temps = Vec::new();
+        for entry in entries {
+            let key_code = emit_expr(&entry.key, env, signatures)?.code;
+            let found = format!("flux__map_key_found_{}", *temp_counter);
+            *temp_counter += 1;
+            let value_temp = format!("flux__map_value_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!("{pad}    bool {found} = false;\n"));
+            if entry.binding.name != "_" && !dead.is_some_and(|names| names.contains(&entry.binding.name)) {
+                out.push_str(&format!("{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"));
+                binding_temps.push((entry.binding.name.clone(), value_temp.clone()));
+            }
+            let equal = if *key_ty == Type::Str {
+                format!("strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0")
+            } else {
+                format!("(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})")
+            };
+            out.push_str(&format!("{pad}    for (size_t flux__map_index = 0; flux__map_index < {map_name}.keys.len; ++flux__map_index) {{\n"));
+            out.push_str(&format!("{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"));
+            if !binding_temps.is_empty() && binding_temps.last().is_some_and(|(_, temp)| temp == &value_temp) {
+                out.push_str(&format!("{pad}            {value_temp} = *(({value_c} *)flux_list_at_unchecked({map_name}.values, flux__map_index, sizeof({value_c})));\n"));
+            }
+            out.push_str(&format!("{pad}            break;\n{pad}        }}\n{pad}    }}\n{pad}    if (!{found}) {arm_match} = false;\n"));
+        }
+        out.push_str(&format!("{pad}    if ({arm_match}) {{\n"));
+        let mut nested = env.clone();
+        for (name, temp) in binding_temps {
+            out.push_str(&format!("{pad}        {value_c} {} = {temp};\n", local_c_name(&name)));
+            nested.insert(name, (*value_ty).clone());
+        }
+        if let Some(guard) = &arm.guard {
+            let guard = emit_expr(guard, &nested, signatures)?;
+            out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard.code)));
+            out.push_str(&format!("{pad}            {matched} = true;\n"));
+            let mut nested_mutable = mutable.clone();
+            emit_block(out, &arm.body, depth + 3, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            out.push_str(&format!("{pad}        }}\n"));
+        } else {
+            out.push_str(&format!("{pad}        {matched} = true;\n"));
+            let mut nested_mutable = mutable.clone();
+            emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+        }
+        out.push_str(&format!("{pad}    }}\n{pad}}}\n"));
+    }
+    Ok(())
+}
+
 fn list_match_condition(pattern: &ListMatchPattern, temp: &str) -> String {
     match pattern {
         ListMatchPattern::Wildcard { .. } => "true".to_string(),
@@ -29040,6 +29150,7 @@ fn list_match_condition(pattern: &ListMatchPattern, temp: &str) -> String {
                 format!("{temp}.len == {}", bindings.len())
             }
         }
+        ListMatchPattern::Map { .. } => "false".to_string(),
     }
 }
 

@@ -3,6 +3,7 @@ use crate::ast::{
     EnumVariant, Expr, ExprKind, FlowDirection, Function, GridLayout, GridTrack, ImportDef,
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
     InterpolatedStringPart, ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern,
+    MapPatternEntry,
     MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp,
     Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode,
     Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern, StructPatternField,
@@ -1383,6 +1384,13 @@ fn shift_list_match_pattern_columns(pattern: &mut ListMatchPattern, offset: usiz
             }
         }
         ListMatchPattern::Wildcard { span } => span.column += offset,
+        ListMatchPattern::Map { entries, span } => {
+            span.column += offset;
+            for entry in entries {
+                shift_expr_columns(&mut entry.key, offset);
+                entry.binding.span.column += offset;
+            }
+        }
     }
 }
 
@@ -3508,10 +3516,14 @@ fn parse_list_match_expr_arm(line: &Line) -> Result<ListMatchExprArm, Diagnostic
 
 fn is_list_match_arm_line(line: &Line) -> bool {
     let Some(colon) = find_top_level_colon(&line.text) else {
-        return line.text.trim_start().starts_with('[');
+        return line.text.trim_start().starts_with('[')
+            || line.text.trim_start().starts_with('{');
     };
     let pattern = line.text[..colon].trim();
-    pattern.starts_with('[') || pattern == "_" || pattern.starts_with("_ if ")
+    pattern.starts_with('[')
+        || pattern.starts_with('{')
+        || pattern == "_"
+        || pattern.starts_with("_ if ")
 }
 
 fn parse_match_guard(
@@ -3786,6 +3798,34 @@ fn parse_list_match_pattern(
     let span = SourceSpan::new(line, column + leading, trimmed.len());
     if trimmed == "_" {
         return Ok(ListMatchPattern::Wildcard { span });
+    }
+    if trimmed.starts_with('{') {
+        let Some(inner) = trimmed.strip_prefix('{').and_then(|value| value.strip_suffix('}')) else {
+            return Err(diag(line, "map match patterns must end with '}'"));
+        };
+        let mut entries = Vec::new();
+        if !inner.trim().is_empty() {
+            for (part, part_offset) in split_top_level_commas_with_offsets(inner) {
+                let Some(colon) = find_top_level_colon(part) else {
+                    return Err(diag(line, "map match entries use 'key: binding' syntax"));
+                };
+                let (key_source, key_column) = trim_with_column(part[..colon].trim(), column + leading + 1 + part_offset);
+                let (binding_source, binding_column) = trim_with_column(part[colon + 1..].trim(), column + leading + 1 + part_offset + colon + 1);
+                if key_source.is_empty() || binding_source.is_empty() {
+                    return Err(diag(line, "map match entries require both a key and binding"));
+                }
+                let key = parse_expression_at(key_source, line, key_column)?;
+                validate_identifier(binding_source, line)?;
+                entries.push(MapPatternEntry {
+                    key,
+                    binding: PatternBinding {
+                        name: binding_source.to_string(),
+                        span: SourceSpan::new(line, binding_column, binding_source.len()),
+                    },
+                });
+            }
+        }
+        return Ok(ListMatchPattern::Map { entries, span });
     }
     let Some(pattern) = parse_list_destructure_pattern(input, line, column, true)? else {
         return Err(diag(
@@ -4566,6 +4606,13 @@ fn attach_list_match_pattern_source(pattern: &mut ListMatchPattern, source_id: S
             }
         }
         ListMatchPattern::Wildcard { span } => *span = span.with_source(source_id),
+        ListMatchPattern::Map { entries, span } => {
+            *span = span.with_source(source_id);
+            for entry in entries {
+                attach_expr_source(&mut entry.key, source_id);
+                entry.binding.span = entry.binding.span.with_source(source_id);
+            }
+        }
     }
 }
 

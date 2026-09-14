@@ -1022,6 +1022,14 @@ fn format_list_match_pattern(pattern: &ListMatchPattern) -> String {
             }
             format!("[{}]", entries.join(", "))
         }
+        ListMatchPattern::Map { entries, .. } => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(|entry| format!("{}: {}", format_expr(&entry.key, 0), entry.binding.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

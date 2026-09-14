@@ -4936,20 +4936,21 @@ fn check_block_all(
                 }
             }
             StmtKind::ListMatch { value, arms } => {
-                let element_ty = match type_of_expr(value, env, signatures) {
+                let (element_ty, map_key_ty) = match type_of_expr(value, env, signatures) {
                     Ok(value_ty) => match signatures.canonical_type(&value_ty) {
-                        Type::List(element) => Some(*element),
+                        Type::List(element) => (Some(*element), None),
+                        Type::Map(key, value) => (Some(*value), Some(*key)),
                         actual => {
                             diagnostics.push(diag(
                                 value.span,
-                                &format!("list match requires a list value, got {}", actual.name()),
+                                &format!("collection match requires a list or map value, got {}", actual.name()),
                             ));
-                            None
+                            (None, None)
                         }
                     },
                     Err(diagnostic) => {
                         diagnostics.push(diagnostic);
-                        None
+                        (None, None)
                     }
                 };
                 let patterns = arms
@@ -4961,6 +4962,24 @@ fn check_block_all(
                 }
                 if let Some(element_ty) = element_ty {
                     for arm in arms {
+                        if let ListMatchPattern::Map { entries, .. } = &arm.pattern {
+                            let Some(key_ty) = &map_key_ty else {
+                                diagnostics.push(diag(
+                                    list_match_pattern_span(&arm.pattern),
+                                    "map match pattern requires a map value",
+                                ));
+                                continue;
+                            };
+                            validate_map_match_pattern(entries, key_ty, signatures, diagnostics);
+                        } else if map_key_ty.is_some()
+                            && !matches!(arm.pattern, ListMatchPattern::Wildcard { .. })
+                        {
+                            diagnostics.push(diag(
+                                list_match_pattern_span(&arm.pattern),
+                                "map match values require '{key: binding}' or '_:' patterns",
+                            ));
+                            continue;
+                        }
                         let mut nested = env.clone();
                         if let Err(diagnostic) =
                             bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)
@@ -5143,8 +5162,24 @@ fn bind_list_match_pattern(
     element_ty: &Type,
     env: &mut HashMap<String, Type>,
 ) -> Result<(), Diagnostic> {
-    let ListMatchPattern::List { bindings, rest, .. } = pattern else {
-        return Ok(());
+    let (bindings, rest) = match pattern {
+        ListMatchPattern::List { bindings, rest, .. } => (bindings, rest),
+        ListMatchPattern::Map { entries, .. } => {
+            for entry in entries {
+                if entry.binding.name == "_" {
+                    continue;
+                }
+                if env.contains_key(&entry.binding.name) {
+                    return Err(diag(
+                        entry.binding.span,
+                        &format!("match binding '{}' shadows an existing binding", entry.binding.name),
+                    ));
+                }
+                env.insert(entry.binding.name.clone(), element_ty.clone());
+            }
+            return Ok(());
+        }
+        ListMatchPattern::Wildcard { .. } => return Ok(()),
     };
     for binding in bindings {
         if binding.name == "_" {
@@ -5183,7 +5218,40 @@ fn bind_list_match_pattern(
 
 fn list_match_pattern_span(pattern: &ListMatchPattern) -> SourceSpan {
     match pattern {
-        ListMatchPattern::List { span, .. } | ListMatchPattern::Wildcard { span } => *span,
+        ListMatchPattern::List { span, .. }
+        | ListMatchPattern::Map { span, .. }
+        | ListMatchPattern::Wildcard { span } => *span,
+    }
+}
+
+fn validate_map_match_pattern(
+    entries: &[crate::ast::MapPatternEntry],
+    key_ty: &Type,
+    signatures: &Signatures,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let actual = match type_of_expr(&entry.key, &HashMap::new(), signatures) {
+            Ok(ty) => ty,
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                continue;
+            }
+        };
+        if let Err(diagnostic) = require_type(entry.key.span, key_ty, &actual, "map match key") {
+            diagnostics.push(diagnostic);
+        }
+        let Some(constant) = constant_primitive_value(&entry.key, signatures) else {
+            diagnostics.push(diag(
+                entry.key.span,
+                "map match keys must be compile-time primitive values",
+            ));
+            continue;
+        };
+        if !seen.insert(format!("{}:{:?}", constant.ty().name(), constant)) {
+            diagnostics.push(diag(entry.key.span, "duplicate key in map match pattern"));
+        }
     }
 }
 
@@ -5197,6 +5265,7 @@ fn validate_list_match_coverage(
     let mut exact_lengths = HashSet::new();
     let mut minimum_rest: Option<usize> = None;
     let mut wildcard_seen = false;
+    let mut saw_map = false;
     for (pattern, guarded) in patterns {
         let already_complete = minimum_rest
             .is_some_and(|minimum| (0..minimum).all(|length| exact_lengths.contains(&length)));
@@ -5242,10 +5311,17 @@ fn validate_list_match_coverage(
                     }
                 }
             }
+            ListMatchPattern::Map { .. } => saw_map = true,
         }
     }
     if wildcard_seen {
         return Ok(());
+    }
+    if saw_map {
+        return Err(diag(
+            span,
+            "non-exhaustive map match; add an unguarded '_:' fallback",
+        ));
     }
     let Some(minimum_rest) = minimum_rest else {
         return Err(diag(

@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 564
+- Completed baseline units: 565
 - Reported overall progress: **76%**
 - Current net scope growth after the baseline: 116 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -282,7 +282,7 @@ Flux intentionally keeps function multi-return values narrow today. General reco
 - [x] Positional record fields with `(value, ...)` literals/types, `.0`/`.1` access, and single-field `(value,)` syntax that remains distinct from grouping through formatting.
 - [x] Record destructuring patterns: `(first, second)` patterns destructure positional or named anonymous records by field order in `let`/`var` bindings and assignment, infer exact field types, evaluate the record expression once, preserve formatter/semantic/CFG typing, and lower to direct native field projection without allocation.
 - [x] List patterns with exact/rest/wildcard shapes in local bindings plus exhaustive statement/value `match`, including zero-copy rest views over strided lists.
-- [ ] Map patterns.
+- [x] Map patterns for statement `match` arms: compile-time primitive keys bind map values from native paired storage, duplicate keys are rejected, and an unguarded `_` fallback is required for exhaustiveness. Expression-producing map matches and dynamic key patterns remain follow-up work.
 - [x] Struct patterns for bindings and enum match payloads; map pattern forms remain pending with map values.
 - [x] Enum/tagged-union variant patterns with typed positional payload bindings, ignored positions, nested struct payload patterns, and exhaustive statement/value matching.
 - [x] Relational/logical scalar enum-payload patterns where readable: `==`, `!=`, `<`, `<=`, `>`, and `>=` compare against compile-time primitive constants, `&&`/`||` compose relational tests, statement/value matches share native lowering and formatter support, and refutable pattern arms remain conservatively non-exhaustive until a later irrefutable arm covers the variant.

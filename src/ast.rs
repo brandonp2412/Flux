@@ -714,6 +714,16 @@ pub enum ListMatchPattern {
     Wildcard {
         span: SourceSpan,
     },
+    Map {
+        entries: Vec<MapPatternEntry>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MapPatternEntry {
+    pub key: Expr,
+    pub binding: PatternBinding,
 }
 
 #[derive(Debug, Clone)]
