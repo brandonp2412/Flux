@@ -549,7 +549,12 @@ fn ffi_header_type_supported_inner(
             | Type::Record(_)
             | Type::Function { .. } => false,
         },
-        Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Record(_) | Type::Function { .. } => false,
+        Type::Void
+        | Type::List(_)
+        | Type::Set(_)
+        | Type::Map(_, _)
+        | Type::Record(_)
+        | Type::Function { .. } => false,
     }
 }
 
@@ -735,7 +740,14 @@ fn emit_c_header_function_type_typedefs(
                     collect_nested_function_types(&field.ty, signatures, types, visiting);
                 }
             }
-            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) => {}
+            Type::I64
+            | Type::Bool
+            | Type::Str
+            | Type::Error
+            | Type::Void
+            | Type::List(_)
+            | Type::Set(_)
+            | Type::Map(_, _) => {}
         }
     }
 
@@ -1710,8 +1722,10 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__preferences_")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -1756,7 +1770,10 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <errno.h>\n");
     }
-    if uses_background || runtime_usage.contains("flux__fs_") || runtime_usage.contains("flux__preferences_") {
+    if uses_background
+        || runtime_usage.contains("flux__fs_")
+        || runtime_usage.contains("flux__preferences_")
+    {
         out.push_str("#include <sys/types.h>\n");
     }
     if uses_background {
@@ -1815,6 +1832,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#include <fcntl.h>\n");
     }
@@ -6293,8 +6311,11 @@ static const char *flux__preferences_append(const char *record, size_t length) {
     if (record == NULL || length > 1048576u) return "preference record exceeds storage limit";
     const char *path = flux__preferences_path();
     if (path == NULL) return "preference path is unavailable";
-    FILE *file = fopen(path, "a");
-    if (file == NULL) return "failed to open preferences for writing";
+    int descriptor = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (descriptor < 0) return "failed to open preferences for writing";
+    (void)fchmod(descriptor, 0600);
+    FILE *file = fdopen(descriptor, "a");
+    if (file == NULL) { close(descriptor); return "failed to open preferences for writing"; }
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return "failed to seek preferences"; }
     long current = ftell(file);
     if (current < 0 || (uint64_t)current > UINT64_C(1048576) || length > UINT64_C(1048576) - (uint64_t)current) { fclose(file); return "preferences file exceeds 1 MiB storage limit"; }
@@ -11000,8 +11021,7 @@ fn emit_windows_native_application(
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     let uses_dynamic_colors = view.elements.iter().any(|element| {
         ["background_color", "color"].iter().any(|property_name| {
-            (property_name == &"background_color"
-                || element.kind == "Text")
+            (property_name == &"background_color" || element.kind == "Text")
                 && view_property(element, property_name)
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
         })
@@ -11360,7 +11380,10 @@ fn emit_windows_native_application(
         ));
         if let Some(property) = view_property(element, "color") {
             if static_expr_str(&property.value, signatures).is_some() {
-                out.push_str(&format!(" SetTextColor(dc, flux__win_color_{}_color);", element.name));
+                out.push_str(&format!(
+                    " SetTextColor(dc, flux__win_color_{}_color);",
+                    element.name
+                ));
             } else {
                 out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_color) SetTextColor(dc, flux__win_dynamic_color_{}_color);", element.name, element.name));
             }
@@ -11820,23 +11843,37 @@ fn emit_linux_gtk_application(
     out.push_str(" if (type == 'b') { unsigned char value = 0; if (fread(&value, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Bool) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value != 0;", c_string(&state.name), ui_state_c_name(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {} = value != 0;",
+                c_string(&state.name),
+                ui_state_c_name(&state.name)
+            ));
         }
     }
     out.push_str(" } else if (type == 'i') { int64_t value = 0; if (fread(&value, sizeof(value), 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::I64) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value;", c_string(&state.name), ui_state_c_name(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {} = value;",
+                c_string(&state.name),
+                ui_state_c_name(&state.name)
+            ));
         }
     }
     out.push_str(" } else if (type == 's') { size_t length = 0; if (fread(&length, sizeof(length), 1, file) != 1 || length > (size_t)16 * 1024 * 1024) { free(name); fclose(file); remove(path); return; } char *value = malloc(length + 1); if (value == NULL || (length != 0 && fread(value, 1, length, file) != length)) { free(value); free(name); fclose(file); remove(path); return; } value[length] = '\\0'; bool adopted = false;");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Str) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {{", c_string(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{",
+                c_string(&state.name)
+            ));
             if view_state_accepts_text_input_value(view, &state.name) {
                 out.push_str(&format!(" {}(value);", ui_set_state_c_name(&state.name)));
             } else {
-                out.push_str(&format!(" {} = value; adopted = true;", ui_state_c_name(&state.name)));
+                out.push_str(&format!(
+                    " {} = value; adopted = true;",
+                    ui_state_c_name(&state.name)
+                ));
             }
             out.push('}');
         }
@@ -17538,7 +17575,9 @@ fn expr_contains_await(expr: &Expr) -> bool {
         ExprKind::Pipe { input, args, .. } => {
             expr_contains_await(input) || args.iter().any(expr_contains_await)
         }
-        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => items.iter().any(expr_contains_await),
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
+            items.iter().any(expr_contains_await)
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -29085,7 +29124,11 @@ fn emit_block(
                     }
                 };
                 let is_map = map_key.is_some();
-                let source_c = if is_map { "struct flux__map" } else { "struct flux__list" };
+                let source_c = if is_map {
+                    "struct flux__map"
+                } else {
+                    "struct flux__list"
+                };
                 let source_name = format!("flux__iter_source_{}", *temp_counter);
                 *temp_counter += 1;
                 let index_is_live = index_name.as_ref().is_some_and(|index| {
@@ -29452,7 +29495,9 @@ fn emit_map_match(
 ) -> Result<(), Diagnostic> {
     let map_name = format!("flux__map_match_{}", *temp_counter);
     *temp_counter += 1;
-    out.push_str(&format!("{pad}struct flux__map {map_name} = {source_code};\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__map {map_name} = {source_code};\n"
+    ));
     let matched = format!("flux__map_match_done_{}", *temp_counter);
     *temp_counter += 1;
     out.push_str(&format!("{pad}bool {matched} = false;\n"));
@@ -29470,19 +29515,41 @@ fn emit_map_match(
                 let guard = emit_expr(guard, &nested, signatures)?;
                 out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
-                emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+                emit_block(
+                    out,
+                    &arm.body,
+                    depth + 2,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    temp_counter,
+                    context,
+                )?;
                 out.push_str(&format!("{pad}    }}\n"));
             } else {
                 out.push_str(&format!("{pad}    {matched} = true;\n"));
-                emit_block(out, &arm.body, depth + 1, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+                emit_block(
+                    out,
+                    &arm.body,
+                    depth + 1,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    temp_counter,
+                    context,
+                )?;
             }
             out.push_str(&format!("{pad}}}\n"));
             continue;
         };
         let arm_match = format!("flux__map_arm_match_{}", *temp_counter);
         *temp_counter += 1;
-        out.push_str(&format!("{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"));
-        let dead = context.dead_definition_names.get(&source_span_key(arm.span));
+        out.push_str(&format!(
+            "{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"
+        ));
+        let dead = context
+            .dead_definition_names
+            .get(&source_span_key(arm.span));
         let mut binding_temps = Vec::new();
         for entry in entries {
             let key_code = emit_expr(&entry.key, env, signatures)?.code;
@@ -29491,18 +29558,32 @@ fn emit_map_match(
             let value_temp = format!("flux__map_value_{}", *temp_counter);
             *temp_counter += 1;
             out.push_str(&format!("{pad}    bool {found} = false;\n"));
-            if entry.binding.name != "_" && !dead.is_some_and(|names| names.contains(&entry.binding.name)) {
-                out.push_str(&format!("{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"));
+            if entry.binding.name != "_"
+                && !dead.is_some_and(|names| names.contains(&entry.binding.name))
+            {
+                out.push_str(&format!(
+                    "{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"
+                ));
                 binding_temps.push((entry.binding.name.clone(), value_temp.clone()));
             }
             let equal = if *key_ty == Type::Str {
-                format!("strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0")
+                format!(
+                    "strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0"
+                )
             } else {
-                format!("(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})")
+                format!(
+                    "(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})"
+                )
             };
             out.push_str(&format!("{pad}    for (size_t flux__map_index = 0; flux__map_index < {map_name}.keys.len; ++flux__map_index) {{\n"));
-            out.push_str(&format!("{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"));
-            if !binding_temps.is_empty() && binding_temps.last().is_some_and(|(_, temp)| temp == &value_temp) {
+            out.push_str(&format!(
+                "{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"
+            ));
+            if !binding_temps.is_empty()
+                && binding_temps
+                    .last()
+                    .is_some_and(|(_, temp)| temp == &value_temp)
+            {
                 out.push_str(&format!("{pad}            {value_temp} = *(({value_c} *)flux_list_at_unchecked({map_name}.values, flux__map_index, sizeof({value_c})));\n"));
             }
             out.push_str(&format!("{pad}            break;\n{pad}        }}\n{pad}    }}\n{pad}    if (!{found}) {arm_match} = false;\n"));
@@ -29510,20 +29591,44 @@ fn emit_map_match(
         out.push_str(&format!("{pad}    if ({arm_match}) {{\n"));
         let mut nested = env.clone();
         for (name, temp) in binding_temps {
-            out.push_str(&format!("{pad}        {value_c} {} = {temp};\n", local_c_name(&name)));
+            out.push_str(&format!(
+                "{pad}        {value_c} {} = {temp};\n",
+                local_c_name(&name)
+            ));
             nested.insert(name, (*value_ty).clone());
         }
         if let Some(guard) = &arm.guard {
             let guard = emit_expr(guard, &nested, signatures)?;
-            out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard.code)));
+            out.push_str(&format!(
+                "{pad}        if ({}) {{\n",
+                c_condition(&guard.code)
+            ));
             out.push_str(&format!("{pad}            {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
-            emit_block(out, &arm.body, depth + 3, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            emit_block(
+                out,
+                &arm.body,
+                depth + 3,
+                &mut nested,
+                &mut nested_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
             out.push_str(&format!("{pad}        }}\n"));
         } else {
             out.push_str(&format!("{pad}        {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
-            emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            emit_block(
+                out,
+                &arm.body,
+                depth + 2,
+                &mut nested,
+                &mut nested_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
         }
         out.push_str(&format!("{pad}    }}\n{pad}}}\n"));
     }
@@ -31528,7 +31633,9 @@ fn emit_expr(
     let emitted = match &expr.kind {
         ExprKind::Map(items) => {
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let Type::Map(key, value) = &result_ty else { unreachable!() };
+            let Type::Map(key, value) = &result_ty else {
+                unreachable!()
+            };
             let key_c = c_type(key, signatures);
             let value_c = c_type(value, signatures);
             let mut keys = Vec::new();
@@ -31858,20 +31965,40 @@ fn emit_expr(
                 let key_c = c_type(&key, signatures);
                 let value_c = c_type(&value, signatures);
                 let base_c = c_type(&base_value.ty, signatures);
-                let base_name = format!("flux__map_index_base_{}_{}", expr.span.line, expr.span.column);
-                let key_name = format!("flux__map_index_key_{}_{}", expr.span.line, expr.span.column);
-                let result_name = format!("flux__map_index_result_{}_{}", expr.span.line, expr.span.column);
+                let base_name = format!(
+                    "flux__map_index_base_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let key_name = format!(
+                    "flux__map_index_key_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__map_index_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
                 let map_source = if optional_base {
                     format!("{base_name}.value")
                 } else {
                     base_name.clone()
                 };
                 let equality = match signatures.canonical_type(&key) {
-                    Type::Str => format!("strcmp({key_name}, *((const char **)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))) == 0"),
-                    Type::Bool | Type::I64 => format!("{key_name} == *(({key_c} *)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))"),
-                    _ => return Err(diag(expr.span, "map indexing currently requires an i64, bool, or str key")),
+                    Type::Str => format!(
+                        "strcmp({key_name}, *((const char **)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))) == 0"
+                    ),
+                    Type::Bool | Type::I64 => format!(
+                        "{key_name} == *(({key_c} *)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))"
+                    ),
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            "map indexing currently requires an i64, bool, or str key",
+                        ));
+                    }
                 };
-                let value_read = format!("*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))");
+                let value_read = format!(
+                    "*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))"
+                );
                 let map_present = if optional_base {
                     format!("{base_name}.has_value && ")
                 } else {
@@ -31987,7 +32114,10 @@ fn emit_expr(
             named_args,
         } if name == "contains" => {
             if !named_args.is_empty() || args.len() != 2 {
-                return Err(diag(expr.span, "invalid contains call reached code generation"));
+                return Err(diag(
+                    expr.span,
+                    "invalid contains call reached code generation",
+                ));
             }
             let collection = emit_expr(&args[0], env, signatures)?;
             let searched = emit_expr(&args[1], env, signatures)?;
@@ -32000,9 +32130,18 @@ fn emit_expr(
                 _ => return Err(diag(expr.span, "contains requires a collection value")),
             };
             let element_c = c_type(&element, signatures);
-            let source_name = format!("flux__contains_source_{}_{}", expr.span.line, expr.span.column);
-            let searched_name = format!("flux__contains_value_{}_{}", expr.span.line, expr.span.column);
-            let result_name = format!("flux__contains_result_{}_{}", expr.span.line, expr.span.column);
+            let source_name = format!(
+                "flux__contains_source_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let searched_name = format!(
+                "flux__contains_value_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let result_name = format!(
+                "flux__contains_result_{}_{}",
+                expr.span.line, expr.span.column
+            );
             let list_source = if map {
                 format!("{source_name}.keys")
             } else {
@@ -32736,13 +32875,21 @@ fn emit_qualified_call(
     let name = crate::builtin_names::qualified_impl(namespace, name);
     if namespace == "preferences" {
         if !named_args.is_empty() {
-            return Err(diag(span, "invalid preferences call reached code generation"));
+            return Err(diag(
+                span,
+                "invalid preferences call reached code generation",
+            ));
         }
         let helper = match name {
             "get" if args.len() == 3 => "flux__preferences_get",
             "set" if args.len() == 2 => "flux__preferences_set",
             "remove" if args.len() == 1 => "flux__preferences_remove",
-            _ => return Err(diag(span, "invalid preferences call reached code generation")),
+            _ => {
+                return Err(diag(
+                    span,
+                    "invalid preferences call reached code generation",
+                ));
+            }
         };
         let values = args
             .iter()
@@ -32760,7 +32907,10 @@ fn emit_qualified_call(
         }
         if name == "length" {
             if args.len() != 1 {
-                return Err(diag(span, "invalid str.length call reached code generation"));
+                return Err(diag(
+                    span,
+                    "invalid str.length call reached code generation",
+                ));
             }
             let value = emit_expr(&args[0], env, signatures)?;
             return Ok((
@@ -34342,7 +34492,10 @@ fn emit_qualified_call(
         }
         if name == "list" {
             if args.len() != 2 {
-                return Err(diag(span, "invalid directory.list call reached code generation"));
+                return Err(diag(
+                    span,
+                    "invalid directory.list call reached code generation",
+                ));
             }
             let path = emit_expr(&args[0], env, signatures)?;
             let callback = emit_expr(&args[1], env, signatures)?;
@@ -35725,7 +35878,10 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             format!("struct {}", record_c_name(&record, signatures))
         }
         Type::Optional(inner) => {
-            if matches!(signatures.canonical_type(&inner), Type::List(_) | Type::Set(_)) {
+            if matches!(
+                signatures.canonical_type(&inner),
+                Type::List(_) | Type::Set(_)
+            ) {
                 "struct flux__optional_list".to_string()
             } else if matches!(signatures.canonical_type(&inner), Type::Map(_, _)) {
                 "struct flux__optional_map".to_string()
@@ -35769,7 +35925,11 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
         Type::Set(element) => format!("set_{}", type_mangle(&element, signatures)),
-        Type::Map(key, value) => format!("map_{}_{}", type_mangle(&key, signatures), type_mangle(&value, signatures)),
+        Type::Map(key, value) => format!(
+            "map_{}_{}",
+            type_mangle(&key, signatures),
+            type_mangle(&value, signatures)
+        ),
         Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
         Type::Record(fields) => {
             let fields = fields
