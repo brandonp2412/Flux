@@ -12892,6 +12892,69 @@ fn main() -> i64 {
 }
 
 #[test]
+fn sibling_borrow_lifetimes_keep_definition_identity() {
+    let source = r#"
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30, 40]
+    if positive(1):
+        let view: i64[] = source[1:]
+        print(view[0])
+    else:
+        let view: i64[] = source[2:]
+        print(view[0])
+    return 0
+}
+"#;
+
+    check_source(source).expect("sibling borrowed views should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1211))
+        .expect("sibling borrowed-view lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let lifetimes = graph
+        .borrow_lifetimes()
+        .iter()
+        .filter(|lifetime| lifetime.borrower == "view" && lifetime.source == "source")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifetimes.len(),
+        2,
+        "same-named sibling bindings must retain two definition-scoped inferred lifetimes"
+    );
+    assert_ne!(
+        lifetimes[0].definition, lifetimes[1].definition,
+        "each inferred lifetime must retain the concrete borrower definition identity"
+    );
+    assert_ne!(
+        lifetimes[0].origin, lifetimes[1].origin,
+        "same-named sibling lifetimes must retain distinct source origins"
+    );
+    assert!(
+        lifetimes
+            .iter()
+            .all(|lifetime| !lifetime.starts.is_empty() && !lifetime.ends.is_empty()),
+        "every sibling lifetime should expose deterministic start and end boundaries"
+    );
+    for lifetime in lifetimes {
+        assert!(lifetime.starts.iter().all(|start| {
+            start.definition == lifetime.definition
+                && start.borrower == lifetime.borrower
+                && start.source == lifetime.source
+        }));
+        assert!(lifetime.ends.iter().all(|end| {
+            end.definition == lifetime.definition
+                && end.borrower == lifetime.borrower
+                && end.source == lifetime.source
+        }));
+    }
+}
+
+#[test]
 fn loop_local_borrow_lifetime_boundaries_end_before_owner_move() {
     let source = r#"
 fn main() -> i64 {

@@ -342,6 +342,7 @@ impl ControlFlowLiveState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipBorrowedBinding {
+    pub definition: ControlFlowDefinitionId,
     pub borrower: String,
     pub source: String,
     pub origin: SourceSpan,
@@ -356,6 +357,7 @@ pub struct ControlFlowBorrowState {
 pub struct OwnershipBorrowStart {
     pub from: ControlFlowNodeId,
     pub to: ControlFlowNodeId,
+    pub definition: ControlFlowDefinitionId,
     pub borrower: String,
     pub source: String,
     pub origin: SourceSpan,
@@ -365,9 +367,20 @@ pub struct OwnershipBorrowStart {
 pub struct OwnershipBorrowEnd {
     pub from: ControlFlowNodeId,
     pub to: ControlFlowNodeId,
+    pub definition: ControlFlowDefinitionId,
     pub borrower: String,
     pub source: String,
     pub origin: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipBorrowLifetime {
+    pub definition: ControlFlowDefinitionId,
+    pub borrower: String,
+    pub source: String,
+    pub origin: SourceSpan,
+    pub starts: Vec<OwnershipBorrowStart>,
+    pub ends: Vec<OwnershipBorrowEnd>,
 }
 
 impl ControlFlowBorrowState {
@@ -379,6 +392,12 @@ impl ControlFlowBorrowState {
         self.borrows
             .iter()
             .any(|borrow| borrow.borrower == borrower && borrow.source == source)
+    }
+
+    fn contains_definition(&self, definition: ControlFlowDefinitionId, source: &str) -> bool {
+        self.borrows
+            .iter()
+            .any(|borrow| borrow.definition == definition && borrow.source == source)
     }
 }
 
@@ -439,6 +458,7 @@ pub struct ControlFlowGraph {
     borrow_states_before: Vec<ControlFlowBorrowState>,
     borrow_starts: Vec<OwnershipBorrowStart>,
     borrow_ends: Vec<OwnershipBorrowEnd>,
+    borrow_lifetimes: Vec<OwnershipBorrowLifetime>,
 }
 
 impl ControlFlowGraph {
@@ -611,6 +631,10 @@ impl ControlFlowGraph {
 
     pub fn borrow_ends(&self) -> &[OwnershipBorrowEnd] {
         &self.borrow_ends
+    }
+
+    pub fn borrow_lifetimes(&self) -> &[OwnershipBorrowLifetime] {
+        &self.borrow_lifetimes
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -1039,10 +1063,12 @@ impl<'a> ControlFlowBuilder<'a> {
             borrow_states_before: Vec::new(),
             borrow_starts: Vec::new(),
             borrow_ends: Vec::new(),
+            borrow_lifetimes: Vec::new(),
         };
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
+        graph.borrow_lifetimes = compute_borrow_lifetimes(&graph);
         graph
     }
 
@@ -4086,10 +4112,11 @@ fn compute_borrow_starts(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowStart> 
             continue;
         };
         for borrow in to_state.borrows() {
-            if !from_state.contains(&borrow.borrower, &borrow.source) {
+            if !from_state.contains_definition(borrow.definition, &borrow.source) {
                 starts.push(OwnershipBorrowStart {
                     from: edge.from,
                     to: edge.to,
+                    definition: borrow.definition,
                     borrower: borrow.borrower.clone(),
                     source: borrow.source.clone(),
                     origin: borrow.origin,
@@ -4122,10 +4149,11 @@ fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
             continue;
         };
         for borrow in from_state.borrows() {
-            if !to_state.contains(&borrow.borrower, &borrow.source) {
+            if !to_state.contains_definition(borrow.definition, &borrow.source) {
                 ends.push(OwnershipBorrowEnd {
                     from: edge.from,
                     to: edge.to,
+                    definition: borrow.definition,
                     borrower: borrow.borrower.clone(),
                     source: borrow.source.clone(),
                     origin: borrow.origin,
@@ -4143,6 +4171,39 @@ fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
     });
     ends.dedup();
     ends
+}
+
+fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLifetime> {
+    let mut lifetimes =
+        BTreeMap::<(ControlFlowDefinitionId, String), OwnershipBorrowLifetime>::new();
+
+    for state in &graph.borrow_states_before {
+        for borrow in state.borrows() {
+            lifetimes
+                .entry((borrow.definition, borrow.source.clone()))
+                .or_insert_with(|| OwnershipBorrowLifetime {
+                    definition: borrow.definition,
+                    borrower: borrow.borrower.clone(),
+                    source: borrow.source.clone(),
+                    origin: borrow.origin,
+                    starts: Vec::new(),
+                    ends: Vec::new(),
+                });
+        }
+    }
+
+    for start in &graph.borrow_starts {
+        if let Some(lifetime) = lifetimes.get_mut(&(start.definition, start.source.clone())) {
+            lifetime.starts.push(start.clone());
+        }
+    }
+    for end in &graph.borrow_ends {
+        if let Some(lifetime) = lifetimes.get_mut(&(end.definition, end.source.clone())) {
+            lifetime.ends.push(end.clone());
+        }
+    }
+
+    lifetimes.into_values().collect()
 }
 
 fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState> {
@@ -4218,6 +4279,7 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
                         continue;
                     };
                     borrows.extend(sources.iter().map(|source| OwnershipBorrowedBinding {
+                        definition: *definition,
                         borrower: borrower.clone(),
                         source: source.clone(),
                         origin,
@@ -4225,8 +4287,9 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
                 }
             }
             borrows.sort_by(|left, right| {
-                left.borrower
-                    .cmp(&right.borrower)
+                left.definition
+                    .cmp(&right.definition)
+                    .then_with(|| left.borrower.cmp(&right.borrower))
                     .then_with(|| left.source.cmp(&right.source))
                     .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
             });
