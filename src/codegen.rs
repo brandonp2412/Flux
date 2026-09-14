@@ -1338,10 +1338,14 @@ pub fn emit_c_for_target_with_source_metadata(
             "process.* APIs require a desktop/server target",
         ));
     }
-    if target == NativeTarget::Android && runtime_usage.contains("flux__net_") {
+    if target == NativeTarget::Android
+        && (runtime_usage.contains("flux__net_")
+            || runtime_usage.contains("flux__tls_")
+            || runtime_usage.contains("flux__crypto_"))
+    {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "net.* APIs require a desktop/server target",
+            "network, TLS, and cryptographic APIs require a desktop/server target",
         ));
     }
     if target != NativeTarget::Linux && runtime_usage.contains("flux__preferences_") {
@@ -1713,6 +1717,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
         || runtime_usage.contains("flux__preferences_")
+        || runtime_usage.contains("flux__tls_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -1731,8 +1736,13 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__crypto_sha384(")
         || runtime_usage.contains("flux__crypto_sha512(")
         || runtime_usage.contains("flux__crypto_hmac_sha256(")
+        || runtime_usage.contains("flux__crypto_hmac_sha512(")
+        || runtime_usage.contains("flux__tls_")
     {
         out.push_str("#include <openssl/sha.h>\n#include <openssl/hmac.h>\n");
+    }
+    if runtime_usage.contains("flux__tls_") {
+        out.push_str("#include <openssl/ssl.h>\n#include <openssl/err.h>\n");
     }
     if uses_workers
         || runtime_usage.contains("flux__channel_")
@@ -1805,6 +1815,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_parent_pid(")
         || runtime_usage.contains("flux__fs_")
         || runtime_usage.contains("flux__preferences_")
+        || runtime_usage.contains("flux__tls_")
     {
         out.push_str("#include <unistd.h>\n");
     }
@@ -1827,7 +1838,7 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <fcntl.h>\n");
     }
-    if runtime_usage.contains("flux__net_") {
+    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__tls_") {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
@@ -6439,6 +6450,30 @@ static const char *flux__preferences_remove(const char *key) {
     callback(encoded);
     return NULL;
 }
+"#);
+    }
+    if runtime_usage.contains("flux__tls_") {
+        out.push_str(r#"struct flux__tls_slot { SSL_CTX *context; SSL *session; int socket; bool used; };
+static struct flux__tls_slot flux__tls_slots[64];
+static inline struct flux__net_i64_error flux__tls_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
+static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (handle < 1 || handle > 64 || !flux__tls_slots[handle - 1].used) return NULL; return &flux__tls_slots[handle - 1]; }
+static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) {
+    if (socket_handle < 0 || socket_handle > INT_MAX || server_name == NULL || server_name[0] == '\0' || ca_file == NULL) return flux__tls_result(-1, "invalid TLS wrap arguments");
+    SSL_CTX *context = SSL_CTX_new(TLS_client_method());
+    if (context == NULL) return flux__tls_result(-1, "failed to create TLS context");
+    SSL_CTX_set_verify(context, SSL_VERIFY_PEER, NULL);
+    if (ca_file[0] == '\0') { if (SSL_CTX_set_default_verify_paths(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load system CA certificates"); } }
+    else if (SSL_CTX_load_verify_locations(context, ca_file, NULL) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load TLS CA file"); }
+    SSL *session = SSL_new(context);
+    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || SSL_set_tlsext_host_name(session, server_name) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "failed to configure TLS session"); }
+    X509_VERIFY_PARAM *parameters = SSL_get0_param(session);
+    if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1 || SSL_connect(session) != 1 || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS handshake or certificate verification failed"); }
+    for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; return flux__tls_result((int64_t)index + 1, NULL); }
+    SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
+}
+static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; return NULL; }
+static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = strlen(value); if (length > 65536) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
+static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
 "#);
     }
     if runtime_usage.contains("flux__str_length(") {
@@ -32887,6 +32922,35 @@ fn emit_qualified_call(
             "flux__crypto_hmac_sha512"
         };
         return Ok((format!("{helper}({}, {}, {})", key.code, value.code, callback.code), vec![Type::Error], None));
+    }
+    if namespace == "tls" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid TLS call reached code generation"));
+        }
+        match name {
+            "wrap" if args.len() == 3 => {
+                let socket = emit_expr(&args[0], env, signatures)?;
+                let server_name = emit_expr(&args[1], env, signatures)?;
+                let ca_file = emit_expr(&args[2], env, signatures)?;
+                return Ok((format!("flux__tls_wrap({}, {}, {})", socket.code, server_name.code, ca_file.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+            }
+            "read" if args.len() == 3 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((format!("flux__tls_read({}, {}, {})", session.code, max_bytes.code, callback.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+            }
+            "write" if args.len() == 2 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                return Ok((format!("flux__tls_write({}, {})", session.code, value.code), vec![Type::Error], None));
+            }
+            "close" if args.len() == 1 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                return Ok((format!("flux__tls_close({})", session.code), vec![Type::Error], None));
+            }
+            _ => return Err(diag(span, "invalid TLS call reached code generation")),
+        }
     }
     if namespace == "str" {
         if !named_args.is_empty() {

@@ -1224,6 +1224,17 @@ fn add_qualified_namespace_completions(
         push_completion_item(items, seen, "hmacSha512", 3, "fn crypto.hmacSha512(key: str, value: str, callback: fn(str) -> void) -> error");
         return true;
     }
+    if namespace == "tls" {
+        for (label, detail) in [
+            ("wrap", "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)"),
+            ("read", "fn tls.read(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"),
+            ("write", "fn tls.write(session: i64, value: str) -> error"),
+            ("close", "fn tls.close(session: i64) -> error"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "str" {
         push_completion_item(items, seen, "length", 3, "fn str.length(value: str) -> i64");
         push_completion_item(
@@ -3688,6 +3699,16 @@ fn signature_help_for_document_cached(
                 "error",
                 active_parameter,
             ));
+        }
+        if namespace == "tls" {
+            let (label, parameters, returns) = match member {
+                "wrap" => ("tls.wrap", vec!["socket: i64", "serverName: str", "caFile: str"], "(i64, error)"),
+                "read" => ("tls.read", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
+                "write" => ("tls.write", vec!["session: i64", "value: str"], "error"),
+                "close" => ("tls.close", vec!["session: i64"], "error"),
+                _ => return None,
+            };
+            return Some(signature_help_for_builtin(label, &parameters, returns, active_parameter));
         }
         if namespace == "process" {
             match member {

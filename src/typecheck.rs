@@ -7503,6 +7503,60 @@ fn check_qualified_call(
         require_type(args[callback_index].span, &expected, &callback, &format!("crypto.{name} callback"))?;
         return Ok(vec![Type::Error]);
     }
+    if namespace == "tls" {
+        if !named_args.is_empty() {
+            return Err(diag(span, &format!("tls.{name} accepts positional arguments only")));
+        }
+        match name.as_str() {
+            "wrap" => {
+                if args.len() != 3 {
+                    return Err(diag(span, &format!("tls.wrap expects 3 arguments, got {}", args.len())));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.wrap socket")?;
+                let server_name = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &server_name, "tls.wrap serverName")?;
+                let ca_file = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &ca_file, "tls.wrap caFile")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "read" => {
+                if args.len() != 3 {
+                    return Err(diag(span, &format!("tls.read expects 3 arguments, got {}", args.len())));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.read session")?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &max_bytes, "tls.read maxBytes")?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)) {
+                    return Err(diag(args[1].span, "tls.read maxBytes must be between 1 and 65536"));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
+                require_type(args[2].span, &expected, &callback, "tls.read callback")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
+            "write" => {
+                if args.len() != 2 {
+                    return Err(diag(span, &format!("tls.write expects 2 arguments, got {}", args.len())));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.write session")?;
+                let value = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &value, "tls.write value")?;
+                return Ok(vec![Type::Error]);
+            }
+            "close" => {
+                if args.len() != 1 {
+                    return Err(diag(span, &format!("tls.close expects 1 argument, got {}", args.len())));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "tls.close session")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => return Err(diag(*name_span, &format!("tls module has no function '{name}'"))),
+        }
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(

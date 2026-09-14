@@ -15729,6 +15729,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tls_contract_wraps_verified_native_socket_handles() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let (socket, connect_error) = net.connect("example.com", 443)
+    let (session, tls_error) = tls.wrap(socket, "example.com", "")
+    let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    let (received, read_error) = tls.read(session, 1024, show)
+    let close_error: error = tls.close(session)
+    print(connect_error)
+    print(tls_error)
+    print(write_error)
+    print(received)
+    print(read_error)
+    print(close_error)
+    return 0
+}
+"#;
+    check_source(source).expect("TLS calls should typecheck");
+    let generated = compile_to_c(source).expect("TLS calls should lower natively");
+    assert!(generated.contains("#include <openssl/ssl.h>"));
+    assert!(generated.contains("SSL_CTX_set_verify"));
+    assert!(generated.contains("SSL_get_verify_result"));
+    assert!(generated.contains("flux__tls_read("));
+    assert!(generated.contains("invalid or closed TLS session"));
+
+    let root = std::env::temp_dir().join(format!("flux-tls-contract-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("TLS source should be writable");
+    let binary = root.join("tls-contract");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS binary should build");
+    assert!(
+        built.status.success(),
+        "TLS native link failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {
