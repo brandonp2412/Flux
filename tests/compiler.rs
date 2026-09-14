@@ -10068,6 +10068,69 @@ fn main() -> i64 {
 }
 
 #[test]
+fn directory_list_lends_entry_names_to_a_callback() {
+    let root = std::env::temp_dir().join(format!("flux-directory-list-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("directory list fixture should be writable");
+    fs::write(root.join("alpha.txt"), "a").expect("directory list first entry should be writable");
+    fs::write(root.join("beta.txt"), "b").expect("directory list second entry should be writable");
+    let escaped = root
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn show(name: str) -> void {{
+    print(name)
+}}
+fn main() -> i64 {{
+    let listError: error = directory.list("{}", show)
+    print(listError)
+    return 0
+}}
+"#,
+        escaped
+    );
+    check_source(&source).expect("directory.list should typecheck");
+    let generated = compile_to_c(&source).expect("directory.list should lower natively");
+    assert!(generated.contains("flux__fs_list_directory"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("directory list source should be writable");
+    let binary = root.join("directory-list-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("directory list binary should build");
+    assert!(
+        built.status.success(),
+        "directory list build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("directory list binary should run");
+    assert!(run.status.success());
+    let output = String::from_utf8_lossy(&run.stdout);
+    assert!(output.contains("alpha.txt\n"));
+    assert!(output.contains("beta.txt\n"));
+    assert!(output.ends_with("nil\n"));
+
+    let invalid = r#"
+fn main() -> i64 {
+    let _failure: error = directory.list(".", false)
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("directory.list callback type should be checked");
+    assert!(error.message.contains("directory.list callback: expected fn(str) -> void"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn canonical_filesystem_scalar_metadata_is_typed_native_and_tree_shaken() {
     let root = std::env::temp_dir().join(format!(
         "flux-filesystem-scalar-metadata-{}",

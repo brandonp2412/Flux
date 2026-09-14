@@ -1700,6 +1700,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
@@ -1738,6 +1739,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__time_start_timer(")
         || runtime_usage.contains("flux__fs_create_directories(")
         || runtime_usage.contains("flux__fs_remove_directories(")
+        || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
     {
         out.push_str("#include <errno.h>\n");
@@ -1788,7 +1790,9 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__fs_") {
         out.push_str("#include <sys/stat.h>\n");
     }
-    if runtime_usage.contains("flux__fs_remove_directories(") {
+    if runtime_usage.contains("flux__fs_remove_directories(")
+        || runtime_usage.contains("flux__fs_list_directory(")
+    {
         out.push_str("#include <dirent.h>\n");
     }
     if runtime_usage.contains("flux__url_") {
@@ -6213,6 +6217,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__fs_is_directory(") {
         out.push_str("static inline bool flux__fs_is_directory(const char *path) { struct stat info; return stat(path, &info) == 0 && S_ISDIR(info.st_mode); }\n");
+    }
+    if runtime_usage.contains("flux__fs_list_directory(") {
+        out.push_str("static inline const char *flux__fs_list_directory(const char *path, void (*callback)(const char *)) { if (path == NULL || callback == NULL) return \"invalid directory list arguments\"; DIR *directory = opendir(path); if (directory == NULL) return \"failed to open directory\"; const char *failure = NULL; for (;;) { errno = 0; struct dirent *entry = readdir(directory); if (entry == NULL) { if (errno != 0) failure = \"failed to read directory\"; break; } if (strcmp(entry->d_name, \".\") == 0 || strcmp(entry->d_name, \"..\") == 0) continue; callback(entry->d_name); } if (closedir(directory) != 0 && failure == NULL) failure = \"failed to close directory\"; return failure; }\n");
     }
     if runtime_usage.contains("flux__fs_create_directory(") {
         out.push_str("static inline const char *flux__fs_create_directory(const char *path) { return mkdir(path, 0777) == 0 ? NULL : \"failed to create directory\"; }\n");
@@ -33488,6 +33495,18 @@ fn emit_qualified_call(
     if namespace == "directory" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid directory call reached code generation"));
+        }
+        if name == "list" {
+            if args.len() != 2 {
+                return Err(diag(span, "invalid directory.list call reached code generation"));
+            }
+            let path = emit_expr(&args[0], env, signatures)?;
+            let callback = emit_expr(&args[1], env, signatures)?;
+            return Ok((
+                format!("flux__fs_list_directory({}, {})", path.code, callback.code),
+                vec![Type::Error],
+                None,
+            ));
         }
         if matches!(
             name,

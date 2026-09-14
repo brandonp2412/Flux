@@ -10222,6 +10222,28 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "list" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "directory.list expects 2 arguments: path, callback",
+                    ));
+                }
+                let path_type = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &path_type, "directory.list path")?;
+                let callback_type = type_of_expr(&args[1], env, signatures)?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback_type,
+                    "directory.list callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "exists" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions" | "owner"
             | "group" | "inode" | "device" | "hardLinks" | "blockSize" | "allocatedSize"
             | "create" | "createAll" | "remove" | "removeAll" => {

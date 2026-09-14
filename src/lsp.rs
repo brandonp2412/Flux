@@ -1832,6 +1832,10 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn directory.exists(path: str) -> bool"),
             (
+                "list",
+                "fn directory.list(path: str, callback: fn(str) -> void) -> error",
+            ),
+            (
                 "modified",
                 "fn directory.modified(path: str) -> (i64, error)",
             ),
@@ -3916,6 +3920,14 @@ fn signature_help_for_document_cached(
         }
         if namespace == "directory" {
             match implementation_member {
+                "list" => {
+                    return Some(signature_help_for_builtin(
+                        "directory.list",
+                        &["path: str", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
                 "exists" => {
                     return Some(signature_help_for_builtin(
                         "directory.exists",
@@ -7718,6 +7730,7 @@ mod tests {
         ))
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
+        assert!(directory_items.contains("fn directory.list(path: str, callback: fn(str) -> void) -> error"));
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.owner(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.group(path: str) -> (i64, error)"));
@@ -9728,6 +9741,30 @@ mod tests {
         .expect("file.read should have signature help")
         .to_json();
         assert!(help.contains("fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"));
+    }
+
+    #[test]
+    fn signature_help_supports_directory_listing() {
+        let uri = "file:///tmp/directory-list-signatures.flux";
+        let source = "fn show(_name: str) -> void {\n}\nfn main() -> i64 {\n    print(directory.list(\".\", show))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("directory.list("))
+            .unwrap();
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("directory.list(").unwrap() + "directory.list(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("directory.list should have signature help")
+        .to_json();
+        assert!(help.contains("fn directory.list(path: str, callback: fn(str) -> void) -> error"));
     }
 
     #[test]
