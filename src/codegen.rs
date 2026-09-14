@@ -10509,8 +10509,9 @@ fn emit_windows_native_application(
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
     out.push_str(&format!(
-        "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\n"
+        "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
+    out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical <= 0) return (int)logical; int64_t scaled = (logical * (int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); return scaled > INT32_MAX ? INT32_MAX : (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { return ((int64_t)physical * INT64_C(96) + (int64_t)flux__win_dpi / INT64_C(2)) / (int64_t)flux__win_dpi; }\n");
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -10643,6 +10644,29 @@ fn emit_windows_native_application(
         ));
     }
     for (index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_tap") else {
+            continue;
+        };
+        if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            out.push_str(&format!(
+                "static void flux__win_tap_{index}(void) {{ {} = {next}; flux__win_refresh(); }}\n",
+                ui_state_c_name(&transition.state)
+            ));
+        } else {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onTap requires a named fn() -> void callback or state transition",
+                ));
+            };
+            out.push_str(&format!(
+                "static void flux__win_tap_{index}(void) {{ {}(); flux__win_refresh(); }}\n",
+                function_c_name(function)
+            ));
+        }
+    }
+    for (index, element) in view.elements.iter().enumerate() {
         if element.kind != "TextInput" {
             continue;
         }
@@ -10694,14 +10718,14 @@ fn emit_windows_native_application(
     let padding = i64::from(view.grid.padding.unwrap_or(20));
     let columns = view.grid.columns.len().max(1) as i64;
     let rows = view.grid.rows.len().max(1) as i64;
-    out.push_str(&format!("static void flux__win_layout(int width, int height) {{ int column_width = (width - {} + {}) / {}; int row_height = (height - {} + {}) / {}; if (column_width < 1) column_width = 1; if (row_height < 1) row_height = 1;\n", padding * 2, gap, columns, padding * 2, gap, rows));
+    out.push_str(&format!("static void flux__win_layout(int width, int height) {{ int scaled_padding = flux__win_scale(INT64_C({padding})); int scaled_gap = flux__win_scale(INT64_C({gap})); int column_width = (width - scaled_padding * 2 + scaled_gap) / {columns}; int row_height = (height - scaled_padding * 2 + scaled_gap) / {rows}; if (column_width < 1) column_width = 1; if (row_height < 1) row_height = 1;\n"));
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);
         let column_offset = element.column as i64 - 1;
         let row_offset = element.row as i64 - 1;
         let column_span = element.column_span as i64;
         let row_span = element.row_span as i64;
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = {padding} + {column_offset} * column_width; int y = {padding} + {row_offset} * row_height; int control_width = {column_span} * column_width - {gap}; int control_height = {row_span} * row_height - {gap}; if (control_width < 40) control_width = 40; if (control_height < 28) control_height = 28; MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int minimum_width = flux__win_scale(INT64_C(40)); int minimum_height = flux__win_scale(INT64_C(28)); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
@@ -10814,12 +10838,22 @@ fn emit_windows_native_application(
                 ));
             }
         } else if element.kind == "TextInput" && view_property(element, "on_change").is_some() {
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE && !flux__win_refreshing) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == EN_CHANGE) flux__win_change_{index}((HWND)lparam); return 0;\n", 1000 + index));
+        } else if view_property(element, "on_tap").is_some() {
+            let notification = if element.kind == "Button"
+                || element.kind == "Toggle"
+                || element.kind == "Radio"
+            {
+                "BN_CLICKED"
+            } else {
+                "STN_CLICKED"
+            };
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) flux__win_tap_{index}(); return 0;\n", 1000 + index));
         }
     }
-    out.push_str("default: break; } break; case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam); flux__ui_window_height = (int64_t)HIWORD(lparam); flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height); flux__win_refresh(); return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
-    out.push_str("static int flux__win_run(void) { HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
-    out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, {}, {}, NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
+    out.push_str("default: break; } break; case WM_SIZE: { int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); } return 0; case WM_DPICHANGED: { UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {0}; if (GetClientRect(hwnd, &client)) { int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); } flux__win_refresh(); } return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
+    out.push_str("static int flux__win_run(void) { flux__win_enable_dpi_awareness(); flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
+    out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
         let x = padding + (element.column as i64 - 1) * ((width - padding * 2 + gap) / columns);
@@ -10903,12 +10937,16 @@ fn emit_windows_native_application(
                     )
                 }
             }
+            _ if view_property(element, "on_tap").is_some() => {
+                ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY")
+            }
             _ => ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT"),
         };
         let id = if matches!(
             element.kind.as_str(),
             "Button" | "TextInput" | "Toggle" | "Radio"
-        ) {
+        ) || view_property(element, "on_tap").is_some()
+        {
             (1000 + index).to_string()
         } else {
             "0".to_string()
@@ -10949,7 +10987,7 @@ fn emit_windows_native_application(
             }
         }
     }
-    out.push_str("RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { flux__ui_window_width = (int64_t)(flux__win_client.right - flux__win_client.left); flux__ui_window_height = (int64_t)(flux__win_client.bottom - flux__win_client.top); flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height); } flux__win_refresh();\n");
+    out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); } flux__win_refresh();\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }

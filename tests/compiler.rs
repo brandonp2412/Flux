@@ -79,8 +79,8 @@ view Screen {
     grid columns: 1fr
     grid rows: auto auto auto auto auto
     Text title at 1,1
-        text: query
-        visible: active
+        text: "Flux on Windows"
+        onTap: pressed
     TextInput input at 2,1
         text: query
         enabled: active
@@ -134,9 +134,17 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("MoveWindow(flux__ui_title"));
     assert!(generated.contains("EN_CHANGE && !flux__win_refreshing"));
     assert!(generated.contains("flux__win_change_1"));
-    assert!(generated.contains("flux__win_check_2"));
-    assert!(generated.contains("flux__win_check_3"));
-    assert!(generated.contains("flux__win_click_4"));
+    assert!(generated.contains("flux__win_click_2"));
+    assert!(generated.contains("flux__win_tap_0"));
+    assert!(generated.contains("SS_LEFT | SS_NOTIFY"));
+    assert!(generated.contains("STN_CLICKED"));
+    assert!(generated.contains("SetProcessDpiAwarenessContext"));
+    assert!(generated.contains("set_context((HANDLE)(INT_PTR)-4)"));
+    assert!(generated.contains("SetProcessDPIAware()"));
+    assert!(generated.contains("GetDeviceCaps(dc, LOGPIXELSX)"));
+    assert!(generated.contains("case WM_DPICHANGED"));
+    assert!(generated.contains("flux__win_unscale(physical_width)"));
+    assert!(generated.contains("flux__win_scale(INT64_C(640))"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
 }
@@ -183,12 +191,10 @@ app Screen(title: "Stateful Windows", width: 720, height: 480)
 
     assert!(generated.contains("BS_AUTOCHECKBOX"));
     assert!(generated.contains("WS_GROUP | BS_AUTORADIOBUTTON"));
-    assert!(generated.contains("case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam)"));
-    assert!(generated.contains("flux__ui_window_height = (int64_t)HIWORD(lparam)"));
-    assert!(
-        generated
-            .contains("flux__win_layout((int)flux__ui_window_width, (int)flux__ui_window_height)")
-    );
+    assert!(generated.contains("case WM_SIZE: { int physical_width = (int)LOWORD(lparam)"));
+    assert!(generated.contains("flux__ui_window_width = flux__win_unscale(physical_width)"));
+    assert!(generated.contains("flux__ui_window_height = flux__win_unscale(physical_height)"));
+    assert!(generated.contains("flux__win_layout(physical_width, physical_height)"));
     assert!(generated.contains("MoveWindow(flux__ui_toggle"));
     assert!(
         generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_caption)")
@@ -259,7 +265,8 @@ app Screen(title: "Windows input")
     assert!(generated.contains("flux__ui_derived_caption = flux__ui_state_query"));
     assert!(generated.contains("static int64_t flux__ui_window_width"));
     assert!(generated.contains("flux__ui_derived_roomy = (flux__ui_window_width >= INT64_C(600))"));
-    assert!(generated.contains("case WM_SIZE: flux__ui_window_width = (int64_t)LOWORD(lparam)"));
+    assert!(generated.contains("case WM_SIZE: { int physical_width = (int)LOWORD(lparam)"));
+    assert!(generated.contains("flux__ui_window_width = flux__win_unscale(physical_width)"));
     assert!(generated.contains("flux__win_submit_0"));
     assert!(generated.contains("WM_KEYDOWN && wparam == VK_RETURN"));
     assert!(generated.contains("SetLastError(0);"));

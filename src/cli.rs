@@ -8564,6 +8564,9 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     {
         libraries.push("-luser32");
     }
+    if c_source.contains("GetDeviceCaps(") {
+        libraries.push("-lgdi32");
+    }
     if c_source.contains("GetOpenFileNameW(") || c_source.contains("GetSaveFileNameW(") {
         libraries.push("-lcomdlg32");
     }
@@ -9671,6 +9674,8 @@ app OverlayDemo(title: "Overlay")
     fn windows_native_system_libraries_follow_reachable_platform_features() {
         let basic = windows_native_system_libraries("CreateWindowExA(");
         assert_eq!(basic, vec!["-luser32"]);
+        let dpi_aware = windows_native_system_libraries("CreateWindowExA( GetDeviceCaps(");
+        assert_eq!(dpi_aware, vec!["-luser32", "-lgdi32"]);
 
         let integrated = windows_native_system_libraries(
             "CreateWindowExA( OpenClipboard( GetOpenFileNameW( GetSaveFileNameW( Shell_NotifyIconW( SHBrowseForFolderW( CoTaskMemFree(",
