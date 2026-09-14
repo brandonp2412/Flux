@@ -16,9 +16,9 @@ flux format --version
 
 The canonical formatter is deterministic and idempotent: formatting the same valid source with the same formatter version produces the same bytes, and formatting already-canonical output again does not change it.
 
-Formatter compatibility begins at version `1`. A compiler change that intentionally changes the canonical bytes produced for source that was already canonical under the current version must increment `FORMATTER_VERSION`. Bug fixes that only make previously rejected or incorrectly handled syntax format correctly do not require a version increase unless they rewrite previously canonical valid source.
+Formatter compatibility begins at version `2`. A compiler change that intentionally changes the canonical bytes produced for source that was already canonical under the current version must increment `FORMATTER_VERSION`. Bug fixes that only make previously rejected or incorrectly handled syntax format correctly do not require a version increase unless they rewrite previously canonical valid source.
 
-The compatibility version describes formatting behavior, not the Flux grammar version. New language syntax can be added while formatter version `1` remains current when existing canonical source retains its canonical representation.
+The compatibility version describes formatting behavior, not the Flux grammar version. New language syntax can be added while formatter version `2` remains current when existing canonical source retains its canonical representation.
 
 Flux source deliberately has no comments, so the formatter has no comment-preservation mode. Invalid source is diagnosed through the compiler parser rather than partially rewritten.
 
