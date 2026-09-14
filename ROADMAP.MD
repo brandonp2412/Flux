@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 134 checkbox items
+- Current net scope growth after the baseline: 138 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -981,9 +981,13 @@ Web is a supported target, not the implementation substrate for native apps. The
 - [ ] Raster image codecs.
 - [ ] Vector image support.
 - [ ] Video playback.
+  - [x] Android native media playback primitive: `android.play`, `android.pause`, `android.resume`, and `android.stop` use compiler-owned `MediaPlayer`/`Uri` JNI glue with deterministic release and boolean failure reporting; source code exposes no platform object or plugin bridge. Cross-target playback and richer lifecycle/streaming semantics remain pending.
 - [ ] Audio playback.
+  - [x] Android native audio playback is covered by the same compiler-owned `MediaPlayer` primitive, accepting URI/path-like `str` sources and providing pause/resume/stop without an application-authored bridge. Other targets and richer audio/session semantics remain pending.
 - [ ] Camera capture.
+  - [x] Android camera capture primitive: `android.camera(callback)` launches the compiler-owned capture intent and returns the resulting URI through a synchronous borrowed callback, with generated JNI result dispatch and tree-shaking when unused. Other targets and owned media results remain pending.
 - [ ] Microphone capture.
+  - [x] Android microphone recording primitive: `android.startMicrophoneRecording(path)` / `android.record(path)` and `android.stopMicrophoneRecording()` / `android.stopRecord()` use compiler-owned `MediaRecorder` JNI glue, retain only a native global recorder handle while active, and release it on stop. Other targets, permission UX, and richer media ownership remain pending.
 - [ ] Hardware decoding interfaces.
 - [ ] Files. Bootstrap scalar file/directory metadata includes size, modification/access/inode-change times, permission bits, numeric owner/group IDs, inode/device identities, and hard-link counts with explicit errors and no escaping borrowed data. Native callback-free mutation covers file truncation, file/directory permission and modification/access-time updates, and directory rename with path-kind/range validation and explicit errors; access-time reads preserve native millisecond precision. Bounded callback-scoped text reads through `file.read(path, maxBytes, callback) -> error` validate limits, reject binary/NUL data, and never expose the temporary buffer beyond the exact callback. Callback-scoped directory enumeration through `directory.list(path, callback) -> error` lends each entry name synchronously while the directory handle remains owned by the native helper. Owned reads, directory listings, byte I/O, and owned path values remain sequenced behind the owned-string/collection work.
 - [ ] Preferences/settings.
