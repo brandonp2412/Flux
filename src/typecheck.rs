@@ -7483,17 +7483,17 @@ fn check_qualified_call(
         }
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || !matches!(name.as_str(), "sha256" | "sha512" | "hmacSha256") {
+        if !named_args.is_empty() || !matches!(name.as_str(), "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512") {
             return Err(diag(span, &format!("crypto.{name} accepts positional arguments only and only the supported digest functions are available")));
         }
-        let expected_args = if matches!(name.as_str(), "sha256" | "sha512") { 2 } else { 3 };
+        let expected_args = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 2 } else { 3 };
         if args.len() != expected_args {
             return Err(diag(span, &format!("crypto.{name} expects {expected_args} arguments, got {}", args.len())));
         }
-        let value_index = if matches!(name.as_str(), "sha256" | "sha512") { 0 } else { 1 };
+        let value_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 0 } else { 1 };
         let value = type_of_expr(&args[value_index], env, signatures)?;
         require_type(args[value_index].span, &Type::Str, &value, &format!("crypto.{name} value"))?;
-        let callback_index = if matches!(name.as_str(), "sha256" | "sha512") { 1 } else { 2 };
+        let callback_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 1 } else { 2 };
         if name == "hmacSha256" {
             let key = type_of_expr(&args[0], env, signatures)?;
             require_type(args[0].span, &Type::Str, &key, "crypto.hmacSha256 key")?;

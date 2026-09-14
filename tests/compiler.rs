@@ -15683,8 +15683,12 @@ fn main() -> i64 {
     print(failure)
     let sha512_failure: error = crypto.sha512("abc", show)
     print(sha512_failure)
+    let sha384_failure: error = crypto.sha384("abc", show)
+    print(sha384_failure)
     let hmac_failure: error = crypto.hmacSha256("key", "The quick brown fox jumps over the lazy dog", show)
     print(hmac_failure)
+    let hmac512_failure: error = crypto.hmacSha512("key", "The quick brown fox jumps over the lazy dog", show)
+    print(hmac512_failure)
     return 0
 }
 "#;
@@ -15695,6 +15699,8 @@ fn main() -> i64 {
     assert!(generated.contains("crypto.sha256 input exceeds 65536 bytes"));
     assert!(generated.contains("flux__crypto_sha512("));
     assert!(generated.contains("crypto.sha512 input exceeds 65536 bytes"));
+    assert!(generated.contains("flux__crypto_sha384("));
+    assert!(generated.contains("flux__crypto_hmac_sha512("));
     assert!(generated.contains("flux__crypto_hmac_sha256("));
     assert!(generated.contains("HMAC-SHA-256"));
 
@@ -15718,7 +15724,7 @@ fn main() -> i64 {
         .output()
         .expect("crypto binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\nddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\nnil\nf7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\nnil\n");
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\nddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\nnil\ncb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\nnil\nf7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\nnil\nb42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a\nnil\n");
     let _ = fs::remove_dir_all(&root);
 }
 

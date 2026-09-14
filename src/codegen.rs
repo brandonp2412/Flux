@@ -1728,6 +1728,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <sqlite3.h>\n");
     }
     if runtime_usage.contains("flux__crypto_sha256(")
+        || runtime_usage.contains("flux__crypto_sha384(")
         || runtime_usage.contains("flux__crypto_sha512(")
         || runtime_usage.contains("flux__crypto_hmac_sha256(")
     {
@@ -6382,6 +6383,24 @@ static const char *flux__preferences_remove(const char *key) {
 }
 "#);
     }
+    if runtime_usage.contains("flux__crypto_sha384(") {
+        out.push_str(r#"static inline const char *flux__crypto_sha384(const char *value, void (*callback)(const char *)) {
+    if (value == NULL || callback == NULL) return "invalid crypto.sha384 arguments";
+    size_t length = strlen(value);
+    if (length > 65536) return "crypto.sha384 input exceeds 65536 bytes";
+    unsigned char digest[SHA384_DIGEST_LENGTH];
+    if (SHA384((const unsigned char *)value, length, digest) == NULL) return "SHA-384 failed";
+    char encoded[SHA384_DIGEST_LENGTH * 2 + 1];
+    for (size_t index = 0; index < SHA384_DIGEST_LENGTH; index += 1) {
+        int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+        if (written != 2) return "SHA-384 formatting failed";
+    }
+    encoded[SHA384_DIGEST_LENGTH * 2] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
+    }
     if runtime_usage.contains("flux__crypto_hmac_sha256(") {
         out.push_str(r#"static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
     if (key == NULL || value == NULL || callback == NULL) return "invalid crypto.hmacSha256 arguments";
@@ -6397,6 +6416,26 @@ static const char *flux__preferences_remove(const char *key) {
         if (written != 2) return "HMAC-SHA-256 formatting failed";
     }
     encoded[SHA256_DIGEST_LENGTH * 2] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__crypto_hmac_sha512(") {
+        out.push_str(r#"static inline const char *flux__crypto_hmac_sha512(const char *key, const char *value, void (*callback)(const char *)) {
+    if (key == NULL || value == NULL || callback == NULL) return "invalid crypto.hmacSha512 arguments";
+    size_t key_length = strlen(key);
+    size_t value_length = strlen(value);
+    if (key_length > 65536 || value_length > 65536) return "crypto.hmacSha512 input exceeds 65536 bytes";
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_length = 0;
+    if (HMAC(EVP_sha512(), key, (int)key_length, (const unsigned char *)value, value_length, digest, &digest_length) == NULL || digest_length != SHA512_DIGEST_LENGTH) return "HMAC-SHA-512 failed";
+    char encoded[SHA512_DIGEST_LENGTH * 2 + 1];
+    for (size_t index = 0; index < SHA512_DIGEST_LENGTH; index += 1) {
+        int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+        if (written != 2) return "HMAC-SHA-512 formatting failed";
+    }
+    encoded[SHA512_DIGEST_LENGTH * 2] = '\0';
     callback(encoded);
     return NULL;
 }
@@ -32822,23 +32861,32 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || !matches!(name, "sha256" | "sha512" | "hmacSha256") {
+        if !named_args.is_empty() || !matches!(name, "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512") {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let expected_args = if matches!(name, "sha256" | "sha512") { 2 } else { 3 };
+        let expected_args = if matches!(name, "sha256" | "sha384" | "sha512") { 2 } else { 3 };
         if args.len() != expected_args {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let value_index = if matches!(name, "sha256" | "sha512") { 0 } else { 1 };
+        let value_index = if matches!(name, "sha256" | "sha384" | "sha512") { 0 } else { 1 };
         let value = emit_expr(&args[value_index], env, signatures)?;
-        if matches!(name, "sha256" | "sha512") {
+        if matches!(name, "sha256" | "sha384" | "sha512") {
             let callback = emit_expr(&args[1], env, signatures)?;
-            let helper = if name == "sha256" { "flux__crypto_sha256" } else { "flux__crypto_sha512" };
+            let helper = match name {
+                "sha256" => "flux__crypto_sha256",
+                "sha384" => "flux__crypto_sha384",
+                _ => "flux__crypto_sha512",
+            };
             return Ok((format!("{helper}({}, {})", value.code, callback.code), vec![Type::Error], None));
         }
         let key = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[2], env, signatures)?;
-        return Ok((format!("flux__crypto_hmac_sha256({}, {}, {})", key.code, value.code, callback.code), vec![Type::Error], None));
+        let helper = if name == "hmacSha256" {
+            "flux__crypto_hmac_sha256"
+        } else {
+            "flux__crypto_hmac_sha512"
+        };
+        return Ok((format!("{helper}({}, {}, {})", key.code, value.code, callback.code), vec![Type::Error], None));
     }
     if namespace == "str" {
         if !named_args.is_empty() {
