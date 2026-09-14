@@ -46196,6 +46196,7 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));
     assert!(generated.contains("WebSocket handshake is missing Sec-WebSocket-Key"));
     assert!(generated.contains("WebSocket text message exceeds maxBytes"));
+    assert!(generated.contains("WebSocket text message contains invalid UTF-8"));
     assert!(generated.contains("WebSocket continuation frame expected"));
     assert!(generated.contains("WebSocket reserved bits are unsupported"));
     assert!(generated.contains("failed to send WebSocket pong"));
