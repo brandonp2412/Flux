@@ -26711,6 +26711,34 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 }
 
 #[test]
+fn project_analysis_cache_clear_discards_parsed_module_entries() {
+    let root = std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary cache-clear project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(&entry, "fn main() -> i64 { 0 }\n").expect("entry should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial analysis should succeed");
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 0, misses: 1 }
+    );
+
+    cache.clear();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("analysis after clearing should succeed");
+    assert_eq!(
+        cache.module_parse_stats(),
+        fluxc::project::ModuleParseCacheStats { hits: 0, misses: 2 }
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-typecheck-{}",

@@ -128,6 +128,10 @@ impl ModuleParseCache {
             misses: self.misses,
         }
     }
+
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+    }
 }
 
 #[derive(Debug, Default)]
@@ -226,6 +230,7 @@ impl ProjectAnalysisCache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.module_parses.clear_entries();
         self.invalidated_paths.clear();
     }
 
