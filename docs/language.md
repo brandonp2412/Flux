@@ -810,7 +810,7 @@ Locale-sensitive formatting uses callback-scoped borrowed text so formatting doe
 Flux exposes a small compiler-owned filesystem surface without requiring an object API or a user-written native bridge. The default spelling keeps ordinary file and directory work short and explicit:
 
 ```flux
-print(directory.createAll("cache/images"))
+print(directory.make("cache/images"))
 print(directory.exists("cache"))
 print(file.write("cache/data.txt", "hello"))
 print(file.append("cache/data.txt", " world"))
@@ -821,21 +821,21 @@ print(sizeError)
 print(file.copy("cache/data.txt", "cache/backup.txt"))
 print(file.rename("cache/backup.txt", "cache/archive.txt"))
 print(file.remove("cache/archive.txt"))
-print(directory.removeAll("cache"))
+print(directory.erase("cache"))
 ```
 
-`file.exists` is true only for regular files and `directory.exists` only for directories. `file.size` returns the regular-file byte count plus an explicit `error`; it does not allocate or expose a borrowed result. Mutating operations return Flux `error`: `nil` means success and a non-nil error means the native operation failed. `file.write` truncates or creates a text file, while `file.append` appends or creates it. `file.copy` streams bytes through a bounded native buffer and overwrites the destination; a failed copy may therefore leave a partial destination. `file.rename` uses the target platform's native rename operation. `directory.create` / `directory.remove` operate on one level, while `directory.createAll` / `directory.removeAll` provide recursive behavior. The older `fs.exists`, `fs.isFile`, `fs.isDirectory`, `fs.createDirectory`, `fs.createDirectories`, `fs.removeFile`, `fs.removeDirectory`, `fs.removeDirectories`, `fs.writeText`, `fs.appendText`, `fs.rename`, and `fs.copyFile` spellings remain accepted for compatibility, but the `file.*` / `directory.*` forms are the ordinary API. Generated helpers are emitted only when reachable. Owned file-read results, directory enumeration, owned path values, binary byte I/O, and richer metadata/errors remain blocked on the owned-string/collection work rather than hiding heap-backed lifetime rules inside this bootstrap API.
+`file.exists` is true only for regular files and `directory.exists` only for directories. `file.size` returns the regular-file byte count plus an explicit `error`; it does not allocate or expose a borrowed result. Mutating operations return Flux `error`: `nil` means success and a non-nil error means the native operation failed. `file.write` truncates or creates a text file, while `file.append` appends or creates it. `file.copy` streams bytes through a bounded native buffer and overwrites the destination; a failed copy may therefore leave a partial destination. `file.rename` uses the target platform's native rename operation. `directory.create` / `directory.remove` operate on one level, while `directory.make` / `directory.erase` provide recursive behavior. The older `fs.exists`, `fs.isFile`, `fs.isDirectory`, `fs.createDirectory`, `fs.createDirectories`, `fs.removeFile`, `fs.removeDirectory`, `fs.removeDirectories`, `fs.writeText`, `fs.appendText`, `fs.rename`, and `fs.copyFile` spellings remain accepted for compatibility, but the `file.*` / `directory.*` forms are the ordinary API. Generated helpers are emitted only when reachable. Owned file-read results, directory enumeration, owned path values, binary byte I/O, and richer metadata/errors remain blocked on the owned-string/collection work rather than hiding heap-backed lifetime rules inside this bootstrap API.
 
 ## Native time primitives
 
 Current native targets expose scalar clock and sleep operations without allocating a date/time object or linking a framework runtime:
 
 ```flux
-let started: i64 = time.monotonic()
+let started: i64 = time.steady()
 time.sleep(50)
-let deadline: i64 = time.monotonic() + 50
-time.sleepUntil(deadline)
-let elapsed: i64 = time.monotonic() - started
+let deadline: i64 = time.steady() + 50
+time.until(deadline)
+let elapsed: i64 = time.steady() - started
 print(elapsed)
 print(time.now())
 let timestamp: i64 = time.utc(2000, 1, 2, 3, 4, 5, 6)
@@ -845,9 +845,9 @@ print(time.day(timestamp))
 print(time.weekday(timestamp))
 ```
 
-`time.now()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.monotonic()` is the clock for measuring elapsed durations. `time.sleep(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. `time.sleepUntil(deadlineMillis)` blocks until the monotonic clock reaches an absolute deadline; already-expired deadlines return immediately, and the implementation rechecks the monotonic clock so interruptions or oversleep do not accumulate scheduling drift across repeated deadline-based loops. Legacy longer spellings remain source-compatible but are omitted from canonical tooling.
+`time.now()` reads wall-clock Unix milliseconds and may move forward or backward when the system clock changes. `time.steady()` is the clock for measuring elapsed durations. `time.sleep(durationMs)` accepts a non-negative `i64`, retries an interrupted native sleep, rejects statically known negative durations at compile time, and traps a dynamic negative duration rather than silently wrapping it into a huge delay. `time.until(deadlineMillis)` blocks until the steady clock reaches an absolute deadline; already-expired deadlines return immediately, and the implementation rechecks the monotonic clock so interruptions or oversleep do not accumulate scheduling drift across repeated deadline-based loops. Legacy longer spellings remain source-compatible but are omitted from canonical tooling.
 
-UTC calendar conversion remains allocation-free. `time.utc(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.year`, `month`, `day`, `hour`, `minute`, `second`, `millis`, `weekday`, and `dayOfYear` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `weekday` uses ISO numbering (`1` Monday through `7` Sunday), and `dayOfYear` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
+UTC calendar conversion remains allocation-free. `time.utc(year, month, day, hour, minute, second, millisecond)` validates the supplied UTC calendar components and returns Unix milliseconds; statically known invalid component ranges and impossible dates such as 29 February in a non-leap year are compile errors, while dynamic invalid values trap rather than normalize silently. `time.year`, `month`, `day`, `hour`, `minute`, `second`, `millis`, `weekday`, and `yearday` perform the inverse decomposition and each return an `i64`. Months and days are one-based, `weekday` uses ISO numbering (`1` Monday through `7` Sunday), and `yearday` is `1..=366`. Negative pre-epoch timestamps normalize correctly, including their millisecond component. These helpers are emitted only when reachable. First-class calendar/date values, formatting, named time zones, local-time conversion, and richer duration types remain separate standard-library work.
 
 ## Native worker threads
 

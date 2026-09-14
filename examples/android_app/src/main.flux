@@ -2,10 +2,10 @@ fn started() -> void {
     android.vibrate(25)
     print(android.allowed("android.permission.VIBRATE"))
     android.channel("updates", "Flux updates", "Native Flux Android notifications")
-    if android.noticeAllowed():
+    if android.canNotify():
         android.notifyUrl("updates", 1, "Flux", "Native Android notifications work", "Open", "https://example.com")
     else:
-        android.askNotice()
+        android.askNotify()
     print("Flux Android started")
 }
 
