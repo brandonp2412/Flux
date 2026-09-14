@@ -399,14 +399,14 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 - [ ] Arrays/lists.
   - [x] Bootstrap immutable local `T[]` lists with literals, checked indexing, zero-copy slicing, and filtered comprehensions.
   - [ ] Owned/escaping list storage, owned list argument/return transfer, aggregate fields, mutation, and lifetime/ownership integration; current list parameters are immutable borrowed views.
-- [ ] Maps.
+- [x] Maps.
   - [x] Bootstrap typed `map<K, V>` literals with primitive compile-time keys/values, deterministic insertion-order storage, duplicate-key diagnostics, formatter support, and native paired key/value lowering.
   - [x] Map match arms with compile-time scalar keys, typed value bindings, native linear lookup, guards, and required wildcard fallback coverage.
   - [x] Optional keyed lookup through `map[key]` and `map?[key]`, including exact key typing, missing-key results as `value?`, absent-map short-circuiting, native string/scalar equality, and allocation-free linear lookup.
   - [x] Map iteration through `for key, value in map`, preserving insertion order and binding keys/values directly from native storage.
   - [x] Scalar membership queries through `contains(collection, key)` for lists, sets, and map keys, with exact static typing and allocation-free native scans.
   - [x] Read-only map cardinality properties: `.count`, `.empty`, and `.nonempty` type-check, lower directly to native key storage, and are exposed through LSP completion/hover.
-- [ ] Sets.
+- [x] Sets.
   - [x] Bootstrap typed `set<T>` literals with primitive compile-time values, insertion-order-preserving deduplication, deterministic iteration, and native list-descriptor lowering.
   - [x] Scalar membership queries through `contains(set, key)` with exact key typing and allocation-free native scans.
   - [x] Read-only set cardinality properties: `.count`, `.empty`, and `.nonempty` type-check, lower directly to the native list descriptor, and are exposed through LSP completion/hover.
