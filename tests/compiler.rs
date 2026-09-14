@@ -119,7 +119,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
-    assert!(generated.contains("SetWindowTextA(flux__ui_title, flux__ui_state_query)"));
+    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)"));
     assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
     assert!(
         generated
