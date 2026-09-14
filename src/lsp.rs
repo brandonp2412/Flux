@@ -867,6 +867,14 @@ fn completion_items_at_cursor_cached(
     let (Some(line_index), Some(character)) = (line_index, character) else {
         return items;
     };
+    add_named_argument_completions(
+        &mut items,
+        &mut seen,
+        source,
+        line_index,
+        character,
+        encoding,
+    );
     let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
         return items;
     };
@@ -892,6 +900,56 @@ fn completion_items_at_cursor_cached(
         }
     }
     items
+}
+
+fn add_named_argument_completions(
+    items: &mut Vec<JsonValue>,
+    seen: &mut HashSet<String>,
+    source: &str,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) {
+    let line = source.lines().nth(line_index).unwrap_or("");
+    let byte_in_line = byte_offset_for_encoded_column(line, character, encoding);
+    let absolute = source
+        .lines()
+        .take(line_index)
+        .map(|line| line.len() + 1)
+        .sum::<usize>()
+        + byte_in_line;
+    let Some(prefix) = source.get(..absolute.min(source.len())) else {
+        return;
+    };
+    let Some((call_name, active_parameter)) = active_call(prefix) else {
+        return;
+    };
+    let Some((namespace, member)) = call_name.rsplit_once('.') else {
+        return;
+    };
+    let params = if namespace == "android" {
+        crate::android_bindings::binding_named(member)
+            .map(|binding| binding.params)
+            .unwrap_or_default()
+    } else {
+        return;
+    };
+    let already_typed = prefix
+        .rsplit_once('(')
+        .map(|(_, args)| args.split(',').any(|arg| arg.trim_start().contains(':')))
+        .unwrap_or(false);
+    if already_typed {
+        return;
+    }
+    if let Some(param) = params.get(active_parameter) {
+        push_completion_item(
+            items,
+            seen,
+            &format!("{}: ", param.name),
+            10,
+            &format!("named argument {}", param.signature),
+        );
+    }
 }
 
 fn completion_items_at_position(
@@ -4976,10 +5034,23 @@ fn semantic_identifier_kind(
     if word == "print" {
         return SemanticTokenKind::Function;
     }
+    if crate::typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&word)
+        && source
+            .lines()
+            .nth(line.saturating_sub(1))
+            .is_some_and(|line_text| leading_spaces(line_text) == 4)
+    {
+        return SemanticTokenKind::Type;
+    }
     let Some(database) = database else {
         return SemanticTokenKind::Variable;
     };
     let symbol = database.symbol_at(source_id, line, column).or_else(|| {
+        if let Some(view_symbol) =
+            visible_view_symbol_for_position(database, source, source_id, line, word)
+        {
+            return Some(view_symbol);
+        }
         if let Some(local) =
             visible_local_symbol_for_position(database, source, source_id, line, word)
         {
@@ -5240,6 +5311,15 @@ fn symbol_for_position<'a>(
     database
         .symbol_at(source_id, line_index + 1, byte + 1)
         .or_else(|| {
+            if let Some(view_symbol) = visible_view_symbol_for_position(
+                database,
+                source,
+                source_id,
+                line_index + 1,
+                identifier_at(line, byte)?,
+            ) {
+                return Some(view_symbol);
+            }
             let name = identifier_at(line, byte)?;
             if let Some(local) =
                 visible_local_symbol_for_position(database, source, source_id, line_index + 1, name)
@@ -5253,6 +5333,41 @@ fn symbol_for_position<'a>(
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
         })
+}
+
+fn visible_view_symbol_for_position<'a>(
+    database: &'a crate::semantic::SemanticDatabase,
+    source: &str,
+    source_id: SourceId,
+    line: usize,
+    name: &str,
+) -> Option<&'a crate::semantic::SemanticSymbol> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let view = database.program().views.iter().find(|view| {
+        view.name_span.source_id == source_id
+            && view.line <= line
+            && lines
+                .iter()
+                .enumerate()
+                .skip(view.line)
+                .find(|(_, candidate)| {
+                    candidate.trim() == "}" && leading_spaces(candidate) == 0
+                })
+                .is_some_and(|(end, _)| line <= end + 1)
+    })?;
+    database.symbols().iter().find(|symbol| {
+        symbol.name == name
+            && symbol.span.source_id == source_id
+            && symbol.span.line >= view.line
+            && matches!(
+                symbol.kind,
+                crate::semantic::SymbolKind::Parameter
+                    | crate::semantic::SymbolKind::ViewState
+                    | crate::semantic::SymbolKind::ViewDerived
+            )
+            && symbol.span.line <= line
+            && local_symbol_visible_at_line(source, symbol, line)
+    })
 }
 
 fn is_local_symbol_kind(kind: crate::semantic::SymbolKind) -> bool {
@@ -10573,6 +10688,74 @@ mod tests {
         .to_json();
         assert!(definition.contains("\"line\":3"));
         assert!(definition.contains("\"character\":10"));
+    }
+
+    #[test]
+    fn view_state_definition_and_usage_are_navigable() {
+        let uri = "file:///tmp/view-state-definition.flux";
+        let source = "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello\"\n        visible: clicked\n}\n\napp Demo\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let definition = definition_for_document(
+            uri,
+            source,
+            &documents,
+            7,
+            source.lines().nth(7).unwrap().find("clicked").unwrap(),
+            PositionEncoding::Utf8,
+        )
+        .expect("view state usage should resolve");
+        assert!(definition.to_json().contains("\"line\":3"));
+        assert!(definition.to_json().contains("\"character\":10"));
+    }
+
+    #[test]
+    fn builtin_view_elements_get_type_semantic_tokens() {
+        let uri = "file:///tmp/view-semantic-kinds.flux";
+        let source = "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text title at 1,1\n        text: \"Hello\"\n    Button action at 2,1\n        text: \"Go\"\n}\n\napp Demo\n";
+        let data = semantic_tokens(uri, source, PositionEncoding::Utf8);
+        let numbers = data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (chunks, remainder) = numbers.as_chunks::<5>();
+        assert!(remainder.is_empty());
+        let mut found_text = false;
+        let mut found_title = false;
+        let mut line = 0i64;
+        let mut start = 0i64;
+        for token in chunks {
+            line += token[0];
+            start = if token[0] == 0 { start + token[1] } else { token[1] };
+            if line == 4 && start == 4 {
+                found_text = token[3] == SemanticTokenKind::Type as i64;
+            }
+            if line == 4 && start == 9 {
+                found_title = token[3] == SemanticTokenKind::Variable as i64;
+            }
+        }
+        assert!(found_text, "Text should be a type semantic token");
+        assert!(found_title, "title should be a variable semantic token");
+    }
+
+    #[test]
+    fn android_call_completion_suggests_the_active_named_parameter() {
+        let uri = "file:///tmp/android-named-argument.flux";
+        let source = "fn main() -> i64 {\n    android.notify(\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line = source.lines().nth(1).unwrap();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(1),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains("channelId: "), "completion items: {items}");
     }
 
     #[test]

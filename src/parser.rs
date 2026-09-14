@@ -11,7 +11,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
-pub const GRAMMAR_VERSION: u32 = 1;
+pub const GRAMMAR_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 struct Line {
@@ -929,9 +929,28 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
     let mut lines = Vec::new();
     let mut diagnostics = Vec::new();
     let mut multiline: Option<Line> = None;
+    let mut header: Option<(Line, i32)> = None;
 
     for (index, raw) in source.lines().enumerate() {
         let number = index + 1;
+
+        if let Some((line, depth)) = header.as_mut() {
+            if raw.contains('\t') {
+                diagnostics.push(diag(
+                    number,
+                    "tabs are not allowed for indentation; use spaces",
+                ));
+                continue;
+            }
+            line.text.push(' ');
+            line.text.push_str(raw.trim());
+            *depth += parenthesis_delta(raw);
+            if *depth <= 0 {
+                let completed = header.take().expect("multiline header exists").0;
+                push_preprocessed_line(completed, &mut lines, &mut diagnostics);
+            }
+            continue;
+        }
 
         if let Some(line) = multiline.as_mut() {
             line.text.push('\n');
@@ -962,6 +981,18 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
             continue;
         }
 
+        if is_function_header_prefix(source_text) && parenthesis_delta(source_text) > 0 {
+            header = Some((
+                Line {
+                    number,
+                    indent,
+                    text: source_text.to_string(),
+                },
+                parenthesis_delta(source_text),
+            ));
+            continue;
+        }
+
         push_preprocessed_line(
             Line {
                 number,
@@ -980,8 +1011,47 @@ fn preprocess(source: &str) -> (Vec<Line>, Vec<Diagnostic>) {
             "unterminated multiline string literal",
         ));
     }
+    if let Some((line, _)) = header {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticStage::Parse,
+            SourceSpan::new(line.number, line.indent + 1, line.text.len().max(1)),
+            "unterminated multiline function header",
+        ));
+    }
 
     (lines, diagnostics)
+}
+
+fn is_function_header_prefix(text: &str) -> bool {
+    text.starts_with("fn ")
+        || text.starts_with("async fn ")
+        || text.starts_with("pub fn ")
+        || text.starts_with("pub async fn ")
+}
+
+fn parenthesis_delta(text: &str) -> i32 {
+    let mut delta = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for byte in text.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'(' => delta += 1,
+            b')' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
 }
 
 fn push_preprocessed_line(

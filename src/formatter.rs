@@ -12,7 +12,8 @@ use crate::parser;
 ///
 /// A change that intentionally rewrites already-canonical source differently must
 /// increment this value so editor/CI integrations can pin formatter behavior.
-pub const FORMATTER_VERSION: u32 = 1;
+pub const FORMATTER_VERSION: u32 = 2;
+const MAX_LINE_WIDTH: usize = 80;
 
 pub fn format_source(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parser::parse_all(source)?;
@@ -164,11 +165,12 @@ fn format_interface(definition: &crate::ast::InterfaceDef, lines: &mut HashMap<u
         }
         lines.insert(
             function.line,
-            format!(
-                "    fn {}({}) -> {}",
-                function.name,
-                param_parts.join(", "),
-                format_return_types(&function.returns)
+            format_function_header(
+                "    fn ",
+                &function.name,
+                &param_parts,
+                &format_return_types(&function.returns),
+                "",
             ),
         );
     }
@@ -461,13 +463,37 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     }
     lines.insert(
         function.line,
-        format!(
-            "{visibility}{async_prefix}fn {}({params}) -> {} {{",
-            function.name,
-            format_return_types(&function.returns)
+        format_function_header(
+            &format!("{visibility}{async_prefix}fn "),
+            &function.name,
+            &param_parts,
+            &format_return_types(&function.returns),
+            "{",
         ),
     );
     format_block(&function.body, 1, lines);
+}
+
+fn format_function_header(
+    prefix: &str,
+    name: &str,
+    params: &[String],
+    returns: &str,
+    suffix: &str,
+) -> String {
+    let return_suffix = if suffix.is_empty() {
+        format!("-> {returns}")
+    } else {
+        format!("-> {returns} {suffix}")
+    };
+    let inline = format!("{prefix}{name}({}) {return_suffix}", params.join(", "));
+    if inline.len() <= MAX_LINE_WIDTH || params.len() < 2 {
+        return inline;
+    }
+    format!(
+        "{prefix}{name}(\n    {}\n) {return_suffix}",
+        params.join(",\n    ")
+    )
 }
 
 fn format_block(body: &[Stmt], depth: usize, lines: &mut HashMap<usize, String>) {

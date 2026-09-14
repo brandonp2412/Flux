@@ -7,6 +7,7 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -4434,6 +4435,19 @@ fn demangle_profile_symbols(report: &str) -> String {
 }
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
+    let (quit_tx, quit_rx) = mpsc::channel();
+    if io::stdin().is_terminal() {
+        thread::spawn(move || {
+            let mut line = String::new();
+            while io::stdin().read_line(&mut line).is_ok() {
+                if line.trim().eq_ignore_ascii_case("q") {
+                    let _ = quit_tx.send(());
+                    break;
+                }
+                line.clear();
+            }
+        });
+    }
     let mut generation = 0usize;
     let mut analysis_cache = fluxc::project::ProjectAnalysisCache::default();
     write_development_status(
@@ -4467,13 +4481,18 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     );
     let mut status_state = "running";
     eprintln!(
-        "run: started ({}); watching {} source file{}",
+        "run: started ({}) • watching {} source file{} • press q then Enter to quit",
         mode.name(),
         watch_paths.len(),
         if watch_paths.len() == 1 { "" } else { "s" }
     );
 
     loop {
+        if quit_rx.try_recv().is_ok() {
+            stop_child(&mut child);
+            eprintln!("run: stopped");
+            return Ok(());
+        }
         if child
             .as_mut()
             .is_some_and(|process| process.try_wait().ok().flatten().is_some())

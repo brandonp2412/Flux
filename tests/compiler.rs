@@ -22731,14 +22731,14 @@ fn formatter_is_deterministic_without_comments() {
 
 #[test]
 fn grammar_contract_has_a_stable_discoverable_version() {
-    assert_eq!(fluxc::GRAMMAR_VERSION, 1);
+    assert_eq!(fluxc::GRAMMAR_VERSION, 2);
 
     let output = Command::new(env!("CARGO_BIN_EXE_flux"))
         .args(["grammar", "--version"])
         .output()
         .expect("flux grammar --version should launch");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2");
     assert!(output.stderr.is_empty());
 }
 
@@ -22771,15 +22771,26 @@ fn native_abi_policy_has_a_stable_discoverable_version() {
 
 #[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
-    assert_eq!(fluxc::formatter::FORMATTER_VERSION, 1);
+    assert_eq!(fluxc::formatter::FORMATTER_VERSION, 2);
 
     let output = Command::new(env!("CARGO_BIN_EXE_flux"))
         .args(["format", "--version"])
         .output()
         .expect("flux format --version should launch");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "2");
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn formatter_wraps_long_function_signatures_and_round_trips() {
+    let source = "interface Calculator {\n    fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n}\n\nfn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64 {\n    return first_value + second_value + third_value\n}\n";
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("long function signatures should format");
+    assert!(formatted.lines().all(|line| line.len() <= 80));
+    assert_eq!(formatted.lines().filter(|line| line.len() > 80).count(), 0);
+    assert!(formatted.matches("fn calculate_with_a_deliberately_long_name(\n").count() >= 2);
+    fluxc::parser::parse_all(&formatted).expect("wrapped formatter output should reparse");
 }
 
 #[test]
