@@ -16195,6 +16195,7 @@ fn ui_expr_c(
             Ok(match op {
                 UnaryOp::Neg => format!("flux_neg_i64({inner})"),
                 UnaryOp::Not => format!("(!({inner}))"),
+                UnaryOp::Borrow => inner,
             })
         }
         ExprKind::Binary { left, op, right } => {
@@ -32705,10 +32706,12 @@ fn emit_expr(
                 code: match op {
                     UnaryOp::Neg => format!("flux_neg_i64({})", inner.code),
                     UnaryOp::Not => format!("(!{})", inner.code),
+                    UnaryOp::Borrow => inner.code.clone(),
                 },
                 ty: match op {
                     UnaryOp::Neg => Type::I64,
                     UnaryOp::Not => Type::Bool,
+                    UnaryOp::Borrow => inner.ty,
                 },
             }
         }

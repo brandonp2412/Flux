@@ -919,6 +919,10 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*then_value, source, visiting)
                     || self.value_depends_on_borrow_source(*else_value, source, visiting)
             }
+            ControlFlowValueKind::Unary {
+                op: UnaryOp::Borrow,
+                operand,
+            } => self.value_depends_on_borrow_source(*operand, source, visiting),
             _ => false,
         }
     }
@@ -1036,6 +1040,10 @@ impl ControlFlowGraph {
                 visit(*then_value);
                 visit(*else_value);
             }
+            ControlFlowValueKind::Unary {
+                op: UnaryOp::Borrow,
+                operand,
+            } => visit(*operand),
             _ => {}
         }
     }

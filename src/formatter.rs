@@ -1322,6 +1322,7 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             let operator = match op {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "!",
+                UnaryOp::Borrow => "borrow ",
             };
             format!("{operator}{}", format_expr(expr, 8))
         }

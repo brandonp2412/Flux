@@ -5674,6 +5674,24 @@ fn type_of_partial_application(
     })
 }
 
+fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(_) => true,
+        ExprKind::Index {
+            base,
+            optional: false,
+            ..
+        }
+        | ExprKind::Slice { base, .. } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        ExprKind::Field {
+            base,
+            optional: false,
+            ..
+        } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -7114,6 +7132,24 @@ pub fn type_of_expr(
                 UnaryOp::Not => {
                     require_type(expr.span, &Type::Bool, &ty, "unary '!'")?;
                     Ok(Type::Bool)
+                }
+                UnaryOp::Borrow => {
+                    if !is_zero_copy_borrow_rooted_in_named_storage(inner) {
+                        return Err(diag(
+                            expr.span,
+                            "borrow currently requires named list storage or a zero-copy view rooted in it",
+                        )
+                        .with_note(
+                            "bind the owner first, then borrow that binding or one of its zero-copy indexing/slicing/property views so the inferred lifetime has stable storage",
+                        ));
+                    }
+                    if !matches!(signatures.canonical_type(&ty), Type::List(_)) {
+                        return Err(diag(
+                            expr.span,
+                            "borrow currently supports concrete list bindings",
+                        ));
+                    }
+                    Ok(ty)
                 }
             }
         }
@@ -12117,6 +12153,10 @@ fn evaluate_default_expr(
                     &Type::Bool,
                     &actual.ty(),
                 )),
+                (UnaryOp::Borrow, _) => Err(diag(
+                    expr.span,
+                    "borrow expressions are not compile-time constants",
+                )),
             }
         }
         ExprKind::Binary { left, op, right } => {
@@ -12312,6 +12352,10 @@ fn evaluate_constant_expr(
                     "unary '!'",
                     &Type::Bool,
                     &actual.ty(),
+                )),
+                (UnaryOp::Borrow, _) => Err(diag(
+                    expr.span,
+                    "borrow expressions are not compile-time constants",
                 )),
             }
         }
