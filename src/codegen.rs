@@ -1439,8 +1439,6 @@ pub fn emit_c_for_target_with_source_metadata(
         ));
     }
 
-    let record_types =
-        reachable_record_types(program, signatures, &reachable_functions, &function_ir);
     let mut out = String::new();
     emit_runtime_prelude(
         &mut out,
@@ -1453,9 +1451,6 @@ pub fn emit_c_for_target_with_source_metadata(
             && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
     );
 
-    for ty in &record_types {
-        out.push_str(&format!("struct {};\n", record_c_name(ty, signatures)));
-    }
     for definition in &program.structs {
         if reachable_value_types.contains(&definition.name) {
             out.push_str(&format!("struct {};\n", struct_c_name(&definition.name)));
@@ -1501,12 +1496,6 @@ pub fn emit_c_for_target_with_source_metadata(
         }
     }
     if !reachable_value_types.is_empty() {
-        out.push('\n');
-    }
-    for ty in &record_types {
-        emit_record_definition(&mut out, ty, signatures);
-    }
-    if !record_types.is_empty() {
         out.push('\n');
     }
 
@@ -20696,11 +20685,6 @@ fn collect_interface_names_from_type(
                 collect_interface_names_from_type(ty, signatures, reachable, pending);
             }
         }
-        Type::Record { positional, named } => {
-            for ty in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
-                collect_interface_names_from_type(ty, signatures, reachable, pending);
-            }
-        }
         Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void => {}
     }
 }
@@ -20762,14 +20746,6 @@ fn collect_interface_names_from_expr(
         ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_interface_names_from_expr(item, signatures, reachable, pending);
-            }
-        }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_interface_names_from_expr(value, signatures, reachable, pending);
-            }
-            for field in named {
-                collect_interface_names_from_expr(&field.value, signatures, reachable, pending);
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
@@ -20981,14 +20957,6 @@ fn collect_enum_variant_refs_from_expr(
         ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_enum_variant_refs_from_expr(item, signatures, variants);
-            }
-        }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_enum_variant_refs_from_expr(value, signatures, variants);
-            }
-            for field in named {
-                collect_enum_variant_refs_from_expr(&field.value, signatures, variants);
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
@@ -21374,11 +21342,6 @@ fn collect_value_type_names_from_type(
                 collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
             }
         }
-        Type::Record { positional, named } => {
-            for ty in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
-                collect_value_type_names_from_type(ty, signatures, known, reachable, pending);
-            }
-        }
         Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void => {}
     }
 }
@@ -21469,20 +21432,6 @@ fn collect_value_type_names_from_expr(
         ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_value_type_names_from_expr(item, signatures, known, reachable, pending);
-            }
-        }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_value_type_names_from_expr(value, signatures, known, reachable, pending);
-            }
-            for field in named {
-                collect_value_type_names_from_expr(
-                    &field.value,
-                    signatures,
-                    known,
-                    reachable,
-                    pending,
-                );
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
@@ -21750,11 +21699,6 @@ impl InterfacePackFacts {
                     self.mark_open_type(ty, signatures);
                 }
             }
-            Type::Record { positional, named } => {
-                for ty in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
-                    self.mark_open_type(ty, signatures);
-                }
-            }
             Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::Named(_) => {}
         }
     }
@@ -21843,14 +21787,6 @@ fn collect_interface_pack_facts_from_expr(
         ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_interface_pack_facts_from_expr(item, env, signatures, facts);
-            }
-        }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_interface_pack_facts_from_expr(value, env, signatures, facts);
-            }
-            for field in named {
-                collect_interface_pack_facts_from_expr(&field.value, env, signatures, facts);
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
@@ -22307,26 +22243,6 @@ fn collect_interface_dispatch_refs_from_expr(
                 );
             }
         }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_interface_dispatch_refs_from_expr(
-                    value,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-            for field in named {
-                collect_interface_dispatch_refs_from_expr(
-                    &field.value,
-                    env,
-                    signatures,
-                    direct_functions,
-                    dynamic_capabilities,
-                );
-            }
-        }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_interface_dispatch_refs_from_expr(
                 value,
@@ -22699,14 +22615,6 @@ fn collect_named_function_refs_from_expr(
                 collect_named_function_refs_from_expr(item, known, references);
             }
         }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_named_function_refs_from_expr(value, known, references);
-            }
-            for field in named {
-                collect_named_function_refs_from_expr(&field.value, known, references);
-            }
-        }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
             collect_named_function_refs_from_expr(value, known, references);
         }
@@ -23010,14 +22918,6 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
         ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
             for item in items {
                 collect_function_helpers_from_expr(item, functions);
-            }
-        }
-        ExprKind::RecordLiteral { positional, named } => {
-            for value in positional {
-                collect_function_helpers_from_expr(value, functions);
-            }
-            for field in named {
-                collect_function_helpers_from_expr(&field.value, functions);
             }
         }
         ExprKind::ListSpread { value, .. } | ExprKind::ListOptional { value, .. } => {
@@ -29121,14 +29021,6 @@ fn dead_store_rhs_is_discardable(
                     .iter()
                     .all(|field| dead_store_rhs_is_discardable(&field.value, env, signatures))
         }
-        ExprKind::RecordLiteral { positional, named } => {
-            positional
-                .iter()
-                .all(|value| dead_store_rhs_is_discardable(value, env, signatures))
-                && named
-                    .iter()
-                    .all(|field| dead_store_rhs_is_discardable(&field.value, env, signatures))
-        }
         ExprKind::Field { base, name, .. }
             if dead_store_rhs_is_discardable(base, env, signatures) =>
         {
@@ -29136,7 +29028,7 @@ fn dead_store_rhs_is_discardable(
                 .ok()
                 .map(|ty| signatures.canonical_type(&ty))
             {
-                Some(Type::Named(_) | Type::Record { .. }) => true,
+                Some(Type::Named(_)) => true,
                 Some(Type::List(_)) => {
                     let static_len = static_list_length(base, env, signatures).ok().flatten();
                     match crate::builtin_names::list_member_impl(name) {
@@ -33529,8 +33421,11 @@ fn emit_expr(
                 Type::Bool => "flux_print_bool",
                 Type::Str => "flux_print_str",
                 Type::Error => "flux_print_error",
-                Type::Named(_) | Type::Record { .. } => {
-                    return Err(diag(expr.span, "cannot print an aggregate value directly"));
+                Type::Named(_) => {
+                    return Err(diag(
+                        expr.span,
+                        "cannot print a named aggregate value directly",
+                    ));
                 }
                 Type::List(_) => return Err(diag(expr.span, "cannot print a list directly")),
                 Type::Set(_) => return Err(diag(expr.span, "cannot print a set directly")),
@@ -33680,47 +33575,6 @@ fn emit_expr(
             };
             EmittedExpr { code, ty }
         }
-        ExprKind::RecordLiteral { positional, named } => {
-            let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-            let Type::Record {
-                positional: positional_types,
-                named: named_types,
-            } = &result_ty
-            else {
-                return Err(diag(
-                    expr.span,
-                    "invalid record literal reached code generation",
-                ));
-            };
-            let mut rendered = Vec::with_capacity(positional.len() + named.len());
-            for (index, value) in positional.iter().enumerate() {
-                let expected = &positional_types[index];
-                rendered.push(format!(
-                    ".flux__p{index} = {}",
-                    emit_expr_for_expected(value, expected, env, signatures)?
-                ));
-            }
-            for field in named {
-                let expected = named_types
-                    .iter()
-                    .find(|(name, _)| name == &field.name)
-                    .map(|(_, ty)| ty)
-                    .expect("checked record literal named field exists");
-                rendered.push(format!(
-                    ".{} = {}",
-                    field_c_name(&field.name),
-                    emit_expr_for_expected(&field.value, expected, env, signatures)?
-                ));
-            }
-            EmittedExpr {
-                code: format!(
-                    "((struct {}){{ {} }})",
-                    record_c_name(&result_ty, signatures),
-                    rendered.join(", ")
-                ),
-                ty: result_ty,
-            }
-        }
         ExprKind::StructLiteral {
             name, base, fields, ..
         } => {
@@ -33865,26 +33719,6 @@ fn emit_expr(
                     "__extension__ ({{ {base_c} flux__optional_access_value = {}; flux__optional_access_value.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})",
                     emitted_base.code
                 )
-            } else if let Type::Record { positional, named } =
-                signatures.canonical_type(&emitted_base.ty)
-            {
-                if let Ok(index) = name.parse::<usize>() {
-                    if index >= positional.len() {
-                        return Err(diag(
-                            expr.span,
-                            "invalid positional record field reached code generation",
-                        ));
-                    }
-                    format!("({}).flux__p{index}", emitted_base.code)
-                } else {
-                    if !named.iter().any(|(field, _)| field == name) {
-                        return Err(diag(
-                            expr.span,
-                            "invalid named record field reached code generation",
-                        ));
-                    }
-                    format!("({}).{}", emitted_base.code, field_c_name(name))
-                }
             } else if let Type::List(element) = &emitted_base.ty {
                 let element_c = c_type(element, signatures);
                 match crate::builtin_names::list_member_impl(name) {
@@ -37487,7 +37321,6 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             }
         }
         Type::Function { params, returns } => function_type_name(&params, &returns, signatures),
-        Type::Record { .. } => format!("struct {}", record_c_name(ty, signatures)),
     }
 }
 
@@ -37545,9 +37378,6 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
             let name = function_type_name(&params, &returns, signatures);
             name.trim_start_matches("flux__fn_").to_string()
         }
-        Type::Record { .. } => record_c_name(ty, signatures)
-            .trim_start_matches("flux__record_")
-            .to_string(),
     }
 }
 
@@ -38122,120 +37952,6 @@ fn struct_update_helper_name_from_names<'a>(
         fields.join("__")
     };
     format!("flux__update_{name}__{suffix}")
-}
-
-fn record_c_name(ty: &Type, signatures: &Signatures) -> String {
-    let canonical = signatures.canonical_type(ty);
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in canonical.name().bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("flux__record_{hash:016x}")
-}
-
-fn record_depth(ty: &Type, signatures: &Signatures) -> usize {
-    match signatures.canonical_type(ty) {
-        Type::Record { positional, named } => {
-            1 + positional
-                .iter()
-                .chain(named.iter().map(|(_, ty)| ty))
-                .map(|ty| record_depth(ty, signatures))
-                .max()
-                .unwrap_or(0)
-        }
-        _ => 0,
-    }
-}
-
-fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet<Type>) {
-    match signatures.canonical_type(ty) {
-        Type::Record { positional, named } => {
-            let canonical = Type::Record {
-                positional: positional.clone(),
-                named: named.clone(),
-            };
-            for field in positional.iter().chain(named.iter().map(|(_, ty)| ty)) {
-                collect_record_type(field, signatures, records);
-            }
-            records.insert(canonical);
-        }
-        Type::List(inner) | Type::Optional(inner) => {
-            collect_record_type(&inner, signatures, records)
-        }
-        Type::Function { params, returns } => {
-            for inner in params.iter().chain(&returns) {
-                collect_record_type(inner, signatures, records);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn reachable_record_types(
-    program: &Program,
-    signatures: &Signatures,
-    reachable_functions: &HashSet<String>,
-    function_ir: &FunctionIrCache,
-) -> Vec<Type> {
-    let mut records = HashSet::new();
-    for function in &program.functions {
-        if !reachable_functions.contains(&function.name) {
-            continue;
-        }
-        for param in &function.params {
-            collect_record_type(&param.ty, signatures, &mut records);
-        }
-        for ty in &function.returns {
-            collect_record_type(ty, signatures, &mut records);
-        }
-        if let Some(cfg) = function_ir.get(&function.name) {
-            for node in cfg.nodes().iter().filter(|node| cfg.is_reachable(node.id)) {
-                for definition in &node.definitions {
-                    collect_record_type(&definition.ty, signatures, &mut records);
-                }
-            }
-            for value in cfg
-                .values()
-                .iter()
-                .filter(|value| cfg.is_value_reachable(value.id))
-            {
-                collect_record_type(&value.ty, signatures, &mut records);
-            }
-        }
-    }
-    let mut records = records.into_iter().collect::<Vec<_>>();
-    records.sort_by(|left, right| {
-        record_depth(left, signatures)
-            .cmp(&record_depth(right, signatures))
-            .then_with(|| left.name().cmp(&right.name()))
-    });
-    records
-}
-
-fn emit_record_definition(out: &mut String, ty: &Type, signatures: &Signatures) {
-    let canonical = signatures.canonical_type(ty);
-    let Type::Record { positional, named } = &canonical else {
-        return;
-    };
-    out.push_str(&format!(
-        "struct {} {{\n",
-        record_c_name(&canonical, signatures)
-    ));
-    for (index, field) in positional.iter().enumerate() {
-        out.push_str(&format!(
-            "    {} flux__p{index};\n",
-            c_type(field, signatures)
-        ));
-    }
-    for (name, field) in named {
-        out.push_str(&format!(
-            "    {} {};\n",
-            c_type(field, signatures),
-            field_c_name(name)
-        ));
-    }
-    out.push_str("};\n");
 }
 
 fn emit_struct_definition(out: &mut String, definition: &StructDef, signatures: &Signatures) {
