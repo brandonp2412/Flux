@@ -26739,6 +26739,48 @@ fn project_analysis_cache_clear_discards_parsed_module_entries() {
 }
 
 #[test]
+fn project_codegen_cache_reuses_and_invalidates_generated_c() {
+    let root = std::env::temp_dir().join(format!("flux-project-codegen-cache-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary codegen-cache project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(&entry, "fn main() -> i64 {\n    print(1)\n    return 0\n}\n")
+        .expect("entry should be writable");
+    let analysis = fluxc::project::analyze(&entry).expect("initial analysis should succeed");
+
+    let first = analysis
+        .emit_c_cached(&entry)
+        .expect("initial codegen should succeed");
+    let cache_dir = root.join(".flux/cache");
+    let artifacts = fs::read_dir(&cache_dir)
+        .expect("codegen cache directory should exist")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("codegen cache entries should be readable");
+    assert_eq!(artifacts.len(), 1);
+    let second = analysis
+        .emit_c_cached(&entry)
+        .expect("cached codegen should succeed");
+    assert_eq!(first, second);
+    let cached_artifact =
+        fs::read_to_string(artifacts[0].path()).expect("cached C should be readable");
+    assert!(cached_artifact.starts_with("flux-project-codegen-v1:"));
+    assert!(cached_artifact.len() > "flux-project-codegen-v1:\n".len());
+
+    fs::write(&entry, "fn main() -> i64 {\n    print(2)\n    return 0\n}\n")
+        .expect("updated entry should be writable");
+    let updated = fluxc::project::analyze(&entry).expect("updated analysis should succeed");
+    let third = updated
+        .emit_c_cached(&entry)
+        .expect("invalidated codegen should succeed");
+    assert_ne!(first, third);
+    assert_eq!(
+        fs::read_dir(&cache_dir).expect("cache directory should remain readable").count(),
+        2
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-typecheck-{}",

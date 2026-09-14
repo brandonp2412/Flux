@@ -6,6 +6,8 @@ use crate::ast::Program;
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, parser, typecheck};
 
+const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
+
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
     pub path: PathBuf,
@@ -25,6 +27,35 @@ pub struct ProjectAnalysis {
 impl ProjectAnalysis {
     pub fn emit_c(&self) -> Result<String, Diagnostic> {
         self.emit_c_for_target(codegen::NativeTarget::Linux)
+    }
+
+    /// Reuse a validated generated-C artifact for development builds.
+    ///
+    /// Analysis still happens before this method is called, so cache hits never
+    /// bypass parsing, imports, or type checking. The artifact only avoids
+    /// repeating native-source generation and is invalidated by every loaded
+    /// source, module identity, translation resource, and this cache version.
+    pub fn emit_c_cached(&self, target: &Path) -> Result<String, Diagnostic> {
+        let fingerprint = codegen_cache_fingerprint(self);
+        let path = codegen_cache_path(target, fingerprint);
+        let header = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}\n");
+        if let Ok(cached) = fs::read_to_string(&path)
+            && let Some(generated) = cached.strip_prefix(&header)
+        {
+            return Ok(generated.to_string());
+        }
+
+        let generated = self.emit_c()?;
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+        if fs::write(&temporary, format!("{header}{generated}")).is_ok() {
+            if fs::rename(&temporary, &path).is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+        }
+        Ok(generated)
     }
 
     pub fn emit_c_header(&self) -> Result<String, Diagnostic> {
@@ -56,6 +87,43 @@ impl ProjectAnalysis {
             target,
         )
     }
+}
+
+fn codegen_cache_path(target: &Path, fingerprint: u64) -> PathBuf {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    root.join(".flux")
+        .join("cache")
+        .join(format!("codegen-{fingerprint:016x}.c"))
+}
+
+fn codegen_cache_fingerprint(analysis: &ProjectAnalysis) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut add = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    };
+    add(PROJECT_CODEGEN_CACHE_VERSION.as_bytes());
+    for source in &analysis.sources {
+        add(source.path.to_string_lossy().as_bytes());
+        add(source.module_name.as_bytes());
+        add(source.text.as_bytes());
+    }
+    for (locale, entries) in &analysis.translations {
+        add(locale.as_bytes());
+        for (key, value) in entries {
+            add(key.as_bytes());
+            add(value.as_bytes());
+        }
+    }
+    hash
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

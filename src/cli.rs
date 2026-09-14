@@ -4545,7 +4545,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             }
         };
         let sources = analysis.sources.clone();
-        let generated = match analysis.emit_c() {
+        let generated = match analysis.emit_c_cached(target) {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 report_diagnostics(target, &[diagnostic], &sources);
@@ -4665,7 +4665,7 @@ fn start_development_build(
         }
     };
     let sources = analysis.sources.clone();
-    let generated = match analysis.emit_c() {
+    let generated = match analysis.emit_c_cached(target) {
         Ok(generated) => generated,
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);
