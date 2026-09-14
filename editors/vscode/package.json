@@ -1,0 +1,67 @@
+{
+  "name": "flux-language",
+  "displayName": "Flux",
+  "description": "Flux language support powered by the compiler's built-in LSP.",
+  "version": "0.1.0",
+  "publisher": "brandonp2412",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:flux",
+    "onCommand:flux.run",
+    "onCommand:flux.check",
+    "onCommand:flux.restartServer"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "flux",
+        "aliases": [
+          "Flux",
+          "flux"
+        ],
+        "extensions": [
+          ".flux"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "flux",
+        "scopeName": "source.flux",
+        "path": "./syntaxes/flux.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "flux.run",
+        "title": "Flux: Run"
+      },
+      {
+        "command": "flux.check",
+        "title": "Flux: Check"
+      },
+      {
+        "command": "flux.restartServer",
+        "title": "Flux: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Flux",
+      "properties": {
+        "flux.executablePath": {
+          "type": "string",
+          "default": "flux",
+          "description": "Path to the Flux executable used for the language server and Flux commands."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXT="$ROOT/editors/vscode"
+VERSION="$(node -p "require('$EXT/package.json').version")"
+DIST="$EXT/dist"
+VSIX="$DIST/flux-vscode-$VERSION.vsix"
+
+package_extension() {
+  command -v zip >/dev/null 2>&1 || {
+    printf 'error: zip is required to package the VS Code extension\n' >&2
+    exit 1
+  }
+
+  mkdir -p "$DIST"
+  rm -f "$VSIX"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/extension/syntaxes"
+
+  cp "$EXT/[Content_Types].xml" "$tmp/[Content_Types].xml"
+  cp "$EXT/extension.vsixmanifest" "$tmp/extension.vsixmanifest"
+  cp "$EXT/package.json" "$tmp/extension/package.json"
+  cp "$EXT/README.md" "$tmp/extension/README.md"
+  cp "$EXT/extension.js" "$tmp/extension/extension.js"
+  cp "$EXT/lsp-connection.js" "$tmp/extension/lsp-connection.js"
+  cp "$EXT/language-configuration.json" "$tmp/extension/language-configuration.json"
+  cp "$EXT/syntaxes/flux.tmLanguage.json" "$tmp/extension/syntaxes/flux.tmLanguage.json"
+
+  (
+    cd "$tmp"
+    zip -q -r "$VSIX" '[Content_Types].xml' extension.vsixmanifest extension
+  )
+
+  printf '%s\n' "$VSIX"
+}
+
+case "${1:-package}" in
+  package)
+    package_extension
+    ;;
+  install)
+    package_extension >/dev/null
+    if ! command -v code >/dev/null 2>&1; then
+      printf 'VS Code CLI not found. Install this file from VS Code: %s\n' "$VSIX" >&2
+      exit 1
+    fi
+    code --install-extension "$VSIX" --force
+    printf 'installed: %s\n' "$VSIX"
+    ;;
+  *)
+    printf 'usage: %s [package|install]\n' "$0" >&2
+    exit 2
+    ;;
+esac

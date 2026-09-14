@@ -3,3 +3,4 @@
 **/build/
 *.o
 *.exe
+/editors/vscode/dist/
