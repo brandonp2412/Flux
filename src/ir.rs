@@ -297,6 +297,7 @@ pub struct ControlFlowOwnership {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipMovedBinding {
+    pub definition: ControlFlowDefinitionId,
     pub name: String,
     pub origin: SourceSpan,
 }
@@ -323,7 +324,19 @@ impl ControlFlowMoveState {
     pub fn origin(&self, name: &str) -> Option<SourceSpan> {
         self.moved
             .iter()
-            .find(|binding| binding.name == name)
+            .filter(|binding| binding.name == name)
+            .map(|binding| binding.origin)
+            .min_by_key(|origin| span_key(*origin))
+    }
+
+    pub fn is_definition_moved(&self, definition: ControlFlowDefinitionId) -> bool {
+        self.origin_for_definition(definition).is_some()
+    }
+
+    pub fn origin_for_definition(&self, definition: ControlFlowDefinitionId) -> Option<SourceSpan> {
+        self.moved
+            .iter()
+            .find(|binding| binding.definition == definition)
             .map(|binding| binding.origin)
     }
 }
@@ -663,16 +676,24 @@ impl ControlFlowGraph {
             .is_some_and(ControlFlowMoveState::reachable)
     }
 
+    pub fn definitions_reaching_before(
+        &self,
+        id: ControlFlowNodeId,
+        name: &str,
+    ) -> Option<&BTreeSet<ControlFlowDefinitionId>> {
+        self.reaching_definitions_before
+            .get(id.0)
+            .and_then(Option::as_ref)
+            .and_then(|reaching| reaching.get(name))
+    }
+
     pub fn definition_reaches_before(
         &self,
         id: ControlFlowNodeId,
         name: &str,
         definition: ControlFlowDefinitionId,
     ) -> bool {
-        self.reaching_definitions_before
-            .get(id.0)
-            .and_then(Option::as_ref)
-            .and_then(|reaching| reaching.get(name))
+        self.definitions_reaching_before(id, name)
             .is_some_and(|definitions| definitions.contains(&definition))
     }
 
@@ -1172,7 +1193,12 @@ impl<'a> ControlFlowBuilder<'a> {
             &self.parameters,
             self.signatures,
         );
-        let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
+        let move_states_before = compute_move_states(
+            &self.nodes,
+            &self.edges,
+            &reaching_definitions_before,
+            self.entry,
+        );
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
         let (value_uses, value_regions) = collect_value_uses(&self.values);
@@ -4507,9 +4533,10 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
 fn compute_move_states(
     nodes: &[ControlFlowNode],
     edges: &[ControlFlowEdge],
+    reaching_definitions_before: &[Option<ReachingDefinitionMap>],
     entry: ControlFlowNodeId,
 ) -> Vec<ControlFlowMoveState> {
-    let mut states = vec![None::<BTreeMap<String, SourceSpan>>; nodes.len()];
+    let mut states = vec![None::<BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>>; nodes.len()];
     states[entry.0] = Some(BTreeMap::new());
     let mut queue = VecDeque::from([entry]);
 
@@ -4517,18 +4544,27 @@ fn compute_move_states(
         let Some(mut outgoing_state) = states[id.0].clone() else {
             continue;
         };
-        for definition in &nodes[id.0].definitions {
-            outgoing_state.remove(&definition.name);
+        for (index, _) in nodes[id.0].definitions.iter().enumerate() {
+            outgoing_state.remove(&ControlFlowDefinitionId::Node { node: id, index });
         }
         for movement in &nodes[id.0].ownership.moves {
-            outgoing_state
-                .entry(movement.source.clone())
-                .and_modify(|origin| {
-                    if span_key(movement.span) < span_key(*origin) {
-                        *origin = movement.span;
-                    }
-                })
-                .or_insert(movement.span);
+            let Some(definitions) = reaching_definitions_before
+                .get(id.0)
+                .and_then(Option::as_ref)
+                .and_then(|reaching| reaching.get(&movement.source))
+            else {
+                continue;
+            };
+            for definition in definitions {
+                outgoing_state
+                    .entry(*definition)
+                    .and_modify(|(_, origin)| {
+                        if span_key(movement.span) < span_key(*origin) {
+                            *origin = movement.span;
+                        }
+                    })
+                    .or_insert((movement.source.clone(), movement.span));
+            }
         }
 
         for edge in edges.iter().filter(|edge| edge.from == id) {
@@ -4553,7 +4589,7 @@ fn compute_move_states(
                 reachable: true,
                 moved: moved
                     .into_iter()
-                    .map(|(name, origin)| OwnershipMovedBinding { name, origin })
+                    .map(|(definition, (name, origin))| OwnershipMovedBinding { definition, name, origin })
                     .collect(),
             },
             None => ControlFlowMoveState::default(),
@@ -4562,19 +4598,19 @@ fn compute_move_states(
 }
 
 fn merge_move_state(
-    target: &mut BTreeMap<String, SourceSpan>,
-    incoming: &BTreeMap<String, SourceSpan>,
+    target: &mut BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>,
+    incoming: &BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>,
 ) -> bool {
     let mut changed = false;
-    for (name, origin) in incoming {
-        match target.get_mut(name) {
-            Some(existing) if span_key(*origin) < span_key(*existing) => {
+    for (definition, (name, origin)) in incoming {
+        match target.get_mut(definition) {
+            Some((_, existing)) if span_key(*origin) < span_key(*existing) => {
                 *existing = *origin;
                 changed = true;
             }
             Some(_) => {}
             None => {
-                target.insert(name.clone(), *origin);
+                target.insert(*definition, (name.clone(), *origin));
                 changed = true;
             }
         }

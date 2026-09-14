@@ -5040,12 +5040,17 @@ fn check_cfg_moved_reads(
             .ownership
             .borrows
             .iter()
-            .map(|borrow| &borrow.source)
-            .filter(|name| state.is_moved(name))
-            .cloned()
+            .filter_map(|borrow| {
+                let definitions = graph.definitions_reaching_before(node.id, &borrow.source)?;
+                definitions.iter().find_map(|definition| {
+                    state
+                        .origin_for_definition(*definition)
+                        .map(|origin| (borrow.source.clone(), origin))
+                })
+            })
             .collect::<Vec<_>>();
-        moved_reads.sort();
-        moved_reads.dedup();
+        moved_reads.sort_by(|left, right| left.0.cmp(&right.0));
+        moved_reads.dedup_by(|left, right| left.0 == right.0);
         if moved_reads.is_empty() {
             continue;
         }
@@ -5056,15 +5061,13 @@ fn check_cfg_moved_reads(
                 if moved_reads.len() == 1 { "" } else { "s" },
                 moved_reads
                     .iter()
-                    .map(|name| format!("'{name}'"))
+                    .map(|(name, _)| format!("'{name}'"))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
         );
-        for name in moved_reads {
-            if let Some(move_span) = state.origin(&name) {
-                diagnostic = diagnostic.with_label(move_span, format!("'{name}' moved here"));
-            }
+        for (name, move_span) in moved_reads {
+            diagnostic = diagnostic.with_label(move_span, format!("'{name}' moved here"));
         }
         diagnostics.push(diagnostic);
     }
