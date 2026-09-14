@@ -9381,6 +9381,62 @@ fn main() -> i64 {
     assert!(generated.contains("flux__secure_remove("));
     assert!(generated.contains("secret_password_free(secret)"));
 
+    let android_source = r#"
+fn value(text: str) -> void {
+    print(text)
+}
+fn started() -> void {
+    print(crypto.sha256("abc", value))
+    print(crypto.hmacSha256("key", "value", value))
+    print(crypto.randomHex(16, value))
+    let (matches, equalError) = crypto.equal("same", "same")
+    print(matches)
+    print(equalError)
+    print(secure.write("flux-test", "account", "secret"))
+    let (found, readError) = secure.read("flux-test", "account", value)
+    print(found)
+    print(readError)
+    print(secure.remove("flux-test", "account"))
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(onStart: started)
+"#;
+    let program =
+        fluxc::parser::parse(android_source).expect("Android secure storage should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Android secure storage should check");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("portable security services should lower for Android apps");
+    assert!(android.contains("#define FLUX_ANDROID_APP 1"));
+    assert!(android.contains("static bool flux__android_crypto_sha256(const char *value"));
+    assert!(android.contains("java/security/MessageDigest"));
+    assert!(android.contains("javax/crypto/Mac"));
+    assert!(android.contains("java/security/SecureRandom"));
+    assert!(android.contains("flux__android_crypto_equal(left, right, &result.v0)"));
+    assert!(
+        android
+            .contains("static bool flux__android_secure_store(const char *key, const char *value)")
+    );
+    assert!(android.contains(
+        "static bool flux__android_secure_read(const char *key, void (*callback)(const char *))"
+    ));
+    assert!(android.contains("static bool flux__android_secure_remove(const char *key)"));
+    assert!(android.contains(
+        "static inline char *flux__secure_android_key(const char *service, const char *account)"
+    ));
+    assert!(android.contains("bool stored = flux__android_secure_store(key, secret);"));
+    assert!(android.contains("result.v0 = flux__android_secure_read(key, callback);"));
+    assert!(android.contains("bool removed = flux__android_secure_remove(key);"));
+    assert!(android.contains("app/flux/runtime/FluxSecureStorage"));
+
     let dead = r#"
 fn value(_text: str) -> void {
 }

@@ -1847,7 +1847,7 @@ fn emit_runtime_prelude(
         }
     }
     if uses_android {
-        out.push_str("#include <android/native_activity.h>\n");
+        out.push_str("#define FLUX_ANDROID_APP 1\n#include <android/native_activity.h>\n");
         if runtime_usage.contains("flux__android_keep_screen_on(") {
             out.push_str("#include <android/window.h>\n");
         }
@@ -1975,14 +1975,27 @@ fn emit_runtime_prelude(
         uses_android && runtime_usage.contains("flux__android_stop_microphone_recording(");
     let uses_android_microphone =
         uses_android_start_microphone_recording || uses_android_stop_microphone_recording;
-    let uses_android_secure_store =
-        uses_android && runtime_usage.contains("flux__android_secure_store(");
-    let uses_android_secure_read =
-        uses_android && runtime_usage.contains("flux__android_secure_read(");
-    let uses_android_secure_remove =
-        uses_android && runtime_usage.contains("flux__android_secure_remove(");
+    let uses_android_secure_store = uses_android
+        && (runtime_usage.contains("flux__android_secure_store(")
+            || runtime_usage.contains("flux__secure_write("));
+    let uses_android_secure_read = uses_android
+        && (runtime_usage.contains("flux__android_secure_read(")
+            || runtime_usage.contains("flux__secure_read("));
+    let uses_android_secure_remove = uses_android
+        && (runtime_usage.contains("flux__android_secure_remove(")
+            || runtime_usage.contains("flux__secure_remove("));
     let uses_android_secure_storage =
         uses_android_secure_store || uses_android_secure_read || uses_android_secure_remove;
+    let uses_android_crypto_sha256 = uses_android && runtime_usage.contains("flux__crypto_sha256(");
+    let uses_android_crypto_hmac_sha256 =
+        uses_android && runtime_usage.contains("flux__crypto_hmac_sha256(");
+    let uses_android_crypto_random_hex =
+        uses_android && runtime_usage.contains("flux__crypto_random_hex(");
+    let uses_android_crypto_equal = uses_android && runtime_usage.contains("flux__crypto_equal(");
+    let uses_android_crypto = uses_android_crypto_sha256
+        || uses_android_crypto_hmac_sha256
+        || uses_android_crypto_random_hex
+        || uses_android_crypto_equal;
     let uses_android_read_clipboard_text = uses_android
         && (runtime_usage.contains("flux__android_read_clipboard_text(")
             || uses_clipboard_read_text);
@@ -2082,6 +2095,7 @@ fn emit_runtime_prelude(
         || uses_android_media_playback
         || uses_android_microphone
         || uses_android_secure_storage
+        || uses_android_crypto
         || uses_android_read_clipboard_text
         || (uses_android
             && (uses_dialog_alert
@@ -2229,6 +2243,151 @@ fn emit_runtime_prelude(
         out.push_str("    (*env)->DeleteLocalRef(env, bytes);\n");
         out.push_str("    return result;\n");
         out.push_str("}\n");
+    }
+    if uses_android_crypto {
+        out.push_str(r#"static jbyteArray flux__android_crypto_bytes(JNIEnv *env, const char *value) {
+    if (env == NULL || value == NULL) return NULL;
+    size_t length = strlen(value);
+    if (length > INT32_MAX) return NULL;
+    jbyteArray bytes = (*env)->NewByteArray(env, (jsize)length);
+    if (bytes == NULL) return NULL;
+    if (length > 0) (*env)->SetByteArrayRegion(env, bytes, 0, (jsize)length, (const jbyte *)value);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, bytes); return NULL; }
+    return bytes;
+}
+static bool flux__android_crypto_emit_hex(JNIEnv *env, jbyteArray bytes, void (*callback)(const char *)) {
+    static const char alphabet[] = "0123456789abcdef";
+    if (env == NULL || bytes == NULL || callback == NULL) return false;
+    jsize length = (*env)->GetArrayLength(env, bytes);
+    if (length < 0 || (size_t)length > (SIZE_MAX - 1) / 2) return false;
+    unsigned char *raw = length > 0 ? malloc((size_t)length) : NULL;
+    if (length > 0 && raw == NULL) return false;
+    if (length > 0) (*env)->GetByteArrayRegion(env, bytes, 0, length, (jbyte *)raw);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); if (raw != NULL) free(raw); return false; }
+    size_t output_length = (size_t)length * 2;
+    char *output = malloc(output_length + 1);
+    if (output == NULL) { if (raw != NULL) { memset(raw, 0, (size_t)length); free(raw); } return false; }
+    for (jsize index = 0; index < length; index += 1) {
+        output[(size_t)index * 2] = alphabet[raw[index] >> 4];
+        output[(size_t)index * 2 + 1] = alphabet[raw[index] & 15];
+    }
+    output[output_length] = '\0';
+    callback(output);
+    memset(output, 0, output_length);
+    free(output);
+    if (raw != NULL) { memset(raw, 0, (size_t)length); free(raw); }
+    return true;
+}
+static bool flux__android_crypto_sha256(const char *value, void (*callback)(const char *)) {
+    if (value == NULL || callback == NULL || flux__android_activity == NULL) return false;
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;
+    bool success = false; jclass digest_class = NULL; jstring algorithm = NULL; jobject digest = NULL; jbyteArray input = NULL; jbyteArray result = NULL;
+    digest_class = (*env)->FindClass(env, "java/security/MessageDigest");
+    if (digest_class == NULL) goto done;
+    algorithm = (*env)->NewStringUTF(env, "SHA-256");
+    jmethodID get_instance = (*env)->GetStaticMethodID(env, digest_class, "getInstance", "(Ljava/lang/String;)Ljava/security/MessageDigest;");
+    if (algorithm == NULL || get_instance == NULL) goto done;
+    digest = (*env)->CallStaticObjectMethod(env, digest_class, get_instance, algorithm);
+    if (digest == NULL || (*env)->ExceptionCheck(env)) goto done;
+    input = flux__android_crypto_bytes(env, value);
+    jmethodID digest_method = (*env)->GetMethodID(env, digest_class, "digest", "([B)[B");
+    if (input == NULL || digest_method == NULL) goto done;
+    result = (jbyteArray)(*env)->CallObjectMethod(env, digest, digest_method, input);
+    if (result == NULL || (*env)->ExceptionCheck(env)) goto done;
+    success = flux__android_crypto_emit_hex(env, result, callback);
+done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (result != NULL) (*env)->DeleteLocalRef(env, result);
+    if (input != NULL) (*env)->DeleteLocalRef(env, input);
+    if (digest != NULL) (*env)->DeleteLocalRef(env, digest);
+    if (algorithm != NULL) (*env)->DeleteLocalRef(env, algorithm);
+    if (digest_class != NULL) (*env)->DeleteLocalRef(env, digest_class);
+    flux__android_release_env(detach);
+    return success;
+}
+static bool flux__android_crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
+    if (key == NULL || value == NULL || callback == NULL || flux__android_activity == NULL) return false;
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;
+    bool success = false; jclass mac_class = NULL; jclass key_class = NULL; jstring algorithm = NULL; jbyteArray key_bytes = NULL; jbyteArray value_bytes = NULL; jobject secret_key = NULL; jobject mac = NULL; jbyteArray result = NULL;
+    mac_class = (*env)->FindClass(env, "javax/crypto/Mac");
+    key_class = (*env)->FindClass(env, "javax/crypto/spec/SecretKeySpec");
+    algorithm = (*env)->NewStringUTF(env, "HmacSHA256");
+    key_bytes = flux__android_crypto_bytes(env, key);
+    value_bytes = flux__android_crypto_bytes(env, value);
+    if (mac_class == NULL || key_class == NULL || algorithm == NULL || key_bytes == NULL || value_bytes == NULL) goto done;
+    jmethodID key_ctor = (*env)->GetMethodID(env, key_class, "<init>", "([BLjava/lang/String;)V");
+    if (key_ctor == NULL) goto done;
+    secret_key = (*env)->NewObject(env, key_class, key_ctor, key_bytes, algorithm);
+    jmethodID get_instance = (*env)->GetStaticMethodID(env, mac_class, "getInstance", "(Ljava/lang/String;)Ljavax/crypto/Mac;");
+    if (secret_key == NULL || get_instance == NULL || (*env)->ExceptionCheck(env)) goto done;
+    mac = (*env)->CallStaticObjectMethod(env, mac_class, get_instance, algorithm);
+    if (mac == NULL || (*env)->ExceptionCheck(env)) goto done;
+    jmethodID init = (*env)->GetMethodID(env, mac_class, "init", "(Ljava/security/Key;)V");
+    jmethodID do_final = (*env)->GetMethodID(env, mac_class, "doFinal", "([B)[B");
+    if (init == NULL || do_final == NULL) goto done;
+    (*env)->CallVoidMethod(env, mac, init, secret_key);
+    if ((*env)->ExceptionCheck(env)) goto done;
+    result = (jbyteArray)(*env)->CallObjectMethod(env, mac, do_final, value_bytes);
+    if (result == NULL || (*env)->ExceptionCheck(env)) goto done;
+    success = flux__android_crypto_emit_hex(env, result, callback);
+done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (result != NULL) (*env)->DeleteLocalRef(env, result);
+    if (mac != NULL) (*env)->DeleteLocalRef(env, mac);
+    if (secret_key != NULL) (*env)->DeleteLocalRef(env, secret_key);
+    if (value_bytes != NULL) (*env)->DeleteLocalRef(env, value_bytes);
+    if (key_bytes != NULL) (*env)->DeleteLocalRef(env, key_bytes);
+    if (algorithm != NULL) (*env)->DeleteLocalRef(env, algorithm);
+    if (key_class != NULL) (*env)->DeleteLocalRef(env, key_class);
+    if (mac_class != NULL) (*env)->DeleteLocalRef(env, mac_class);
+    flux__android_release_env(detach);
+    return success;
+}
+static bool flux__android_crypto_random_hex(int64_t byte_count, void (*callback)(const char *)) {
+    if (byte_count < 1 || byte_count > 32768 || callback == NULL || flux__android_activity == NULL) return false;
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;
+    bool success = false; jclass random_class = NULL; jobject random = NULL; jbyteArray bytes = NULL;
+    random_class = (*env)->FindClass(env, "java/security/SecureRandom");
+    if (random_class == NULL) goto done;
+    jmethodID ctor = (*env)->GetMethodID(env, random_class, "<init>", "()V");
+    jmethodID next_bytes = (*env)->GetMethodID(env, random_class, "nextBytes", "([B)V");
+    if (ctor == NULL || next_bytes == NULL) goto done;
+    random = (*env)->NewObject(env, random_class, ctor);
+    bytes = (*env)->NewByteArray(env, (jsize)byte_count);
+    if (random == NULL || bytes == NULL || (*env)->ExceptionCheck(env)) goto done;
+    (*env)->CallVoidMethod(env, random, next_bytes, bytes);
+    if ((*env)->ExceptionCheck(env)) goto done;
+    success = flux__android_crypto_emit_hex(env, bytes, callback);
+done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (bytes != NULL) (*env)->DeleteLocalRef(env, bytes);
+    if (random != NULL) (*env)->DeleteLocalRef(env, random);
+    if (random_class != NULL) (*env)->DeleteLocalRef(env, random_class);
+    flux__android_release_env(detach);
+    return success;
+}
+static bool flux__android_crypto_equal(const char *left, const char *right, bool *equal) {
+    if (left == NULL || right == NULL || equal == NULL || flux__android_activity == NULL) return false;
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return false;
+    bool success = false; jclass digest_class = NULL; jbyteArray left_bytes = NULL; jbyteArray right_bytes = NULL;
+    digest_class = (*env)->FindClass(env, "java/security/MessageDigest");
+    left_bytes = flux__android_crypto_bytes(env, left);
+    right_bytes = flux__android_crypto_bytes(env, right);
+    if (digest_class == NULL || left_bytes == NULL || right_bytes == NULL) goto done;
+    jmethodID is_equal = (*env)->GetStaticMethodID(env, digest_class, "isEqual", "([B[B)Z");
+    if (is_equal == NULL) goto done;
+    *equal = (*env)->CallStaticBooleanMethod(env, digest_class, is_equal, left_bytes, right_bytes) == JNI_TRUE;
+    if ((*env)->ExceptionCheck(env)) goto done;
+    success = true;
+done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (right_bytes != NULL) (*env)->DeleteLocalRef(env, right_bytes);
+    if (left_bytes != NULL) (*env)->DeleteLocalRef(env, left_bytes);
+    if (digest_class != NULL) (*env)->DeleteLocalRef(env, digest_class);
+    flux__android_release_env(detach);
+    return success;
+}
+"#);
     }
     if uses_android_camera {
         out.push_str("static void (*flux__android_camera_callback)(const char *) = NULL;\n");
@@ -4446,6 +4605,22 @@ static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left
     result.v0 = left_length == 0 || CRYPTO_memcmp(left, right, left_length) == 0;
     return result;
 }
+#elif defined(__ANDROID__) && defined(FLUX_ANDROID_APP)
+static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
+    return flux__android_crypto_sha256(value, callback) ? NULL : "crypto.sha256 failed";
+}
+static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
+    return flux__android_crypto_hmac_sha256(key, value, callback) ? NULL : "crypto.hmacSha256 failed";
+}
+static inline const char *flux__crypto_random_hex(int64_t byte_count, void (*callback)(const char *)) {
+    if (byte_count < 1 || byte_count > 32768) return "crypto.randomHex byteCount must be between 1 and 32768";
+    return flux__android_crypto_random_hex(byte_count, callback) ? NULL : "crypto.randomHex failed to obtain secure randomness";
+}
+static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left, const char *right) {
+    struct flux__crypto_bool_error result = { .v0 = false, .v1 = NULL };
+    if (!flux__android_crypto_equal(left, right, &result.v0)) result.v1 = "crypto.equal failed";
+    return result;
+}
 #else
 static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) { (void)value; (void)callback; return "crypto primitives are unavailable on this target"; }
 static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) { (void)key; (void)value; (void)callback; return "crypto primitives are unavailable on this target"; }
@@ -4491,6 +4666,47 @@ static inline const char *flux__secure_remove(const char *service, const char *a
     if (cleared && error == NULL) return NULL;
     if (error != NULL) g_error_free(error);
     return "secure.remove failed";
+}
+#elif defined(__ANDROID__) && defined(FLUX_ANDROID_APP)
+static inline char *flux__secure_android_key(const char *service, const char *account) {
+    if (service == NULL || account == NULL) return NULL;
+    size_t service_length = strlen(service);
+    size_t account_length = strlen(account);
+    char prefix[32];
+    int prefix_length = snprintf(prefix, sizeof(prefix), "%zu:", service_length);
+    if (prefix_length < 0 || (size_t)prefix_length >= sizeof(prefix)) return NULL;
+    if (service_length > SIZE_MAX - account_length || service_length + account_length > SIZE_MAX - (size_t)prefix_length - 1) return NULL;
+    size_t total = (size_t)prefix_length + service_length + account_length;
+    char *key = malloc(total + 1);
+    if (key == NULL) return NULL;
+    memcpy(key, prefix, (size_t)prefix_length);
+    memcpy(key + prefix_length, service, service_length);
+    memcpy(key + prefix_length + service_length, account, account_length);
+    key[total] = '\0';
+    return key;
+}
+static inline const char *flux__secure_write(const char *service, const char *account, const char *secret) {
+    char *key = flux__secure_android_key(service, account);
+    if (key == NULL) return "secure.write could not build storage key";
+    bool stored = flux__android_secure_store(key, secret);
+    free(key);
+    return stored ? NULL : "secure.write failed";
+}
+static inline struct flux__secure_bool_error flux__secure_read(const char *service, const char *account, void (*callback)(const char *)) {
+    struct flux__secure_bool_error result = { .v0 = false, .v1 = NULL };
+    if (callback == NULL) { result.v1 = "secure.read callback is invalid"; return result; }
+    char *key = flux__secure_android_key(service, account);
+    if (key == NULL) { result.v1 = "secure.read could not build storage key"; return result; }
+    result.v0 = flux__android_secure_read(key, callback);
+    free(key);
+    return result;
+}
+static inline const char *flux__secure_remove(const char *service, const char *account) {
+    char *key = flux__secure_android_key(service, account);
+    if (key == NULL) return "secure.remove could not build storage key";
+    bool removed = flux__android_secure_remove(key);
+    free(key);
+    return removed ? NULL : "secure.remove failed";
 }
 #else
 static inline const char *flux__secure_write(const char *service, const char *account, const char *secret) { (void)service; (void)account; (void)secret; return "secure storage is unavailable on this target"; }
