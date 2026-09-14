@@ -24402,11 +24402,15 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &log,
         &[
             "version-two",
+            "reload: incremental analysis rechecked 1 module",
             "reload: rebuilt and restarted after source change",
         ],
         Duration::from_secs(5),
     );
     wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
+    let status = fs::read_to_string(&status_path).expect("run status should remain readable");
+    assert!(status.contains("\"analysis\":\"incremental\""));
+    assert!(status.contains("\"rechecked_modules\":1"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -26638,9 +26642,17 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
     cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("first analysis should succeed");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+    );
     cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("unchanged analysis should be reused");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Cached)
+    );
     assert_eq!(
         cache.stats(),
         fluxc::project::ProjectAnalysisCacheStats { hits: 1, misses: 1 }
@@ -26729,6 +26741,12 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let diagnostics = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect_err("body-only type errors must be caught by incremental checking");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1,
+        })
+    );
     assert!(
         diagnostics
             .iter()
@@ -26750,6 +26768,12 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("valid body-only edit should reuse the prior typed graph");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1,
+        })
+    );
     assert_eq!(
         cache.incremental_typecheck_stats(),
         fluxc::project::IncrementalTypecheckStats {

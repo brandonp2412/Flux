@@ -4472,19 +4472,25 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             "source change detected; recompiling",
         );
         eprintln!("reload: source change detected; recompiling");
-        let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
+        let analysis_result = analysis_cache.analyze_with_overlays(target, &HashMap::new());
+        let analysis_outcome = analysis_cache.last_outcome();
+        if let Some(outcome) = analysis_outcome {
+            eprintln!("reload: {}", development_analysis_summary(outcome));
+        }
+        let analysis = match analysis_result {
             Ok(analysis) => analysis,
             Err(diagnostics) => {
                 let (_, sources) = fluxc::project::check_with_sources(target);
                 report_diagnostics(target, &diagnostics, &sources);
                 watch_paths = merge_watch_paths(target, &watch_paths, &sources);
                 fingerprints = watch_fingerprints(&watch_paths);
-                write_development_status(
+                write_development_status_with_analysis(
                     target,
                     "compile_error",
                     generation,
                     mode,
                     "compile failed; keeping the last good process",
+                    analysis_outcome,
                 );
                 status_state = "compile_error";
                 eprintln!("reload: compile failed; keeping the last good process");
@@ -4498,12 +4504,13 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 report_diagnostics(target, &[diagnostic], &sources);
                 watch_paths = merge_watch_paths(target, &watch_paths, &sources);
                 fingerprints = watch_fingerprints(&watch_paths);
-                write_development_status(
+                write_development_status_with_analysis(
                     target,
                     "compile_error",
                     generation,
                     mode,
                     "compile failed; keeping the last good process",
+                    analysis_outcome,
                 );
                 status_state = "compile_error";
                 eprintln!("reload: compile failed; keeping the last good process");
@@ -4528,12 +4535,13 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
-        write_development_status(
+        write_development_status_with_analysis(
             target,
             "restarted",
             generation,
             mode,
             "rebuilt and restarted after source change",
+            analysis_outcome,
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
@@ -4547,6 +4555,32 @@ fn write_development_status(
     mode: BuildMode,
     message: &str,
 ) {
+    write_development_status_with_analysis(target, state, generation, mode, message, None);
+}
+
+fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
+    match outcome {
+        fluxc::project::ProjectAnalysisOutcome::Cached => {
+            "analysis reused cached graph".to_string()
+        }
+        fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules } => format!(
+            "incremental analysis rechecked {rechecked_modules} module{}",
+            if rechecked_modules == 1 { "" } else { "s" }
+        ),
+        fluxc::project::ProjectAnalysisOutcome::Full => {
+            "analysis performed full typecheck".to_string()
+        }
+    }
+}
+
+fn write_development_status_with_analysis(
+    target: &Path,
+    state: &str,
+    generation: usize,
+    mode: BuildMode,
+    message: &str,
+    analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
+) {
     let Ok(path) = fluxc::project::development_status_path(target) else {
         return;
     };
@@ -4554,12 +4588,25 @@ fn write_development_status(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
+    let analysis_fields = match analysis_outcome {
+        Some(fluxc::project::ProjectAnalysisOutcome::Cached) => {
+            ",\"analysis\":\"cached\",\"rechecked_modules\":0".to_string()
+        }
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules }) => {
+            format!(",\"analysis\":\"incremental\",\"rechecked_modules\":{rechecked_modules}")
+        }
+        Some(fluxc::project::ProjectAnalysisOutcome::Full) => {
+            ",\"analysis\":\"full\",\"rechecked_modules\":0".to_string()
+        }
+        None => String::new(),
+    };
     let payload = format!(
-        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}}}\n",
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{} }}\n",
         json_string(state),
         json_string(mode.name()),
         std::process::id(),
         json_string(message),
+        analysis_fields,
     );
     let temp = path.with_file_name(format!(
         ".{}.{}.tmp",

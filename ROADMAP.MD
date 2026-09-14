@@ -653,7 +653,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] `flux run` watches the project automatically in development mode.
   - [x] Bootstrap `flux run`/`fluxc run` builds and launches a native development binary, then continuously watches the real project/import graph plus `flux.toml` where applicable; dependency-save rebuild/restart and broken-edit recovery are covered by an end-to-end CLI test.
 - [ ] Saving a source file automatically triggers incremental recompilation.
-  - [x] Bootstrap runner automatically recompiles on save through the reusable project-analysis cache: unchanged whole graphs are reused, and changed graphs reuse parsed ASTs for unaffected modules. Whole-program type checking/codegen still rerun after a semantic change, so true incremental recompilation remains pending.
+  - [x] Bootstrap runner automatically recompiles on save through the reusable project-analysis cache: unchanged whole graphs are reused, unaffected module ASTs stay cached, and body-only source edits with an unchanged declaration/import surface recheck only the changed module against the previous typed signatures. The runner now publishes/logs whether each rebuild used a cached graph, incremental recheck (including module count), or full typecheck so this behavior is E2E-verifiable. Whole-program C emission and native compilation still rerun after a semantic change, so end-to-end incremental recompilation remains pending.
 - [x] No hot-reload hotkey is required for the normal workflow: the bootstrap runner reacts to saves automatically.
 - [ ] Apply compatible function/view changes to the running process automatically.
 - [ ] Preserve compatible application/UI state across reloads.
@@ -666,7 +666,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Stable development ABI/function indirection strategy.
 - [ ] Incremental compiler cache.
   - [x] `fluxc run` owns a persistent `ProjectAnalysisCache`, avoiding the former separate check + compile analysis on successful rebuilds and reusing unchanged module ASTs across changed graphs.
-  - [ ] Incremental semantic/type/codegen reuse for changed graphs, plus durable on-disk cache artifacts where they materially improve cold-start development builds.
+  - [ ] Incremental semantic/type/codegen reuse for changed graphs, plus durable on-disk cache artifacts where they materially improve cold-start development builds. Parse and body-only type reuse are now observable through `ProjectAnalysisOutcome` and the development-status JSON; per-change codegen/native compilation reuse remains the blocking gap.
 - [ ] Target: save-to-visible-update latency competitive with modern React Fast Refresh for ordinary UI edits.
 
 # Milestone 12 — Input and interaction

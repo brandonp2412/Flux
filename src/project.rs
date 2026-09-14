@@ -71,6 +71,13 @@ pub struct IncrementalTypecheckStats {
     pub full_runs: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectAnalysisOutcome {
+    Cached,
+    Incremental { rechecked_modules: usize },
+    Full,
+}
+
 #[derive(Debug, Clone)]
 struct CachedProjectAnalysis {
     analysis: ProjectAnalysis,
@@ -140,6 +147,7 @@ pub struct ProjectAnalysisCache {
     incremental_typecheck_runs: usize,
     incremental_typecheck_modules: usize,
     full_typecheck_runs: usize,
+    last_outcome: Option<ProjectAnalysisOutcome>,
 }
 
 impl ProjectAnalysisCache {
@@ -154,6 +162,7 @@ impl ProjectAnalysisCache {
             && !self.entry_is_invalidated(&key, entry)
         {
             self.hits += 1;
+            self.last_outcome = Some(ProjectAnalysisOutcome::Cached);
             return Ok(entry.analysis.clone());
         }
 
@@ -190,6 +199,9 @@ impl ProjectAnalysisCache {
         {
             self.incremental_typecheck_runs += 1;
             self.incremental_typecheck_modules += changed_sources.len();
+            self.last_outcome = Some(ProjectAnalysisOutcome::Incremental {
+                rechecked_modules: changed_sources.len(),
+            });
             typecheck::check_changed_sources_with_signatures(
                 &report.program,
                 &previous.analysis.signatures,
@@ -203,6 +215,7 @@ impl ProjectAnalysisCache {
             }
         } else {
             self.full_typecheck_runs += 1;
+            self.last_outcome = Some(ProjectAnalysisOutcome::Full);
             analyze_with_overlays_report(report)?
         };
         self.entries.insert(
@@ -246,6 +259,10 @@ impl ProjectAnalysisCache {
             rechecked_modules: self.incremental_typecheck_modules,
             full_runs: self.full_typecheck_runs,
         }
+    }
+
+    pub const fn last_outcome(&self) -> Option<ProjectAnalysisOutcome> {
+        self.last_outcome
     }
 
     fn entry_is_invalidated(&self, target: &Path, entry: &CachedProjectAnalysis) -> bool {
