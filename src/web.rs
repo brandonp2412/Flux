@@ -74,7 +74,16 @@ pub fn emit_html_with_wasm(
     }
     out.push_str("</main>\n<script>\n'use strict';\n");
     let web_functions = emit_application_functions(&mut out, program, view, wasm_policy)?;
-    emit_runtime(&mut out, view, &web_functions)?;
+    let application_id = application
+        .metadata
+        .iter()
+        .find(|field| field.name == "id")
+        .and_then(|field| match &field.value.kind {
+            ExprKind::Str(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .unwrap_or("app.flux.bootstrap");
+    emit_runtime(&mut out, view, &web_functions, application_id)?;
     out.push_str("</script>\n</body>\n</html>\n");
     Ok(out)
 }
@@ -674,6 +683,7 @@ fn emit_runtime(
     out: &mut String,
     view: &ViewDef,
     web_functions: &HashSet<String>,
+    application_id: &str,
 ) -> Result<(), Diagnostic> {
     let state_names = view
         .states
@@ -687,10 +697,26 @@ fn emit_runtime(
         .collect::<HashSet<_>>();
 
     out.push_str("const state=Object.create(null);\n");
+    out.push_str("const fluxStateStorageKey=");
+    out.push_str(&js_string(&format!("flux.state.{application_id}")));
+    out.push_str(";let fluxRestoredState=null;try{const saved=sessionStorage.getItem(fluxStateStorageKey);if(saved!==null){const parsed=JSON.parse(saved);if(parsed!==null&&typeof parsed==='object')fluxRestoredState=parsed;}}catch(_){}\n");
     for state in &view.states {
         out.push_str("state[");
         out.push_str(&js_string(&state.name));
-        out.push_str("]=");
+        out.push_str("]=fluxRestoredState!==null&&Object.prototype.hasOwnProperty.call(fluxRestoredState,");
+        out.push_str(&js_string(&state.name));
+        out.push_str(")&&");
+        let restored_type = match &state.ty {
+            Type::Bool => "typeof fluxRestoredState[STATE] === 'boolean'",
+            Type::I64 => "typeof fluxRestoredState[STATE] === 'number' && Number.isSafeInteger(fluxRestoredState[STATE])",
+            Type::Str => "typeof fluxRestoredState[STATE] === 'string'",
+            _ => "false",
+        }
+        .replace("STATE", &js_string(&state.name));
+        out.push_str(&restored_type);
+        out.push_str("?fluxRestoredState[");
+        out.push_str(&js_string(&state.name));
+        out.push_str("]:");
         out.push_str(&expr_js(
             &state.initial,
             &state_names,
@@ -728,7 +754,7 @@ fn emit_runtime(
     for element in &view.elements {
         emit_refresh(out, element, &state_names, &derived_names, web_functions)?;
     }
-    out.push_str("}\n");
+    out.push_str("try{sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state));}catch(_){}\n}\n");
 
     for element in &view.elements {
         emit_events(out, element, &state_names, &derived_names, web_functions)?;
@@ -1229,10 +1255,12 @@ view Demo {
 app Demo
 "#,
         );
-        assert!(output.contains("state[\"active\"]=false"));
+        assert!(output.contains("flux.state.app.flux.bootstrap"));
+        assert!(output.contains("typeof fluxRestoredState[\"active\"] === 'boolean'"));
         assert!(output.contains("addEventListener('click'"));
         assert!(output.contains("state[\"active\"]="));
         assert!(output.contains("fluxRefresh();"));
+        assert!(output.contains("sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state))"));
         assert!(!output.contains("methodChannel"));
     }
 
