@@ -25536,6 +25536,16 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
         "reproducibility verification failed: {}",
         String::from_utf8_lossy(&verify.stderr)
     );
+    let tampered_metadata = metadata_source.replace("artifact_hash = \"", "artifact_hash = \"0");
+    fs::write(&metadata_second, tampered_metadata).expect("tampered metadata should be writable");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["verify-reproducibility"])
+        .arg(&metadata)
+        .arg(&metadata_second)
+        .output()
+        .expect("reproducibility verifier should reject tampering");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("reproducibility mismatch"));
     let _ = fs::remove_dir_all(&root);
 }
 
