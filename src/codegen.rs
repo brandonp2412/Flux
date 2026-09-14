@@ -1727,8 +1727,10 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
-    if runtime_usage.contains("flux__crypto_sha256(") {
-        out.push_str("#include <openssl/sha.h>\n");
+    if runtime_usage.contains("flux__crypto_sha256(")
+        || runtime_usage.contains("flux__crypto_hmac_sha256(")
+    {
+        out.push_str("#include <openssl/sha.h>\n#include <openssl/hmac.h>\n");
     }
     if uses_workers
         || runtime_usage.contains("flux__channel_")
@@ -6354,6 +6356,26 @@ static const char *flux__preferences_remove(const char *key) {
     for (size_t index = 0; index < SHA256_DIGEST_LENGTH; index += 1) {
         int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
         if (written != 2) return "SHA-256 formatting failed";
+    }
+    encoded[SHA256_DIGEST_LENGTH * 2] = '\0';
+    callback(encoded);
+    return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__crypto_hmac_sha256(") {
+        out.push_str(r#"static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
+    if (key == NULL || value == NULL || callback == NULL) return "invalid crypto.hmacSha256 arguments";
+    size_t key_length = strlen(key);
+    size_t value_length = strlen(value);
+    if (key_length > 65536 || value_length > 65536) return "crypto.hmacSha256 input exceeds 65536 bytes";
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_length = 0;
+    if (HMAC(EVP_sha256(), key, (int)key_length, (const unsigned char *)value, value_length, digest, &digest_length) == NULL || digest_length != SHA256_DIGEST_LENGTH) return "HMAC-SHA-256 failed";
+    char encoded[SHA256_DIGEST_LENGTH * 2 + 1];
+    for (size_t index = 0; index < SHA256_DIGEST_LENGTH; index += 1) {
+        int written = snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+        if (written != 2) return "HMAC-SHA-256 formatting failed";
     }
     encoded[SHA256_DIGEST_LENGTH * 2] = '\0';
     callback(encoded);
@@ -32781,12 +32803,22 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || name != "sha256" || args.len() != 2 {
-            return Err(diag(span, "invalid crypto.sha256 call reached code generation"));
+        if !named_args.is_empty() || !matches!(name, "sha256" | "hmacSha256") {
+            return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let value = emit_expr(&args[0], env, signatures)?;
-        let callback = emit_expr(&args[1], env, signatures)?;
-        return Ok((format!("flux__crypto_sha256({}, {})", value.code, callback.code), vec![Type::Error], None));
+        let expected_args = if name == "sha256" { 2 } else { 3 };
+        if args.len() != expected_args {
+            return Err(diag(span, "invalid crypto call reached code generation"));
+        }
+        let value_index = if name == "sha256" { 0 } else { 1 };
+        let value = emit_expr(&args[value_index], env, signatures)?;
+        if name == "sha256" {
+            let callback = emit_expr(&args[1], env, signatures)?;
+            return Ok((format!("flux__crypto_sha256({}, {})", value.code, callback.code), vec![Type::Error], None));
+        }
+        let key = emit_expr(&args[0], env, signatures)?;
+        let callback = emit_expr(&args[2], env, signatures)?;
+        return Ok((format!("flux__crypto_hmac_sha256({}, {}, {})", key.code, value.code, callback.code), vec![Type::Error], None));
     }
     if namespace == "str" {
         if !named_args.is_empty() {

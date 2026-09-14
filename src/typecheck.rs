@@ -7483,17 +7483,24 @@ fn check_qualified_call(
         }
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || name != "sha256" {
+        if !named_args.is_empty() || !matches!(name.as_str(), "sha256" | "hmacSha256") {
             return Err(diag(span, &format!("crypto.{name} accepts positional arguments only and only sha256 is available")));
         }
-        if args.len() != 2 {
-            return Err(diag(span, &format!("crypto.sha256 expects 2 arguments, got {}", args.len())));
+        let expected_args = if name == "sha256" { 2 } else { 3 };
+        if args.len() != expected_args {
+            return Err(diag(span, &format!("crypto.{name} expects {expected_args} arguments, got {}", args.len())));
         }
-        let value = type_of_expr(&args[0], env, signatures)?;
-        require_type(args[0].span, &Type::Str, &value, "crypto.sha256 value")?;
-        let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+        let value_index = if name == "sha256" { 0 } else { 1 };
+        let value = type_of_expr(&args[value_index], env, signatures)?;
+        require_type(args[value_index].span, &Type::Str, &value, &format!("crypto.{name} value"))?;
+        let callback_index = if name == "sha256" { 1 } else { 2 };
+        if name == "hmacSha256" {
+            let key = type_of_expr(&args[0], env, signatures)?;
+            require_type(args[0].span, &Type::Str, &key, "crypto.hmacSha256 key")?;
+        }
+        let callback = signatures.canonical_type(&type_of_expr(&args[callback_index], env, signatures)?);
         let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
-        require_type(args[1].span, &expected, &callback, "crypto.sha256 callback")?;
+        require_type(args[callback_index].span, &expected, &callback, &format!("crypto.{name} callback"))?;
         return Ok(vec![Type::Error]);
     }
     if namespace == "process" {
