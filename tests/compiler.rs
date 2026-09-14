@@ -44528,6 +44528,34 @@ fn main() -> i64 {
     assert!(generated.contains(".keys.len"));
     assert!(generated.contains(".len == 0"));
     assert!(generated.contains(".len != 0"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-collection-properties-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("collection-property fixture should be writable");
+    let c_path = root.join("properties.c");
+    let exe_path = root.join("properties");
+    fs::write(&c_path, generated).expect("collection-property C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile collection properties");
+    assert!(
+        compile.status.success(),
+        "collection-property C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("collection-property program should run");
+    assert!(output.status.success());
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
