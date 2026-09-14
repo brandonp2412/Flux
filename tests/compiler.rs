@@ -46218,3 +46218,109 @@ fn main() -> i64 {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn websocket_server_reads_fragmented_text_and_answers_ping() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket probe should bind");
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let source = format!(
+        r#"fn onText(value: str) -> void {{
+    print(value)
+}}
+
+fn main() -> i64 {{
+    let (listener, listenError) = net.listen("127.0.0.1", {port}, 8)
+    if listenError != nil:
+        return 1
+    let (socket, acceptError) = net.accept(listener)
+    if acceptError != nil:
+        return 2
+    let (session, handshakeError) = websocket.accept(socket)
+    if handshakeError != nil:
+        return 3
+    let (_bytes, readError) = websocket.readText(session, 64, onText)
+    if readError != nil:
+        return 4
+    let writeError: error = websocket.writeText(session, "ok")
+    if writeError != nil:
+        return 5
+    let closeError: error = websocket.close(session)
+    if closeError != nil:
+        return 6
+    return 0
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!("flux-websocket-e2e-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("WebSocket E2E fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("WebSocket E2E source should be writable");
+    let binary = root.join("websocket-e2e");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("WebSocket E2E binary should build");
+    assert!(
+        built.status.success(),
+        "WebSocket E2E build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let server = thread::spawn(move || {
+        let output = Command::new(&binary)
+            .output()
+            .expect("WebSocket E2E server should run");
+        assert!(
+            output.status.success(),
+            "WebSocket E2E server failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\n");
+    });
+    thread::sleep(Duration::from_millis(100));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port))
+        .expect("WebSocket E2E client should connect");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: SGVsbG9GbHV4V29ybGQ=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !handshake.ends_with(b"\r\n\r\n") {
+        client.read_exact(&mut byte).unwrap();
+        handshake.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
+    fn masked_frame(fin: bool, opcode: u8, payload: &[u8], key: [u8; 4]) -> Vec<u8> {
+        let mut frame = vec![if fin { 0x80 | opcode } else { opcode }, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&key);
+        frame.extend(payload.iter().enumerate().map(|(index, byte)| byte ^ key[index % 4]));
+        frame
+    }
+    client
+        .write_all(&masked_frame(false, 1, b"hel", [1, 2, 3, 4]))
+        .unwrap();
+    client
+        .write_all(&masked_frame(true, 9, b"?", [5, 6, 7, 8]))
+        .unwrap();
+    client
+        .write_all(&masked_frame(true, 0, b"lo", [9, 10, 11, 12]))
+        .unwrap();
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 128];
+    while !(response.windows(2).any(|window| window == [0x8A, 1])
+        && response.windows(3).any(|window| window == [0x81, 2, b'o']))
+    {
+        let received = client.read(&mut chunk).unwrap();
+        assert!(received > 0, "WebSocket server should send pong and text response");
+        response.extend_from_slice(&chunk[..received]);
+    }
+    server.join().unwrap();
+    let _ = fs::remove_dir_all(&root);
+}
