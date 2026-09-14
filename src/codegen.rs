@@ -16521,6 +16521,8 @@ struct AsyncBranchAwaitPlan {
 #[derive(Clone)]
 struct AsyncNestedBranchAwaitPlan {
     statement_index: usize,
+    then_await_indices: Vec<usize>,
+    else_await_indices: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -16901,14 +16903,17 @@ fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBran
     else {
         return None;
     };
-    if !expr_contains_await(nested_cond)
-        || nested_body.iter().any(stmt_contains_await)
-        || nested_else_body.iter().any(stmt_contains_await)
-    {
+    if !expr_contains_await(nested_cond) {
         return None;
     }
     direct_await_call(nested_cond)?;
-    Some(AsyncNestedBranchAwaitPlan { statement_index })
+    let then_await_indices = block_branch_await_indices(nested_body, true)?;
+    let else_await_indices = block_branch_await_indices(nested_else_body, true)?;
+    Some(AsyncNestedBranchAwaitPlan {
+        statement_index,
+        then_await_indices,
+        else_await_indices,
+    })
 }
 
 fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
@@ -17589,20 +17594,55 @@ fn async_continuation_plan(
             let StmtKind::If {
                 cond: nested_cond,
                 binding: nested_binding,
+                body: nested_body,
+                else_body: nested_else_body,
                 ..
             } = &nested_stmt.kind
             else {
                 return None;
             };
-            if nested_binding.is_some() {
+            let mut nested_then_env = env.clone();
+            if let Some(binding) = nested_binding {
                 let Type::Optional(inner) = signatures
                     .canonical_type(&typecheck::type_of_expr(nested_cond, &env, signatures).ok()?)
                 else {
                     return None;
                 };
+                let inner = signatures.canonical_type(&inner);
                 if !async_continuation_state_type(signatures, &inner) {
                     return None;
                 }
+                if binding.name != "_" {
+                    if locals
+                        .get(&binding.name)
+                        .is_some_and(|existing| existing != &inner)
+                    {
+                        return None;
+                    }
+                    nested_then_env.insert(binding.name.clone(), inner.clone());
+                    locals.insert(binding.name.clone(), inner);
+                }
+            }
+            let nested_plan = nested_branch_await.as_ref()?;
+            if let Some(last_await) = nested_plan.then_await_indices.last().copied() {
+                collect_async_saved_locals(
+                    nested_body,
+                    last_await,
+                    &nested_then_env,
+                    signatures,
+                    &mut locals,
+                    &mut mutable,
+                )?;
+            }
+            if let Some(last_await) = nested_plan.else_await_indices.last().copied() {
+                collect_async_saved_locals(
+                    nested_else_body,
+                    last_await,
+                    &env,
+                    signatures,
+                    &mut locals,
+                    &mut mutable,
+                )?;
             }
         }
         if let Some(branch) = branch_await
@@ -22158,6 +22198,7 @@ fn emit_async_nested_branch_continuation_function(
         signatures,
         nested_cond.span,
     )?;
+    let first_nested_state = 2;
     let mut nested_then_env = outer_env.clone();
     let mut nested_then_mutable = outer_mutable.clone();
     let mut nested_else_env = outer_env.clone();
@@ -22195,31 +22236,121 @@ fn emit_async_nested_branch_continuation_function(
     if let Some(nested_condition) = nested_condition {
         out.push_str(&format!("{pad}if ({nested_condition}) {{\n"));
     }
-    emit_block(
-        out,
-        nested_body,
-        4,
-        &mut nested_then_env,
-        &mut nested_then_mutable,
-        signatures,
-        temp_counter,
-        state_context,
-    )?;
+    if let Some(first_await) = branch.then_await_indices.first().copied() {
+        emit_block(
+            out,
+            &nested_body[..first_await],
+            4,
+            &mut nested_then_env,
+            &mut nested_then_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+        let awaited_stmt = &nested_body[first_await];
+        emit_source_line(out, awaited_stmt.span, context.source_paths);
+        let conditional_suspend = emit_async_branch_suspend(
+            out,
+            "                ",
+            awaited_stmt,
+            first_nested_state,
+            function,
+            plan,
+            &nested_then_env,
+            &nested_then_mutable,
+            signatures,
+        )?;
+        if conditional_suspend {
+            let mut present_env = nested_then_env.clone();
+            let mut present_mutable = nested_then_mutable.clone();
+            let _ = emit_async_conditional_present_sequence(
+                out,
+                "                ",
+                function,
+                signatures,
+                plan,
+                nested_body,
+                &branch.then_await_indices,
+                0,
+                first_nested_state,
+                &mut present_env,
+                &mut present_mutable,
+                temp_counter,
+                state_context,
+            )?;
+        }
+    } else {
+        emit_block(
+            out,
+            nested_body,
+            4,
+            &mut nested_then_env,
+            &mut nested_then_mutable,
+            signatures,
+            temp_counter,
+            state_context,
+        )?;
+    }
     out.push_str(&format!("{pad}}}"));
     if nested_else_body.is_empty() {
         out.push('\n');
     } else {
         out.push_str(" else {\n");
-        emit_block(
-            out,
-            nested_else_body,
-            4,
-            &mut nested_else_env,
-            &mut nested_else_mutable,
-            signatures,
-            temp_counter,
-            state_context,
-        )?;
+        if let Some(first_await) = branch.else_await_indices.first().copied() {
+            emit_block(
+                out,
+                &nested_else_body[..first_await],
+                4,
+                &mut nested_else_env,
+                &mut nested_else_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+            let awaited_stmt = &nested_else_body[first_await];
+            emit_source_line(out, awaited_stmt.span, context.source_paths);
+            let conditional_suspend = emit_async_branch_suspend(
+                out,
+                "                ",
+                awaited_stmt,
+                first_nested_state + branch.then_await_indices.len(),
+                function,
+                plan,
+                &nested_else_env,
+                &nested_else_mutable,
+                signatures,
+            )?;
+            if conditional_suspend {
+                let mut present_env = nested_else_env.clone();
+                let mut present_mutable = nested_else_mutable.clone();
+                let _ = emit_async_conditional_present_sequence(
+                    out,
+                    "                ",
+                    function,
+                    signatures,
+                    plan,
+                    nested_else_body,
+                    &branch.else_await_indices,
+                    0,
+                    first_nested_state + branch.then_await_indices.len(),
+                    &mut present_env,
+                    &mut present_mutable,
+                    temp_counter,
+                    state_context,
+                )?;
+            }
+        } else {
+            emit_block(
+                out,
+                nested_else_body,
+                4,
+                &mut nested_else_env,
+                &mut nested_else_mutable,
+                signatures,
+                temp_counter,
+                state_context,
+            )?;
+        }
         out.push_str(&format!("{pad}}}\n"));
     }
     emit_async_nested_branch_tail(
@@ -22234,6 +22365,40 @@ fn emit_async_nested_branch_continuation_function(
         3,
     )?;
     out.push_str("        }\n");
+
+    emit_async_branch_resume_states(
+        out,
+        function,
+        signatures,
+        plan,
+        nested_body,
+        &branch.then_await_indices,
+        first_nested_state,
+        branch.statement_index + 1,
+        nested_then_env,
+        nested_then_mutable,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        context,
+    )?;
+    emit_async_branch_resume_states(
+        out,
+        function,
+        signatures,
+        plan,
+        nested_else_body,
+        &branch.else_await_indices,
+        first_nested_state + branch.then_await_indices.len(),
+        branch.statement_index + 1,
+        nested_else_env,
+        nested_else_mutable,
+        &outer_env,
+        &outer_mutable,
+        temp_counter,
+        context,
+    )?;
+
     out.push_str("        default: fputs(\"Flux runtime error: invalid async continuation state\\n\", stderr); abort();\n");
     out.push_str("    }\n}\n");
     Ok(())
