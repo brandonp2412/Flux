@@ -379,6 +379,7 @@ pub struct OwnershipBorrowLifetime {
     pub borrower: String,
     pub source: String,
     pub origin: SourceSpan,
+    pub active_before: Vec<ControlFlowNodeId>,
     pub starts: Vec<OwnershipBorrowStart>,
     pub ends: Vec<OwnershipBorrowEnd>,
 }
@@ -635,6 +636,15 @@ impl ControlFlowGraph {
 
     pub fn borrow_lifetimes(&self) -> &[OwnershipBorrowLifetime] {
         &self.borrow_lifetimes
+    }
+
+    pub fn borrow_lifetimes_before(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> impl Iterator<Item = &OwnershipBorrowLifetime> {
+        self.borrow_lifetimes
+            .iter()
+            .filter(move |lifetime| lifetime.active_before.contains(&id))
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -4177,7 +4187,7 @@ fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLife
     let mut lifetimes =
         BTreeMap::<(ControlFlowDefinitionId, String), OwnershipBorrowLifetime>::new();
 
-    for state in &graph.borrow_states_before {
+    for (node_index, state) in graph.borrow_states_before.iter().enumerate() {
         for borrow in state.borrows() {
             lifetimes
                 .entry((borrow.definition, borrow.source.clone()))
@@ -4186,9 +4196,12 @@ fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLife
                     borrower: borrow.borrower.clone(),
                     source: borrow.source.clone(),
                     origin: borrow.origin,
+                    active_before: Vec::new(),
                     starts: Vec::new(),
                     ends: Vec::new(),
-                });
+                })
+                .active_before
+                .push(ControlFlowNodeId(node_index));
         }
     }
 

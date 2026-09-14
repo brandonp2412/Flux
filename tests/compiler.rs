@@ -12935,10 +12935,12 @@ fn main() -> i64 {
         "same-named sibling lifetimes must retain distinct source origins"
     );
     assert!(
-        lifetimes
-            .iter()
-            .all(|lifetime| !lifetime.starts.is_empty() && !lifetime.ends.is_empty()),
-        "every sibling lifetime should expose deterministic start and end boundaries"
+        lifetimes.iter().all(|lifetime| {
+            !lifetime.active_before.is_empty()
+                && !lifetime.starts.is_empty()
+                && !lifetime.ends.is_empty()
+        }),
+        "every sibling lifetime should expose its active CFG region and deterministic boundaries"
     );
     for lifetime in lifetimes {
         assert!(lifetime.starts.iter().all(|start| {
@@ -12997,6 +12999,19 @@ fn main() -> i64 {
             .borrow_state_before(end.to)
             .is_some_and(|state| !state.contains("tail", "values")),
         "the loop-local borrow must be dead after its end edge"
+    );
+    let lifetime = graph
+        .borrow_lifetimes()
+        .iter()
+        .find(|lifetime| lifetime.borrower == "tail" && lifetime.source == "values")
+        .expect("the loop-local tail should expose one inferred lifetime record");
+    assert!(
+        lifetime.active_before.contains(&start.to),
+        "the inferred lifetime must include nodes entered after its start boundary"
+    );
+    assert!(
+        !lifetime.active_before.contains(&end.to),
+        "the inferred lifetime must exclude nodes after its end boundary"
     );
 }
 

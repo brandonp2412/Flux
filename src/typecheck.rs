@@ -5040,19 +5040,15 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
         if !graph.is_reachable(node.id) || node.ownership.moves.is_empty() {
             continue;
         }
-        let Some(borrow_state) = graph.borrow_state_before(node.id) else {
-            continue;
-        };
         for ownership_move in &node.ownership.moves {
-            let mut aliases = borrow_state
-                .borrows()
-                .iter()
-                .filter(|borrow| {
-                    borrow.source == ownership_move.source
-                        && borrow.borrower != ownership_move.source
-                        && borrow.borrower != ownership_move.destination
+            let mut aliases = graph
+                .borrow_lifetimes_before(node.id)
+                .filter(|lifetime| {
+                    lifetime.source == ownership_move.source
+                        && lifetime.borrower != ownership_move.source
+                        && lifetime.borrower != ownership_move.destination
                 })
-                .map(|borrow| (borrow.borrower.clone(), borrow.origin))
+                .map(|lifetime| (lifetime.borrower.clone(), lifetime.origin))
                 .collect::<Vec<_>>();
             aliases.sort_by(|left, right| left.0.cmp(&right.0));
             aliases.dedup_by(|left, right| left.0 == right.0);
