@@ -104,6 +104,8 @@ struct BuildOptions {
     mode: BuildMode,
     native_target: NativeTargetOptions,
     locked: bool,
+    write_reproducibility: Option<PathBuf>,
+    verify_reproducibility: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -905,7 +907,33 @@ fn run() -> Result<(), CliError> {
                     return Err(CliError::Reported);
                 }
             };
-            let output = if let Some(output) = options.output {
+            let reproducibility = if options.write_reproducibility.is_some()
+                || options.verify_reproducibility.is_some()
+            {
+                Some(native_reproducibility_metadata(
+                    path,
+                    &generated,
+                    options.mode,
+                    &options.native_target,
+                )?)
+            } else {
+                None
+            };
+            if let Some(metadata_path) = options.verify_reproducibility.as_deref() {
+                let expected = fs::read_to_string(metadata_path).map_err(|error| {
+                    format!(
+                        "failed to read reproducibility metadata '{}': {error}",
+                        metadata_path.display()
+                    )
+                })?;
+                verify_native_reproducibility_metadata(
+                    &expected,
+                    reproducibility
+                        .as_deref()
+                        .expect("verification requires generated metadata"),
+                )?;
+            }
+            let output = if let Some(output) = options.output.clone() {
                 output
             } else {
                 let entry = fluxc::project::resolve_entry(path).map_err(|diagnostics| {
@@ -926,6 +954,21 @@ fn run() -> Result<(), CliError> {
                 native_package.as_ref(),
                 false,
             )?;
+            if let Some(metadata_path) = options.write_reproducibility.as_deref() {
+                fs::write(
+                    metadata_path,
+                    reproducibility
+                        .as_deref()
+                        .expect("metadata output requires generated metadata"),
+                )
+                .map_err(|error| {
+                    format!(
+                        "failed to write reproducibility metadata '{}': {error}",
+                        metadata_path.display()
+                    )
+                })?;
+                println!("reproducibility metadata: {}", metadata_path.display());
+            }
             println!("built ({}): {}", options.mode.name(), output.display());
             Ok(())
         }
@@ -5719,6 +5762,8 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
     let mut mode_seen = false;
     let mut native_target = NativeTargetOptions::default();
     let mut locked = false;
+    let mut write_reproducibility = None;
+    let mut verify_reproducibility = None;
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -5770,9 +5815,41 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
                 locked = true;
                 index += 1;
             }
+            "--write-reproducibility" => {
+                if write_reproducibility.is_some() {
+                    return Err("'--write-reproducibility' may only be specified once".to_string());
+                }
+                if verify_reproducibility.is_some() {
+                    return Err(
+                        "reproducibility metadata cannot be written and verified in the same build"
+                            .to_string(),
+                    );
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'--write-reproducibility' requires a metadata path".to_string());
+                };
+                write_reproducibility = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--verify-reproducibility" => {
+                if verify_reproducibility.is_some() {
+                    return Err("'--verify-reproducibility' may only be specified once".to_string());
+                }
+                if write_reproducibility.is_some() {
+                    return Err(
+                        "reproducibility metadata cannot be written and verified in the same build"
+                            .to_string(),
+                    );
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'--verify-reproducibility' requires a metadata path".to_string());
+                };
+                verify_reproducibility = Some(PathBuf::from(path));
+                index += 2;
+            }
             flag => {
                 return Err(format!(
-                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', '--sysroot <directory>', or '--locked'"
+                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', '--sysroot <directory>', '--locked', '--write-reproducibility <file>', or '--verify-reproducibility <file>'"
                 ));
             }
         }
@@ -5782,6 +5859,8 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
         mode,
         native_target,
         locked,
+        write_reproducibility,
+        verify_reproducibility,
     })
 }
 
@@ -9435,6 +9514,208 @@ fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn native_reproducibility_metadata(
+    target: &Path,
+    c_source: &str,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<String, String> {
+    let host_target = command_first_line("clang", &["-dumpmachine"])?;
+    let selected_target = native_target
+        .triple
+        .clone()
+        .unwrap_or_else(|| host_target.clone());
+    let sdk_id = reproducibility_sdk_identity(native_target, &host_target, &selected_target)?;
+    let gtk = c_source.contains("#include <gtk/gtk.h>");
+    let sqlite = c_source.contains("#include <sqlite3.h>");
+    let toolchain = native_toolchain_reproducibility_identity(gtk, sqlite, native_target)?;
+    let runtime = native_runtime_reproducibility_identity(&sdk_id, &selected_target)?;
+    let environment = reproducibility_environment_identity();
+    let (manifest_sha256, lock_sha256) = target_reproducibility_inputs(target)?;
+    let flux_binary = env::current_exe()
+        .map_err(|error| format!("failed to locate the running Flux compiler: {error}"))?;
+    let flux_binary_sha256 = fluxc::package_ecosystem::sha256_file(&flux_binary)
+        .map_err(|error| format!("failed to fingerprint the Flux compiler binary: {error}"))?;
+
+    Ok(format!(
+        "format_version=1\nflux_version={}\nflux_binary_sha256={}\nmode={}\ntarget={}\ngenerated_c_sha256={}\nmanifest_sha256={}\nlock_sha256={}\nsdk_id_sha256={}\ntoolchain_sha256={}\nruntime_sha256={}\nenvironment_sha256={}\n",
+        env!("CARGO_PKG_VERSION"),
+        flux_binary_sha256,
+        mode.name(),
+        selected_target,
+        fluxc::package_ecosystem::sha256_bytes(c_source.as_bytes()),
+        manifest_sha256,
+        lock_sha256,
+        fluxc::package_ecosystem::sha256_bytes(sdk_id.as_bytes()),
+        fluxc::package_ecosystem::sha256_bytes(toolchain.as_bytes()),
+        fluxc::package_ecosystem::sha256_bytes(runtime.as_bytes()),
+        fluxc::package_ecosystem::sha256_bytes(environment.as_bytes()),
+    ))
+}
+
+fn verify_native_reproducibility_metadata(expected: &str, actual: &str) -> Result<(), String> {
+    if expected.trim_end() == actual.trim_end() {
+        return Ok(());
+    }
+    let expected_lines = expected.lines().collect::<Vec<_>>();
+    let actual_lines = actual.lines().collect::<Vec<_>>();
+    let count = expected_lines.len().max(actual_lines.len());
+    for index in 0..count {
+        let expected = expected_lines.get(index).copied().unwrap_or("<missing>");
+        let actual = actual_lines.get(index).copied().unwrap_or("<missing>");
+        if expected != actual {
+            return Err(format!(
+                "reproducibility verification failed at metadata line {}: expected '{expected}', got '{actual}'",
+                index + 1
+            ));
+        }
+    }
+    Err("reproducibility verification failed: metadata differs".to_string())
+}
+
+fn target_reproducibility_inputs(target: &Path) -> Result<(String, String), String> {
+    let manifest = if target.is_dir() {
+        let candidate = target.join("flux.toml");
+        candidate.is_file().then_some(candidate)
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        Some(target.to_path_buf())
+    } else {
+        None
+    };
+    let Some(manifest) = manifest else {
+        return Ok(("none".to_string(), "none".to_string()));
+    };
+    let manifest_sha256 = fluxc::package_ecosystem::sha256_file(&manifest)
+        .map_err(|error| format!("failed to fingerprint '{}': {error}", manifest.display()))?;
+    let lock = manifest
+        .parent()
+        .expect("manifest target has a parent")
+        .join("flux.lock");
+    let lock_sha256 = if lock.is_file() {
+        fluxc::package_ecosystem::sha256_file(&lock)
+            .map_err(|error| format!("failed to fingerprint '{}': {error}", lock.display()))?
+    } else {
+        "none".to_string()
+    };
+    Ok((manifest_sha256, lock_sha256))
+}
+
+fn reproducibility_sdk_identity(
+    native_target: &NativeTargetOptions,
+    host_target: &str,
+    selected_target: &str,
+) -> Result<String, String> {
+    if native_target.sysroot.is_some() || selected_target != host_target {
+        return env::var("FLUX_SDK_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                "reproducibility metadata for a cross-target or explicit-sysroot build requires FLUX_SDK_ID to name an immutable SDK/sysroot identity (for example an SDK version plus content or container digest)"
+                    .to_string()
+            });
+    }
+
+    let os_release = fs::read("/etc/os-release").unwrap_or_default();
+    let ldd = command_first_line("ldd", &["--version"]).unwrap_or_else(|_| "unknown".to_string());
+    let mut identity = Vec::new();
+    identity.extend_from_slice(host_target.as_bytes());
+    identity.push(0);
+    identity.extend_from_slice(&os_release);
+    identity.push(0);
+    identity.extend_from_slice(ldd.as_bytes());
+    Ok(format!(
+        "host:{}",
+        fluxc::package_ecosystem::sha256_bytes(&identity)
+    ))
+}
+
+fn reproducibility_environment_identity() -> String {
+    const VARIABLES: &[&str] = &[
+        "C_INCLUDE_PATH",
+        "CPATH",
+        "LANG",
+        "LC_ALL",
+        "LIBRARY_PATH",
+        "PKG_CONFIG_LIBDIR",
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_SYSROOT_DIR",
+        "SOURCE_DATE_EPOCH",
+        "TZ",
+    ];
+    let mut identity = String::new();
+    for variable in VARIABLES {
+        let value = env::var_os(variable)
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<unset>".to_string());
+        identity.push_str(variable);
+        identity.push('=');
+        identity.push_str(&value);
+        identity.push('\n');
+    }
+    identity
+}
+
+fn executable_sha256(program: &str) -> Result<String, String> {
+    let direct = Path::new(program);
+    let path = if direct.is_file() {
+        direct.to_path_buf()
+    } else {
+        PathBuf::from(command_first_line("which", &[program])?)
+    };
+    fluxc::package_ecosystem::sha256_file(&path).map_err(|error| {
+        format!(
+            "failed to fingerprint executable '{}': {error}",
+            path.display()
+        )
+    })
+}
+
+fn native_toolchain_reproducibility_identity(
+    gtk: bool,
+    sqlite: bool,
+    native_target: &NativeTargetOptions,
+) -> Result<String, String> {
+    let clang_version = command_first_line("clang", &["--version"])?;
+    let clang_sha256 = executable_sha256("clang")?;
+    let target_arg = native_target
+        .triple
+        .as_deref()
+        .map(|target| format!("--target={target}"));
+    let mut linker_args = Vec::new();
+    if let Some(target_arg) = target_arg.as_deref() {
+        linker_args.push(target_arg);
+    }
+    linker_args.push("-print-prog-name=ld");
+    let linker = command_first_line("clang", &linker_args)?;
+    let linker_version =
+        command_first_line(&linker, &["--version"]).unwrap_or_else(|_| "unknown".to_string());
+    let linker_sha256 = executable_sha256(&linker).unwrap_or_else(|_| "unknown".to_string());
+    let mut identity = format!(
+        "clangVersion={clang_version}\nclangSha256={clang_sha256}\nlinkerVersion={linker_version}\nlinkerSha256={linker_sha256}"
+    );
+    if gtk {
+        let gtk_version = command_first_line("pkg-config", &["--modversion", "gtk4"])?;
+        identity.push_str(&format!("\ngtk4={gtk_version}"));
+    }
+    if sqlite {
+        let sqlite_version = command_first_line("pkg-config", &["--modversion", "sqlite3"])?;
+        identity.push_str(&format!("\nsqlite3={sqlite_version}"));
+    }
+    Ok(identity)
+}
+
+fn native_runtime_reproducibility_identity(
+    sdk_id: &str,
+    selected_target: &str,
+) -> Result<String, String> {
+    let ldd_version =
+        command_first_line("ldd", &["--version"]).unwrap_or_else(|_| "unknown".to_string());
+    let ldd_sha256 = executable_sha256("ldd").unwrap_or_else(|_| "unknown".to_string());
+    Ok(format!(
+        "target={selected_target}\nsdk={sdk_id}\nlddVersion={ldd_version}\nlddSha256={ldd_sha256}"
+    ))
+}
+
 fn native_toolchain_cache_identity(
     gtk: bool,
     sqlite: bool,
@@ -9547,6 +9828,14 @@ fn usage() -> String {
         &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} update <package-dir|flux.toml> | {command} outdated <package-dir|flux.toml> | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
     )
     .replace(
+        &format!(
+            " [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml>"
+        ),
+        &format!(
+            " [--sysroot <directory>] [--locked] [--write-reproducibility <file>|--verify-reproducibility <file>] | {command} build android <package-dir|flux.toml>"
+        ),
+    )
+    .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),
         &format!(
         " | {command} build web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always] | {command} build android <package-dir|flux.toml>"
@@ -9594,15 +9883,15 @@ mod tests {
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
-        build_native_configured,
-        build_native_instrumented, build_options, compile_web_html, debug_options,
-        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
+        build_native_configured, build_native_instrumented, build_options, compile_web_html,
+        debug_options, demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
         github_repository_parts, json_string, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
         profile_report_addresses, publish_registry_package_command, registry_publish_options,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
-        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
+        stage_package_assets, symbolize_options, target_reproducibility_inputs, test_options,
+        validate_android_publish_manifest, verify_native_reproducibility_metadata,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
     };
@@ -10603,6 +10892,8 @@ app OverlayDemo(title: "Overlay")
             Some(std::path::Path::new("/sdk/sysroot"))
         );
         assert!(!options.locked);
+        assert!(options.write_reproducibility.is_none());
+        assert!(options.verify_reproducibility.is_none());
 
         let locked = build_options(&["--locked".to_string()], BuildMode::Release)
             .expect("locked mode should parse");
@@ -10614,12 +10905,50 @@ app OverlayDemo(title: "Overlay")
             )
             .is_err()
         );
+        let write = build_options(
+            &[
+                "--write-reproducibility".to_string(),
+                "build.repro".to_string(),
+            ],
+            BuildMode::Release,
+        )
+        .expect("reproducibility output should parse");
+        assert_eq!(
+            write.write_reproducibility.as_deref(),
+            Some(std::path::Path::new("build.repro"))
+        );
+        let verify = build_options(
+            &[
+                "--verify-reproducibility".to_string(),
+                "build.repro".to_string(),
+            ],
+            BuildMode::Release,
+        )
+        .expect("reproducibility verification should parse");
+        assert_eq!(
+            verify.verify_reproducibility.as_deref(),
+            Some(std::path::Path::new("build.repro"))
+        );
+        assert!(
+            build_options(
+                &[
+                    "--write-reproducibility".to_string(),
+                    "one".to_string(),
+                    "--verify-reproducibility".to_string(),
+                    "two".to_string(),
+                ],
+                BuildMode::Release,
+            )
+            .is_err()
+        );
 
         let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
         assert_eq!(default.native_target, NativeTargetOptions::default());
         assert!(!default.locked);
+        assert!(default.write_reproducibility.is_none());
+        assert!(default.verify_reproducibility.is_none());
         assert_eq!(
             default.native_target.codegen_target(),
             crate::codegen::NativeTarget::Linux
@@ -10640,6 +10969,54 @@ app OverlayDemo(title: "Overlay")
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn reproducibility_inputs_pin_manifest_and_lockfile_content() {
+        let root = std::env::temp_dir().join(format!("flux-repro-inputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("reproducibility fixture should be writable");
+        let manifest = root.join("flux.toml");
+        let lock = root.join("flux.lock");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"repro\"\nentry = \"main.flux\"\n",
+        )
+        .expect("manifest should be writable");
+        std::fs::write(&lock, "format_version = 1\nresolver = 1\n")
+            .expect("lockfile should be writable");
+
+        let (manifest_hash, first_lock_hash) =
+            target_reproducibility_inputs(&root).expect("inputs should fingerprint");
+        assert_eq!(
+            manifest_hash,
+            crate::package_ecosystem::sha256_file(&manifest).unwrap()
+        );
+        assert_eq!(
+            first_lock_hash,
+            crate::package_ecosystem::sha256_file(&lock).unwrap()
+        );
+
+        std::fs::write(&lock, "format_version = 1\nresolver = 2\n")
+            .expect("lockfile should remain writable");
+        let (_, second_lock_hash) =
+            target_reproducibility_inputs(&manifest).expect("manifest target should fingerprint");
+        assert_ne!(first_lock_hash, second_lock_hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reproducibility_metadata_verification_reports_first_changed_field() {
+        let expected = "format_version=1\nmode=release\ntarget=x86_64\n";
+        assert!(verify_native_reproducibility_metadata(expected, expected).is_ok());
+        let error = verify_native_reproducibility_metadata(
+            expected,
+            "format_version=1\nmode=debug\ntarget=x86_64\n",
+        )
+        .expect_err("a changed build identity must fail verification");
+        assert!(error.contains("metadata line 2"));
+        assert!(error.contains("mode=release"));
+        assert!(error.contains("mode=debug"));
     }
 
     #[test]
