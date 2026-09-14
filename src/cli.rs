@@ -9168,6 +9168,15 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     if c_source.contains("CoTaskMemFree(") || c_source.contains("CoCreateInstance(") {
         libraries.push("-lole32");
     }
+    if c_source.contains("BCryptOpenAlgorithmProvider(") || c_source.contains("BCryptGenRandom(") {
+        libraries.push("-lbcrypt");
+    }
+    if c_source.contains("CredWriteW(")
+        || c_source.contains("CredReadW(")
+        || c_source.contains("CredDeleteW(")
+    {
+        libraries.push("-ladvapi32");
+    }
     libraries
 }
 
@@ -10581,6 +10590,12 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(
             windows_native_system_libraries("ShellExecuteW("),
             vec!["-lshell32"]
+        );
+        assert_eq!(
+            windows_native_system_libraries(
+                "BCryptOpenAlgorithmProvider( BCryptGenRandom( CredWriteW( CredReadW( CredDeleteW("
+            ),
+            vec!["-lbcrypt", "-ladvapi32"]
         );
         assert!(windows_native_system_libraries("int main(void) { return 0; }").is_empty());
     }

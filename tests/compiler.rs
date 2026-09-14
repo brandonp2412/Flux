@@ -9381,6 +9381,27 @@ fn main() -> i64 {
     assert!(generated.contains("flux__secure_remove("));
     assert!(generated.contains("secret_password_free(secret)"));
 
+    let windows_program =
+        fluxc::parser::parse(source).expect("Windows security services should parse");
+    let windows_signatures =
+        fluxc::typecheck::check(&windows_program).expect("Windows security services should check");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &windows_program,
+        &windows_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable security services should lower for Windows");
+    assert!(windows.contains("#include <bcrypt.h>"));
+    assert!(windows.contains("#include <wincred.h>"));
+    assert!(windows.contains("BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM"));
+    assert!(windows.contains("BCryptGenRandom(NULL, bytes"));
+    assert!(windows.contains("CredWriteW(&credential, 0)"));
+    assert!(windows.contains("CredReadW(target, CRED_TYPE_GENERIC"));
+    assert!(windows.contains("CredDeleteW(target, CRED_TYPE_GENERIC"));
+    assert!(windows.contains("SecureZeroMemory(secret, length)"));
+    assert!(!windows.contains("#include <poll.h>"));
+
     let android_source = r#"
 fn value(text: str) -> void {
     print(text)
@@ -9453,6 +9474,21 @@ fn main() -> i64 {
     assert!(!dead_generated.contains("#include <libsecret/secret.h>"));
     assert!(!dead_generated.contains("flux__crypto_sha256("));
     assert!(!dead_generated.contains("flux__secure_write("));
+    let dead_program =
+        fluxc::parser::parse(dead).expect("dead Windows security fixture should parse");
+    let dead_signatures =
+        fluxc::typecheck::check(&dead_program).expect("dead Windows security fixture should check");
+    let dead_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &dead_program,
+        &dead_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dead Windows security calls should lower safely");
+    assert!(!dead_windows.contains("#include <bcrypt.h>"));
+    assert!(!dead_windows.contains("#include <wincred.h>"));
+    assert!(!dead_windows.contains("BCryptOpenAlgorithmProvider("));
+    assert!(!dead_windows.contains("CredWriteW("));
 
     let random_error = check_source(
         "fn value(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(crypto.randomHex(0, value))\n    return 0\n}\n",

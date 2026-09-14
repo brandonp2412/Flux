@@ -3297,7 +3297,8 @@ done:
             || uses_tray_show
             || uses_file_dialog
             || uses_windows_message_box
-            || uses_windows_open)
+            || uses_windows_open
+            || runtime_usage.contains("flux__secure_"))
     {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
