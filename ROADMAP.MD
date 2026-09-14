@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 132 checkbox items
+- Current net scope growth after the baseline: 133 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -899,6 +899,7 @@ Android is the first application-platform target. Android integration must feel 
 - [x] Generated Windows GUI C is syntax-validated against the available Wine Win32 headers (`-fshort-wchar`) and linked into a Windows executable with `winegcc`/Wine import libraries in compiler regression coverage; interactive execution on a native Windows GUI host remains the final backend validation gate.
 - [ ] Multi-window.
 - [ ] MSIX/store packaging.
+  - [x] Unsigned MSIX bundle generation is available through `flux package --format msix --target <windows-triple>`: the compiler stages the native executable/assets, writes a versioned full-trust Appx manifest and placeholder tile assets, and emits a deterministic metadata-stripped ZIP container. Certificate signing, identity provisioning, and Microsoft Store submission remain pending.
 
 ## macOS
 

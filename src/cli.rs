@@ -115,6 +115,7 @@ enum PackageFormat {
     Container,
     Systemd,
     Static,
+    Msix,
 }
 
 impl PackageFormat {
@@ -125,8 +126,9 @@ impl PackageFormat {
             "container" => Ok(Self::Container),
             "systemd" => Ok(Self::Systemd),
             "static" => Ok(Self::Static),
+            "msix" => Ok(Self::Msix),
             _ => Err(format!(
-                "unknown package format '{value}'; expected directory, tar.gz, container, systemd, or static"
+                "unknown package format '{value}'; expected directory, tar.gz, container, systemd, static, or msix"
             )),
         }
     }
@@ -2470,6 +2472,9 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
         PackageFormat::Static => package_root
             .join("dist")
             .join(format!("{artifact_name}-static")),
+        PackageFormat::Msix => package_root
+            .join("dist")
+            .join(format!("{artifact_name}.msix")),
     };
     let output = options.output.unwrap_or(default_output);
     if output.exists() {
@@ -2504,10 +2509,13 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
     }
 
     let sources = validate_project(&manifest.path)?;
-    let generated = match fluxc::project::compile_to_c(&manifest.path) {
+    let codegen_target = options.native_target.codegen_target();
+    let generated = match fluxc::project::analyze_for_target(&manifest.path, codegen_target)
+        .and_then(|analysis| analysis.emit_c_for_target(codegen_target).map_err(|error| vec![error]))
+    {
         Ok(generated) => generated,
-        Err(diagnostic) => {
-            report_diagnostics(&manifest.path, &[diagnostic], &sources);
+        Err(diagnostics) => {
+            report_diagnostics(&manifest.path, &diagnostics, &sources);
             return Err(CliError::Reported);
         }
     };
@@ -2599,6 +2607,15 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 options.mode,
                 &options.native_target,
                 &manifest.native,
+            )?;
+        }
+        PackageFormat::Msix => {
+            build_msix_bundle(
+                &manifest,
+                &generated,
+                &output,
+                options.mode,
+                &options.native_target,
             )?;
         }
     }
@@ -2750,6 +2767,105 @@ fn build_package_directory(
         );
         fs::write(applications.join(format!("{}.desktop", manifest.name)), desktop)
             .map_err(|error| format!("failed to write desktop metadata: {error}"))?;
+    }
+    Ok(())
+}
+
+fn msix_version(manifest: &fluxc::project::PackageManifest) -> Result<String, CliError> {
+    let version = manifest.version.as_deref().unwrap_or("0.0.0");
+    let mut components = version.split(['.', '-']);
+    let major = components
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| CliError::Message("MSIX package versions must start with numeric SemVer components".to_string()))?;
+    let minor = components
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| CliError::Message("MSIX package versions must include major.minor.patch".to_string()))?;
+    let patch = components
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| CliError::Message("MSIX package versions must include major.minor.patch".to_string()))?;
+    if major > u64::from(u16::MAX)
+        || minor > u64::from(u16::MAX)
+        || patch > u64::from(u16::MAX)
+    {
+        return Err(CliError::Message(
+            "MSIX package version components must fit within 16-bit unsigned integers".to_string(),
+        ));
+    }
+    Ok(format!("{major}.{minor}.{patch}.0"))
+}
+
+fn msix_manifest_xml(
+    manifest: &fluxc::project::PackageManifest,
+    executable: &str,
+) -> Result<String, CliError> {
+    let version = msix_version(manifest)?;
+    let name = xml_escape(&manifest.name);
+    let executable = xml_escape(executable);
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"CN=Flux Development\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>Flux Development</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
+    ))
+}
+
+fn build_msix_bundle(
+    manifest: &fluxc::project::PackageManifest,
+    generated: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<(), CliError> {
+    if native_target.codegen_target() != fluxc::codegen::NativeTarget::Windows {
+        return Err(CliError::Message(
+            "MSIX packaging requires a Windows Clang target such as x86_64-pc-windows-gnu".to_string(),
+        ));
+    }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("failed to create MSIX output directory '{}': {error}", parent.display())
+        })?;
+    }
+    let staging_root = package_staging_dir();
+    let result = (|| -> Result<(), CliError> {
+        fs::create_dir_all(&staging_root).map_err(|error| {
+            format!("failed to create MSIX staging directory: {error}")
+        })?;
+        let staged = staging_root.join("package");
+        build_package_directory(manifest, generated, &staged, mode, native_target)?;
+        fs::create_dir_all(staged.join("Assets"))
+            .map_err(|error| format!("failed to create MSIX asset directory: {error}"))?;
+        fs::write(
+            staged.join("AppxManifest.xml"),
+            msix_manifest_xml(manifest, &manifest.name)?,
+        )
+        .map_err(|error| format!("failed to write AppxManifest.xml: {error}"))?;
+        const EMPTY_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1,
+            0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84,
+            120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29,
+            0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+        for name in ["StoreLogo.png", "Square44x44Logo.png", "Square150x150Logo.png"] {
+            fs::write(staged.join("Assets").join(name), EMPTY_PNG)
+                .map_err(|error| format!("failed to write MSIX asset '{name}': {error}"))?;
+        }
+        run_checked(
+            Command::new("zip")
+                .current_dir(&staged)
+                .args(["-X", "-q", "-r"])
+                .arg(output)
+                .arg("."),
+            "MSIX package archive",
+        )?;
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&staging_root);
+    if let Err(error) = result {
+        let _ = fs::remove_file(output);
+        return Err(error);
     }
     Ok(())
 }
@@ -5894,7 +6010,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                 }
                 let Some(value) = args.get(index + 1) else {
                     return Err(
-                        "'--format' requires directory, tar.gz, container, systemd, or static"
+                        "'--format' requires directory, tar.gz, container, systemd, static, or msix"
                             .to_string(),
                     );
                 };
@@ -5931,7 +6047,7 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
             }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static>', '--target <triple>', '--sysroot <directory>', or '--locked'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static|msix>', '--target <triple>', '--sysroot <directory>', or '--locked'"
                 ));
             }
         }
@@ -10093,7 +10209,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd|static|msix] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -10112,7 +10228,7 @@ fn usage() -> String {
         ),
     )
     .replace(
-        "--format directory|tar.gz|container|systemd",
+        "--format directory|tar.gz|container|systemd|msix",
         "--format directory|tar.gz|container|systemd|static",
     )
     .replace(
@@ -10157,6 +10273,7 @@ mod tests {
         profile_report_addresses, publish_registry_package_command, registry_publish_options,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
+        msix_manifest_xml, msix_version,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
     };
@@ -10833,8 +10950,47 @@ app OverlayDemo(title: "Overlay")
         let static_package = package_options(&["--format".to_string(), "static".to_string()])
             .expect("static package options should parse");
         assert_eq!(static_package.format, PackageFormat::Static);
+        let msix = package_options(&["--format".to_string(), "msix".to_string()])
+            .expect("MSIX package options should parse");
+        assert_eq!(msix.format, PackageFormat::Msix);
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
+    }
+
+    #[test]
+    fn msix_manifest_is_versioned_and_declares_full_trust_entrypoint() {
+        let manifest = crate::project::PackageManifest {
+            linux: crate::project::LinuxPackageConfig::default(),
+            format_version: crate::project::PACKAGE_FORMAT_VERSION,
+            name: "flux-demo".to_string(),
+            version: Some("1.2.3".to_string()),
+            entry: std::path::PathBuf::from("src/main.flux"),
+            path: std::path::PathBuf::from("/tmp/flux-demo/flux.toml"),
+            assets: None,
+            dependencies: std::collections::BTreeMap::new(),
+            constants: std::collections::BTreeMap::new(),
+            translations: std::collections::BTreeMap::new(),
+            native: crate::project::NativePackageConfig::default(),
+            platform: crate::project::PlatformPackageConfig::default(),
+            android: crate::project::AndroidPackageConfig {
+                application_id: "app.flux.demo".to_string(),
+                version_code: 1,
+                min_sdk: 23,
+                target_sdk: 36,
+                permissions: Vec::new(),
+                deep_links: Vec::new(),
+                keystore: None,
+                key_alias: None,
+            },
+            workspace_members: Vec::new(),
+        };
+        let xml = msix_manifest_xml(&manifest, "flux-demo").expect("MSIX manifest should emit");
+        assert!(xml.contains("Name=\"flux-demo\""));
+        assert!(xml.contains("Version=\"1.2.3.0\""));
+        assert!(xml.contains("Executable=\"flux-demo\""));
+        assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
+        assert!(xml.contains("runFullTrust"));
+        assert!(msix_version(&manifest).is_ok());
     }
 
     #[test]
