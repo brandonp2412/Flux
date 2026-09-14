@@ -1422,6 +1422,16 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "uri" {
+        push_completion_item(
+            items,
+            seen,
+            "parse",
+            3,
+            "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error",
+        );
+        return true;
+    }
     if namespace == "http" {
         push_completion_item(
             items,
@@ -3341,6 +3351,17 @@ fn signature_help_for_document_cached(
                 }
                 _ => {}
             }
+        }
+        if namespace == "uri" && implementation_member == "parse" {
+            return Some(signature_help_for_builtin(
+                "uri.parse",
+                &[
+                    "value: str",
+                    "callback: fn(str, str, str, str, str) -> void",
+                ],
+                "error",
+                active_parameter,
+            ));
         }
         if namespace == "http" {
             match implementation_member {
@@ -9198,6 +9219,54 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn uri_parse_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/uri-signatures.flux";
+        let source = "fn parsed(_scheme: str, _authority: str, _path: str, _query: str, _fragment: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.parse(\"custom://host/path\", parsed))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("uri.parse("))
+            .expect("URI call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "uri.parse(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("URI call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error"
+        ));
+
+        let completion_source = format!("{source}    uri.\n");
+        let completion_line = completion_source
+            .lines()
+            .position(|line| line.trim() == "uri.")
+            .expect("URI completion line should exist");
+        let line = completion_source.lines().nth(completion_line).unwrap();
+        let completion_documents =
+            HashMap::from([(uri.to_string(), completion_source.clone())]);
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            &completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains(
+            "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error"
+        ));
     }
 
     #[test]

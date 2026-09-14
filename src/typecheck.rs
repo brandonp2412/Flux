@@ -9316,6 +9316,23 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "uri" {
+        if name != "parse" || !named_args.is_empty() || args.len() != 2 {
+            return Err(diag(
+                *name_span,
+                &format!("uri module has no function '{name}' or invalid arguments"),
+            ));
+        }
+        let value = type_of_expr(&args[0], env, signatures)?;
+        require_type(args[0].span, &Type::Str, &value, "uri.parse value")?;
+        let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+        let expected = Type::Function {
+            params: vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
+            returns: Vec::new(),
+        };
+        require_type(args[1].span, &expected, &callback, "uri.parse callback")?;
+        return Ok(vec![Type::Error]);
+    }
     if namespace == "browser" {
         if !named_args.is_empty() {
             return Err(diag(

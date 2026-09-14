@@ -4202,6 +4202,60 @@ fn emit_runtime_prelude(
 }
 "#);
     }
+    if runtime_usage.contains("flux__uri_parse(") {
+        out.push_str(r#"static inline const char *flux__uri_parse(const char *value, void (*callback)(const char *, const char *, const char *, const char *, const char *)) {
+    size_t length = strlen(value);
+    if (length == 0) return "URI must not be empty";
+    if (length > 65536) return "URI exceeds 65536 bytes";
+    char buffer[65537];
+    memcpy(buffer, value, length + 1);
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)buffer[index];
+        if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+    }
+    char *scheme_end = strchr(buffer, ':');
+    if (scheme_end == NULL || scheme_end == buffer) return "URI must include a scheme";
+    for (char *part = buffer; part < scheme_end; part += 1) {
+        unsigned char byte = (unsigned char)*part;
+        bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+            || (part != buffer && ((byte >= '0' && byte <= '9') || byte == '+' || byte == '-' || byte == '.'));
+        if (!valid) return "URI scheme is invalid";
+    }
+    *scheme_end = '\0';
+    char *rest = scheme_end + 1;
+    char *fragment = strchr(rest, '#');
+    if (fragment != NULL) {
+        *fragment = '\0';
+        fragment += 1;
+    } else {
+        fragment = "";
+    }
+    char *query = strchr(rest, '?');
+    if (query != NULL) {
+        *query = '\0';
+        query += 1;
+    } else {
+        query = "";
+    }
+    char *authority = "";
+    char *path = rest;
+    char path_copy[65537];
+    if (rest[0] == '/' && rest[1] == '/') {
+        authority = rest + 2;
+        path = strpbrk(authority, "/");
+        if (path == NULL) {
+            path = "";
+        } else {
+            memcpy(path_copy, path, strlen(path) + 1);
+            *path = '\0';
+            path = path_copy;
+        }
+    }
+    callback(buffer, authority, path, query, fragment);
+    return NULL;
+}
+"#);
+    }
     if runtime_usage.contains("flux__url_decode_component(") {
         out.push_str(r#"static inline const char *flux__url_decode_component(const char *value, void (*callback)(const char *)) {
     size_t length = strlen(value);
@@ -32840,6 +32894,18 @@ fn emit_qualified_call(
         };
         return Ok((
             format!("{helper}({}, {})", value.code, callback.code),
+            vec![Type::Error],
+            None,
+        ));
+    }
+    if namespace == "uri" {
+        if !named_args.is_empty() || name != "parse" || args.len() != 2 {
+            return Err(diag(span, "invalid URI call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        let callback = emit_expr(&args[1], env, signatures)?;
+        return Ok((
+            format!("flux__uri_parse({}, {})", value.code, callback.code),
             vec![Type::Error],
             None,
         ));

@@ -4684,6 +4684,76 @@ fn main() -> i64 {
 }
 
 #[test]
+fn general_uri_parsing_is_typed_borrowed_tree_shaken_and_runnable() {
+    let source = r#"
+fn parsed(scheme: str, authority: str, path: str, query: str, fragment: str) -> void {
+    print(scheme)
+    print(authority)
+    print(path)
+    print(query)
+    print(fragment)
+}
+fn main() -> i64 {
+    print(uri.parse("custom+v1://example.test/a/b?x=1#frag", parsed))
+    print(uri.parse("mailto:alice@example.test", parsed))
+    print(uri.parse("not a URI", parsed))
+    return 0
+}
+"#;
+    check_source(source).expect("general URI parsing should typecheck");
+    let generated = compile_to_c(source).expect("general URI parsing should lower natively");
+    assert!(generated.contains("flux__uri_parse("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn parsed(_scheme: str, _authority: str, _path: str, _query: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.parse(\"custom://host\", parsed))\n    return 0\n}\n",
+    )
+    .expect_err("URI parser callback shape must be exact");
+    assert!(invalid_callback.message.contains("uri.parse callback"));
+
+    let unused = r#"
+fn parsed(_scheme: str, _authority: str, _path: str, _query: str, _fragment: str) -> void {
+}
+fn hidden() -> void {
+    print(uri.parse("custom://host/path", parsed))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead URI parser should tree-shake");
+    assert!(!unused_generated.contains("flux__uri_parse("));
+
+    let root = std::env::temp_dir().join(format!("flux-general-uri-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI fixture should be writable");
+    let source_path = root.join("uri.flux");
+    fs::write(&source_path, source).expect("URI Flux source should be writable");
+    let binary = root.join("uri");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI Flux binary should build");
+    assert!(
+        built.status.success(),
+        "URI fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains whitespace or control characters\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn url_component_percent_decoding_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn decoded(value: str) -> void {
