@@ -152,6 +152,107 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
+    assert!(!generated.contains("#include <wincodec.h>"));
+    assert!(!generated.contains("IWICImagingFactory"));
+}
+
+#[test]
+fn windows_backend_lowers_images_through_native_wic_and_owner_draw() {
+    let source = r#"
+fn opened() -> void {
+    print("opened")
+}
+view Screen {
+    state imageSource: str = "asset://photos/cover.png"
+    state imageAlt: str = "Cover art"
+    state imageFit: str = "contain"
+    grid columns: 1fr
+    grid rows: 1fr
+    Image cover at 1,1
+        source: imageSource
+        alt: imageAlt
+        fit: imageFit
+        canShrink: true
+        onTap: opened
+}
+app Screen(title: "Native image")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows image source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Image should lower to native Win32/WIC code");
+
+    for native_piece in [
+        "#include <wincodec.h>",
+        "IWICImagingFactory",
+        "CoCreateInstance(&CLSID_WICImagingFactory",
+        "CreateDecoderFromFilename",
+        "GUID_WICPixelFormat32bppBGRA",
+        "GetModuleFileNameW(NULL",
+        "FLUX_ASSET_ROOT",
+        "SS_OWNERDRAW | SS_NOTIFY",
+        "case WM_DRAWITEM",
+        "StretchBlt(",
+        "ROLE_SYSTEM_GRAPHIC",
+    ] {
+        assert!(
+            generated.contains(native_piece),
+            "missing native Windows Image lowering {native_piece}"
+        );
+    }
+    assert!(generated.contains(
+        "flux__win_image_update(flux__ui_cover, &flux__win_image_bitmap_cover, &flux__win_image_source_cover, flux__ui_state_imageSource)"
+    ));
+    assert!(
+        generated.contains(
+            "flux__win_image_fit_cover = flux__win_image_fit_mode(flux__ui_state_imageFit)"
+        )
+    );
+    assert!(generated.contains("flux__win_image_can_shrink_cover = true"));
+    assert!(
+        generated
+            .contains("flux__win_accessibility_set_name(flux__ui_cover, flux__ui_state_imageAlt)")
+    );
+    assert!(generated.contains(
+        "flux__win_image_draw(item->hDC, &item->rcItem, flux__win_image_bitmap_cover, flux__win_image_fit_cover, flux__win_image_can_shrink_cover)"
+    ));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+    assert!(!generated.contains("android/native_activity.h"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: 1fr
+    Image cover at 1,1
+        source: "cover.png"
+        fit: "squash"
+}
+app Screen
+"#;
+    let invalid_program =
+        fluxc::parser::parse(invalid).expect("invalid Windows Image fit source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+        .expect("Image fit validation belongs to native codegen");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid Image.fit literal must fail Windows lowering");
+    assert!(
+        error
+            .message
+            .contains("Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'")
+    );
 }
 
 #[test]
@@ -502,6 +603,112 @@ app Screen(title: "Accessible Windows")
     assert!(generated.contains("WM_SETFONT"));
     assert!(generated.contains("flux__win_apply_fonts();"));
     assert!(generated.contains("CoUninitialize()"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
+fn windows_backend_lowers_native_colors_alignment_and_minimum_layout() {
+    let source = r##"
+view Screen {
+    state foreground: str = "accent"
+    state background: str = "#102030"
+    state border: str = "outline"
+    state borderWidth: i64 = 2
+    state edgeWidth: i64 = 3
+    state rounding: i64 = 12
+    state cornerRadius: i64 = 6
+    state raised: bool = false
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Styled"
+        color: foreground
+        backgroundColor: background
+        borderColor: border
+        borderWidth: borderWidth
+        borderTopColor: "danger"
+        borderEndColor: "success"
+        borderBottomColor: "warning"
+        borderStartColor: border
+        borderTopWidth: edgeWidth
+        borderEndWidth: 4
+        borderBottomWidth: 5
+        borderStartWidth: borderWidth
+        borderStyle: "dashed"
+        radius: rounding
+        radiusTopLeft: cornerRadius
+        radiusTopRight: 10
+        radiusBottomRight: 8
+        radiusBottomLeft: 4
+        textAlign: "center"
+        minWidth: 180
+        minHeight: 44
+        alignX: "center"
+        alignY: "end"
+    Button action at 2,1
+        text: "Change"
+        backgroundColor: "surfaceRaised"
+        onPress: raised => !raised
+}
+app Screen(title: "Styled Windows")
+"##;
+    let program = fluxc::parser::parse(source).expect("Windows styling source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows styling source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows styling source should lower to native Win32 C");
+
+    assert!(generated.contains("static bool flux__win_parse_ui_color"));
+    assert!(generated.contains("GetSysColor(COLOR_HIGHLIGHT)"));
+    assert!(generated.contains("CreateSolidBrush(next)"));
+    assert!(generated.contains("static int flux__win_border_style_value"));
+    assert!(generated.contains("CreateEllipticRgn"));
+    assert!(generated.contains("CombineRgn(region, region, square, RGN_DIFF)"));
+    assert!(generated.contains("RoundRect(dc"));
+    assert!(generated.contains("flux__win_draw_edge"));
+    assert!(generated.contains("PS_DASH"));
+    assert!(generated.contains(
+        "flux__win_border_start_color_title = flux__win_border_color(flux__ui_state_border)"
+    ));
+    assert!(
+        generated.contains("flux__win_border_top_width_value_title = flux__ui_state_edgeWidth")
+    );
+    assert!(
+        generated.contains("flux__win_border_start_width_value_title = flux__ui_state_borderWidth")
+    );
+    assert!(
+        generated.contains("flux__win_radius_top_left_value_title = flux__ui_state_cornerRadius")
+    );
+    assert!(generated.contains("flux__win_radius_top_right_value_title = INT64_C(10)"));
+    assert!(
+        generated
+            .contains("flux__win_border_style_title = flux__win_border_style_value(\"dashed\")")
+    );
+    assert!(generated.contains("flux__win_apply_radius(flux__ui_title, flux__win_radius_top_left_title, flux__win_radius_top_right_title, flux__win_radius_bottom_right_title, flux__win_radius_bottom_left_title)"));
+    assert!(generated.contains("flux__win_style_proc_title"));
+    assert!(
+        generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORBTN:")
+    );
+    assert!(
+        generated.contains(
+            "flux__win_foreground_title = flux__win_text_color(flux__ui_state_foreground)"
+        )
+    );
+    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_title"));
+    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_action"));
+    assert!(generated.contains("WS_CHILD | WS_VISIBLE | SS_CENTER"));
+    assert!(generated.contains("minimum_width = flux__win_scale(INT64_C(180))"));
+    assert!(generated.contains("minimum_height = flux__win_scale(INT64_C(44))"));
+    assert!(generated.contains("int control_width = 1 == 3 ? available_width : minimum_width"));
+    assert!(generated.contains("if (1 == 1) x += (available_width - control_width) / 2"));
+    assert!(generated.contains("if (2 == 1) y += (available_height - control_height) / 2; else if (2 == 2) y += available_height - control_height"));
+    assert!(generated.contains("DeleteObject(flux__win_background_brush_title)"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }
