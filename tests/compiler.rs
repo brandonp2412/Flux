@@ -2104,7 +2104,13 @@ fn main() -> i64 {
     let output = Command::new(&exe_path)
         .output()
         .expect("optional-cascade program should run");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "map iteration should exit cleanly: status={:?}, stdout={}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "99\n2\n7\n-1\n");
     let _ = fs::remove_dir_all(&root);
 
@@ -14464,7 +14470,7 @@ fn main() -> i64 {
     let offsets: i64[] = [10]
     let values: i64[] = [1, 2]
     let total: i64 = fold(values, 0, fn(acc: i64, value: i64) { acc + value + offsets.first })
-    return total
+    return total - 3
 }
 "#;
     check_source(borrowed_list_capture)
@@ -44556,6 +44562,35 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_at_unchecked"));
     assert!(generated.contains("strcmp("));
 
+    let root = std::env::temp_dir().join(format!(
+        "flux-map-index-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("map index fixture should be writable");
+    let c_path = root.join("map_index.c");
+    let exe_path = root.join("map_index");
+    fs::write(&c_path, generated).expect("generated map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile map indexing");
+    assert!(
+        compile.status.success(),
+        "map index C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("map index program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n-1\n");
+    let _ = fs::remove_dir_all(&root);
+
     let wrong_key = r#"
 fn main() -> i64 {
     let values: map<str, i64> = {"one": 1}
@@ -44576,7 +44611,7 @@ fn main() -> i64 {
     for key, value in values:
         print key
         total = total + value
-    return total
+    return total - 3
 }
 "#;
     check_source(source).expect("map iteration should typecheck");
@@ -44584,6 +44619,41 @@ fn main() -> i64 {
     assert!(generated.contains("struct flux__map flux__iter_source_"));
     assert!(generated.contains(".keys.len"));
     assert!(generated.contains(".values"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-map-iteration-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("map iteration fixture should be writable");
+    let c_path = root.join("map_iteration.c");
+    let exe_path = root.join("map_iteration");
+    fs::write(&c_path, generated).expect("generated map iteration C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile map iteration");
+    assert!(
+        compile.status.success(),
+        "map iteration C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("map iteration program should run");
+    assert!(
+        output.status.success(),
+        "map iteration should exit cleanly: status={:?}, stdout={}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "one\ntwo\n");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

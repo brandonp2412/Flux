@@ -28736,7 +28736,7 @@ fn emit_block(
                 let index_is_live = index_name.as_ref().is_some_and(|index| {
                     !dead_definitions.is_some_and(|dead| dead.contains(index))
                 });
-                let index_c = if index_is_live {
+                let index_c = if index_is_live && !is_map {
                     local_c_name(index_name.as_ref().expect("live index must be named"))
                 } else {
                     let generated = format!("flux__iter_index_{}", *temp_counter);
