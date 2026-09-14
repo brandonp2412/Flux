@@ -1338,14 +1338,18 @@ pub fn emit_c_for_target_with_source_metadata(
             "process.* APIs require a desktop/server target",
         ));
     }
+    if target == NativeTarget::Android && runtime_usage.contains("flux__net_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "net.* APIs require a desktop/server target",
+        ));
+    }
     if target == NativeTarget::Android
-        && (runtime_usage.contains("flux__net_")
-            || runtime_usage.contains("flux__tls_")
-            || runtime_usage.contains("flux__crypto_"))
+        && (runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__crypto_"))
     {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "network, TLS, and cryptographic APIs require a desktop/server target",
+            "TLS and cryptographic APIs require a desktop/server target",
         ));
     }
     if target != NativeTarget::Linux && runtime_usage.contains("flux__preferences_") {
