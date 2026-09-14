@@ -142,6 +142,36 @@ app Screen(title: "Native Flux", width: 640, height: 480)
 }
 
 #[test]
+fn windows_backend_loads_images_through_native_bitmap_controls() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: 1fr
+    Image logo at 1,1
+        source: "logo.bmp"
+        alt: "Flux logo"
+        fit: "contain"
+}
+app Screen(title: "Image")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows image source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows image source should lower to native Win32 C");
+    assert!(generated.contains("static HBITMAP flux__win_bitmap_logo = NULL;"));
+    assert!(generated.contains("LoadImageA(NULL, path, IMAGE_BITMAP"));
+    assert!(generated.contains("STM_SETIMAGE"));
+    assert!(generated.contains("LR_CREATEDIBSECTION"));
+    assert!(generated.contains("SS_BITMAP | SS_CENTERIMAGE"));
+    assert!(generated.contains("flux__win_set_bitmap(flux__ui_logo"));
+}
+
+#[test]
 fn windows_platform_bindings_lower_directly_and_reject_other_targets() {
     let source = r#"
 fn main() -> i64 {

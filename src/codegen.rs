@@ -10585,6 +10585,7 @@ fn emit_windows_native_application(
             "Text"
                 | "Button"
                 | "TextInput"
+                | "Image"
                 | "Toggle"
                 | "Radio"
                 | "Nav"
@@ -10595,7 +10596,7 @@ fn emit_windows_native_application(
         ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Windows backend currently renders native text, button, text-input, toggle, radio, and semantic text controls",
+                "bootstrap Windows backend currently renders native text, button, text-input, image, toggle, radio, and semantic text controls",
             ));
         }
     }
@@ -10738,6 +10739,12 @@ fn emit_windows_native_application(
                 element.name
             ));
         }
+        if element.kind == "Image" {
+            out.push_str(&format!(
+                "static HBITMAP flux__win_bitmap_{} = NULL;\n",
+                element.name
+            ));
+        }
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("static void flux__win_apply_fonts(void) {\n");
@@ -10806,6 +10813,9 @@ fn emit_windows_native_application(
     );
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
+    if view.elements.iter().any(|element| element.kind == "Image") {
+        out.push_str("static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *path) { if (control == NULL || current == NULL) return; if (path == NULL || path[0] == '\\0' || strncmp(path, \"asset://\", 8) == 0) { if (*current != NULL) { SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, 0); DeleteObject(*current); *current = NULL; } return; } HBITMAP next = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); if (next == NULL) return; HBITMAP previous = (HBITMAP)SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)next); if (previous != NULL && previous != next) DeleteObject(previous); *current = next; }\n");
+    }
     let uses_key_events = view
         .elements
         .iter()
@@ -11014,6 +11024,7 @@ fn emit_windows_native_application(
         let variable = ui_widget_c_name(&element.name);
         let text_property = match element.kind.as_str() {
             "Text" | "Button" | "Header" => Some("text"),
+            "Image" => Some("source"),
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => Some("label"),
             "Card" => Some("title"),
             "TextInput" => Some("text"),
@@ -11022,9 +11033,16 @@ fn emit_windows_native_application(
         if let Some(property_name) = text_property {
             if let Some(property) = view_property(element, property_name) {
                 let value = ui_expr_c(&property.value, view, signatures)?;
-                out.push_str(&format!(
-                    "flux__win_set_text_if_changed({variable}, {value});\n"
-                ));
+                if element.kind == "Image" {
+                    out.push_str(&format!(
+                        "flux__win_set_bitmap({variable}, &flux__win_bitmap_{}, {value});\n",
+                        element.name
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "flux__win_set_text_if_changed({variable}, {value});\n"
+                    ));
+                }
             }
         }
         if let Some(property) = view_property(element, "visible") {
@@ -11188,6 +11206,7 @@ fn emit_windows_native_application(
             (((height - padding * 2 + gap) / rows) * element.row_span as i64 - gap).max(28);
         let text_property = match element.kind.as_str() {
             "TextInput" => "text",
+            "Image" => "source",
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
             "Card" => "title",
             _ => "text",
@@ -11198,6 +11217,10 @@ fn emit_windows_native_application(
             None => c_string(&element.name),
         };
         let (class, style) = match element.kind.as_str() {
+            "Image" => (
+                "STATIC",
+                "WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE",
+            ),
             "Button" => (
                 "BUTTON",
                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
