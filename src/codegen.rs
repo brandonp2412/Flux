@@ -32118,6 +32118,26 @@ fn emit_expr(
                         ));
                     }
                 }
+            } else if matches!(
+                signatures.canonical_type(&emitted_base.ty),
+                Type::Set(_) | Type::Map(_, _)
+            ) {
+                let length_code = match signatures.canonical_type(&emitted_base.ty) {
+                    Type::Set(_) => format!("({}).len", emitted_base.code),
+                    Type::Map(_, _) => format!("({}).keys.len", emitted_base.code),
+                    _ => unreachable!("collection property branch guarantees a set or map"),
+                };
+                match name.as_str() {
+                    "count" => length_code,
+                    "empty" => format!("({length_code} == 0)"),
+                    "nonempty" => format!("({length_code} != 0)"),
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            "unknown collection property reached code generation",
+                        ));
+                    }
+                }
             } else if let Type::Record(fields) = signatures.canonical_type(&emitted_base.ty) {
                 let index = if let Ok(index) = name.parse::<usize>() {
                     index

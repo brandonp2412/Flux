@@ -7029,6 +7029,17 @@ pub fn type_of_expr(
                         ));
                     }
                 }
+            } else if matches!(&base_ty, Type::Set(_) | Type::Map(_, _)) {
+                match name.as_str() {
+                    "count" => Type::I64,
+                    "empty" | "nonempty" => Type::Bool,
+                    _ => {
+                        return Err(diag(
+                            *name_span,
+                            &format!("collection type '{}' has no property '{name}'", base_ty.name()),
+                        ));
+                    }
+                }
             } else if let Type::Record(fields) = &base_ty {
                 if let Ok(index) = name.parse::<usize>() {
                     fields

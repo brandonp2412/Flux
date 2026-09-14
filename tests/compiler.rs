@@ -44511,6 +44511,26 @@ fn main() -> i64 {
 }
 
 #[test]
+fn set_and_map_collection_properties_lower_to_native_lengths() {
+    let source = r#"
+fn main() -> i64 {
+    let values: set<i64> = {1, 2}
+    let mapping: map<i64, str> = {1: "one"}
+    if values.count != 2 || !values.nonempty || values.empty:
+        return 1
+    if mapping.count != 1 || !mapping.nonempty || mapping.empty:
+        return 2
+    return 0
+}
+"#;
+    check_source(source).expect("set/map properties should typecheck");
+    let generated = compile_to_c(source).expect("set/map properties should lower natively");
+    assert!(generated.contains(".keys.len"));
+    assert!(generated.contains(".len == 0"));
+    assert!(generated.contains(".len != 0"));
+}
+
+#[test]
 fn map_patterns_bind_values_and_require_a_wildcard_fallback() {
     let source = r#"
 fn main() -> i64 {

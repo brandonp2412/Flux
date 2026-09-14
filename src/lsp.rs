@@ -898,7 +898,9 @@ fn completion_items_at_cursor_cached(
         {
             if matches!(
                 crate::ast::Type::parse(&type_name),
-                Some(crate::ast::Type::List(_))
+                Some(crate::ast::Type::List(_)
+                    | crate::ast::Type::Set(_)
+                    | crate::ast::Type::Map(_, _))
             ) {
                 add_list_property_completions(&mut items, &mut seen, &type_name);
             } else {
@@ -2306,20 +2308,23 @@ fn add_list_property_completions(
     seen: &mut HashSet<String>,
     type_name: &str,
 ) {
-    let element_type = crate::ast::Type::parse(type_name)
-        .and_then(|ty| match ty {
-            crate::ast::Type::List(element) => Some(element.name()),
-            _ => None,
-        })
-        .unwrap_or_else(|| "value".to_string());
-    for (name, ty) in [
-        ("count", "i64".to_string()),
-        ("empty", "bool".to_string()),
-        ("nonempty", "bool".to_string()),
-        ("first", element_type.clone()),
-        ("last", element_type.clone()),
-        ("only", element_type),
-    ] {
+    let properties = match crate::ast::Type::parse(type_name) {
+        Some(crate::ast::Type::List(element)) => vec![
+            ("count", "i64".to_string()),
+            ("empty", "bool".to_string()),
+            ("nonempty", "bool".to_string()),
+            ("first", element.name()),
+            ("last", element.name()),
+            ("only", element.name()),
+        ],
+        Some(crate::ast::Type::Set(_)) | Some(crate::ast::Type::Map(_, _)) => vec![
+            ("count", "i64".to_string()),
+            ("empty", "bool".to_string()),
+            ("nonempty", "bool".to_string()),
+        ],
+        _ => Vec::new(),
+    };
+    for (name, ty) in properties {
         push_completion_item(
             items,
             seen,
