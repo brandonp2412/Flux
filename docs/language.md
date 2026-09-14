@@ -71,6 +71,8 @@ let pattern: str = r"\d+\w+"
 
 Raw strings use `r"..."`. Backslashes are literal rather than escape introducers, so paths and regular-expression-like text do not require doubled backslashes. The closing `"` still terminates the literal, so the bootstrap raw form does not embed a double quote. Raw and ordinary literals have the same `str` type and runtime representation; canonical formatting normalizes raw literals to the equivalent escaped ordinary string.
 
+`str.slice(value, start, end, callback)` provides a bounded immutable borrowed view over a UTF-8 string. `start` and `end` are byte offsets that must be within the value and on code-point boundaries; the resulting text is valid only during the synchronous `fn(str) -> void` callback, and the operation returns an `error`. The compiler uses fixed stack storage rather than creating an escaping string, so owned strings and escaping slices remain separate ownership work.
+
 Local mutation must be declared explicitly with `var`. Reassignment preserves the declared static type, and immutable `let` bindings, parameters, destructured bindings, and `for` loop variables cannot be assigned to:
 
 ```flux

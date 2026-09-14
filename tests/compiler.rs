@@ -15574,6 +15574,27 @@ fn main() -> i64 {
 }
 
 #[test]
+fn string_slices_are_borrowed_only_for_callback_scope() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let failure: error = str.slice("Flux 💙", 5, 9, show)
+    print(failure)
+    return 0
+}
+"#;
+
+    check_source(source).expect("string slices should typecheck");
+    let generated = compile_to_c(source).expect("string slices should lower natively");
+    assert!(generated.contains("flux__str_slice("));
+    assert!(generated.contains("UTF-8 boundaries"));
+    assert!(generated.contains("char result[65537]"));
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {

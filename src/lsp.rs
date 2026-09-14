@@ -1206,6 +1206,16 @@ fn add_qualified_namespace_completions(
     namespace: &str,
     program: &crate::ast::Program,
 ) -> bool {
+    if namespace == "str" {
+        push_completion_item(
+            items,
+            seen,
+            "slice",
+            3,
+            "fn str.slice(value: str, start: i64, end: i64, callback: fn(str) -> void) -> error",
+        );
+        return true;
+    }
     if namespace == "process" {
         push_completion_item(items, seen, "pid", 3, "fn process.pid() -> i64");
         push_completion_item(items, seen, "parent", 3, "fn process.parent() -> i64");
@@ -3571,6 +3581,16 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 _ => {}
+            }
+        }
+        if namespace == "str" {
+            if member == "slice" {
+                return Some(signature_help_for_builtin(
+                    "str.slice",
+                    &["value: str", "start: i64", "end: i64", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                ));
             }
         }
         if namespace == "process" {
@@ -8641,6 +8661,30 @@ mod tests {
         assert!(fold_help.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
         let reduce_help = help_for("reduce(");
         assert!(reduce_help.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
+    }
+
+    #[test]
+    fn signature_help_supports_borrowed_string_slices() {
+        let uri = "file:///tmp/string-slice-signatures.flux";
+        let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    str.slice(\"Flux\", 0, 2, show)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("str.slice("))
+            .expect("string slice call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("str.slice(").unwrap() + "str.slice(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("string slice should have signature help")
+        .to_json();
+        assert!(help.contains("fn str.slice(value: str, start: i64, end: i64, callback: fn(str) -> void) -> error"));
     }
 
     #[test]

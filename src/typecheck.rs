@@ -7375,6 +7375,43 @@ fn check_qualified_call(
             rename_builtin_diagnostic(diagnostic, &implementation, &canonical)
         });
     }
+    if namespace == "str" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("str.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "slice" => {
+                if args.len() != 4 {
+                    return Err(diag(
+                        span,
+                        &format!("str.slice expects 4 arguments, got {}", args.len()),
+                    ));
+                }
+                let value = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &value, "str.slice value")?;
+                for (index, label) in [(1, "start"), (2, "end")] {
+                    let bound = type_of_expr(&args[index], env, signatures)?;
+                    require_type(args[index].span, &Type::I64, &bound, &format!("str.slice {label}"))?;
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[3].span, &expected, &callback, "str.slice callback")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("str module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(

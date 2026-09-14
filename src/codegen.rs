@@ -6214,6 +6214,10 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
 
+    if runtime_usage.contains("flux__str_slice(") {
+        out.push_str("static inline const char *flux__str_slice(const char *value, int64_t start, int64_t end, void (*callback)(const char *)) { if (value == NULL || callback == NULL || start < 0 || end < start) return \"invalid string slice bounds\"; size_t length = strlen(value); if (length > 65536 || (uint64_t)start > (uint64_t)length || (uint64_t)end > (uint64_t)length) return \"string slice bounds exceed value length\"; size_t begin = (size_t)start; size_t finish = (size_t)end; if ((begin < length && (((unsigned char)value[begin] & 0xC0u) == 0x80u)) || (finish < length && (((unsigned char)value[finish] & 0xC0u) == 0x80u))) return \"string slice bounds must be UTF-8 boundaries\"; size_t result_length = finish - begin; char result[65537]; memcpy(result, value + begin, result_length); result[result_length] = '\\0'; callback(result); return NULL; }\\n");
+    }
+
     if runtime_usage.contains("flux__fs_exists(") {
         out.push_str("static inline bool flux__fs_exists(const char *path) { struct stat info; return stat(path, &info) == 0; }\n");
     }
@@ -32606,6 +32610,23 @@ fn emit_qualified_call(
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
     let name = crate::builtin_names::qualified_impl(namespace, name);
+    if namespace == "str" {
+        if !named_args.is_empty() || name != "slice" || args.len() != 4 {
+            return Err(diag(span, "invalid str.slice call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        let start = emit_expr(&args[1], env, signatures)?;
+        let end = emit_expr(&args[2], env, signatures)?;
+        let callback = emit_expr(&args[3], env, signatures)?;
+        return Ok((
+            format!(
+                "flux__str_slice({}, {}, {}, {})",
+                value.code, start.code, end.code, callback.code
+            ),
+            vec![Type::Error],
+            None,
+        ));
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid process call reached code generation"));
