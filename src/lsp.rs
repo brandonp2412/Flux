@@ -2971,14 +2971,6 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
-    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
-    let standalone_database;
-    let database = if let Some((database, _)) = project_analysis.as_ref() {
-        database
-    } else {
-        standalone_database = analyzed_document(uri, source)?;
-        &standalone_database
-    };
     if call_name == "print" {
         return Some(signature_help_for_builtin(
             "print",
