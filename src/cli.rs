@@ -4696,7 +4696,11 @@ fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliErro
         command.env("FLUX_ASSET_ROOT", asset_root);
     }
     command
-        .stdin(Stdio::inherit())
+        .stdin(if io::stdin().is_terminal() {
+            Stdio::null()
+        } else {
+            Stdio::inherit()
+        })
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
