@@ -11076,27 +11076,10 @@ fn emit_windows_native_application(
             None if element.kind == "TextInput" => c_string(""),
             None => c_string(&element.name),
         };
-        let text = view_property(element, text_property)
-            .and_then(|property| static_expr_str(&property.value, signatures))
-            .unwrap_or_else(|| {
-                if element.kind == "TextInput" {
-                    String::new()
-                } else {
-                    element.name.clone()
-                }
-            });
         let (class, style) = match element.kind.as_str() {
             "Button" => (
                 "BUTTON",
                 "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
-            ),
-            "Toggle" => (
-                "BUTTON",
-                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX",
-            ),
-            "Radio" => (
-                "BUTTON",
-                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON",
             ),
             "TextInput" => {
                 let multiline = match view_property(element, "multiline") {
@@ -32868,6 +32851,28 @@ fn emit_qualified_call(
                     None,
                 ))
             }
+            "messageBox" if args.len() == 2 => {
+                let title = emit_expr(&args[0], env, signatures)?;
+                let message = emit_expr(&args[1], env, signatures)?;
+                Ok((
+                    format!(
+                        "flux__windows_message_box({}, {})",
+                        title.code, message.code
+                    ),
+                    vec![Type::I64],
+                    None,
+                ))
+            }
+            "screenWidth" if args.is_empty() => Ok((
+                "flux__windows_screen_width()".to_string(),
+                vec![Type::I64],
+                None,
+            )),
+            "screenHeight" if args.is_empty() => Ok((
+                "flux__windows_screen_height()".to_string(),
+                vec![Type::I64],
+                None,
+            )),
             _ => Err(diag(
                 span,
                 "invalid windows platform call reached code generation",

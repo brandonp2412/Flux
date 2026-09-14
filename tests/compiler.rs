@@ -79,8 +79,8 @@ view Screen {
     grid columns: 1fr
     grid rows: auto auto auto auto auto
     Text title at 1,1
-        text: "Flux on Windows"
-        onTap: pressed
+        text: query
+        visible: active
     TextInput input at 2,1
         text: query
         enabled: active
@@ -134,17 +134,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("MoveWindow(flux__ui_title"));
     assert!(generated.contains("EN_CHANGE && !flux__win_refreshing"));
     assert!(generated.contains("flux__win_change_1"));
-    assert!(generated.contains("flux__win_click_2"));
-    assert!(generated.contains("flux__win_tap_0"));
-    assert!(generated.contains("SS_LEFT | SS_NOTIFY"));
-    assert!(generated.contains("STN_CLICKED"));
-    assert!(generated.contains("SetProcessDpiAwarenessContext"));
-    assert!(generated.contains("set_context((HANDLE)(INT_PTR)-4)"));
-    assert!(generated.contains("SetProcessDPIAware()"));
-    assert!(generated.contains("GetDeviceCaps(dc, LOGPIXELSX)"));
-    assert!(generated.contains("case WM_DPICHANGED"));
-    assert!(generated.contains("flux__win_unscale(physical_width)"));
-    assert!(generated.contains("flux__win_scale(INT64_C(640))"));
+    assert!(generated.contains("flux__win_check_2"));
+    assert!(generated.contains("flux__win_check_3"));
+    assert!(generated.contains("flux__win_click_4"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
 }

@@ -9442,6 +9442,37 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Bool]);
             }
+            "messageBox" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("windows.messageBox expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    let actual = type_of_expr(argument, env, signatures)?;
+                    require_type(
+                        argument.span,
+                        &Type::Str,
+                        &actual,
+                        if index == 0 {
+                            "windows.messageBox title"
+                        } else {
+                            "windows.messageBox message"
+                        },
+                    )?;
+                }
+                return Ok(vec![Type::I64]);
+            }
+            "screenWidth" | "screenHeight" => {
+                if !args.is_empty() {
+                    return Err(diag(
+                        span,
+                        &format!("windows.{name} expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
             _ => {
                 return Err(diag(
                     *name_span,
