@@ -7227,6 +7227,191 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "crypto" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("crypto.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "sha256" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("crypto.sha256 expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let value = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &value, "crypto.sha256 value")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[1].span, &expected, &callback, "crypto.sha256 callback")?;
+                return Ok(vec![Type::Error]);
+            }
+            "hmacSha256" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("crypto.hmacSha256 expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let key = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &key, "crypto.hmacSha256 key")?;
+                let value = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &value, "crypto.hmacSha256 value")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "crypto.hmacSha256 callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            "randomHex" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("crypto.randomHex expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let bytes = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &bytes,
+                    "crypto.randomHex byteCount",
+                )?;
+                if matches!(constant_primitive_value(&args[0], signatures), Some(ConstantValue::I64(value)) if !(1..=32768).contains(&value))
+                {
+                    return Err(diag(
+                        args[0].span,
+                        "crypto.randomHex byteCount must be between 1 and 32768",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    "crypto.randomHex callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
+            "equal" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("crypto.equal expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, label) in [(0, "left"), (1, "right")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("crypto.equal {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Bool, Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("crypto module has no function '{name}'"),
+                ));
+            }
+        }
+    }
+    if namespace == "secure" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("secure.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "write" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("secure.write expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, label) in [(0, "service"), (1, "account"), (2, "secret")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("secure.write {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            "read" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("secure.read expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, label) in [(0, "service"), (1, "account")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("secure.read {label}"),
+                    )?;
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[2].span, &expected, &callback, "secure.read callback")?;
+                return Ok(vec![Type::Bool, Type::Error]);
+            }
+            "remove" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("secure.remove expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, label) in [(0, "service"), (1, "account")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("secure.remove {label}"),
+                    )?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("secure module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "sqlite" {
         if !named_args.is_empty() {
             return Err(diag(

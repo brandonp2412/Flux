@@ -1714,6 +1714,12 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__sqlite_") {
         out.push_str("#include <sqlite3.h>\n");
     }
+    if runtime_usage.contains("flux__crypto_") {
+        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <openssl/crypto.h>\n#include <openssl/evp.h>\n#include <openssl/hmac.h>\n#include <openssl/rand.h>\n#include <openssl/sha.h>\n#endif\n");
+    }
+    if runtime_usage.contains("flux__secure_") {
+        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <libsecret/secret.h>\n#endif\n");
+    }
     if uses_workers
         || runtime_usage.contains("flux__channel_")
         || runtime_usage.contains("flux__async_task_")
@@ -1801,7 +1807,7 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <fcntl.h>\n");
     }
-    if runtime_usage.contains("flux__net_") {
+    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__crypto_") {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
@@ -4383,6 +4389,114 @@ fn emit_runtime_prelude(
     }
     return NULL;
 }
+"#);
+    }
+
+    if runtime_usage.contains("flux__crypto_") {
+        out.push_str(r#"struct flux__crypto_bool_error { bool v0; const char *v1; };
+#if defined(__linux__) && !defined(__ANDROID__)
+static inline const char *flux__crypto_emit_hex(const unsigned char *bytes, size_t length, void (*callback)(const char *)) {
+    static const char alphabet[] = "0123456789abcdef";
+    if (callback == NULL) return "crypto callback is invalid";
+    if (length > (SIZE_MAX - 1) / 2) return "crypto result is too large";
+    size_t output_length = length * 2;
+    char *output = malloc(output_length + 1);
+    if (output == NULL) return "crypto could not allocate result";
+    for (size_t index = 0; index < length; index += 1) {
+        output[index * 2] = alphabet[bytes[index] >> 4];
+        output[index * 2 + 1] = alphabet[bytes[index] & 15];
+    }
+    output[output_length] = '\0';
+    callback(output);
+    free(output);
+    return NULL;
+}
+static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    if (SHA256((const unsigned char *)value, strlen(value), digest) == NULL) return "crypto.sha256 failed";
+    return flux__crypto_emit_hex(digest, SHA256_DIGEST_LENGTH, callback);
+}
+static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
+    size_t key_length = strlen(key);
+    if (key_length > INT_MAX) return "crypto.hmacSha256 key is too large";
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_length = 0;
+    if (HMAC(EVP_sha256(), key, (int)key_length, (const unsigned char *)value, strlen(value), digest, &digest_length) == NULL) return "crypto.hmacSha256 failed";
+    return flux__crypto_emit_hex(digest, digest_length, callback);
+}
+static inline const char *flux__crypto_random_hex(int64_t byte_count, void (*callback)(const char *)) {
+    if (byte_count < 1 || byte_count > 32768) return "crypto.randomHex byteCount must be between 1 and 32768";
+    unsigned char *bytes = malloc((size_t)byte_count);
+    if (bytes == NULL) return "crypto.randomHex could not allocate entropy buffer";
+    if (RAND_bytes(bytes, (int)byte_count) != 1) {
+        OPENSSL_cleanse(bytes, (size_t)byte_count);
+        free(bytes);
+        return "crypto.randomHex failed to obtain secure randomness";
+    }
+    const char *error = flux__crypto_emit_hex(bytes, (size_t)byte_count, callback);
+    OPENSSL_cleanse(bytes, (size_t)byte_count);
+    free(bytes);
+    return error;
+}
+static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left, const char *right) {
+    size_t left_length = strlen(left);
+    size_t right_length = strlen(right);
+    struct flux__crypto_bool_error result = { .v0 = false, .v1 = NULL };
+    if (left_length != right_length) return result;
+    result.v0 = left_length == 0 || CRYPTO_memcmp(left, right, left_length) == 0;
+    return result;
+}
+#else
+static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) { (void)value; (void)callback; return "crypto primitives are unavailable on this target"; }
+static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) { (void)key; (void)value; (void)callback; return "crypto primitives are unavailable on this target"; }
+static inline const char *flux__crypto_random_hex(int64_t byte_count, void (*callback)(const char *)) { (void)byte_count; (void)callback; return "crypto primitives are unavailable on this target"; }
+static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left, const char *right) { (void)left; (void)right; struct flux__crypto_bool_error result = { .v0 = false, .v1 = "crypto primitives are unavailable on this target" }; return result; }
+#endif
+"#);
+    }
+
+    if runtime_usage.contains("flux__secure_") {
+        out.push_str(r#"struct flux__secure_bool_error { bool v0; const char *v1; };
+#if defined(__linux__) && !defined(__ANDROID__)
+static const SecretSchema flux__secure_schema = {
+    "dev.flux.Secret", SECRET_SCHEMA_NONE,
+    {
+        { "service", SECRET_SCHEMA_ATTRIBUTE_STRING },
+        { "account", SECRET_SCHEMA_ATTRIBUTE_STRING },
+        { NULL, 0 },
+    }
+};
+static inline const char *flux__secure_write(const char *service, const char *account, const char *secret) {
+    GError *error = NULL;
+    gboolean stored = secret_password_store_sync(&flux__secure_schema, SECRET_COLLECTION_DEFAULT, "Flux secret", secret, NULL, &error, "service", service, "account", account, NULL);
+    if (stored && error == NULL) return NULL;
+    if (error != NULL) g_error_free(error);
+    return "secure.write failed";
+}
+static inline struct flux__secure_bool_error flux__secure_read(const char *service, const char *account, void (*callback)(const char *)) {
+    struct flux__secure_bool_error result = { .v0 = false, .v1 = NULL };
+    if (callback == NULL) { result.v1 = "secure.read callback is invalid"; return result; }
+    GError *error = NULL;
+    gchar *secret = secret_password_lookup_sync(&flux__secure_schema, NULL, &error, "service", service, "account", account, NULL);
+    if (error != NULL) { g_error_free(error); result.v1 = "secure.read failed"; return result; }
+    if (secret == NULL) return result;
+    callback(secret);
+    secret_password_free(secret);
+    result.v0 = true;
+    return result;
+}
+static inline const char *flux__secure_remove(const char *service, const char *account) {
+    GError *error = NULL;
+    gboolean cleared = secret_password_clear_sync(&flux__secure_schema, NULL, &error, "service", service, "account", account, NULL);
+    if (cleared && error == NULL) return NULL;
+    if (error != NULL) g_error_free(error);
+    return "secure.remove failed";
+}
+#else
+static inline const char *flux__secure_write(const char *service, const char *account, const char *secret) { (void)service; (void)account; (void)secret; return "secure storage is unavailable on this target"; }
+static inline struct flux__secure_bool_error flux__secure_read(const char *service, const char *account, void (*callback)(const char *)) { (void)service; (void)account; (void)callback; struct flux__secure_bool_error result = { .v0 = false, .v1 = "secure storage is unavailable on this target" }; return result; }
+static inline const char *flux__secure_remove(const char *service, const char *account) { (void)service; (void)account; return "secure storage is unavailable on this target"; }
+#endif
 "#);
     }
 
@@ -31940,6 +32054,108 @@ fn emit_qualified_call(
             }
             _ => {
                 return Err(diag(span, "unknown process call reached code generation"));
+            }
+        }
+    }
+    if namespace == "crypto" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid crypto call reached code generation"));
+        }
+        match name {
+            "sha256" => {
+                let value = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__crypto_sha256({}, {})", value.code, callback.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "hmacSha256" => {
+                let key = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__crypto_hmac_sha256({}, {}, {})",
+                        key.code, value.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "randomHex" => {
+                let byte_count = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__crypto_random_hex({}, {})",
+                        byte_count.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "equal" => {
+                let left = emit_expr(&args[0], env, signatures)?;
+                let right = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__crypto_equal({}, {})", left.code, right.code),
+                    vec![Type::Bool, Type::Error],
+                    Some("flux__crypto_bool_error".to_string()),
+                ));
+            }
+            _ => return Err(diag(span, "unknown crypto call reached code generation")),
+        }
+    }
+    if namespace == "secure" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid secure-storage call reached code generation",
+            ));
+        }
+        match name {
+            "write" => {
+                let service = emit_expr(&args[0], env, signatures)?;
+                let account = emit_expr(&args[1], env, signatures)?;
+                let secret = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__secure_write({}, {}, {})",
+                        service.code, account.code, secret.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "read" => {
+                let service = emit_expr(&args[0], env, signatures)?;
+                let account = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__secure_read({}, {}, {})",
+                        service.code, account.code, callback.code
+                    ),
+                    vec![Type::Bool, Type::Error],
+                    Some("flux__secure_bool_error".to_string()),
+                ));
+            }
+            "remove" => {
+                let service = emit_expr(&args[0], env, signatures)?;
+                let account = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__secure_remove({}, {})", service.code, account.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => {
+                return Err(diag(
+                    span,
+                    "unknown secure-storage call reached code generation",
+                ));
             }
         }
     }

@@ -9347,6 +9347,75 @@ fn main() -> i64 {
 }
 
 #[test]
+fn crypto_and_secure_storage_are_typed_borrowed_and_tree_shaken() {
+    let source = r#"
+fn value(text: str) -> void {
+    print(text)
+}
+fn main() -> i64 {
+    print(crypto.sha256("abc", value))
+    print(crypto.hmacSha256("key", "value", value))
+    print(crypto.randomHex(16, value))
+    let (matches, equalError) = crypto.equal("same", "same")
+    print(matches)
+    print(equalError)
+    print(secure.write("flux-test", "account", "secret"))
+    let (found, readError) = secure.read("flux-test", "account", value)
+    print(found)
+    print(readError)
+    print(secure.remove("flux-test", "account"))
+    return 0
+}
+"#;
+
+    check_source(source).expect("security service APIs should typecheck");
+    let generated = compile_to_c(source).expect("security service APIs should lower natively");
+    assert!(generated.contains("#include <openssl/sha.h>"));
+    assert!(generated.contains("#include <libsecret/secret.h>"));
+    assert!(generated.contains("flux__crypto_sha256("));
+    assert!(generated.contains("flux__crypto_hmac_sha256("));
+    assert!(generated.contains("flux__crypto_random_hex("));
+    assert!(generated.contains("flux__crypto_equal("));
+    assert!(generated.contains("flux__secure_write("));
+    assert!(generated.contains("flux__secure_read("));
+    assert!(generated.contains("flux__secure_remove("));
+    assert!(generated.contains("secret_password_free(secret)"));
+
+    let dead = r#"
+fn value(_text: str) -> void {
+}
+fn hidden() -> void {
+    print(crypto.sha256("abc", value))
+    print(secure.write("service", "account", "secret"))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead security calls should lower safely");
+    assert!(!dead_generated.contains("#include <openssl/sha.h>"));
+    assert!(!dead_generated.contains("#include <libsecret/secret.h>"));
+    assert!(!dead_generated.contains("flux__crypto_sha256("));
+    assert!(!dead_generated.contains("flux__secure_write("));
+
+    let random_error = check_source(
+        "fn value(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(crypto.randomHex(0, value))\n    return 0\n}\n",
+    )
+    .expect_err("statically invalid secure-random sizes must fail");
+    assert!(
+        random_error
+            .message
+            .contains("crypto.randomHex byteCount must be between 1 and 32768")
+    );
+
+    let callback_error = check_source(
+        "fn value(_number: i64) -> void {\n}\nfn main() -> i64 {\n    let (_found, _failure) = secure.read(\"service\", \"account\", value)\n    return 0\n}\n",
+    )
+    .expect_err("secure-storage callback shape must be exact");
+    assert!(callback_error.message.contains("secure.read callback"));
+}
+
+#[test]
 fn sqlite_interface_is_typed_borrowed_tree_shaken_and_runnable() {
     let root = std::env::temp_dir().join(format!("flux-sqlite-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

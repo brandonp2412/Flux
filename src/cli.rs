@@ -9213,10 +9213,37 @@ fn build_native_configured(
     } else {
         Vec::new()
     };
+    let linux_native = native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux;
+    let crypto = linux_native && c_source.contains("#include <openssl/sha.h>");
+    let crypto_cflags = if crypto {
+        pkg_config_flags("--cflags", "openssl")?
+    } else {
+        Vec::new()
+    };
+    let crypto_libs = if crypto {
+        pkg_config_flags("--libs", "openssl")?
+    } else {
+        Vec::new()
+    };
+    let secure = linux_native && c_source.contains("#include <libsecret/secret.h>");
+    let secure_cflags = if secure {
+        pkg_config_flags("--cflags", "libsecret-1")?
+    } else {
+        Vec::new()
+    };
+    let secure_libs = if secure {
+        pkg_config_flags("--libs", "libsecret-1")?
+    } else {
+        Vec::new()
+    };
     let mut native_cflags = gtk_cflags;
     native_cflags.extend(sqlite_cflags);
+    native_cflags.extend(crypto_cflags);
+    native_cflags.extend(secure_cflags);
     let mut native_libs = gtk_libs;
     native_libs.extend(sqlite_libs);
+    native_libs.extend(crypto_libs);
+    native_libs.extend(secure_libs);
     if native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows {
         native_libs.extend(
             windows_native_system_libraries(c_source)
@@ -9241,7 +9268,8 @@ fn build_native_configured(
     let cache_enabled = native_package.map_or(true, |native_package| {
         native_package.libraries.is_empty() && native_package.search_paths.is_empty()
     });
-    let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
+    let toolchain_identity =
+        native_toolchain_cache_identity(gtk, sqlite, crypto, secure, native_target)?;
     let cache = native_build_cache_path_configured(
         c_source,
         mode,
@@ -9404,6 +9432,8 @@ fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
 fn native_toolchain_cache_identity(
     gtk: bool,
     sqlite: bool,
+    crypto: bool,
+    secure: bool,
     native_target: &NativeTargetOptions,
 ) -> Result<String, String> {
     let clang = command_first_line("clang", &["--version"])?;
@@ -9427,6 +9457,14 @@ fn native_toolchain_cache_identity(
     if sqlite {
         let sqlite_version = command_first_line("pkg-config", &["--modversion", "sqlite3"])?;
         identity.push_str(&format!("\nsqlite3={sqlite_version}"));
+    }
+    if crypto {
+        let openssl_version = command_first_line("pkg-config", &["--modversion", "openssl"])?;
+        identity.push_str(&format!("\nopenssl={openssl_version}"));
+    }
+    if secure {
+        let libsecret_version = command_first_line("pkg-config", &["--modversion", "libsecret-1"])?;
+        identity.push_str(&format!("\nlibsecret={libsecret_version}"));
     }
     Ok(identity)
 }
