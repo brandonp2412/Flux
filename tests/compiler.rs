@@ -15778,6 +15778,86 @@ fn main() -> i64 {
 }
 
 #[test]
+fn tls_verified_client_round_trips_against_local_openssl_server() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("flux-tls-e2e-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS E2E fixture should be writable");
+    let key = root.join("server.key");
+    let certificate = root.join("server.crt");
+    let generated = Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-keyout"])
+        .arg(&key)
+        .args(["-out"])
+        .arg(&certificate)
+        .output()
+        .expect("OpenSSL should generate the TLS fixture certificate");
+    assert!(generated.status.success(), "certificate generation failed: {}", String::from_utf8_lossy(&generated.stderr));
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("TLS fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut server = Command::new("openssl")
+        .args(["s_server", "-quiet", "-www", "-accept"])
+        .arg(port.to_string())
+        .args(["-cert"])
+        .arg(&certificate)
+        .args(["-key"])
+        .arg(&key)
+        .spawn()
+        .expect("OpenSSL TLS fixture server should start");
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let source = format!(
+        r#"
+fn show(value: str) -> void {{
+    print(value)
+}}
+
+fn main() -> i64 {{
+    let (socket, connect_error) = net.connect("127.0.0.1", {port})
+    let (session, tls_error) = tls.wrap(socket, "127.0.0.1", "{}")
+    let write_error: error = tls.write(session, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+    let (received, read_error) = tls.read(session, 4096, show)
+    let close_error: error = tls.close(session)
+    print(connect_error)
+    print(tls_error)
+    print(write_error)
+    print(received)
+    print(read_error)
+    print(close_error)
+    return 0
+}}
+"#,
+        certificate.display()
+    );
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("TLS E2E source should be writable");
+    let binary = root.join("tls-e2e");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS E2E Flux binary should build");
+    assert!(built.status.success(), "TLS E2E build failed: {}", String::from_utf8_lossy(&built.stderr));
+    let run = Command::new(&binary).output().expect("TLS E2E Flux binary should run");
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(run.status.success(), "TLS E2E run failed: {}", String::from_utf8_lossy(&run.stderr));
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(stdout.contains("HTTP/1.0 200"), "TLS response missing: {stdout}");
+    assert!(stdout.contains("nil\n"), "TLS error result missing: {stdout}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {
