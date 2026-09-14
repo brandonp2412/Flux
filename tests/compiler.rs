@@ -44424,3 +44424,38 @@ fn main() -> i64 {
     assert_eq!(mutable.kind, fluxc::semantic::SymbolKind::MutableBinding);
     assert_eq!(mutable.ty, Some(fluxc::ast::Type::I64));
 }
+
+#[test]
+fn linux_reload_preserves_compatible_primitive_view_state() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state enabled: bool = true
+    state count: i64 = 3
+    state message: str = "ready"
+    Text label at 1,1
+        text: message
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("reload state fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("reload state fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("reload state fixture should lower for Linux");
+
+    assert!(generated.contains("FLUX_RELOAD_STATE_PATH"));
+    assert!(generated.contains("'F','L','X','S'"));
+    assert!(generated.contains("uint32_t count = 3;"));
+    assert!(generated.contains("flux__ui_state_enabled ? 1 : 0"));
+    assert!(generated.contains("fwrite(&flux__ui_state_count"));
+    assert!(generated.contains("flux__ui_state_message = value"));
+    assert!(generated.contains("signal(SIGTERM, flux__ui_reload_signal)"));
+    assert!(generated.contains("flux__ui_restore_reload_state();"));
+}

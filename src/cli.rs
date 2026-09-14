@@ -4550,6 +4550,8 @@ fn demangle_profile_symbols(report: &str) -> String {
 }
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
+    let reload_state_path = development_reload_state_path(target);
+    let _ = fs::remove_file(&reload_state_path);
     let (quit_tx, quit_rx) = mpsc::channel();
     if io::stdin().is_terminal() {
         thread::spawn(move || {
@@ -4605,6 +4607,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     loop {
         if quit_rx.try_recv().is_ok() {
             stop_child(&mut child);
+            let _ = fs::remove_file(&reload_state_path);
             eprintln!("run: stopped");
             return Ok(());
         }
@@ -4690,7 +4693,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             continue;
         }
 
-        stop_child(&mut child);
+        stop_child_for_reload(&mut child);
         let previous_binary = std::mem::replace(&mut binary, next_binary);
         child = Some(spawn_development_binary(&binary, target)?);
         let _ = fs::remove_file(previous_binary);
@@ -4804,6 +4807,7 @@ fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliErro
         None
     };
     let mut command = Command::new(path);
+    command.env("FLUX_RELOAD_STATE_PATH", development_reload_state_path(target));
     if let Some(manifest_path) = manifest_path
         && let Ok(manifest) = fluxc::project::read_manifest(&manifest_path)
         && let Some(asset_root) = manifest.assets
@@ -4835,6 +4839,37 @@ fn stop_child(child: &mut Option<Child>) {
         let _ = process.kill();
     }
     let _ = process.wait();
+}
+
+fn stop_child_for_reload(child: &mut Option<Child>) {
+    let Some(mut process) = child.take() else {
+        return;
+    };
+    if process.try_wait().ok().flatten().is_none() {
+        #[cfg(unix)]
+        {
+            let _ = Command::new("kill")
+                .args(["-TERM", &process.id().to_string()])
+                .status();
+            let deadline = Instant::now() + Duration::from_millis(750);
+            while process.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        if process.try_wait().ok().flatten().is_none() {
+            let _ = process.kill();
+        }
+    }
+    let _ = process.wait();
+}
+
+fn development_reload_state_path(target: &Path) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let target_hash = target.to_string_lossy().bytes().fold(0_u64, |hash, byte| {
+        hash.wrapping_mul(16777619).wrapping_add(u64::from(byte))
+    });
+    path.push(format!("fluxc-run-{}-{target_hash:016x}.state", std::process::id()));
+    path
 }
 
 fn development_binary_path(generation: usize) -> PathBuf {
