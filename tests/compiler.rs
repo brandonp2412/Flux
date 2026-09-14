@@ -26902,6 +26902,106 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
 }
 
 #[test]
+fn native_build_reproducibility_metadata_writes_verifies_and_rejects_drift() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-reproducibility-metadata-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("reproducibility metadata fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn main() -> i64 {\n    print(42)\n    return 0\n}\n",
+    )
+    .expect("reproducibility metadata source should be writable");
+    let metadata = root.join("build.repro");
+    let first = root.join("first");
+    let second = root.join("second");
+
+    let written = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&first)
+        .arg("--write-reproducibility")
+        .arg(&metadata)
+        .env("FLUX_CACHE_DIR", root.join("cache-a"))
+        .output()
+        .expect("reproducibility metadata build should run");
+    assert!(
+        written.status.success(),
+        "metadata-producing build failed: {}",
+        String::from_utf8_lossy(&written.stderr)
+    );
+    let record = fs::read_to_string(&metadata).expect("reproducibility metadata should exist");
+    for field in [
+        "format_version=1",
+        "flux_binary_sha256=",
+        "generated_c_sha256=",
+        "sdk_id_sha256=",
+        "toolchain_sha256=",
+        "runtime_sha256=",
+        "environment_sha256=",
+    ] {
+        assert!(record.contains(field), "metadata should contain {field}");
+    }
+
+    let verified = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&second)
+        .arg("--verify-reproducibility")
+        .arg(&metadata)
+        .env("FLUX_CACHE_DIR", root.join("cache-b"))
+        .output()
+        .expect("reproducibility verification build should run");
+    assert!(
+        verified.status.success(),
+        "matching reproducibility metadata should verify: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert_eq!(
+        fs::read(&first).expect("first artifact should be readable"),
+        fs::read(&second).expect("verified artifact should be readable")
+    );
+
+    let drifted = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(root.join("drifted"))
+        .arg("--verify-reproducibility")
+        .arg(&metadata)
+        .env("FLUX_CACHE_DIR", root.join("cache-c"))
+        .env("CPATH", root.join("different-include-path"))
+        .output()
+        .expect("drift verification should run");
+    assert!(!drifted.status.success());
+    let drift_stderr = String::from_utf8_lossy(&drifted.stderr);
+    assert!(drift_stderr.contains("reproducibility verification failed"));
+    assert!(drift_stderr.contains("environment_sha256"));
+
+    let missing_sdk_id = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(root.join("sysrooted"))
+        .arg("--sysroot")
+        .arg("/")
+        .arg("--write-reproducibility")
+        .arg(root.join("sysroot.repro"))
+        .env_remove("FLUX_SDK_ID")
+        .output()
+        .expect("explicit-sysroot reproducibility validation should run");
+    assert!(!missing_sdk_id.status.success());
+    assert!(String::from_utf8_lossy(&missing_sdk_id.stderr).contains("FLUX_SDK_ID"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn release_build_internalizes_and_eliminates_private_leaf_helpers() {
     if Command::new("nm").arg("--version").output().is_err() {
         return;
