@@ -22,6 +22,13 @@ pub struct RegistryRelease {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedRegistryPublish {
+    pub archive: PathBuf,
+    pub release: RegistryRelease,
+    pub metadata: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitRelease {
     pub package: String,
     pub url: String,
@@ -302,6 +309,230 @@ pub fn resolve_registry_release(
             .transpose();
     }
     Ok(Some(release))
+}
+
+pub fn prepare_registry_publish(
+    package_root: &Path,
+    owner: &str,
+    repository: &str,
+    output_directory: &Path,
+) -> io::Result<PreparedRegistryPublish> {
+    validate_package_name(owner).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "registry package owner must be a GitHub account or organization name",
+        )
+    })?;
+    let repository_prefix = format!("https://github.com/{owner}/");
+    if !repository.starts_with(&repository_prefix)
+        || repository[repository_prefix.len()..].is_empty()
+        || repository[repository_prefix.len()..].contains('/')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("package repository must be a canonical GitHub repository under '{owner}'"),
+        ));
+    }
+
+    let root = fs::canonicalize(package_root)?;
+    let manifest_path = root.join("flux.toml");
+    let manifest = crate::project::read_manifest(&manifest_path).map_err(diagnostics_to_io)?;
+    let version = manifest.version.clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "published packages require an explicit [package].version",
+        )
+    })?;
+    validate_version(&version)?;
+    if manifest.native.plugin
+        || !manifest.native.libraries.is_empty()
+        || !manifest.native.search_paths.is_empty()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bootstrap registry packages may not declare native plugins, libraries, or search paths",
+        ));
+    }
+    let mut dependencies = BTreeMap::new();
+    for (name, dependency) in &manifest.dependencies {
+        match dependency {
+            crate::project::PackageDependency::Registry { requirement } => {
+                dependencies.insert(name.clone(), requirement.clone());
+            }
+            crate::project::PackageDependency::Path { .. }
+            | crate::project::PackageDependency::Git { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "published package '{}' dependency '{name}' must use a registry SemVer requirement",
+                        manifest.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    fs::create_dir_all(output_directory)?;
+    let archive_name = format!("{}-{version}.fluxpkg", manifest.name);
+    let archive = output_directory.join(&archive_name);
+    let sha256 = create_fluxpkg(&root, &archive)?;
+    let release = RegistryRelease {
+        package: manifest.name,
+        owner: owner.to_string(),
+        repository: repository.to_string(),
+        version: version.clone(),
+        flux: format!("^{}", env!("CARGO_PKG_VERSION")),
+        asset: format!("{repository}/releases/download/v{version}/{archive_name}"),
+        sha256,
+        dependencies,
+        yanked: false,
+    };
+    let metadata = serialize_registry_release(&release)?;
+    Ok(PreparedRegistryPublish {
+        archive,
+        release,
+        metadata,
+    })
+}
+
+pub fn serialize_registry_release(release: &RegistryRelease) -> io::Result<String> {
+    validate_package_name(&release.package)?;
+    validate_version(&release.version)?;
+    validate_sha256(&release.sha256)?;
+    if release.owner.trim().is_empty()
+        || !release.repository.starts_with("https://github.com/")
+        || !release.asset.starts_with("https://github.com/")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "registry release requires a non-empty owner and canonical GitHub repository/asset URLs",
+        ));
+    }
+    for value in [
+        &release.package,
+        &release.owner,
+        &release.repository,
+        &release.version,
+        &release.flux,
+        &release.asset,
+        &release.sha256,
+    ] {
+        if value.contains(['"', '\\', '\n', '\r']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "registry metadata values may not contain quotes, backslashes, or newlines",
+            ));
+        }
+    }
+    let mut source = format!(
+        "format_version = {}\npackage = {:?}\nowner = {:?}\nrepository = {:?}\nversion = {:?}\nflux = {:?}\nasset = {:?}\nsha256 = {:?}\nyanked = {}\n",
+        REGISTRY_INDEX_FORMAT_VERSION,
+        release.package,
+        release.owner,
+        release.repository,
+        release.version,
+        release.flux,
+        release.asset,
+        release.sha256,
+        release.yanked
+    );
+    if !release.dependencies.is_empty() {
+        source.push_str("\n[dependencies]\n");
+        for (name, requirement) in &release.dependencies {
+            validate_package_name(name)?;
+            crate::project::resolve_semver_requirement(requirement, std::iter::empty::<&str>())
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid dependency SemVer requirement '{requirement}'"),
+                    )
+                })?;
+            source.push_str(&format!("{name} = {requirement:?}\n"));
+        }
+    }
+    Ok(source)
+}
+
+pub fn write_registry_release(
+    registry_root: &Path,
+    release: &RegistryRelease,
+) -> io::Result<PathBuf> {
+    let source = serialize_registry_release(release)?;
+    let package_directory = registry_root.join(&release.package);
+    fs::create_dir_all(&package_directory)?;
+    let owner_path = package_directory.join("owner.txt");
+    let expected_owner = match fs::read_to_string(&owner_path) {
+        Ok(owner) => owner.trim().to_string(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut inferred = None::<String>;
+            for entry in fs::read_dir(&package_directory)? {
+                let path = entry?.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+                    continue;
+                }
+                let existing = read_registry_release(&path)?;
+                match &inferred {
+                    Some(owner) if owner != &existing.owner => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "registry package '{}' has inconsistent historical owners",
+                                release.package
+                            ),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => inferred = Some(existing.owner),
+                }
+            }
+            let owner = inferred.unwrap_or_else(|| release.owner.clone());
+            fs::write(&owner_path, format!("{owner}\n"))?;
+            owner
+        }
+        Err(error) => return Err(error),
+    };
+    if expected_owner != release.owner {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "registry package '{}' is owned by '{}', not '{}'; ownership transfers require an explicit owner.txt registry change before publishing",
+                release.package, expected_owner, release.owner
+            ),
+        ));
+    }
+
+    let release_path = package_directory.join(format!("{}.toml", release.version));
+    if release_path.exists() {
+        let existing = fs::read_to_string(&release_path)?;
+        if existing == source {
+            return Ok(release_path);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "published package version {} {} is immutable and already has different registry metadata",
+                release.package, release.version
+            ),
+        ));
+    }
+    fs::write(&release_path, source)?;
+
+    let versions_path = package_directory.join("versions.txt");
+    let mut versions = match fs::read_to_string(&versions_path) {
+        Ok(source) => source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    versions.push(release.version.clone());
+    versions.sort();
+    versions.dedup();
+    fs::write(&versions_path, format!("{}\n", versions.join("\n")))?;
+    Ok(release_path)
 }
 
 pub fn create_fluxpkg(package_root: &Path, output: &Path) -> io::Result<String> {
@@ -1878,6 +2109,125 @@ mod tests {
         let second_hash = create_fluxpkg(&package, &second).unwrap();
         assert_eq!(first_hash, second_hash);
         assert_eq!(fs::read(first).unwrap(), fs::read(second).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_publish_preparation_is_canonical_and_registry_only() {
+        let root = temp_root("registry-publish-prepare");
+        let package = root.join("package");
+        let output = root.join("out");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nversion = \"1.2.3\"\nentry = \"src/main.flux\"\n\n[dependencies]\nutil = \"^2.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(package.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+
+        let prepared = prepare_registry_publish(
+            &package,
+            "flux-lang",
+            "https://github.com/flux-lang/demo",
+            &output,
+        )
+        .unwrap();
+        assert_eq!(prepared.release.package, "demo");
+        assert_eq!(prepared.release.version, "1.2.3");
+        assert_eq!(prepared.release.dependencies["util"], "^2.0.0");
+        assert_eq!(
+            prepared.release.asset,
+            "https://github.com/flux-lang/demo/releases/download/v1.2.3/demo-1.2.3.fluxpkg"
+        );
+        assert!(prepared.archive.is_file());
+        assert_eq!(
+            parse_registry_release(&prepared.metadata).unwrap(),
+            prepared.release
+        );
+
+        fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nversion = \"1.2.4\"\nentry = \"src/main.flux\"\n\n[dependencies]\nutil = { path = \"../util\" }\n",
+        )
+        .unwrap();
+        let error = prepare_registry_publish(
+            &package,
+            "flux-lang",
+            "https://github.com/flux-lang/demo",
+            &root.join("out-path"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must use a registry SemVer requirement")
+        );
+
+        fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nentry = \"src/main.flux\"\n",
+        )
+        .unwrap();
+        let error = prepare_registry_publish(
+            &package,
+            "flux-lang",
+            "https://github.com/flux-lang/demo",
+            &root.join("out-no-version"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit [package].version"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_publish_write_is_immutable_and_owner_transfer_is_explicit() {
+        let root = temp_root("registry-publish-write");
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let release = RegistryRelease {
+            package: "demo".to_string(),
+            owner: "flux-lang".to_string(),
+            repository: "https://github.com/flux-lang/demo".to_string(),
+            version: "1.0.0".to_string(),
+            flux: "^0.1.0".to_string(),
+            asset: "https://github.com/flux-lang/demo/releases/download/v1.0.0/demo-1.0.0.fluxpkg"
+                .to_string(),
+            sha256: hash.to_string(),
+            dependencies: BTreeMap::new(),
+            yanked: false,
+        };
+        let path = write_registry_release(&root, &release).unwrap();
+        assert_eq!(write_registry_release(&root, &release).unwrap(), path);
+        assert_eq!(
+            fs::read_to_string(root.join("demo/owner.txt")).unwrap(),
+            "flux-lang\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("demo/versions.txt")).unwrap(),
+            "1.0.0\n"
+        );
+
+        let mut conflicting = release.clone();
+        conflicting.sha256 =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let error = write_registry_release(&root, &conflicting).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+
+        let mut transferred = release.clone();
+        transferred.owner = "new-owner".to_string();
+        transferred.repository = "https://github.com/new-owner/demo".to_string();
+        transferred.version = "1.1.0".to_string();
+        transferred.asset =
+            "https://github.com/new-owner/demo/releases/download/v1.1.0/demo-1.1.0.fluxpkg"
+                .to_string();
+        let error = write_registry_release(&root, &transferred).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+
+        fs::write(root.join("demo/owner.txt"), "new-owner\n").unwrap();
+        write_registry_release(&root, &transferred).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("demo/versions.txt")).unwrap(),
+            "1.0.0\n1.1.0\n"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

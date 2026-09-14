@@ -276,6 +276,13 @@ struct AndroidPublishOptions {
     json: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RegistryPublishOptions {
+    target: PathBuf,
+    repository: Option<String>,
+    registry_repository: Option<String>,
+}
+
 impl From<String> for CliError {
     fn from(message: String) -> Self {
         Self::Message(message)
@@ -837,8 +844,11 @@ fn run() -> Result<(), CliError> {
             if args.get(1).is_some_and(|value| value == "android") {
                 return publish_android_command(&args[2..]);
             }
+            if args.get(1).is_some_and(|value| value == "package") {
+                return publish_registry_package_command(&args[2..]);
+            }
             Err(CliError::Message(
-                "publish syntax is 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]'"
+                "publish syntax is 'publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name]' or 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]'"
                     .to_string(),
             ))
         }
@@ -1514,6 +1524,497 @@ fn build_android_command(
         abi: options.abi,
         device: options.device,
     })
+}
+
+fn registry_publish_options(args: &[String]) -> Result<RegistryPublishOptions, String> {
+    let Some(target) = args.first() else {
+        return Err(
+            "package publish syntax is 'publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name]'"
+                .to_string(),
+        );
+    };
+    if target.starts_with("--") {
+        return Err("package publish requires a package directory or flux.toml target".to_string());
+    }
+    let mut repository = None;
+    let mut registry_repository = None;
+    let mut index = 1usize;
+    while index < args.len() {
+        let (slot, label) = match args[index].as_str() {
+            "--repo" => (&mut repository, "--repo"),
+            "--registry" => (&mut registry_repository, "--registry"),
+            option => return Err(format!("unknown package publish option '{option}'")),
+        };
+        if slot.is_some() || index + 1 >= args.len() {
+            return Err(format!(
+                "package publish {label} must be specified exactly once with owner/name"
+            ));
+        }
+        *slot = Some(args[index + 1].clone());
+        index += 2;
+    }
+    Ok(RegistryPublishOptions {
+        target: PathBuf::from(target),
+        repository,
+        registry_repository,
+    })
+}
+
+fn github_repository_parts(repository: &str) -> Result<(&str, &str), String> {
+    let mut parts = repository.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    if owner.is_empty()
+        || name.is_empty()
+        || name.ends_with(".git")
+        || parts.next().is_some()
+        || !owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "GitHub repository '{repository}' must use canonical owner/name syntax"
+        ));
+    }
+    Ok((owner, name))
+}
+
+fn github_cli() -> std::ffi::OsString {
+    env::var_os("FLUX_GITHUB_CLI").unwrap_or_else(|| "gh".into())
+}
+
+fn github_raw(args: &[String], cwd: Option<&Path>) -> io::Result<std::process::Output> {
+    let mut command = Command::new(github_cli());
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command.output()
+}
+
+fn command_output_text(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Result<String, CliError> {
+    let output = if program == "gh" {
+        github_raw(args, cwd)
+    } else {
+        let mut command = Command::new(program);
+        command.args(args);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command.output()
+    }
+    .map_err(|error| CliError::Message(format!("failed to run {program}: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(CliError::Message(if stderr.is_empty() {
+            format!("{program} command failed")
+        } else {
+            stderr
+        }));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| CliError::Message(format!("{program} output was not UTF-8")))
+}
+
+fn package_root_for_publish(target: &Path) -> Result<PathBuf, CliError> {
+    let manifest = if target.is_dir() {
+        target.join("flux.toml")
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        target.to_path_buf()
+    } else {
+        return Err(CliError::Message(
+            "package publishing requires a manifest-backed package directory or flux.toml"
+                .to_string(),
+        ));
+    };
+    let manifest = fs::canonicalize(&manifest).map_err(|error| {
+        CliError::Message(format!(
+            "failed to resolve package manifest '{}': {error}",
+            manifest.display()
+        ))
+    })?;
+    Ok(manifest
+        .parent()
+        .expect("canonical package manifest has a parent")
+        .to_path_buf())
+}
+
+fn ensure_github_release(
+    repository: &str,
+    prepared: &fluxc::package_ecosystem::PreparedRegistryPublish,
+    work: &Path,
+) -> Result<(), CliError> {
+    let tag = format!("v{}", prepared.release.version);
+    let title = format!("{} {}", prepared.release.package, prepared.release.version);
+    let notes = format!(
+        "Flux package {} {} (sha256:{})",
+        prepared.release.package, prepared.release.version, prepared.release.sha256
+    );
+    let create_args = vec![
+        "release".to_string(),
+        "create".to_string(),
+        tag.clone(),
+        prepared.archive.to_string_lossy().into_owned(),
+        "--repo".to_string(),
+        repository.to_string(),
+        "--title".to_string(),
+        title,
+        "--notes".to_string(),
+        notes,
+    ];
+    let output = github_raw(&create_args, Some(work))
+        .map_err(|error| CliError::Message(format!("failed to run gh: {error}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let existing = work.join("existing-release");
+    let _ = fs::remove_dir_all(&existing);
+    fs::create_dir_all(&existing).map_err(|error| {
+        CliError::Message(format!(
+            "failed to create release verification directory '{}': {error}",
+            existing.display()
+        ))
+    })?;
+    let archive_name = prepared
+        .archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("prepared archive has a UTF-8 file name");
+    let download_args = vec![
+        "release".to_string(),
+        "download".to_string(),
+        tag,
+        "--repo".to_string(),
+        repository.to_string(),
+        "--pattern".to_string(),
+        archive_name.to_string(),
+        "--dir".to_string(),
+        existing.to_string_lossy().into_owned(),
+    ];
+    let download = github_raw(&download_args, Some(work))
+        .map_err(|error| CliError::Message(format!("failed to run gh: {error}")))?;
+    if !download.status.success() {
+        let create_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let download_error = String::from_utf8_lossy(&download.stderr).trim().to_string();
+        return Err(CliError::Message(format!(
+            "failed to create GitHub Release: {create_error}; existing-release verification also failed: {download_error}"
+        )));
+    }
+    let existing_archive = existing.join(archive_name);
+    let digest = fluxc::package_ecosystem::sha256_file(&existing_archive)
+        .map_err(|error| CliError::Message(error.to_string()))?;
+    if digest != prepared.release.sha256 {
+        return Err(CliError::Message(format!(
+            "published package version {} {} is immutable: GitHub Release asset hash is {digest}, expected {}",
+            prepared.release.package, prepared.release.version, prepared.release.sha256
+        )));
+    }
+    Ok(())
+}
+
+fn submit_registry_publish(
+    registry_repository: &str,
+    publisher_login: &str,
+    prepared: &fluxc::package_ecosystem::PreparedRegistryPublish,
+    work: &Path,
+) -> Result<Option<String>, CliError> {
+    let (registry_owner, registry_name) = github_repository_parts(registry_repository)?;
+    let base = command_output_text(
+        "gh",
+        &[
+            "repo".to_string(),
+            "view".to_string(),
+            registry_repository.to_string(),
+            "--json".to_string(),
+            "defaultBranchRef".to_string(),
+            "--jq".to_string(),
+            ".defaultBranchRef.name".to_string(),
+        ],
+        None,
+    )?;
+    if base.is_empty() {
+        return Err(CliError::Message(
+            "registry repository has no default branch".to_string(),
+        ));
+    }
+
+    if publisher_login != registry_owner {
+        let fork = format!("{publisher_login}/{registry_name}");
+        let exists = github_raw(
+            &[
+                "repo".to_string(),
+                "view".to_string(),
+                fork.clone(),
+                "--json".to_string(),
+                "nameWithOwner".to_string(),
+            ],
+            None,
+        )
+        .map_err(|error| CliError::Message(format!("failed to run gh: {error}")))?;
+        if !exists.status.success() {
+            command_output_text(
+                "gh",
+                &[
+                    "repo".to_string(),
+                    "fork".to_string(),
+                    registry_repository.to_string(),
+                    "--clone=false".to_string(),
+                ],
+                None,
+            )?;
+        }
+    }
+
+    let checkout = work.join("registry");
+    command_output_text(
+        "gh",
+        &[
+            "repo".to_string(),
+            "clone".to_string(),
+            registry_repository.to_string(),
+            checkout.to_string_lossy().into_owned(),
+            "--".to_string(),
+            "--quiet".to_string(),
+        ],
+        None,
+    )?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let branch = format!(
+        "flux-publish-{}-{}-{nonce}",
+        prepared.release.package, prepared.release.version
+    );
+    command_output_text(
+        "git",
+        &["checkout".to_string(), "-b".to_string(), branch.clone()],
+        Some(&checkout),
+    )?;
+    fluxc::package_ecosystem::write_registry_release(&checkout, &prepared.release)
+        .map_err(|error| CliError::Message(error.to_string()))?;
+    let status = command_output_text(
+        "git",
+        &["status".to_string(), "--porcelain".to_string()],
+        Some(&checkout),
+    )?;
+    if status.is_empty() {
+        return Ok(None);
+    }
+    command_output_text(
+        "git",
+        &["add".to_string(), prepared.release.package.clone()],
+        Some(&checkout),
+    )?;
+    command_output_text(
+        "git",
+        &[
+            "-c".to_string(),
+            "user.name=Flux Registry Publisher".to_string(),
+            "-c".to_string(),
+            "user.email=flux-registry@users.noreply.github.com".to_string(),
+            "commit".to_string(),
+            "-m".to_string(),
+            format!(
+                "Publish {} {}",
+                prepared.release.package, prepared.release.version
+            ),
+        ],
+        Some(&checkout),
+    )?;
+
+    let head = if publisher_login == registry_owner {
+        command_output_text(
+            "git",
+            &["push".to_string(), "origin".to_string(), branch.clone()],
+            Some(&checkout),
+        )?;
+        branch.clone()
+    } else {
+        let fork_url = format!("https://github.com/{publisher_login}/{registry_name}.git");
+        command_output_text(
+            "git",
+            &[
+                "remote".to_string(),
+                "add".to_string(),
+                "publisher".to_string(),
+                fork_url,
+            ],
+            Some(&checkout),
+        )?;
+        command_output_text(
+            "git",
+            &["push".to_string(), "publisher".to_string(), branch.clone()],
+            Some(&checkout),
+        )?;
+        format!("{publisher_login}:{branch}")
+    };
+
+    let pr = command_output_text(
+        "gh",
+        &[
+            "pr".to_string(),
+            "create".to_string(),
+            "--repo".to_string(),
+            registry_repository.to_string(),
+            "--base".to_string(),
+            base,
+            "--head".to_string(),
+            head,
+            "--title".to_string(),
+            format!(
+                "Publish {} {}",
+                prepared.release.package, prepared.release.version
+            ),
+            "--body".to_string(),
+            format!(
+                "Publishes `{}` `{}` with SHA-256 `{}`. Generated by `flux publish package`.",
+                prepared.release.package, prepared.release.version, prepared.release.sha256
+            ),
+        ],
+        Some(&checkout),
+    )?;
+    Ok((!pr.is_empty()).then_some(pr))
+}
+
+fn publish_registry_package_command(args: &[String]) -> Result<(), CliError> {
+    let options = registry_publish_options(args)?;
+    let package_root = package_root_for_publish(&options.target)?;
+    let manifest_path = package_root.join("flux.toml");
+    let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let version = manifest.version.as_deref().ok_or_else(|| {
+        CliError::Message("published packages require an explicit [package].version".to_string())
+    })?;
+
+    fluxc::project::ensure_lockfile(&options.target, false).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let (diagnostics, _) = fluxc::project::check_with_sources(&options.target);
+    if !diagnostics.is_empty() {
+        return Err(CliError::Message(
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    run_tests(
+        &options.target,
+        TestOptions {
+            mode: BuildMode::Debug,
+            coverage: false,
+            deterministic_time: false,
+            ui: false,
+            accessibility: false,
+            locked: true,
+        },
+    )?;
+
+    command_output_text(
+        "gh",
+        &["auth".to_string(), "status".to_string()],
+        Some(&package_root),
+    )?;
+    let publisher_login = command_output_text(
+        "gh",
+        &[
+            "api".to_string(),
+            "user".to_string(),
+            "--jq".to_string(),
+            ".login".to_string(),
+        ],
+        Some(&package_root),
+    )?;
+    let repository = match options.repository {
+        Some(repository) => repository,
+        None => command_output_text(
+            "gh",
+            &[
+                "repo".to_string(),
+                "view".to_string(),
+                "--json".to_string(),
+                "nameWithOwner".to_string(),
+                "--jq".to_string(),
+                ".nameWithOwner".to_string(),
+            ],
+            Some(&package_root),
+        )?,
+    };
+    let (owner, _) = github_repository_parts(&repository)?;
+    let registry_repository = options
+        .registry_repository
+        .or_else(|| env::var("FLUX_REGISTRY_GITHUB_REPO").ok())
+        .ok_or_else(|| {
+            CliError::Message(
+                "package publishing requires '--registry owner/name' or FLUX_REGISTRY_GITHUB_REPO"
+                    .to_string(),
+            )
+        })?;
+    github_repository_parts(&registry_repository)?;
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let work = env::temp_dir().join(format!(
+        "flux-publish-{}-{version}-{}-{nonce}",
+        manifest.name,
+        std::process::id()
+    ));
+    fs::create_dir_all(&work).map_err(|error| {
+        CliError::Message(format!(
+            "failed to create package publish workspace '{}': {error}",
+            work.display()
+        ))
+    })?;
+    let result = (|| {
+        let repository_url = format!("https://github.com/{repository}");
+        let prepared = fluxc::package_ecosystem::prepare_registry_publish(
+            &package_root,
+            owner,
+            &repository_url,
+            &work,
+        )
+        .map_err(|error| CliError::Message(error.to_string()))?;
+        ensure_github_release(&repository, &prepared, &work)?;
+        let pr = submit_registry_publish(&registry_repository, &publisher_login, &prepared, &work)?;
+        println!(
+            "published package: {} {} sha256:{}",
+            prepared.release.package, prepared.release.version, prepared.release.sha256
+        );
+        println!(
+            "release: {}/releases/tag/v{}",
+            repository_url, prepared.release.version
+        );
+        if let Some(pr) = pr {
+            println!("registry PR: {pr}");
+        } else {
+            println!("registry: metadata already present");
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&work);
+    result
 }
 
 fn validate_android_publish_manifest(
@@ -8917,7 +9418,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -8972,15 +9473,214 @@ mod tests {
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, build_native_configured,
         build_native_instrumented, build_options, compile_web_html, debug_options,
-        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar, json_string,
-        native_build_cache_path_configured, native_cache_entry_is_valid,
-        native_package_config_for_target, output_with_timeout, package_artifact_name,
-        package_options, parse_adb_devices, profile_options, profile_report_addresses,
+        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
+        github_repository_parts, json_string, native_build_cache_path_configured,
+        native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
+        package_artifact_name, package_options, parse_adb_devices, profile_options,
+        profile_report_addresses, publish_registry_package_command, registry_publish_options,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
     };
+
+    static REGISTRY_PUBLISH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_publish_package_runs_release_and_registry_pr_flow_locally() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = REGISTRY_PUBLISH_ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "flux-registry-publish-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let package = root.join("package");
+        let registry_seed = root.join("registry-seed");
+        let registry_remote = root.join("registry.git");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::create_dir_all(package.join("tests")).unwrap();
+        std::fs::write(
+            package.join("flux.toml"),
+            "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n",
+        )
+        .unwrap();
+        std::fs::write(package.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        std::fs::write(
+            package.join("tests/publish.flux"),
+            "fn main() -> i64 { 0 }\n",
+        )
+        .unwrap();
+
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--bare"])
+                .arg(&registry_remote)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-b", "main"])
+                .arg(&registry_seed)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(registry_seed.join("README.md"), "# Flux registry\n").unwrap();
+        for args in [
+            vec!["add", "README.md"],
+            vec![
+                "-c",
+                "user.name=Flux Test",
+                "-c",
+                "user.email=flux-test@example.invalid",
+                "commit",
+                "-m",
+                "seed registry",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&registry_seed)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(
+            std::process::Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(&registry_remote)
+                .current_dir(&registry_seed)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["push", "origin", "main"])
+                .current_dir(&registry_seed)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let fake_gh = root.join("gh");
+        std::fs::write(
+            &fake_gh,
+            r#"#!/bin/sh
+if [ "$1 $2" = "auth status" ]; then exit 0; fi
+if [ "$1 $2" = "api user" ]; then printf 'publisher\n'; exit 0; fi
+if [ "$1 $2" = "release create" ]; then test -f "$4"; exit $?; fi
+if [ "$1 $2" = "repo view" ]; then printf 'main\n'; exit 0; fi
+if [ "$1 $2" = "repo clone" ]; then git clone --quiet --branch main "$FLUX_FAKE_REGISTRY_REMOTE" "$4"; exit $?; fi
+if [ "$1 $2" = "pr create" ]; then printf 'https://example.invalid/registry/pull/1\n'; exit 0; fi
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake_gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_gh, permissions).unwrap();
+
+        unsafe {
+            std::env::set_var("FLUX_GITHUB_CLI", &fake_gh);
+            std::env::set_var("FLUX_FAKE_REGISTRY_REMOTE", &registry_remote);
+        }
+        let result = publish_registry_package_command(&[
+            package.to_string_lossy().into_owned(),
+            "--repo".to_string(),
+            "publisher/demo".to_string(),
+            "--registry".to_string(),
+            "publisher/registry".to_string(),
+        ]);
+        unsafe {
+            std::env::remove_var("FLUX_GITHUB_CLI");
+            std::env::remove_var("FLUX_FAKE_REGISTRY_REMOTE");
+        }
+        result.unwrap();
+
+        let refs = std::process::Command::new("git")
+            .args(["--git-dir"])
+            .arg(&registry_remote)
+            .args([
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/flux-publish-*",
+            ])
+            .output()
+            .unwrap();
+        assert!(refs.status.success());
+        let branch = String::from_utf8(refs.stdout)
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("flux-publish-demo-1.0.0-"))
+            .unwrap()
+            .to_string();
+        let metadata = std::process::Command::new("git")
+            .args(["--git-dir"])
+            .arg(&registry_remote)
+            .args(["show", &format!("{branch}:demo/1.0.0.toml")])
+            .output()
+            .unwrap();
+        assert!(metadata.status.success());
+        let metadata = String::from_utf8(metadata.stdout).unwrap();
+        assert!(metadata.contains("package = \"demo\""));
+        assert!(metadata.contains("owner = \"publisher\""));
+        assert!(metadata.contains("yanked = false"));
+        let owner = std::process::Command::new("git")
+            .args(["--git-dir"])
+            .arg(&registry_remote)
+            .args(["show", &format!("{branch}:demo/owner.txt")])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(owner.stdout).unwrap(), "publisher\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_publish_options_and_github_repository_names_are_strict() {
+        assert_eq!(
+            registry_publish_options(&[
+                "demo".to_string(),
+                "--repo".to_string(),
+                "flux-lang/demo".to_string(),
+                "--registry".to_string(),
+                "flux-lang/registry".to_string(),
+            ])
+            .unwrap(),
+            super::RegistryPublishOptions {
+                target: std::path::PathBuf::from("demo"),
+                repository: Some("flux-lang/demo".to_string()),
+                registry_repository: Some("flux-lang/registry".to_string()),
+            }
+        );
+        assert_eq!(
+            github_repository_parts("flux-lang/demo").unwrap(),
+            ("flux-lang", "demo")
+        );
+        assert!(github_repository_parts("https://github.com/flux-lang/demo").is_err());
+        assert!(github_repository_parts("flux-lang/demo.git").is_err());
+        assert!(registry_publish_options(&["demo".to_string(), "--repo".to_string()]).is_err());
+        assert!(
+            registry_publish_options(&[
+                "demo".to_string(),
+                "--registry".to_string(),
+                "a/b".to_string(),
+                "--registry".to_string(),
+                "a/c".to_string(),
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn web_dev_options_are_local_by_default_and_validate_overrides() {
