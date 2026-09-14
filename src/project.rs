@@ -181,19 +181,6 @@ pub struct IncrementalTypecheckStats {
     pub full_runs: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectAnalysisOutcome {
-    Cached,
-    Incremental { rechecked_modules: usize },
-    Full,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectCodegenOutcome {
-    Cached,
-    Full,
-}
-
 #[derive(Debug, Clone)]
 struct CachedProjectAnalysis {
     analysis: ProjectAnalysis,
@@ -267,9 +254,6 @@ pub struct ProjectAnalysisCache {
     incremental_typecheck_runs: usize,
     incremental_typecheck_modules: usize,
     full_typecheck_runs: usize,
-    last_outcome: Option<ProjectAnalysisOutcome>,
-    generated_c: HashMap<(PathBuf, u8), String>,
-    last_codegen_outcome: Option<ProjectCodegenOutcome>,
 }
 
 impl ProjectAnalysisCache {
@@ -284,7 +268,6 @@ impl ProjectAnalysisCache {
             && !self.entry_is_invalidated(&key, entry)
         {
             self.hits += 1;
-            self.last_outcome = Some(ProjectAnalysisOutcome::Cached);
             return Ok(entry.analysis.clone());
         }
 
@@ -321,9 +304,6 @@ impl ProjectAnalysisCache {
         {
             self.incremental_typecheck_runs += 1;
             self.incremental_typecheck_modules += changed_sources.len();
-            self.last_outcome = Some(ProjectAnalysisOutcome::Incremental {
-                rechecked_modules: changed_sources.len(),
-            });
             typecheck::check_changed_sources_with_signatures(
                 &report.program,
                 &previous.analysis.signatures,
@@ -337,7 +317,6 @@ impl ProjectAnalysisCache {
             }
         } else {
             self.full_typecheck_runs += 1;
-            self.last_outcome = Some(ProjectAnalysisOutcome::Full);
             analyze_with_overlays_report(report)?
         };
         self.entries.insert(
@@ -363,7 +342,6 @@ impl ProjectAnalysisCache {
         self.entries.clear();
         self.module_parses.clear_entries();
         self.invalidated_paths.clear();
-        self.last_codegen_outcome = None;
     }
 
     pub const fn stats(&self) -> ProjectAnalysisCacheStats {
@@ -383,39 +361,6 @@ impl ProjectAnalysisCache {
             rechecked_modules: self.incremental_typecheck_modules,
             full_runs: self.full_typecheck_runs,
         }
-    }
-
-    pub const fn last_outcome(&self) -> Option<ProjectAnalysisOutcome> {
-        self.last_outcome
-    }
-
-    pub fn emit_c_for_target_cached(
-        &mut self,
-        target: &Path,
-        analysis: &ProjectAnalysis,
-        native_target: codegen::NativeTarget,
-    ) -> Result<String, Diagnostic> {
-        let key = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
-        let target_key = match native_target {
-            codegen::NativeTarget::Linux => 0,
-            codegen::NativeTarget::Android => 1,
-            codegen::NativeTarget::Windows => 2,
-        };
-        let cache_key = (key, target_key);
-        if self.last_outcome == Some(ProjectAnalysisOutcome::Cached)
-            && let Some(generated) = self.generated_c.get(&cache_key)
-        {
-            self.last_codegen_outcome = Some(ProjectCodegenOutcome::Cached);
-            return Ok(generated.clone());
-        }
-        let generated = analysis.emit_c_for_target(native_target)?;
-        self.generated_c.insert(cache_key, generated.clone());
-        self.last_codegen_outcome = Some(ProjectCodegenOutcome::Full);
-        Ok(generated)
-    }
-
-    pub const fn last_codegen_outcome(&self) -> Option<ProjectCodegenOutcome> {
-        self.last_codegen_outcome
     }
 
     fn entry_is_invalidated(&self, target: &Path, entry: &CachedProjectAnalysis) -> bool {
@@ -776,13 +721,14 @@ fn load_report_with_overlays_and_parse_cache(
                 )]
             })?
     } else if has_registry_dependencies {
-        let provider =
-            crate::package_ecosystem::configured_registry_provider(false).map_err(|error| {
+        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
+            |error| {
                 vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
                 )]
-            })?;
+            },
+        )?;
         let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
             &module_root,
             &provider,
@@ -918,13 +864,14 @@ pub fn analyze_package_test(
                 )]
             })?
     } else if has_registry_dependencies {
-        let provider =
-            crate::package_ecosystem::configured_registry_provider(false).map_err(|error| {
+        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
+            |error| {
                 vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
                 )]
-            })?;
+            },
+        )?;
         let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
             &package_root,
             &provider,

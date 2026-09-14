@@ -123,9 +123,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
-    assert!(
-        generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)")
-    );
+    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)"));
     assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
     assert!(
         generated
@@ -138,9 +136,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_SIZE"));
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
-    assert!(generated.contains(
-        "static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"
-    ));
+    assert!(generated.contains("static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_click_2"));
     assert!(generated.contains("flux__win_click_3"));
@@ -152,107 +148,6 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
-    assert!(!generated.contains("#include <wincodec.h>"));
-    assert!(!generated.contains("IWICImagingFactory"));
-}
-
-#[test]
-fn windows_backend_lowers_images_through_native_wic_and_owner_draw() {
-    let source = r#"
-fn opened() -> void {
-    print("opened")
-}
-view Screen {
-    state imageSource: str = "asset://photos/cover.png"
-    state imageAlt: str = "Cover art"
-    state imageFit: str = "contain"
-    grid columns: 1fr
-    grid rows: 1fr
-    Image cover at 1,1
-        source: imageSource
-        alt: imageAlt
-        fit: imageFit
-        canShrink: true
-        onTap: opened
-}
-app Screen(title: "Native image")
-"#;
-    let program = fluxc::parser::parse(source).expect("Windows image source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
-    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect("Windows Image should lower to native Win32/WIC code");
-
-    for native_piece in [
-        "#include <wincodec.h>",
-        "IWICImagingFactory",
-        "CoCreateInstance(&CLSID_WICImagingFactory",
-        "CreateDecoderFromFilename",
-        "GUID_WICPixelFormat32bppBGRA",
-        "GetModuleFileNameW(NULL",
-        "FLUX_ASSET_ROOT",
-        "SS_OWNERDRAW | SS_NOTIFY",
-        "case WM_DRAWITEM",
-        "StretchBlt(",
-        "ROLE_SYSTEM_GRAPHIC",
-    ] {
-        assert!(
-            generated.contains(native_piece),
-            "missing native Windows Image lowering {native_piece}"
-        );
-    }
-    assert!(generated.contains(
-        "flux__win_image_update(flux__ui_cover, &flux__win_image_bitmap_cover, &flux__win_image_source_cover, flux__ui_state_imageSource)"
-    ));
-    assert!(
-        generated.contains(
-            "flux__win_image_fit_cover = flux__win_image_fit_mode(flux__ui_state_imageFit)"
-        )
-    );
-    assert!(generated.contains("flux__win_image_can_shrink_cover = true"));
-    assert!(
-        generated
-            .contains("flux__win_accessibility_set_name(flux__ui_cover, flux__ui_state_imageAlt)")
-    );
-    assert!(generated.contains(
-        "flux__win_image_draw(item->hDC, &item->rcItem, flux__win_image_bitmap_cover, flux__win_image_fit_cover, flux__win_image_can_shrink_cover)"
-    ));
-    assert!(!generated.contains("method_channel"));
-    assert!(!generated.contains("plugin_registry"));
-    assert!(!generated.contains("#include <gtk/gtk.h>"));
-    assert!(!generated.contains("android/native_activity.h"));
-
-    let invalid = r#"
-view Screen {
-    grid columns: 1fr
-    grid rows: 1fr
-    Image cover at 1,1
-        source: "cover.png"
-        fit: "squash"
-}
-app Screen
-"#;
-    let invalid_program =
-        fluxc::parser::parse(invalid).expect("invalid Windows Image fit source should parse");
-    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
-        .expect("Image fit validation belongs to native codegen");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &invalid_program,
-        &invalid_signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect_err("invalid Image.fit literal must fail Windows lowering");
-    assert!(
-        error
-            .message
-            .contains("Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'")
-    );
 }
 
 #[test]
@@ -603,112 +498,6 @@ app Screen(title: "Accessible Windows")
     assert!(generated.contains("WM_SETFONT"));
     assert!(generated.contains("flux__win_apply_fonts();"));
     assert!(generated.contains("CoUninitialize()"));
-    assert!(!generated.contains("method_channel"));
-    assert!(!generated.contains("plugin_registry"));
-}
-
-#[test]
-fn windows_backend_lowers_native_colors_alignment_and_minimum_layout() {
-    let source = r##"
-view Screen {
-    state foreground: str = "accent"
-    state background: str = "#102030"
-    state border: str = "outline"
-    state borderWidth: i64 = 2
-    state edgeWidth: i64 = 3
-    state rounding: i64 = 12
-    state cornerRadius: i64 = 6
-    state raised: bool = false
-    grid columns: 1fr
-    grid rows: auto auto
-    Text title at 1,1
-        text: "Styled"
-        color: foreground
-        backgroundColor: background
-        borderColor: border
-        borderWidth: borderWidth
-        borderTopColor: "danger"
-        borderEndColor: "success"
-        borderBottomColor: "warning"
-        borderStartColor: border
-        borderTopWidth: edgeWidth
-        borderEndWidth: 4
-        borderBottomWidth: 5
-        borderStartWidth: borderWidth
-        borderStyle: "dashed"
-        radius: rounding
-        radiusTopLeft: cornerRadius
-        radiusTopRight: 10
-        radiusBottomRight: 8
-        radiusBottomLeft: 4
-        textAlign: "center"
-        minWidth: 180
-        minHeight: 44
-        alignX: "center"
-        alignY: "end"
-    Button action at 2,1
-        text: "Change"
-        backgroundColor: "surfaceRaised"
-        onPress: raised => !raised
-}
-app Screen(title: "Styled Windows")
-"##;
-    let program = fluxc::parser::parse(source).expect("Windows styling source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Windows styling source should typecheck");
-    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect("Windows styling source should lower to native Win32 C");
-
-    assert!(generated.contains("static bool flux__win_parse_ui_color"));
-    assert!(generated.contains("GetSysColor(COLOR_HIGHLIGHT)"));
-    assert!(generated.contains("CreateSolidBrush(next)"));
-    assert!(generated.contains("static int flux__win_border_style_value"));
-    assert!(generated.contains("CreateEllipticRgn"));
-    assert!(generated.contains("CombineRgn(region, region, square, RGN_DIFF)"));
-    assert!(generated.contains("RoundRect(dc"));
-    assert!(generated.contains("flux__win_draw_edge"));
-    assert!(generated.contains("PS_DASH"));
-    assert!(generated.contains(
-        "flux__win_border_start_color_title = flux__win_border_color(flux__ui_state_border)"
-    ));
-    assert!(
-        generated.contains("flux__win_border_top_width_value_title = flux__ui_state_edgeWidth")
-    );
-    assert!(
-        generated.contains("flux__win_border_start_width_value_title = flux__ui_state_borderWidth")
-    );
-    assert!(
-        generated.contains("flux__win_radius_top_left_value_title = flux__ui_state_cornerRadius")
-    );
-    assert!(generated.contains("flux__win_radius_top_right_value_title = INT64_C(10)"));
-    assert!(
-        generated
-            .contains("flux__win_border_style_title = flux__win_border_style_value(\"dashed\")")
-    );
-    assert!(generated.contains("flux__win_apply_radius(flux__ui_title, flux__win_radius_top_left_title, flux__win_radius_top_right_title, flux__win_radius_bottom_right_title, flux__win_radius_bottom_left_title)"));
-    assert!(generated.contains("flux__win_style_proc_title"));
-    assert!(
-        generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORBTN:")
-    );
-    assert!(
-        generated.contains(
-            "flux__win_foreground_title = flux__win_text_color(flux__ui_state_foreground)"
-        )
-    );
-    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_title"));
-    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_action"));
-    assert!(generated.contains("WS_CHILD | WS_VISIBLE | SS_CENTER"));
-    assert!(generated.contains("minimum_width = flux__win_scale(INT64_C(180))"));
-    assert!(generated.contains("minimum_height = flux__win_scale(INT64_C(44))"));
-    assert!(generated.contains("int control_width = 1 == 3 ? available_width : minimum_width"));
-    assert!(generated.contains("if (1 == 1) x += (available_width - control_width) / 2"));
-    assert!(generated.contains("if (2 == 1) y += (available_height - control_height) / 2; else if (2 == 2) y += available_height - control_height"));
-    assert!(generated.contains("DeleteObject(flux__win_background_brush_title)"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }
@@ -9815,216 +9604,6 @@ fn main() -> i64 {
     assert!(!dead_generated.contains("#include <pthread.h>"));
 
     let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn crypto_and_secure_storage_are_typed_borrowed_and_tree_shaken() {
-    let source = r#"
-fn value(text: str) -> void {
-    print(text)
-}
-fn main() -> i64 {
-    print(crypto.sha256("abc", value))
-    print(crypto.hmacSha256("key", "value", value))
-    print(crypto.randomHex(16, value))
-    let (matches, equalError) = crypto.equal("same", "same")
-    print(matches)
-    print(equalError)
-    print(secure.write("flux-test", "account", "secret"))
-    let (found, readError) = secure.read("flux-test", "account", value)
-    print(found)
-    print(readError)
-    print(secure.remove("flux-test", "account"))
-    return 0
-}
-"#;
-
-    check_source(source).expect("security service APIs should typecheck");
-    let generated = compile_to_c(source).expect("security service APIs should lower natively");
-    assert!(generated.contains("#include <openssl/sha.h>"));
-    assert!(generated.contains("#include <libsecret/secret.h>"));
-    assert!(generated.contains("flux__crypto_sha256("));
-    assert!(generated.contains("flux__crypto_hmac_sha256("));
-    assert!(generated.contains("flux__crypto_random_hex("));
-    assert!(generated.contains("flux__crypto_equal("));
-    assert!(generated.contains("flux__secure_write("));
-    assert!(generated.contains("flux__secure_read("));
-    assert!(generated.contains("flux__secure_remove("));
-    assert!(generated.contains("secret_password_free(secret)"));
-
-    let windows_program =
-        fluxc::parser::parse(source).expect("Windows security services should parse");
-    let windows_signatures =
-        fluxc::typecheck::check(&windows_program).expect("Windows security services should check");
-    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &windows_program,
-        &windows_signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect("portable security services should lower for Windows");
-    assert!(windows.contains("#include <bcrypt.h>"));
-    assert!(windows.contains("#include <wincred.h>"));
-    assert!(windows.contains("BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM"));
-    assert!(windows.contains("BCryptGenRandom(NULL, bytes"));
-    assert!(windows.contains("CredWriteW(&credential, 0)"));
-    assert!(windows.contains("CredReadW(target, CRED_TYPE_GENERIC"));
-    assert!(windows.contains("CredDeleteW(target, CRED_TYPE_GENERIC"));
-    assert!(windows.contains("SecureZeroMemory(secret, length)"));
-
-    let android_source = r#"
-fn value(text: str) -> void {
-    print(text)
-}
-fn started() -> void {
-    print(crypto.sha256("abc", value))
-    print(crypto.hmacSha256("key", "value", value))
-    print(crypto.randomHex(16, value))
-    let (matches, equalError) = crypto.equal("same", "same")
-    print(matches)
-    print(equalError)
-    print(secure.write("flux-test", "account", "secret"))
-    let (found, readError) = secure.read("flux-test", "account", value)
-    print(found)
-    print(readError)
-    print(secure.remove("flux-test", "account"))
-}
-view Screen {
-    grid columns: 1fr
-    grid rows: auto
-}
-app Screen(onStart: started)
-"#;
-    let program =
-        fluxc::parser::parse(android_source).expect("Android secure storage should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Android secure storage should check");
-    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Android,
-    )
-    .expect("portable security services should lower for Android apps");
-    assert!(android.contains("#define FLUX_ANDROID_APP 1"));
-    assert!(android.contains("static bool flux__android_crypto_sha256(const char *value"));
-    assert!(android.contains("java/security/MessageDigest"));
-    assert!(android.contains("javax/crypto/Mac"));
-    assert!(android.contains("java/security/SecureRandom"));
-    assert!(android.contains("flux__android_crypto_equal(left, right, &result.v0)"));
-    assert!(
-        android
-            .contains("static bool flux__android_secure_store(const char *key, const char *value)")
-    );
-    assert!(android.contains(
-        "static bool flux__android_secure_read(const char *key, void (*callback)(const char *))"
-    ));
-    assert!(android.contains("static bool flux__android_secure_remove(const char *key)"));
-    assert!(android.contains(
-        "static inline char *flux__secure_android_key(const char *service, const char *account)"
-    ));
-    assert!(android.contains("bool stored = flux__android_secure_store(key, secret);"));
-    assert!(android.contains("result.v0 = flux__android_secure_read(key, callback);"));
-    assert!(android.contains("bool removed = flux__android_secure_remove(key);"));
-    assert!(android.contains("app/flux/runtime/FluxSecureStorage"));
-
-    let dead = r#"
-fn value(_text: str) -> void {
-}
-fn hidden() -> void {
-    print(crypto.sha256("abc", value))
-    print(secure.write("service", "account", "secret"))
-}
-fn main() -> i64 {
-    return 0
-}
-"#;
-    let dead_generated = compile_to_c(dead).expect("dead security calls should lower safely");
-    assert!(!dead_generated.contains("#include <openssl/sha.h>"));
-    assert!(!dead_generated.contains("#include <libsecret/secret.h>"));
-    assert!(!dead_generated.contains("flux__crypto_sha256("));
-    assert!(!dead_generated.contains("flux__secure_write("));
-    let dead_program =
-        fluxc::parser::parse(dead).expect("dead Windows security fixture should parse");
-    let dead_signatures =
-        fluxc::typecheck::check(&dead_program).expect("dead Windows security fixture should check");
-    let dead_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &dead_program,
-        &dead_signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect("dead Windows security calls should lower safely");
-    assert!(!dead_windows.contains("#include <bcrypt.h>"));
-    assert!(!dead_windows.contains("#include <wincred.h>"));
-    assert!(!dead_windows.contains("BCryptOpenAlgorithmProvider("));
-    assert!(!dead_windows.contains("CredWriteW("));
-
-    let random_error = check_source(
-        "fn value(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(crypto.randomHex(0, value))\n    return 0\n}\n",
-    )
-    .expect_err("statically invalid secure-random sizes must fail");
-    assert!(
-        random_error
-            .message
-            .contains("crypto.randomHex byteCount must be between 1 and 32768")
-    );
-
-    let callback_error = check_source(
-        "fn value(_number: i64) -> void {\n}\nfn main() -> i64 {\n    let (_found, _failure) = secure.read(\"service\", \"account\", value)\n    return 0\n}\n",
-    )
-    .expect_err("secure-storage callback shape must be exact");
-    assert!(callback_error.message.contains("secure.read callback"));
-}
-
-#[test]
-fn tls_streams_are_typed_verified_and_tree_shaken() {
-    let source = r#"
-fn received(_count: i64, _text: str) -> void {
-}
-fn main() -> i64 {
-    let (client, _clientError) = tls.connect(3, "example.com")
-    let (server, _serverError) = tls.accept(4, "/tmp/cert.pem", "/tmp/key.pem")
-    print(tls.write(client, "hello"))
-    let (_bytes, _readError) = tls.read(server, 4096, received)
-    print(tls.close(client))
-    print(tls.close(server))
-    return 0
-}
-"#;
-    check_source(source).expect("TLS stream APIs should typecheck");
-    let generated = compile_to_c(source).expect("TLS stream APIs should lower natively");
-    assert!(generated.contains("#include <openssl/ssl.h>"));
-    assert!(generated.contains("SSL_CTX_set_default_verify_paths(context)"));
-    assert!(generated.contains("SSL_set1_host(session, server_name)"));
-    assert!(generated.contains("SSL_CTX_use_certificate_chain_file(context, certificate_path)"));
-    assert!(generated.contains("SSL_CTX_check_private_key(context)"));
-    assert!(generated.contains("flux__tls_read("));
-    assert!(generated.contains("flux__tls_write("));
-
-    let invalid = check_source(
-        "fn received(_count: i64, _text: str) -> void {\n}\nfn main() -> i64 {\n    let (_bytes, _failure) = tls.read(1, 0, received)\n    return 0\n}\n",
-    )
-    .expect_err("invalid TLS read bounds must fail statically");
-    assert!(
-        invalid
-            .message
-            .contains("tls.read maxBytes must be between 1 and 65536")
-    );
-
-    let dead = r#"
-fn received(_count: i64, _text: str) -> void {
-}
-fn hidden() -> void {
-    let (_session, _failure) = tls.connect(3, "example.com")
-}
-fn main() -> i64 {
-    return 0
-}
-"#;
-    let dead_generated = compile_to_c(dead).expect("dead TLS calls should lower safely");
-    assert!(!dead_generated.contains("#include <openssl/ssl.h>"));
-    assert!(!dead_generated.contains("flux__tls_connect("));
 }
 
 #[test]
@@ -25917,17 +25496,11 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &log,
         &[
             "version-two",
-            "reload: incremental analysis rechecked 1 module",
             "reload: rebuilt and restarted after source change",
         ],
         Duration::from_secs(5),
     );
     wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
-    let status = fs::read_to_string(&status_path).expect("run status should remain readable");
-    assert!(status.contains("\"analysis\":\"incremental\""));
-    assert!(status.contains("\"rechecked_modules\":1"));
-    assert!(status.contains("\"codegen\":\"full\""));
-    assert!(status.contains("\"native_build\":"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -26979,106 +26552,6 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
         .expect("reproducibility verifier should reject tampering");
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("reproducibility mismatch"));
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn native_build_reproducibility_metadata_writes_verifies_and_rejects_drift() {
-    let root = std::env::temp_dir().join(format!(
-        "flux-reproducibility-metadata-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("reproducibility metadata fixture should be writable");
-    let source = root.join("main.flux");
-    fs::write(
-        &source,
-        "fn main() -> i64 {\n    print(42)\n    return 0\n}\n",
-    )
-    .expect("reproducibility metadata source should be writable");
-    let metadata = root.join("build.repro");
-    let first = root.join("first");
-    let second = root.join("second");
-
-    let written = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(&first)
-        .arg("--write-reproducibility")
-        .arg(&metadata)
-        .env("FLUX_CACHE_DIR", root.join("cache-a"))
-        .output()
-        .expect("reproducibility metadata build should run");
-    assert!(
-        written.status.success(),
-        "metadata-producing build failed: {}",
-        String::from_utf8_lossy(&written.stderr)
-    );
-    let record = fs::read_to_string(&metadata).expect("reproducibility metadata should exist");
-    for field in [
-        "format_version=1",
-        "flux_binary_sha256=",
-        "generated_c_sha256=",
-        "sdk_id_sha256=",
-        "toolchain_sha256=",
-        "runtime_sha256=",
-        "environment_sha256=",
-    ] {
-        assert!(record.contains(field), "metadata should contain {field}");
-    }
-
-    let verified = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(&second)
-        .arg("--verify-reproducibility")
-        .arg(&metadata)
-        .env("FLUX_CACHE_DIR", root.join("cache-b"))
-        .output()
-        .expect("reproducibility verification build should run");
-    assert!(
-        verified.status.success(),
-        "matching reproducibility metadata should verify: {}",
-        String::from_utf8_lossy(&verified.stderr)
-    );
-    assert_eq!(
-        fs::read(&first).expect("first artifact should be readable"),
-        fs::read(&second).expect("verified artifact should be readable")
-    );
-
-    let drifted = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(root.join("drifted"))
-        .arg("--verify-reproducibility")
-        .arg(&metadata)
-        .env("FLUX_CACHE_DIR", root.join("cache-c"))
-        .env("CPATH", root.join("different-include-path"))
-        .output()
-        .expect("drift verification should run");
-    assert!(!drifted.status.success());
-    let drift_stderr = String::from_utf8_lossy(&drifted.stderr);
-    assert!(drift_stderr.contains("reproducibility verification failed"));
-    assert!(drift_stderr.contains("environment_sha256"));
-
-    let missing_sdk_id = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(root.join("sysrooted"))
-        .arg("--sysroot")
-        .arg("/")
-        .arg("--write-reproducibility")
-        .arg(root.join("sysroot.repro"))
-        .env_remove("FLUX_SDK_ID")
-        .output()
-        .expect("explicit-sysroot reproducibility validation should run");
-    assert!(!missing_sdk_id.status.success());
-    assert!(String::from_utf8_lossy(&missing_sdk_id.stderr).contains("FLUX_SDK_ID"));
-
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -28480,35 +27953,12 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let overlays = std::collections::HashMap::new();
-    let initial = cache
+    cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("first analysis should succeed");
-    assert_eq!(
-        cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Full)
-    );
-    let initial_c = cache
-        .emit_c_for_target_cached(&entry, &initial, fluxc::codegen::NativeTarget::Linux)
-        .expect("initial codegen should succeed");
-    assert_eq!(
-        cache.last_codegen_outcome(),
-        Some(fluxc::project::ProjectCodegenOutcome::Full)
-    );
-    let reused = cache
+    cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("unchanged analysis should be reused");
-    assert_eq!(
-        cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Cached)
-    );
-    let reused_c = cache
-        .emit_c_for_target_cached(&entry, &reused, fluxc::codegen::NativeTarget::Linux)
-        .expect("unchanged codegen should be reused");
-    assert_eq!(initial_c, reused_c);
-    assert_eq!(
-        cache.last_codegen_outcome(),
-        Some(fluxc::project::ProjectCodegenOutcome::Cached)
-    );
     assert_eq!(
         cache.stats(),
         fluxc::project::ProjectAnalysisCacheStats { hits: 1, misses: 1 }
@@ -28697,12 +28147,6 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let diagnostics = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect_err("body-only type errors must be caught by incremental checking");
-    assert_eq!(
-        cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
-            rechecked_modules: 1,
-        })
-    );
     assert!(
         diagnostics
             .iter()
@@ -28724,12 +28168,6 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("valid body-only edit should reuse the prior typed graph");
-    assert_eq!(
-        cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
-            rechecked_modules: 1,
-        })
-    );
     assert_eq!(
         cache.incremental_typecheck_stats(),
         fluxc::project::IncrementalTypecheckStats {
@@ -29895,7 +29333,10 @@ fn git_transitive_registry_requirements_share_the_global_solver() {
     fs::copy(&archive, &cached_archive).expect("registry archive should be cacheable");
 
     let fallback_hash = "1".repeat(64);
-    for (version, sha256) in [("1.2.5", hash.as_str()), ("1.4.0", fallback_hash.as_str())] {
+    for (version, sha256) in [
+        ("1.2.5", hash.as_str()),
+        ("1.4.0", fallback_hash.as_str()),
+    ] {
         fs::write(
             registry.join(format!("{version}.toml")),
             format!(

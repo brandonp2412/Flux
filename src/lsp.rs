@@ -1278,69 +1278,6 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
-    if namespace == "crypto" {
-        for (label, detail) in [
-            (
-                "sha256",
-                "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error",
-            ),
-            (
-                "hmacSha256",
-                "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error",
-            ),
-            (
-                "randomHex",
-                "fn crypto.randomHex(byteCount: i64, callback: fn(str) -> void) -> error",
-            ),
-            (
-                "equal",
-                "fn crypto.equal(left: str, right: str) -> (bool, error)",
-            ),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
-        return true;
-    }
-    if namespace == "tls" {
-        for (label, detail) in [
-            (
-                "connect",
-                "fn tls.connect(socket: i64, serverName: str) -> (i64, error)",
-            ),
-            (
-                "accept",
-                "fn tls.accept(socket: i64, certificatePath: str, privateKeyPath: str) -> (i64, error)",
-            ),
-            ("write", "fn tls.write(session: i64, text: str) -> error"),
-            (
-                "read",
-                "fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
-            ),
-            ("close", "fn tls.close(session: i64) -> error"),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
-        return true;
-    }
-    if namespace == "secure" {
-        for (label, detail) in [
-            (
-                "write",
-                "fn secure.write(service: str, account: str, secret: str) -> error",
-            ),
-            (
-                "read",
-                "fn secure.read(service: str, account: str, callback: fn(str) -> void) -> (bool, error)",
-            ),
-            (
-                "remove",
-                "fn secure.remove(service: str, account: str) -> error",
-            ),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
-        return true;
-    }
     if namespace == "sqlite" {
         for (label, detail) in [
             ("open", "fn sqlite.open(path: str) -> (i64, error)"),
@@ -4573,6 +4510,14 @@ fn signature_help_for_document_cached(
                 ));
             }
         }
+        let project_analysis = analyzed_project_document_cached(uri, documents, cache);
+        let standalone_database;
+        let database = if let Some((database, _)) = project_analysis.as_ref() {
+            database
+        } else {
+            standalone_database = analyzed_document(uri, source)?;
+            &standalone_database
+        };
         if let Some(definition) = database.signatures().enum_type(namespace)
             && let Some(variant) = definition.variant(member)
         {
@@ -4592,6 +4537,14 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
+    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
+    let standalone_database;
+    let database = if let Some((database, _)) = project_analysis.as_ref() {
+        database
+    } else {
+        standalone_database = analyzed_document(uri, source)?;
+        &standalone_database
+    };
     if database.signatures().interface(call_name).is_some() {
         return Some(signature_help_for_interface_pack(
             call_name,
@@ -7712,7 +7665,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    crypto.\n    tls.\n    secure.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    windows.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    windows.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -7772,79 +7725,6 @@ mod tests {
         assert!(process_items.contains("fn process.exit(code: i64) -> void"));
         assert!(process_items.contains("fn process.hasEnv(name: str) -> bool"));
         assert!(process_items.contains("fn process.env(name: str, fallback: str) -> str"));
-
-        let crypto_line = source
-            .lines()
-            .position(|line| line.trim() == "crypto.")
-            .expect("crypto completion line should exist");
-        let crypto_source = source.lines().nth(crypto_line).unwrap();
-        let crypto_items = JsonValue::Array(completion_items_at_cursor(
-            uri,
-            source,
-            &documents,
-            Some(crypto_line),
-            Some(crypto_source.len()),
-            PositionEncoding::Utf8,
-        ))
-        .to_json();
-        assert!(
-            crypto_items
-                .contains("fn crypto.sha256(value: str, callback: fn(str) -> void) -> error")
-        );
-        assert!(crypto_items.contains(
-            "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error"
-        ));
-        assert!(
-            crypto_items.contains(
-                "fn crypto.randomHex(byteCount: i64, callback: fn(str) -> void) -> error"
-            )
-        );
-        assert!(crypto_items.contains("fn crypto.equal(left: str, right: str) -> (bool, error)"));
-
-        let tls_line = source
-            .lines()
-            .position(|line| line.trim() == "tls.")
-            .expect("TLS completion line should exist");
-        let tls_source = source.lines().nth(tls_line).unwrap();
-        let tls_items = JsonValue::Array(completion_items_at_cursor(
-            uri,
-            source,
-            &documents,
-            Some(tls_line),
-            Some(tls_source.len()),
-            PositionEncoding::Utf8,
-        ))
-        .to_json();
-        assert!(tls_items.contains("fn tls.connect(socket: i64, serverName: str) -> (i64, error)"));
-        assert!(tls_items.contains(
-            "fn tls.accept(socket: i64, certificatePath: str, privateKeyPath: str) -> (i64, error)"
-        ));
-        assert!(tls_items.contains("fn tls.write(session: i64, text: str) -> error"));
-        assert!(tls_items.contains("fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"));
-        assert!(tls_items.contains("fn tls.close(session: i64) -> error"));
-
-        let secure_line = source
-            .lines()
-            .position(|line| line.trim() == "secure.")
-            .expect("secure completion line should exist");
-        let secure_source = source.lines().nth(secure_line).unwrap();
-        let secure_items = JsonValue::Array(completion_items_at_cursor(
-            uri,
-            source,
-            &documents,
-            Some(secure_line),
-            Some(secure_source.len()),
-            PositionEncoding::Utf8,
-        ))
-        .to_json();
-        assert!(
-            secure_items
-                .contains("fn secure.write(service: str, account: str, secret: str) -> error")
-        );
-        assert!(secure_items.contains(
-            "fn secure.read(service: str, account: str, callback: fn(str) -> void) -> (bool, error)"
-        ));
-        assert!(secure_items.contains("fn secure.remove(service: str, account: str) -> error"));
 
         let sqlite_line = source
             .lines()
@@ -8323,44 +8203,6 @@ mod tests {
         );
         assert!(windows_items.contains("fn windows.screenWidth() -> i64"));
         assert!(windows_items.contains("fn windows.screenHeight() -> i64"));
-    }
-
-    #[test]
-    fn security_namespace_completion_is_available_during_incomplete_edit() {
-        let uri = "file:///tmp/security-qualified-completion.flux";
-        let source = "fn main() -> i64 {\n    crypto.\n    tls.\n    secure.\n    return 0\n}\n";
-        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
-
-        for (namespace, expected) in [
-            (
-                "crypto.",
-                "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error",
-            ),
-            (
-                "tls.",
-                "fn tls.connect(socket: i64, serverName: str) -> (i64, error)",
-            ),
-            (
-                "secure.",
-                "fn secure.write(service: str, account: str, secret: str) -> error",
-            ),
-        ] {
-            let line = source
-                .lines()
-                .position(|candidate| candidate.trim() == namespace)
-                .expect("security namespace completion line should exist");
-            let line_source = source.lines().nth(line).unwrap();
-            let items = JsonValue::Array(completion_items_at_cursor(
-                uri,
-                source,
-                &documents,
-                Some(line),
-                Some(line_source.len()),
-                PositionEncoding::Utf8,
-            ))
-            .to_json();
-            assert!(items.contains(expected), "missing completion for {namespace}");
-        }
     }
 
     #[test]
@@ -10289,7 +10131,7 @@ mod tests {
                 cursor,
                 PositionEncoding::Utf8,
             )
-            .expect("filesystem call should have signature help")
+            .unwrap_or_else(|| panic!("filesystem call {needle} should have signature help"))
             .to_json();
             assert!(help.contains(expected));
         }
