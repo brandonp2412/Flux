@@ -1836,8 +1836,16 @@ fn emit_runtime_prelude(
     }
     if uses_windows {
         out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
-        if runtime_usage.contains("IAccPropServices") {
-            out.push_str("#include <initguid.h>\n#include <oleacc.h>\n");
+        let uses_windows_accessibility = runtime_usage.contains("IAccPropServices");
+        let uses_windows_images = runtime_usage.contains("IWICImagingFactory");
+        if uses_windows_accessibility || uses_windows_images {
+            out.push_str("#include <initguid.h>\n");
+        }
+        if uses_windows_accessibility {
+            out.push_str("#include <oleacc.h>\n");
+        }
+        if uses_windows_images {
+            out.push_str("#include <wincodec.h>\n");
         }
     }
     if uses_android {
@@ -10498,6 +10506,7 @@ fn emit_windows_native_application(
             "Text"
                 | "Button"
                 | "TextInput"
+                | "Image"
                 | "Toggle"
                 | "Radio"
                 | "Nav"
@@ -10508,12 +10517,14 @@ fn emit_windows_native_application(
         ) {
             return Err(diag(
                 element.kind_span,
-                "bootstrap Windows backend currently renders native text, button, text-input, toggle, radio, and semantic text controls",
+                "bootstrap Windows backend currently renders native text, button, text-input, image, toggle, radio, and semantic text controls",
             ));
         }
     }
+    let uses_images = view.elements.iter().any(|element| element.kind == "Image");
     let uses_accessibility = view.elements.iter().any(|element| {
-        view_property(element, "accessibility_label").is_some()
+        element.kind == "Image"
+            || view_property(element, "accessibility_label").is_some()
             || view_property(element, "accessibility_description").is_some()
             || view_property(element, "accessibility_value").is_some()
             || view_property(element, "accessibility_role").is_some()
@@ -10533,6 +10544,122 @@ fn emit_windows_native_application(
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical <= 0) return (int)logical; int64_t scaled = (logical * (int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); return scaled > INT32_MAX ? INT32_MAX : (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { return ((int64_t)physical * INT64_C(96) + (int64_t)flux__win_dpi / INT64_C(2)) / (int64_t)flux__win_dpi; }\n");
     if uses_accessibility {
         out.push_str("static IAccPropServices *flux__win_accessibility = NULL;\nstatic bool flux__win_com_should_uninitialize = false;\nstatic wchar_t *flux__win_accessibility_wide(const char *text) { if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\nstatic void flux__win_accessibility_init(void) { HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); if (SUCCEEDED(initialized)) flux__win_com_should_uninitialize = true; else if (initialized != RPC_E_CHANGED_MODE) return; (void)CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC_SERVER, &IID_IAccPropServices, (void **)&flux__win_accessibility); }\nstatic void flux__win_accessibility_set_name(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_NAME, wide); free(wide); }\nstatic void flux__win_accessibility_set_description(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DESCRIPTION, wide); free(wide); }\nstatic void flux__win_accessibility_set_role(HWND control, LONG role) { if (control == NULL || flux__win_accessibility == NULL) return; VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = role; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_ROLE, value); VariantClear(&value); }\nstatic void flux__win_accessibility_shutdown(void) { if (flux__win_accessibility != NULL) { flux__win_accessibility->lpVtbl->Release(flux__win_accessibility); flux__win_accessibility = NULL; } if (flux__win_com_should_uninitialize) { CoUninitialize(); flux__win_com_should_uninitialize = false; } }\n");
+    }
+    if uses_images {
+        out.push_str(
+            r#"static IWICImagingFactory *flux__win_image_factory = NULL;
+static bool flux__win_image_com_should_uninitialize = false;
+static wchar_t *flux__win_utf8_wide(const char *text) {
+    if (text == NULL) text = "";
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
+    if (length <= 0) return NULL;
+    wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t));
+    if (wide == NULL) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) { free(wide); return NULL; }
+    return wide;
+}
+static wchar_t *flux__win_join_path(const wchar_t *left, const wchar_t *right) {
+    if (left == NULL || right == NULL) return NULL;
+    size_t left_length = wcslen(left); size_t right_length = wcslen(right);
+    bool separator = left_length > 0 && left[left_length - 1] != L'\\' && left[left_length - 1] != L'/';
+    if (left_length > SIZE_MAX - right_length - (separator ? 2 : 1)) return NULL;
+    size_t length = left_length + right_length + (separator ? 1 : 0) + 1;
+    wchar_t *joined = (wchar_t *)malloc(length * sizeof(wchar_t));
+    if (joined == NULL) return NULL;
+    memcpy(joined, left, left_length * sizeof(wchar_t));
+    size_t offset = left_length;
+    if (separator) joined[offset++] = L'\\';
+    memcpy(joined + offset, right, (right_length + 1) * sizeof(wchar_t));
+    return joined;
+}
+static bool flux__win_image_asset_path_safe(const char *relative) {
+    if (relative == NULL || relative[0] == '\0' || relative[0] == '/' || relative[0] == '\\') return false;
+    if (strcmp(relative, "..") == 0 || strstr(relative, "../") != NULL || strstr(relative, "..\\") != NULL) return false;
+    size_t length = strlen(relative);
+    if (length >= 3 && ((relative[length - 3] == '/' || relative[length - 3] == '\\') && relative[length - 2] == '.' && relative[length - 1] == '.')) return false;
+    return true;
+}
+static wchar_t *flux__win_image_source_path(const char *source) {
+    if (source == NULL) source = "";
+    if (strncmp(source, "asset://", 8) != 0) return flux__win_utf8_wide(source);
+    const char *relative = source + 8;
+    if (!flux__win_image_asset_path_safe(relative)) return flux__win_utf8_wide("");
+    wchar_t *relative_wide = flux__win_utf8_wide(relative);
+    if (relative_wide == NULL) return NULL;
+    DWORD root_length = GetEnvironmentVariableW(L"FLUX_ASSET_ROOT", NULL, 0);
+    if (root_length > 0) {
+        wchar_t *root = (wchar_t *)malloc(((size_t)root_length + 1) * sizeof(wchar_t));
+        if (root != NULL && GetEnvironmentVariableW(L"FLUX_ASSET_ROOT", root, root_length + 1) > 0) {
+            wchar_t *resolved = flux__win_join_path(root, relative_wide); free(root); free(relative_wide); return resolved;
+        }
+        free(root);
+    }
+    wchar_t executable[32768]; DWORD executable_length = GetModuleFileNameW(NULL, executable, (DWORD)(sizeof(executable) / sizeof(executable[0])));
+    if (executable_length == 0 || executable_length >= (DWORD)(sizeof(executable) / sizeof(executable[0]))) {
+        wchar_t *assets = flux__win_join_path(L"assets", relative_wide); free(relative_wide); return assets;
+    }
+    wchar_t *slash = wcsrchr(executable, L'\\'); wchar_t *forward = wcsrchr(executable, L'/'); if (forward != NULL && (slash == NULL || forward > slash)) slash = forward;
+    if (slash != NULL) *slash = L'\0'; else executable[0] = L'\0';
+    wchar_t *assets = flux__win_join_path(executable, L"assets");
+    wchar_t *resolved = assets == NULL ? NULL : flux__win_join_path(assets, relative_wide);
+    free(assets); free(relative_wide); return resolved;
+}
+static void flux__win_image_init(void) {
+    HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (SUCCEEDED(initialized)) flux__win_image_com_should_uninitialize = true; else if (initialized != RPC_E_CHANGED_MODE) return;
+    (void)CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&flux__win_image_factory);
+}
+static void flux__win_image_shutdown(void) {
+    if (flux__win_image_factory != NULL) { flux__win_image_factory->lpVtbl->Release(flux__win_image_factory); flux__win_image_factory = NULL; }
+    if (flux__win_image_com_should_uninitialize) { CoUninitialize(); flux__win_image_com_should_uninitialize = false; }
+}
+static HBITMAP flux__win_image_load(const wchar_t *path) {
+    if (flux__win_image_factory == NULL || path == NULL || path[0] == L'\0') return NULL;
+    IWICBitmapDecoder *decoder = NULL; IWICBitmapFrameDecode *frame = NULL; IWICFormatConverter *converter = NULL; HBITMAP bitmap = NULL; void *pixels = NULL;
+    HRESULT status = flux__win_image_factory->lpVtbl->CreateDecoderFromFilename(flux__win_image_factory, path, NULL, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+    if (FAILED(status)) goto done;
+    status = decoder->lpVtbl->GetFrame(decoder, 0, &frame); if (FAILED(status)) goto done;
+    status = flux__win_image_factory->lpVtbl->CreateFormatConverter(flux__win_image_factory, &converter); if (FAILED(status)) goto done;
+    status = converter->lpVtbl->Initialize(converter, (IWICBitmapSource *)frame, &GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom); if (FAILED(status)) goto done;
+    UINT width = 0, height = 0; status = converter->lpVtbl->GetSize(converter, &width, &height); if (FAILED(status) || width == 0 || height == 0 || width > INT32_MAX || height > INT32_MAX) goto done;
+    uint64_t stride64 = (uint64_t)width * UINT64_C(4); uint64_t bytes64 = stride64 * (uint64_t)height; if (stride64 > UINT32_MAX || bytes64 > UINT32_MAX) goto done;
+    BITMAPINFO info = {0}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth = (LONG)width; info.bmiHeader.biHeight = -(LONG)height; info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+    bitmap = CreateDIBSection(NULL, &info, DIB_RGB_COLORS, &pixels, NULL, 0); if (bitmap == NULL || pixels == NULL) goto done;
+    status = converter->lpVtbl->CopyPixels(converter, NULL, (UINT)stride64, (UINT)bytes64, (BYTE *)pixels); if (FAILED(status)) { DeleteObject(bitmap); bitmap = NULL; }
+done:
+    if (converter != NULL) converter->lpVtbl->Release(converter); if (frame != NULL) frame->lpVtbl->Release(frame); if (decoder != NULL) decoder->lpVtbl->Release(decoder); return bitmap;
+}
+static void flux__win_image_update(HWND control, HBITMAP *bitmap, char **cached_source, const char *source) {
+    if (source == NULL) source = "";
+    if (*cached_source != NULL && strcmp(*cached_source, source) == 0) return;
+    wchar_t *path = flux__win_image_source_path(source); HBITMAP next = flux__win_image_load(path); free(path);
+    size_t length = strlen(source); char *copy = (char *)malloc(length + 1); if (copy != NULL) memcpy(copy, source, length + 1);
+    free(*cached_source); *cached_source = copy; if (*bitmap != NULL) DeleteObject(*bitmap); *bitmap = next; if (control != NULL) InvalidateRect(control, NULL, TRUE);
+}
+static int flux__win_image_fit_mode(const char *fit) {
+    if (fit == NULL || strcmp(fit, "contain") == 0) return 1; if (strcmp(fit, "fill") == 0) return 0; if (strcmp(fit, "cover") == 0) return 2; if (strcmp(fit, "scaleDown") == 0 || strcmp(fit, "scale_down") == 0) return 3;
+    fputs("Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\n", stderr); abort();
+}
+static void flux__win_image_draw(HDC dc, const RECT *rect, HBITMAP bitmap, int fit_mode, bool can_shrink) {
+    if (dc == NULL || rect == NULL) return; int control_width = rect->right - rect->left; int control_height = rect->bottom - rect->top; if (control_width <= 0 || control_height <= 0) return;
+    FillRect(dc, rect, GetSysColorBrush(COLOR_WINDOW)); if (bitmap == NULL) return;
+    BITMAP image = {0}; if (GetObjectW(bitmap, sizeof(image), &image) != sizeof(image) || image.bmWidth <= 0 || image.bmHeight <= 0) return;
+    int source_width = image.bmWidth, source_height = image.bmHeight; int draw_width = control_width, draw_height = control_height;
+    if (fit_mode == 1 || fit_mode == 3) {
+        if ((fit_mode == 3 || !can_shrink) && source_width <= control_width && source_height <= control_height) { draw_width = source_width; draw_height = source_height; }
+        else if (!can_shrink && (source_width > control_width || source_height > control_height)) { draw_width = source_width; draw_height = source_height; }
+        else if ((int64_t)control_width * source_height <= (int64_t)control_height * source_width) { draw_width = control_width; draw_height = (int)(((int64_t)source_height * control_width) / source_width); }
+        else { draw_height = control_height; draw_width = (int)(((int64_t)source_width * control_height) / source_height); }
+    } else if (fit_mode == 2) {
+        if ((int64_t)control_width * source_height >= (int64_t)control_height * source_width) { draw_width = control_width; draw_height = (int)(((int64_t)source_height * control_width) / source_width); }
+        else { draw_height = control_height; draw_width = (int)(((int64_t)source_width * control_height) / source_height); }
+    }
+    if (draw_width < 1) draw_width = 1; if (draw_height < 1) draw_height = 1; int draw_x = rect->left + (control_width - draw_width) / 2; int draw_y = rect->top + (control_height - draw_height) / 2;
+    HDC memory = CreateCompatibleDC(dc); if (memory == NULL) return; HGDIOBJ previous = SelectObject(memory, bitmap); int previous_mode = SetStretchBltMode(dc, HALFTONE); POINT previous_origin = {0}; SetBrushOrgEx(dc, 0, 0, &previous_origin);
+    (void)StretchBlt(dc, draw_x, draw_y, draw_width, draw_height, memory, 0, 0, source_width, source_height, SRCCOPY); SetBrushOrgEx(dc, previous_origin.x, previous_origin.y, NULL); SetStretchBltMode(dc, previous_mode); SelectObject(memory, previous); DeleteDC(memory);
+}
+"#,
+        );
     }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
@@ -10626,6 +10753,12 @@ fn emit_windows_native_application(
             out.push_str(&format!(
                 "static HFONT flux__win_font_{} = NULL;\n",
                 element.name
+            ));
+        }
+        if element.kind == "Image" {
+            out.push_str(&format!(
+                "static HBITMAP flux__win_image_bitmap_{} = NULL;\nstatic char *flux__win_image_source_{} = NULL;\nstatic int flux__win_image_fit_{} = 1;\nstatic bool flux__win_image_can_shrink_{} = false;\n",
+                element.name, element.name, element.name, element.name
             ));
         }
     }
@@ -10992,6 +11125,57 @@ fn emit_windows_native_application(
                 out.push_str(&format!("int64_t {max_length} = {value}; if ({max_length} < 0 || {max_length} > INT32_MAX) {{ fputs(\"Flux runtime error: TextInput.maxLength must be between 0 and 2147483647\\n\", stderr); abort(); }} if ({variable} != NULL) SendMessageA({variable}, EM_LIMITTEXT, (WPARAM){max_length}, 0);\n"));
             }
         }
+        if element.kind == "Image" {
+            let source = view_property(element, "source")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| c_string(""));
+            let bitmap = format!("flux__win_image_bitmap_{}", element.name);
+            let cached_source = format!("flux__win_image_source_{}", element.name);
+            let fit_name = format!("flux__win_image_fit_{}", element.name);
+            let can_shrink_name = format!("flux__win_image_can_shrink_{}", element.name);
+            out.push_str(&format!(
+                "flux__win_image_update({variable}, &{bitmap}, &{cached_source}, {source});\n"
+            ));
+            let fit = match view_property(element, "fit") {
+                Some(property) => {
+                    if let Some(value) = static_expr_str(&property.value, signatures) {
+                        let mode = match value.as_str() {
+                            "fill" => 0,
+                            "contain" => 1,
+                            "cover" => 2,
+                            "scaleDown" | "scale_down" => 3,
+                            _ => {
+                                return Err(diag(
+                                    property.value.span,
+                                    "Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'",
+                                ));
+                            }
+                        };
+                        mode.to_string()
+                    } else {
+                        let value = ui_expr_c(&property.value, view, signatures)?;
+                        format!("flux__win_image_fit_mode({value})")
+                    }
+                }
+                None => "1".to_string(),
+            };
+            let can_shrink = view_property(element, "can_shrink")
+                .map(|property| ui_expr_c(&property.value, view, signatures))
+                .transpose()?
+                .unwrap_or_else(|| "false".to_string());
+            out.push_str(&format!(
+                "{fit_name} = {fit}; {can_shrink_name} = {can_shrink}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE);\n"
+            ));
+            if view_property(element, "accessibility_label").is_none()
+                && let Some(property) = view_property(element, "alt")
+            {
+                let alt = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "flux__win_accessibility_set_name({variable}, {alt});\n"
+                ));
+            }
+        }
         let checked_property = match element.kind.as_str() {
             "Toggle" => Some("checked"),
             "Radio" => Some("selected"),
@@ -11049,13 +11233,34 @@ fn emit_windows_native_application(
     } else {
         ""
     };
-    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n"));
+    out.push_str("default: break; } break; ");
+    if uses_images {
+        out.push_str("case WM_DRAWITEM: { DRAWITEMSTRUCT *item = (DRAWITEMSTRUCT *)lparam; if (item == NULL) break; switch (item->CtlID) { ");
+        for (index, element) in view.elements.iter().enumerate() {
+            if element.kind == "Image" {
+                out.push_str(&format!(
+                    "case {}: flux__win_image_draw(item->hDC, &item->rcItem, flux__win_image_bitmap_{}, flux__win_image_fit_{}, flux__win_image_can_shrink_{}); return TRUE; ",
+                    1000 + index,
+                    element.name,
+                    element.name,
+                    element.name
+                ));
+            }
+        }
+        out.push_str("default: break; } break; } break; ");
+    }
+    out.push_str(&format!("case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n"));
     let accessibility_init = if uses_accessibility {
         " flux__win_accessibility_init();"
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
+    let image_init = if uses_images {
+        " flux__win_image_init();"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init}{image_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
@@ -11067,6 +11272,7 @@ fn emit_windows_native_application(
             (((height - padding * 2 + gap) / rows) * element.row_span as i64 - gap).max(28);
         let text_property = match element.kind.as_str() {
             "TextInput" => "text",
+            "Image" => "alt",
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content" => "label",
             "Card" => "title",
             _ => "text",
@@ -11101,6 +11307,13 @@ fn emit_windows_native_application(
                         "EDIT",
                         "WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_LEFT | ES_AUTOHSCROLL",
                     )
+                }
+            }
+            "Image" => {
+                if view_property(element, "on_tap").is_some() {
+                    ("STATIC", "WS_CHILD | WS_VISIBLE | SS_OWNERDRAW | SS_NOTIFY")
+                } else {
+                    ("STATIC", "WS_CHILD | WS_VISIBLE | SS_OWNERDRAW")
                 }
             }
             "Toggle" => (
@@ -11149,7 +11362,7 @@ fn emit_windows_native_application(
         }
         let id = if matches!(
             element.kind.as_str(),
-            "Button" | "TextInput" | "Toggle" | "Radio"
+            "Button" | "TextInput" | "Image" | "Toggle" | "Radio"
         ) || view_property(element, "on_tap").is_some()
         {
             (1000 + index).to_string()
@@ -11180,6 +11393,10 @@ fn emit_windows_native_application(
             };
             out.push_str(&format!(
                 "flux__win_accessibility_set_role({variable}, {native_role});\n"
+            ));
+        } else if element.kind == "Image" {
+            out.push_str(&format!(
+                "flux__win_accessibility_set_role({variable}, ROLE_SYSTEM_GRAPHIC);\n"
             ));
         }
         if element.kind == "TextInput" {
@@ -11250,6 +11467,19 @@ fn emit_windows_native_application(
     out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) {{{key_dispatch} if (IsDialogMessageA(flux__windows_active_window, &message)) continue; TranslateMessage(&message); DispatchMessageA(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_delete_fonts();");
+    }
+    if uses_images {
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| element.kind == "Image")
+        {
+            out.push_str(&format!(
+                " if (flux__win_image_bitmap_{} != NULL) DeleteObject(flux__win_image_bitmap_{}); free(flux__win_image_source_{});",
+                element.name, element.name, element.name
+            ));
+        }
+        out.push_str(" flux__win_image_shutdown();");
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");

@@ -139,6 +139,107 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("flux__win_click_4"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
+    assert!(!generated.contains("#include <wincodec.h>"));
+    assert!(!generated.contains("IWICImagingFactory"));
+}
+
+#[test]
+fn windows_backend_lowers_images_through_native_wic_and_owner_draw() {
+    let source = r#"
+fn opened() -> void {
+    print("opened")
+}
+view Screen {
+    state imageSource: str = "asset://photos/cover.png"
+    state imageAlt: str = "Cover art"
+    state imageFit: str = "contain"
+    grid columns: 1fr
+    grid rows: 1fr
+    Image cover at 1,1
+        source: imageSource
+        alt: imageAlt
+        fit: imageFit
+        canShrink: true
+        onTap: opened
+}
+app Screen(title: "Native image")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows image source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Image should lower to native Win32/WIC code");
+
+    for native_piece in [
+        "#include <wincodec.h>",
+        "IWICImagingFactory",
+        "CoCreateInstance(&CLSID_WICImagingFactory",
+        "CreateDecoderFromFilename",
+        "GUID_WICPixelFormat32bppBGRA",
+        "GetModuleFileNameW(NULL",
+        "FLUX_ASSET_ROOT",
+        "SS_OWNERDRAW | SS_NOTIFY",
+        "case WM_DRAWITEM",
+        "StretchBlt(",
+        "ROLE_SYSTEM_GRAPHIC",
+    ] {
+        assert!(
+            generated.contains(native_piece),
+            "missing native Windows Image lowering {native_piece}"
+        );
+    }
+    assert!(generated.contains(
+        "flux__win_image_update(flux__ui_cover, &flux__win_image_bitmap_cover, &flux__win_image_source_cover, flux__ui_state_imageSource)"
+    ));
+    assert!(
+        generated.contains(
+            "flux__win_image_fit_cover = flux__win_image_fit_mode(flux__ui_state_imageFit)"
+        )
+    );
+    assert!(generated.contains("flux__win_image_can_shrink_cover = true"));
+    assert!(
+        generated
+            .contains("flux__win_accessibility_set_name(flux__ui_cover, flux__ui_state_imageAlt)")
+    );
+    assert!(generated.contains(
+        "flux__win_image_draw(item->hDC, &item->rcItem, flux__win_image_bitmap_cover, flux__win_image_fit_cover, flux__win_image_can_shrink_cover)"
+    ));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+    assert!(!generated.contains("#include <gtk/gtk.h>"));
+    assert!(!generated.contains("android/native_activity.h"));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: 1fr
+    Image cover at 1,1
+        source: "cover.png"
+        fit: "squash"
+}
+app Screen
+"#;
+    let invalid_program =
+        fluxc::parser::parse(invalid).expect("invalid Windows Image fit source should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+        .expect("Image fit validation belongs to native codegen");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid Image.fit literal must fail Windows lowering");
+    assert!(
+        error
+            .message
+            .contains("Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'")
+    );
 }
 
 #[test]
