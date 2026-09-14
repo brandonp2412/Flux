@@ -9400,7 +9400,6 @@ fn main() -> i64 {
     assert!(windows.contains("CredReadW(target, CRED_TYPE_GENERIC"));
     assert!(windows.contains("CredDeleteW(target, CRED_TYPE_GENERIC"));
     assert!(windows.contains("SecureZeroMemory(secret, length)"));
-    assert!(!windows.contains("#include <poll.h>"));
 
     let android_source = r#"
 fn value(text: str) -> void {

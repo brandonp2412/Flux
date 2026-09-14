@@ -1718,10 +1718,10 @@ fn emit_runtime_prelude(
         out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <limits.h>\n#include <openssl/ssl.h>\n#include <openssl/x509_vfy.h>\n#endif\n");
     }
     if runtime_usage.contains("flux__crypto_") {
-        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <openssl/crypto.h>\n#include <openssl/evp.h>\n#include <openssl/hmac.h>\n#include <openssl/rand.h>\n#include <openssl/sha.h>\n#endif\n");
+        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <openssl/crypto.h>\n#include <openssl/evp.h>\n#include <openssl/hmac.h>\n#include <openssl/rand.h>\n#include <openssl/sha.h>\n#elif defined(_WIN32)\n#include <limits.h>\n#include <bcrypt.h>\n#endif\n");
     }
     if runtime_usage.contains("flux__secure_") {
-        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <libsecret/secret.h>\n#endif\n");
+        out.push_str("#if defined(__linux__) && !defined(__ANDROID__)\n#include <libsecret/secret.h>\n#elif defined(_WIN32)\n#include <wincred.h>\n#endif\n");
     }
     if uses_workers
         || runtime_usage.contains("flux__channel_")
@@ -1810,7 +1810,9 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <fcntl.h>\n");
     }
-    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__crypto_") {
+    if runtime_usage.contains("flux__net_")
+        || (runtime_usage.contains("flux__crypto_") && !uses_windows)
+    {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
@@ -4713,6 +4715,82 @@ static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left
     result.v0 = left_length == 0 || CRYPTO_memcmp(left, right, left_length) == 0;
     return result;
 }
+#elif defined(_WIN32)
+static inline const char *flux__crypto_windows_emit_hex(const unsigned char *bytes, size_t length, void (*callback)(const char *)) {
+    static const char alphabet[] = "0123456789abcdef";
+    if (callback == NULL) return "crypto callback is invalid";
+    if (length > (SIZE_MAX - 1) / 2) return "crypto result is too large";
+    size_t output_length = length * 2;
+    char *output = malloc(output_length + 1);
+    if (output == NULL) return "crypto could not allocate result";
+    for (size_t index = 0; index < length; index += 1) {
+        output[index * 2] = alphabet[bytes[index] >> 4];
+        output[index * 2 + 1] = alphabet[bytes[index] & 15];
+    }
+    output[output_length] = '\0';
+    callback(output);
+    SecureZeroMemory(output, output_length);
+    free(output);
+    return NULL;
+}
+static inline const char *flux__crypto_windows_hash(const char *key, const char *value, bool hmac, void (*callback)(const char *)) {
+    if (callback == NULL) return "crypto callback is invalid";
+    size_t value_length = strlen(value);
+    size_t key_length = key == NULL ? 0 : strlen(key);
+    if (value_length > ULONG_MAX || key_length > ULONG_MAX) return "crypto input is too large";
+    BCRYPT_ALG_HANDLE provider = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    PUCHAR object = NULL;
+    DWORD object_length = 0;
+    DWORD result_length = 0;
+    unsigned char digest[32];
+    const char *error = NULL;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, NULL, hmac ? BCRYPT_ALG_HANDLE_HMAC_FLAG : 0);
+    if (status < 0) { error = hmac ? "crypto.hmacSha256 failed" : "crypto.sha256 failed"; goto cleanup; }
+    status = BCryptGetProperty(provider, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_length, sizeof(object_length), &result_length, 0);
+    if (status < 0 || result_length != sizeof(object_length) || object_length == 0) { error = hmac ? "crypto.hmacSha256 failed" : "crypto.sha256 failed"; goto cleanup; }
+    object = malloc(object_length);
+    if (object == NULL) { error = "crypto could not allocate hash state"; goto cleanup; }
+    status = BCryptCreateHash(provider, &hash, object, object_length, hmac ? (PUCHAR)(void *)key : NULL, hmac ? (ULONG)key_length : 0, 0);
+    if (status < 0) { error = hmac ? "crypto.hmacSha256 failed" : "crypto.sha256 failed"; goto cleanup; }
+    status = BCryptHashData(hash, (PUCHAR)(void *)value, (ULONG)value_length, 0);
+    if (status < 0) { error = hmac ? "crypto.hmacSha256 failed" : "crypto.sha256 failed"; goto cleanup; }
+    status = BCryptFinishHash(hash, digest, sizeof(digest), 0);
+    if (status < 0) { error = hmac ? "crypto.hmacSha256 failed" : "crypto.sha256 failed"; goto cleanup; }
+    error = flux__crypto_windows_emit_hex(digest, sizeof(digest), callback);
+cleanup:
+    SecureZeroMemory(digest, sizeof(digest));
+    if (hash != NULL) BCryptDestroyHash(hash);
+    if (object != NULL) { SecureZeroMemory(object, object_length); free(object); }
+    if (provider != NULL) BCryptCloseAlgorithmProvider(provider, 0);
+    return error;
+}
+static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
+    return flux__crypto_windows_hash(NULL, value, false, callback);
+}
+static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
+    return flux__crypto_windows_hash(key, value, true, callback);
+}
+static inline const char *flux__crypto_random_hex(int64_t byte_count, void (*callback)(const char *)) {
+    if (byte_count < 1 || byte_count > 32768) return "crypto.randomHex byteCount must be between 1 and 32768";
+    unsigned char *bytes = malloc((size_t)byte_count);
+    if (bytes == NULL) return "crypto.randomHex could not allocate entropy buffer";
+    NTSTATUS status = BCryptGenRandom(NULL, bytes, (ULONG)byte_count, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    const char *error = status < 0 ? "crypto.randomHex failed to obtain secure randomness" : flux__crypto_windows_emit_hex(bytes, (size_t)byte_count, callback);
+    SecureZeroMemory(bytes, (size_t)byte_count);
+    free(bytes);
+    return error;
+}
+static inline struct flux__crypto_bool_error flux__crypto_equal(const char *left, const char *right) {
+    size_t left_length = strlen(left);
+    size_t right_length = strlen(right);
+    struct flux__crypto_bool_error result = { .v0 = false, .v1 = NULL };
+    if (left_length != right_length) return result;
+    unsigned char difference = 0;
+    for (size_t index = 0; index < left_length; index += 1) difference |= (unsigned char)left[index] ^ (unsigned char)right[index];
+    result.v0 = difference == 0;
+    return result;
+}
 #elif defined(__ANDROID__) && defined(FLUX_ANDROID_APP)
 static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
     return flux__android_crypto_sha256(value, callback) ? NULL : "crypto.sha256 failed";
@@ -4774,6 +4852,76 @@ static inline const char *flux__secure_remove(const char *service, const char *a
     if (cleared && error == NULL) return NULL;
     if (error != NULL) g_error_free(error);
     return "secure.remove failed";
+}
+#elif defined(_WIN32)
+static inline wchar_t *flux__secure_windows_target(const char *service, const char *account) {
+    if (service == NULL || account == NULL) return NULL;
+    size_t service_length = strlen(service);
+    size_t account_length = strlen(account);
+    char prefix[32];
+    int prefix_length = snprintf(prefix, sizeof(prefix), "%zu:", service_length);
+    if (prefix_length < 0 || (size_t)prefix_length >= sizeof(prefix)) return NULL;
+    if (service_length > SIZE_MAX - account_length || service_length + account_length > SIZE_MAX - (size_t)prefix_length - 1) return NULL;
+    size_t total = (size_t)prefix_length + service_length + account_length;
+    char *target = malloc(total + 1);
+    if (target == NULL) return NULL;
+    memcpy(target, prefix, (size_t)prefix_length);
+    memcpy(target + prefix_length, service, service_length);
+    memcpy(target + prefix_length + service_length, account, account_length);
+    target[total] = '\0';
+    wchar_t *wide = flux__windows_utf8_to_wide(target);
+    SecureZeroMemory(target, total);
+    free(target);
+    return wide;
+}
+static inline const char *flux__secure_write(const char *service, const char *account, const char *secret) {
+    wchar_t *target = flux__secure_windows_target(service, account);
+    if (target == NULL) return "secure.write could not build storage key";
+    size_t secret_length = strlen(secret);
+    if (secret_length > CRED_MAX_CREDENTIAL_BLOB_SIZE) { free(target); return "secure.write secret is too large"; }
+    CREDENTIALW credential = {0};
+    credential.Type = CRED_TYPE_GENERIC;
+    credential.TargetName = target;
+    credential.CredentialBlobSize = (DWORD)secret_length;
+    credential.CredentialBlob = (LPBYTE)(void *)secret;
+    credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    credential.UserName = L"Flux";
+    BOOL stored = CredWriteW(&credential, 0);
+    free(target);
+    return stored ? NULL : "secure.write failed";
+}
+static inline struct flux__secure_bool_error flux__secure_read(const char *service, const char *account, void (*callback)(const char *)) {
+    struct flux__secure_bool_error result = { .v0 = false, .v1 = NULL };
+    if (callback == NULL) { result.v1 = "secure.read callback is invalid"; return result; }
+    wchar_t *target = flux__secure_windows_target(service, account);
+    if (target == NULL) { result.v1 = "secure.read could not build storage key"; return result; }
+    PCREDENTIALW credential = NULL;
+    BOOL read = CredReadW(target, CRED_TYPE_GENERIC, 0, &credential);
+    DWORD failure = read ? ERROR_SUCCESS : GetLastError();
+    free(target);
+    if (!read) {
+        if (failure != ERROR_NOT_FOUND) result.v1 = "secure.read failed";
+        return result;
+    }
+    size_t length = (size_t)credential->CredentialBlobSize;
+    char *secret = malloc(length + 1);
+    if (secret == NULL) { CredFree(credential); result.v1 = "secure.read could not allocate secret"; return result; }
+    memcpy(secret, credential->CredentialBlob, length);
+    secret[length] = '\0';
+    callback(secret);
+    SecureZeroMemory(secret, length);
+    free(secret);
+    CredFree(credential);
+    result.v0 = true;
+    return result;
+}
+static inline const char *flux__secure_remove(const char *service, const char *account) {
+    wchar_t *target = flux__secure_windows_target(service, account);
+    if (target == NULL) return "secure.remove could not build storage key";
+    BOOL removed = CredDeleteW(target, CRED_TYPE_GENERIC, 0);
+    DWORD failure = removed ? ERROR_SUCCESS : GetLastError();
+    free(target);
+    return removed || failure == ERROR_NOT_FOUND ? NULL : "secure.remove failed";
 }
 #elif defined(__ANDROID__) && defined(FLUX_ANDROID_APP)
 static inline char *flux__secure_android_key(const char *service, const char *account) {

@@ -7922,6 +7922,44 @@ mod tests {
     }
 
     #[test]
+    fn security_namespace_completion_is_available_during_incomplete_edit() {
+        let uri = "file:///tmp/security-qualified-completion.flux";
+        let source = "fn main() -> i64 {\n    crypto.\n    tls.\n    secure.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+
+        for (namespace, expected) in [
+            (
+                "crypto.",
+                "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "tls.",
+                "fn tls.connect(socket: i64, serverName: str) -> (i64, error)",
+            ),
+            (
+                "secure.",
+                "fn secure.write(service: str, account: str, secret: str) -> error",
+            ),
+        ] {
+            let line = source
+                .lines()
+                .position(|candidate| candidate.trim() == namespace)
+                .expect("security namespace completion line should exist");
+            let line_source = source.lines().nth(line).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line),
+                Some(line_source.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(items.contains(expected), "missing completion for {namespace}");
+        }
+    }
+
+    #[test]
     fn struct_field_completion_uses_visible_typed_values_during_incomplete_edit() {
         let uri = "file:///tmp/struct-field-completion.flux";
         let source = "struct User {\n    name: str\n    age: i64\n}\ntype Person = User\nfn describe(user: User) -> i64 {\n    let person: Person = user\n    user.\n    person.\n    return 0\n}\n";
