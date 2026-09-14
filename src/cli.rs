@@ -10677,6 +10677,7 @@ mod tests {
         msix_manifest_xml, msix_version,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
+        target_reproducibility_inputs, verify_native_reproducibility_metadata,
     };
 
     static REGISTRY_PUBLISH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
