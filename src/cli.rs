@@ -793,6 +793,25 @@ fn run() -> Result<(), CliError> {
             }
             Ok(())
         }
+        "emit-llvm" => {
+            let path = require_target(&args)?;
+            let sources = validate_project(path)?;
+            let generated = match fluxc::project::compile_to_c(path) {
+                Ok(generated) => generated,
+                Err(diagnostic) => {
+                    report_diagnostics(path, &[diagnostic], &sources);
+                    return Err(CliError::Reported);
+                }
+            };
+            let llvm = emit_llvm_from_c(&generated)?;
+            if let Some(output) = output_path(&args[2..])? {
+                fs::write(&output, llvm)
+                    .map_err(|error| format!("failed to write '{}': {error}", output.display()))?;
+            } else {
+                print!("{llvm}");
+            }
+            Ok(())
+        }
         "emit-c-header" => {
             let path = require_target(&args)?;
             let sources = validate_project(path)?;
@@ -5465,6 +5484,35 @@ fn command_first_line(command: &str, args: &[&str]) -> Result<String, String> {
         .to_string())
 }
 
+fn emit_llvm_from_c(c_source: &str) -> Result<String, String> {
+    let mut command = Command::new("clang");
+    command
+        .args(["-S", "-emit-llvm", "-std=c17", "-fwrapv", "-x", "c", "-o", "-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to launch Clang LLVM backend: {error}"))?;
+    child
+        .stdin
+        .take()
+        .expect("LLVM backend stdin was configured as piped")
+        .write_all(c_source.as_bytes())
+        .map_err(|error| format!("failed to send generated C to Clang LLVM backend: {error}"))?;
+    let result = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for Clang LLVM backend: {error}"))?;
+    if !result.status.success() {
+        return Err(format!(
+            "LLVM backend failed:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+    String::from_utf8(result.stdout)
+        .map_err(|error| format!("Clang LLVM backend produced non-UTF-8 IR: {error}"))
+}
+
 fn require_target(args: &[String]) -> Result<&Path, String> {
     if args.len() < 2 {
         return Err(usage());
@@ -10037,7 +10085,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -10094,7 +10142,7 @@ mod tests {
         build_native_configured,
         build_native_instrumented, build_options, compile_web_html, debug_options,
         demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
-        github_repository_parts, json_string, native_build_cache_path_configured,
+        emit_llvm_from_c, github_repository_parts, json_string, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
         linux_desktop_entry,
@@ -10106,6 +10154,15 @@ mod tests {
     };
 
     static REGISTRY_PUBLISH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn llvm_emission_uses_clang_ir_backend() {
+        let ir = emit_llvm_from_c("int main(void) { return 7; }\n")
+            .expect("Clang should emit LLVM IR from generated C");
+        assert!(ir.contains("target triple"));
+        assert!(ir.contains("define"));
+        assert!(ir.contains("@main"));
+    }
 
     #[cfg(unix)]
     #[test]

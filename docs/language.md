@@ -889,7 +889,7 @@ Portable Flux code should lower to real target-native implementations. Cross-pla
 
 ## Native compilation architecture
 
-This bootstrap C path is an implementation stage, not a relaxation of the performance contract. Native object generation already uses the LLVM-class Clang toolchain: checked/generated C is streamed to Clang, which performs the target lowering and object/link generation. The remaining backend milestone is semantic parity for direct typed-Flux-IR lowering, after which the bootstrap C semantic path can be removed.
+This bootstrap C path is an implementation stage, not a relaxation of the performance contract. Native object generation already uses the LLVM-class Clang toolchain: checked/generated C is streamed to Clang, which performs the target lowering and object/link generation. `flux emit-llvm` exposes the resulting textual IR for inspection and downstream LLVM tooling. The remaining backend milestone is semantic parity for direct typed-Flux-IR lowering, after which the bootstrap C semantic path can be removed.
 
 Bootstrap pipeline:
 
