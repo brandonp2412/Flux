@@ -15581,6 +15581,7 @@ fn show(value: str) -> void {
 }
 
 fn main() -> i64 {
+    print(str.length("Flux 💙"))
     let failure: error = str.slice("Flux 💙", 5, 9, show)
     print(failure)
     return 0
@@ -15589,6 +15590,8 @@ fn main() -> i64 {
 
     check_source(source).expect("string slices should typecheck");
     let generated = compile_to_c(source).expect("string slices should lower natively");
+    assert!(generated.contains("flux__str_length("));
+    assert!(generated.contains("invalid UTF-8 string"));
     assert!(generated.contains("flux__str_slice("));
     assert!(generated.contains("UTF-8 boundaries"));
     assert!(generated.contains("char result[65537]"));

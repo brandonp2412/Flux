@@ -73,6 +73,8 @@ Raw strings use `r"..."`. Backslashes are literal rather than escape introducers
 
 `str.slice(value, start, end, callback)` provides a bounded immutable borrowed view over a UTF-8 string. `start` and `end` are byte offsets that must be within the value and on code-point boundaries; the resulting text is valid only during the synchronous `fn(str) -> void` callback, and the operation returns an `error`. The compiler uses fixed stack storage rather than creating an escaping string, so owned strings and escaping slices remain separate ownership work.
 
+`str.length(value)` validates UTF-8 and returns the number of Unicode scalar values as an `i64`, without allocating. Malformed, truncated, overlong, surrogate, or out-of-range sequences trap explicitly in the native runtime.
+
 Local mutation must be declared explicitly with `var`. Reassignment preserves the declared static type, and immutable `let` bindings, parameters, destructured bindings, and `for` loop variables cannot be assigned to:
 
 ```flux

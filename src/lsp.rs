@@ -1207,6 +1207,7 @@ fn add_qualified_namespace_completions(
     program: &crate::ast::Program,
 ) -> bool {
     if namespace == "str" {
+        push_completion_item(items, seen, "length", 3, "fn str.length(value: str) -> i64");
         push_completion_item(
             items,
             seen,
@@ -3584,6 +3585,14 @@ fn signature_help_for_document_cached(
             }
         }
         if namespace == "str" {
+            if member == "length" {
+                return Some(signature_help_for_builtin(
+                    "str.length",
+                    &["value: str"],
+                    "i64",
+                    active_parameter,
+                ));
+            }
             if member == "slice" {
                 return Some(signature_help_for_builtin(
                     "str.slice",

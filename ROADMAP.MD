@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 139 checkbox items
+- Current net scope growth after the baseline: 140 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -395,6 +395,7 @@ Flux has no generics, so common containers need compiler-known/specialized imple
 
 - [ ] Owned string type plus immutable string views/slices.
   - [x] Bootstrap immutable borrowed string slices through `str.slice(value, start, end, callback) -> error`: bounded UTF-8 byte ranges must land on code-point boundaries, the native result is stack-backed and lent only to the exact callback scope, invalid/range/oversize inputs fail explicitly, and the helper is tree-shakeable with LSP completion/signature help. Owned strings and escaping slices remain pending.
+  - [x] Bootstrap allocation-free UTF-8 scalar length through `str.length(value) -> i64`: native lowering validates UTF-8 (including overlong, surrogate, truncated, and out-of-range sequences), counts Unicode scalar values with checked `i64` conversion, and tree-shakes with LSP completion/signature help.
 - [ ] Arrays/lists.
   - [x] Bootstrap immutable local `T[]` lists with literals, checked indexing, zero-copy slicing, and filtered comprehensions.
   - [ ] Owned/escaping list storage, owned list argument/return transfer, aggregate fields, mutation, and lifetime/ownership integration; current list parameters are immutable borrowed views.
