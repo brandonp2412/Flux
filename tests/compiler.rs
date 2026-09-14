@@ -15862,6 +15862,93 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn tls_server_round_trips_against_local_openssl_client() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("flux-tls-server-e2e-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS server fixture should be writable");
+    let key = root.join("server.key");
+    let certificate = root.join("server.crt");
+    let generated = Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-keyout"])
+        .arg(&key)
+        .args(["-out"])
+        .arg(&certificate)
+        .output()
+        .expect("OpenSSL should generate the TLS server certificate");
+    assert!(generated.status.success(), "certificate generation failed: {}", String::from_utf8_lossy(&generated.stderr));
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("TLS server fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let source = format!(
+        r#"
+fn main() -> i64 {{
+    let (listener, listen_error) = net.listen("127.0.0.1", {port}, 4)
+    if listen_error != nil:
+        return 1
+    let (socket, accept_error) = net.accept(listener)
+    if accept_error != nil:
+        return 2
+    let (session, tls_error) = tls.listen(socket, "{}", "{}")
+    if tls_error != nil:
+        return 3
+    let (received, read_error) = tls.read(session, 1024, handle)
+    if read_error != nil:
+        return 4
+    let write_error: error = tls.write(session, "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    if write_error != nil:
+        return 5
+    let close_error: error = tls.close(session)
+    if close_error != nil:
+        return 6
+    print(received)
+    print(net.close(listener))
+    return 0
+}}
+
+fn handle(_value: str) -> void {{
+}}
+"#,
+        certificate.display(),
+        key.display()
+    );
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("TLS server source should be writable");
+    let binary = root.join("tls-server-e2e");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS server Flux binary should build");
+    assert!(built.status.success(), "TLS server build failed: {}", String::from_utf8_lossy(&built.stderr));
+    let flux = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("TLS server Flux binary should start");
+    thread::sleep(Duration::from_millis(80));
+    let mut client = Command::new("openssl")
+        .args(["s_client", "-quiet", "-connect"])
+        .arg(format!("127.0.0.1:{port}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("OpenSSL TLS client should start");
+    client.stdin.take().unwrap().write_all(b"GET / HTTP/1.0\r\n\r\n").expect("TLS client request should write");
+    let client_output = client.wait_with_output().expect("OpenSSL TLS client should finish");
+    let server_output = flux.wait_with_output().expect("TLS server Flux binary should finish");
+    assert!(client_output.status.success(), "TLS client failed: {}", String::from_utf8_lossy(&client_output.stderr));
+    assert!(server_output.status.success(), "TLS server failed: {}", String::from_utf8_lossy(&server_output.stderr));
+    assert!(String::from_utf8_lossy(&client_output.stdout).contains("HTTP/1.0 200 OK"));
+    assert!(String::from_utf8_lossy(&client_output.stdout).contains("OK"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {
