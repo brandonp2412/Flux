@@ -63,6 +63,12 @@ impl BuildMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBuildOutcome {
+    Cached,
+    Compiled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeInstrumentation {
     None,
     Gprof,
@@ -2648,6 +2654,7 @@ fn build_static_executable(
         Some(native_package),
         true,
     )
+    .map(|_| ())
     .map_err(|error| {
         CliError::Message(format!(
             "static package requires a target toolchain with static C runtime support: {error}"
@@ -4498,7 +4505,11 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             }
         };
         let sources = analysis.sources.clone();
-        let generated = match analysis.emit_c() {
+        let generated = match analysis_cache.emit_c_for_target_cached(
+            target,
+            &analysis,
+            fluxc::codegen::NativeTarget::Linux,
+        ) {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 report_diagnostics(target, &[diagnostic], &sources);
@@ -4517,17 +4528,29 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 continue;
             }
         };
+        let codegen_outcome = analysis_cache.last_codegen_outcome();
+        if let Some(outcome) = codegen_outcome {
+            eprintln!("reload: {}", development_codegen_summary(outcome));
+        }
         generation += 1;
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
-        if let Err(message) = build_native(&generated, &next_binary, mode, native_package.as_ref())
-        {
-            write_development_status(target, "compile_error", generation, mode, &message);
-            status_state = "compile_error";
-            eprintln!("reload: {message}");
-            let _ = fs::remove_file(&next_binary);
-            continue;
-        }
+        let native_outcome = match build_native_with_outcome(
+            &generated,
+            &next_binary,
+            mode,
+            native_package.as_ref(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(message) => {
+                write_development_status(target, "compile_error", generation, mode, &message);
+                status_state = "compile_error";
+                eprintln!("reload: {message}");
+                let _ = fs::remove_file(&next_binary);
+                continue;
+            }
+        };
+        eprintln!("reload: {}", development_native_summary(native_outcome));
 
         stop_child(&mut child);
         let previous_binary = std::mem::replace(&mut binary, next_binary);
@@ -4535,13 +4558,15 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
-        write_development_status_with_analysis(
+        write_development_status_with_build(
             target,
             "restarted",
             generation,
             mode,
             "rebuilt and restarted after source change",
             analysis_outcome,
+            codegen_outcome,
+            Some(native_outcome),
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
@@ -4573,6 +4598,20 @@ fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome)
     }
 }
 
+fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -> &'static str {
+    match outcome {
+        fluxc::project::ProjectCodegenOutcome::Cached => "codegen reused cached C",
+        fluxc::project::ProjectCodegenOutcome::Full => "codegen emitted full C",
+    }
+}
+
+fn development_native_summary(outcome: NativeBuildOutcome) -> &'static str {
+    match outcome {
+        NativeBuildOutcome::Cached => "native build reused cached artifact",
+        NativeBuildOutcome::Compiled => "native build compiled with clang",
+    }
+}
+
 fn write_development_status_with_analysis(
     target: &Path,
     state: &str,
@@ -4580,6 +4619,28 @@ fn write_development_status_with_analysis(
     mode: BuildMode,
     message: &str,
     analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
+) {
+    write_development_status_with_build(
+        target,
+        state,
+        generation,
+        mode,
+        message,
+        analysis_outcome,
+        None,
+        None,
+    );
+}
+
+fn write_development_status_with_build(
+    target: &Path,
+    state: &str,
+    generation: usize,
+    mode: BuildMode,
+    message: &str,
+    analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
+    codegen_outcome: Option<fluxc::project::ProjectCodegenOutcome>,
+    native_outcome: Option<NativeBuildOutcome>,
 ) {
     let Ok(path) = fluxc::project::development_status_path(target) else {
         return;
@@ -4600,13 +4661,25 @@ fn write_development_status_with_analysis(
         }
         None => String::new(),
     };
+    let codegen_fields = match codegen_outcome {
+        Some(fluxc::project::ProjectCodegenOutcome::Cached) => ",\"codegen\":\"cached\"",
+        Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"",
+        None => "",
+    };
+    let native_fields = match native_outcome {
+        Some(NativeBuildOutcome::Cached) => ",\"native_build\":\"cached\"",
+        Some(NativeBuildOutcome::Compiled) => ",\"native_build\":\"compiled\"",
+        None => "",
+    };
     let payload = format!(
-        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{} }}\n",
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{}{}{} }}\n",
         json_string(state),
         json_string(mode.name()),
         std::process::id(),
         json_string(message),
         analysis_fields,
+        codegen_fields,
+        native_fields,
     );
     let temp = path.with_file_name(format!(
         ".{}.{}.tmp",
@@ -4659,7 +4732,11 @@ fn start_development_build(
         }
     };
     let sources = analysis.sources.clone();
-    let generated = match analysis.emit_c() {
+    let generated = match analysis_cache.emit_c_for_target_cached(
+        target,
+        &analysis,
+        fluxc::codegen::NativeTarget::Linux,
+    ) {
         Ok(generated) => generated,
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);
@@ -9161,6 +9238,15 @@ fn build_native(
     mode: BuildMode,
     native_package: Option<&fluxc::project::NativePackageConfig>,
 ) -> Result<(), String> {
+    build_native_with_outcome(c_source, output, mode, native_package).map(|_| ())
+}
+
+fn build_native_with_outcome(
+    c_source: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
+) -> Result<NativeBuildOutcome, String> {
     build_native_configured(
         c_source,
         output,
@@ -9188,6 +9274,7 @@ fn build_native_instrumented(
         native_package,
         false,
     )
+    .map(|_| ())
 }
 
 fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
@@ -9226,7 +9313,7 @@ fn build_native_configured(
     native_target: &NativeTargetOptions,
     native_package: Option<&fluxc::project::NativePackageConfig>,
     static_link: bool,
-) -> Result<(), String> {
+) -> Result<NativeBuildOutcome, String> {
     if let Some(sysroot) = native_target.sysroot.as_deref()
         && !sysroot.is_dir()
     {
@@ -9307,7 +9394,7 @@ fn build_native_configured(
                 output.display()
             )
         })?;
-        return Ok(());
+        return Ok(NativeBuildOutcome::Cached);
     }
     if cache_enabled && cache.exists() {
         let _ = fs::remove_file(&cache);
@@ -9384,7 +9471,7 @@ fn build_native_configured(
             }
         }
     }
-    Ok(())
+    Ok(NativeBuildOutcome::Compiled)
 }
 
 fn native_cache_metadata_path(cache: &Path) -> PathBuf {
@@ -9607,9 +9694,8 @@ mod tests {
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
-        build_native_configured,
-        build_native_instrumented, build_options, compile_web_html, debug_options,
-        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
+        build_native_configured, build_native_instrumented, build_options, compile_web_html,
+        debug_options, demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
         github_repository_parts, json_string, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
