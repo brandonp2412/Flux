@@ -1217,19 +1217,27 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "crypto" {
-        push_completion_item(items, seen, "sha256", 3, "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error");
-        push_completion_item(items, seen, "sha384", 3, "fn crypto.sha384(value: str, callback: fn(str) -> void) -> error");
-        push_completion_item(items, seen, "sha512", 3, "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error");
-        push_completion_item(items, seen, "hmacSha256", 3, "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error");
-        push_completion_item(items, seen, "hmacSha512", 3, "fn crypto.hmacSha512(key: str, value: str, callback: fn(str) -> void) -> error");
+        for (label, detail) in [
+            ("sha256", "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error"),
+            ("sha384", "fn crypto.sha384(value: str, callback: fn(str) -> void) -> error"),
+            ("sha512", "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error"),
+            ("hmacSha256", "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error"),
+            ("hmacSha512", "fn crypto.hmacSha512(key: str, value: str, callback: fn(str) -> void) -> error"),
+            ("randomHex", "fn crypto.randomHex(byteCount: i64, callback: fn(str) -> void) -> error"),
+            ("equal", "fn crypto.equal(left: str, right: str) -> (bool, error)"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
         return true;
     }
     if namespace == "tls" {
         for (label, detail) in [
             ("wrap", "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)"),
             ("listen", "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)"),
-            ("read", "fn tls.read(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"),
-            ("write", "fn tls.write(session: i64, value: str) -> error"),
+            ("connect", "fn tls.connect(socket: i64, serverName: str) -> (i64, error)"),
+            ("accept", "fn tls.accept(socket: i64, certificatePath: str, privateKeyPath: str) -> (i64, error)"),
+            ("read", "fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"),
+            ("write", "fn tls.write(session: i64, text: str) -> error"),
             ("close", "fn tls.close(session: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
