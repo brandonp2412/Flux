@@ -37,9 +37,9 @@ const TITLE_MESSAGE: &[WindowsBindingParam] = &[
         ty: WindowsBindingType::Str,
     },
 ];
-const URL: &[WindowsBindingParam] = &[WindowsBindingParam {
-    name: "url",
-    signature: "url: str",
+const TARGET: &[WindowsBindingParam] = &[WindowsBindingParam {
+    name: "target",
+    signature: "target: str",
     ty: WindowsBindingType::Str,
 }];
 const BEEP: &[WindowsBindingParam] = &[
@@ -63,7 +63,7 @@ pub const WINDOWS_BINDINGS: &[WindowsBinding] = &[
     },
     WindowsBinding {
         name: "open",
-        params: URL,
+        params: TARGET,
         returns: WindowsBindingReturn::Bool,
     },
     WindowsBinding {

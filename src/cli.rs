@@ -441,7 +441,19 @@ fn run() -> Result<(), CliError> {
                 fluxc::package_ecosystem::fetch_locked_git_dependencies(target, offline)
                     .map_err(|error| CliError::Message(error.to_string()))?;
             if releases.is_empty() && git_releases.is_empty() {
-                println!("fetched: no remote dependencies");
+                match fluxc::project::fetch_dependencies(target) {
+                    Ok(0) => println!("fetched: no remote dependencies"),
+                    Ok(count) => println!("fetched: {count} local path dependencies"),
+                    Err(diagnostics) => {
+                        return Err(CliError::Message(
+                            diagnostics
+                                .into_iter()
+                                .map(|diagnostic| diagnostic.message)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        ));
+                    }
+                }
             } else {
                 for release in releases.values() {
                     println!(
@@ -486,20 +498,42 @@ fn run() -> Result<(), CliError> {
                         .join("\n"),
                 )
             })?;
-            let outdated = fluxc::package_ecosystem::outdated_package_dependencies(target)
-                .map_err(|error| CliError::Message(error.to_string()))?;
-            if outdated.is_empty() {
-                println!("outdated: none");
-            } else {
-                for dependency in outdated {
-                    println!(
-                        "outdated: {} {} {} -> {}",
-                        dependency.package,
-                        dependency.source,
-                        dependency.current,
-                        dependency.latest
-                    );
+            let local_report = fluxc::project::outdated_dependencies(target).map_err(|diagnostics| {
+                CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
+            let local_lines = local_report
+                .lines()
+                .filter(|line| line.contains("[path:"))
+                .collect::<Vec<_>>();
+            match fluxc::package_ecosystem::outdated_package_dependencies(target) {
+                Ok(outdated) => {
+                    if local_lines.is_empty() && outdated.is_empty() {
+                        println!("outdated: none");
+                    } else {
+                        for line in local_lines {
+                            println!("{line}");
+                        }
+                        for dependency in outdated {
+                            println!(
+                                "outdated: {} {} {} -> {}",
+                                dependency.package,
+                                dependency.source,
+                                dependency.current,
+                                dependency.latest
+                            );
+                        }
+                    }
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    println!("{local_report}");
+                }
+                Err(error) => return Err(CliError::Message(error.to_string())),
             }
             Ok(())
         }

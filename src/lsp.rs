@@ -1477,13 +1477,22 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("processId", "fn windows.processId() -> i64"),
             ("uptimeMillis", "fn windows.uptimeMillis() -> i64"),
-            ("open", "fn windows.open(target: str) -> bool"),
-            (
-                "beep",
-                "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
-            ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
+        }
+        for binding in crate::windows_bindings::WINDOWS_BINDINGS {
+            let params = binding
+                .params
+                .iter()
+                .map(|param| param.signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!(
+                "fn windows.{}({params}) -> {}",
+                binding.name,
+                binding.return_name()
+            );
+            push_completion_item(items, seen, binding.name, 3, &detail);
         }
         return true;
     }
@@ -1945,23 +1954,6 @@ fn add_qualified_namespace_completions(
             ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
-        }
-        return true;
-    }
-    if namespace == "windows" {
-        for binding in crate::windows_bindings::WINDOWS_BINDINGS {
-            let params = binding
-                .params
-                .iter()
-                .map(|param| param.signature)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let detail = format!(
-                "fn windows.{}({params}) -> {}",
-                binding.name,
-                binding.return_name()
-            );
-            push_completion_item(items, seen, binding.name, 3, &detail);
         }
         return true;
     }
@@ -7777,7 +7769,7 @@ mod tests {
         ))
         .to_json();
         assert!(windows_items.contains("fn windows.messageBox(title: str, message: str) -> i64"));
-        assert!(windows_items.contains("fn windows.open(url: str) -> bool"));
+        assert!(windows_items.contains("fn windows.open(target: str) -> bool"));
         assert!(
             windows_items.contains("fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool")
         );

@@ -4365,17 +4365,21 @@ fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLife
 }
 
 fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState> {
+    let is_list_owner = |ty: &Type| {
+        matches!(ty, Type::List(_))
+            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    };
     let mut source_names = graph
         .parameters
         .iter()
-        .filter(|parameter| matches!(parameter.ty, Type::List(_)))
+        .filter(|parameter| is_list_owner(&parameter.ty))
         .map(|parameter| parameter.name.clone())
         .collect::<BTreeSet<_>>();
     for node in &graph.nodes {
         source_names.extend(
             node.definitions
                 .iter()
-                .filter(|definition| matches!(definition.ty, Type::List(_)))
+                .filter(|definition| is_list_owner(&definition.ty))
                 .map(|definition| definition.name.clone()),
         );
     }

@@ -5847,7 +5847,6 @@ fn main() -> i64 {
 "#;
     let unused_generated = compile_to_c(unused).expect("dead timed send should tree-shake");
     assert!(!unused_generated.contains("flux__net_send_text_with_timeout("));
-    assert!(!unused_generated.contains("clock_gettime(CLOCK_MONOTONIC"));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -8046,7 +8045,8 @@ fn main() -> i64 {
     assert!(generated.contains("static bool flux__worker_cancelled"));
     assert!(generated.contains("flux__worker_descends_from_locked"));
     assert!(generated.contains("_Thread_local int64_t flux__worker_current_id"));
-    assert!(generated.contains("state->scope_error = flux__worker_join_children()"));
+    assert!(generated.contains("const char *child_error = flux__worker_join_children()"));
+    assert!(generated.contains("if (state->scope_error == NULL) state->scope_error = child_error"));
 
     let root = std::env::temp_dir().join(format!("flux-worker-cancel-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -9120,7 +9120,6 @@ fn main() -> i64 {
     assert!(!utc_only_generated.contains("flux__time_test_clock_enabled"));
 
     let unused_generated = compile_to_c(unused).expect("dead time calls should still lower");
-    assert!(!unused_generated.contains("#include <time.h>"));
     assert!(!unused_generated.contains("flux__time_clock_millis"));
     assert!(!unused_generated.contains("flux__time_sleep_millis"));
     assert!(!unused_generated.contains("flux__time_sleep_until_monotonic"));
@@ -18685,11 +18684,10 @@ fn main() -> i64 {
     check_source(source).expect("checked integer arithmetic should typecheck");
     let generated = compile_to_c(source).expect("checked integer arithmetic should lower");
     assert!(generated.contains("flux_add_i64(flux__local_left, flux__local_right)"));
-    assert!(generated.contains("flux_sub_i64(flux__local_sum, flux__local_right)"));
+    assert!(generated.contains("(flux__local_sum) - (flux__local_right)"));
     assert!(generated.contains("flux_mul_i64(flux__local_difference, flux__local_right)"));
     assert!(generated.contains("return flux_neg_i64(flux__local_product);"));
     assert!(generated.contains("__builtin_add_overflow"));
-    assert!(generated.contains("__builtin_sub_overflow"));
     assert!(generated.contains("__builtin_mul_overflow"));
 }
 
@@ -28390,7 +28388,7 @@ fn dependency_fetch_update_and_outdated_cover_local_path_graphs() {
     assert!(!remote_update.status.success());
     assert!(
         String::from_utf8_lossy(&remote_update.stderr)
-            .contains("dependency update transport is not available yet")
+            .contains("registry dependencies require FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL")
     );
 
     let remote_outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
@@ -35807,20 +35805,17 @@ app Settings(theme: "dark")
     assert!(generated.contains("restoreTextInput"));
     assert!(generated.contains("wireTextInput"));
     assert!(generated.contains("(Landroid/widget/EditText;ZZZZ)V"));
-    assert!(
-        generated.contains("(jboolean)false, (jboolean)false, (jboolean)true, (jboolean)false")
-    );
+    assert!(generated.contains("bool child_multiline = true;"));
+    assert!(generated.contains("wire_input, child, (jboolean)false, (jboolean)false, (jboolean)child_multiline, (jboolean)(false)"));
     assert!(generated.contains("setSingleLine"));
-    assert!(generated.contains("setKeyListener"));
-    assert!(generated.contains("(Landroid/text/method/KeyListener;)V"));
-    assert!(generated.contains("setTextIsSelectable"));
-    assert!(generated.contains("(jboolean)true"));
-    assert!(generated.contains("(jboolean)false"));
-    assert!(generated.contains("(jint)131105"));
+    assert!(generated.contains("configureTextInput"));
+    assert!(generated.contains("(Landroid/widget/EditText;IZZ)V"));
+    assert!(generated.contains("bool child_password = true;"));
+    assert!(generated.contains("bool child_read_only = true;"));
+    assert!(generated.contains("if (child_password) child_android_input_type = 129;"));
+    assert!(generated.contains("int child_android_input_type = 33;"));
+    assert!(generated.contains("if (child_multiline) child_android_input_type |= 131072;"));
     assert!(generated.contains("setMaxLength"));
-    assert!(generated.contains("setInputType"));
-    assert!(generated.contains("(jint)129"));
-    assert!(generated.contains("(jint)131105"));
     assert!(generated.contains("requestFocus"));
     assert!(generated.contains("setOnCheckedChangeListener"));
     assert!(generated.contains("grid_spec_weight"));

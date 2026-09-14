@@ -1041,6 +1041,7 @@ pub struct VendoredPackages {
 
 pub fn package_has_registry_dependencies(target: &Path) -> io::Result<bool> {
     let manifest = package_manifest_target(target)?;
+    let locked_git = crate::project::locked_git_releases(target).ok();
     let mut requirements = BTreeMap::<String, Vec<String>>::new();
     let mut visited_paths = BTreeSet::new();
     collect_manifest_registry_requirements(
@@ -1048,6 +1049,7 @@ pub fn package_has_registry_dependencies(target: &Path) -> io::Result<bool> {
         &mut visited_paths,
         &mut requirements,
         false,
+        locked_git.as_ref(),
     )?;
     Ok(!requirements.is_empty())
 }
@@ -1064,6 +1066,7 @@ pub fn resolve_package_registry_graph(
         &mut visited_paths,
         &mut base_requirements,
         true,
+        None,
     )?;
     resolve_registry_requirements(provider, base_requirements)
 }
@@ -1500,6 +1503,7 @@ fn collect_manifest_registry_requirements(
     visited_paths: &mut BTreeSet<PathBuf>,
     requirements: &mut BTreeMap<String, Vec<String>>,
     resolve_git: bool,
+    locked_git: Option<&BTreeMap<String, GitRelease>>,
 ) -> io::Result<()> {
     let root = manifest
         .path
@@ -1536,6 +1540,7 @@ fn collect_manifest_registry_requirements(
                     visited_paths,
                     requirements,
                     resolve_git,
+                    locked_git,
                 )?;
             }
             crate::project::PackageDependency::Git { url, rev } if resolve_git => {
@@ -1559,18 +1564,26 @@ fn collect_manifest_registry_requirements(
                     visited_paths,
                     requirements,
                     resolve_git,
+                    locked_git,
                 )?;
             }
             crate::project::PackageDependency::Git { url, rev } => {
-                let release = resolve_git_release(name, url, rev).map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!(
-                            "failed to resolve Git dependency '{name}' while collecting registry requirements: {error}"
-                        ),
-                    )
-                })?;
-                let dependency_root = materialize_git_release(&release, true).map_err(|error| {
+                let key = format!("{url}#{rev}");
+                let (release, offline) = if let Some(release) =
+                    locked_git.and_then(|releases| releases.get(&key))
+                {
+                    (release.clone(), true)
+                } else {
+                    (resolve_git_release(name, url, rev).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "failed to resolve Git dependency '{name}' while collecting registry requirements: {error}"
+                            ),
+                        )
+                    })?, false)
+                };
+                let dependency_root = materialize_git_release(&release, offline).map_err(|error| {
                     io::Error::new(
                         error.kind(),
                         format!(
@@ -1596,6 +1609,7 @@ fn collect_manifest_registry_requirements(
                     visited_paths,
                     requirements,
                     false,
+                    locked_git,
                 )?;
             }
         }
