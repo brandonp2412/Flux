@@ -9,15 +9,15 @@ jobs:
   supported-targets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - name: Install Clang
+      - name: Install native toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang
+          sudo apt-get install -y clang libgtk-4-dev pkg-config
       - name: Install Android toolchain
         run: |
           SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -25,4 +25,19 @@ jobs:
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
           printf 'ANDROID_NDK_HOME=%s\n' "$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Test compiler and supported native targets
-        run: ./tools/flux-self-test
+        shell: bash
+        run: |
+          set -o pipefail
+          log="$(mktemp)"
+          if ./tools/flux-self-test 2>&1 | tee "$log"; then
+            exit 0
+          fi
+          detail="$(awk '/failures:/{capture=1} capture{print}' "$log" | tail -n 24)"
+          if [[ -z "$detail" ]]; then
+            detail="$(tail -n 24 "$log")"
+          fi
+          detail="${detail//'%'/'%25'}"
+          detail="${detail//$'\r'/'%0D'}"
+          detail="${detail//$'\n'/'%0A'}"
+          printf '::error title=Flux self-test failed::%s\n' "$detail"
+          exit 1

@@ -9,7 +9,7 @@ jobs:
   native-performance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -21,13 +21,27 @@ jobs:
       - name: Validate compiler
         run: cargo test --all-targets
       - name: Enforce native performance gate
+        shell: bash
         run: |
+          set -o pipefail
           registry="$(command -v at-spi2-registryd || find /usr/lib /usr/libexec -type f -name at-spi2-registryd -print -quit)"
           test -n "$registry"
-          dbus-run-session -- bash -c '
+          log="$(mktemp)"
+          if dbus-run-session -- bash -c '
             "$1" >/tmp/flux-atspi-registry.log 2>&1 &
             registry_pid=$!
             trap "kill $registry_pid 2>/dev/null || true" EXIT
             sleep 0.2
             xvfb-run -a env NO_AT_BRIDGE=0 ATSPI_NO_CACHE=1 ./tools/flux-bench --runs 7 --batch 3 --ui-timing --ui-timeout 15
-          ' bash "$registry"
+          ' bash "$registry" 2>&1 | tee "$log"; then
+            exit 0
+          fi
+          detail="$(rg '^FAILED:|RuntimeError:|timed out after|command failed' "$log" | tail -n 8)"
+          if [[ -z "$detail" ]]; then
+            detail="$(tail -n 16 "$log")"
+          fi
+          detail="${detail//'%'/'%25'}"
+          detail="${detail//$'\r'/'%0D'}"
+          detail="${detail//$'\n'/'%0A'}"
+          printf '::error title=Flux performance gate failed::%s\n' "$detail"
+          exit 1

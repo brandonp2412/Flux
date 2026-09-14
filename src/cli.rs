@@ -10195,22 +10195,30 @@ app OverlayDemo(title: "Overlay")
             "generated Clang module should import from Objective-C"
         );
 
-        std::fs::write(
-            root.join("consumer.swift"),
-            format!("import {module}\nfunc useFluxModule() -> Int64 {{ 42 }}\n"),
-        )
-        .expect("Swift consumer should be writable");
-        let swift_status = std::process::Command::new("swiftc")
-            .args(["-typecheck", "-I"])
-            .arg(&root)
-            .arg(root.join("consumer.swift"))
+        let swiftc_available = std::process::Command::new("swiftc")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
-            .expect("swiftc should validate generated Apple bindings");
+            .is_ok_and(|status| status.success());
+        if swiftc_available {
+            std::fs::write(
+                root.join("consumer.swift"),
+                format!("import {module}\nfunc useFluxModule() -> Int64 {{ 42 }}\n"),
+            )
+            .expect("Swift consumer should be writable");
+            let swift_status = std::process::Command::new("swiftc")
+                .args(["-typecheck", "-I"])
+                .arg(&root)
+                .arg(root.join("consumer.swift"))
+                .status()
+                .expect("available swiftc should validate generated Apple bindings");
+            assert!(
+                swift_status.success(),
+                "generated Clang module should import from Swift without a bridging header"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
-        assert!(
-            swift_status.success(),
-            "generated Clang module should import from Swift without a bridging header"
-        );
     }
 
     #[test]

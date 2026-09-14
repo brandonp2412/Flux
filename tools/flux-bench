@@ -173,19 +173,25 @@ def accessible_is_showing(node, atspi):
         return False
 
 
-def find_accessible_application(atspi, process_id):
+def accessible_applications(atspi):
     desktop = atspi.get_desktop(0)
     try:
-        children = [desktop.get_child_at_index(index) for index in range(desktop.get_child_count())]
+        return [desktop.get_child_at_index(index) for index in range(desktop.get_child_count())]
     except Exception:
-        return None
-    for child in children:
+        return []
+
+
+def ordered_accessible_applications(atspi, process_id):
+    applications = accessible_applications(atspi)
+
+    def process_priority(application):
         try:
-            if child.get_process_id() == process_id:
-                return child
+            return 0 if application.get_process_id() == process_id else 1
         except Exception:
-            continue
-    return None
+            return 1
+
+    applications.sort(key=process_priority)
+    return applications
 
 
 def find_showing_accessible(root, atspi, role, name):
@@ -209,8 +215,7 @@ def wait_for_ui(process, atspi, timeout, state):
             raise RuntimeError(
                 f"{process.args[0]} exited before native UI reached '{state}'"
             )
-        application = find_accessible_application(atspi, process.pid)
-        if application is not None:
+        for application in ordered_accessible_applications(atspi, process.pid):
             frame = find_showing_accessible(
                 application, atspi, "frame", "Flux Native UI Benchmark"
             )
