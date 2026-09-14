@@ -586,42 +586,36 @@ fn load_report_with_overlays_and_parse_cache(
                 )]
             },
         )?;
-    let (registry_releases, registry_roots) = if has_registry_dependencies {
-        match crate::package_ecosystem::configured_registry_provider(false) {
-            Ok(provider) => {
-                let (graph, roots) =
-                    crate::package_ecosystem::materialize_package_registry_dependencies(
-                        &module_root,
-                        &provider,
-                        false,
-                    )
-                    .map_err(|error| {
-                        vec![Diagnostic::global(
-                            DiagnosticStage::Parse,
-                            format!("failed to materialize registry dependencies: {error}"),
-                        )]
-                    })?;
-                (graph.releases, roots)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                crate::package_ecosystem::materialize_locked_registry_dependencies(
-                    &module_root,
-                    false,
-                )
-                .map_err(|error| {
-                    vec![Diagnostic::global(
-                        DiagnosticStage::Parse,
-                        format!("failed to replay locked registry dependencies: {error}"),
-                    )]
-                })?
-            }
-            Err(error) => {
-                return Err(vec![Diagnostic::global(
+    let lock_exists = package_name.is_some() && module_root.join("flux.lock").is_file();
+    let (registry_releases, registry_roots) = if lock_exists {
+        crate::package_ecosystem::materialize_locked_registry_dependencies(&module_root, false)
+            .map_err(|error| {
+                vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to replay locked registry dependencies: {error}"),
+                )]
+            })?
+    } else if has_registry_dependencies {
+        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
+            |error| {
+                vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
-                )]);
-            }
-        }
+                )]
+            },
+        )?;
+        let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
+            &module_root,
+            &provider,
+            false,
+        )
+        .map_err(|error| {
+            vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("failed to materialize registry dependencies: {error}"),
+            )]
+        })?;
+        (graph.releases, roots)
     } else {
         (BTreeMap::new(), BTreeMap::new())
     };
@@ -735,42 +729,36 @@ pub fn analyze_package_test(
             format!("failed to inspect registry dependencies: {error}"),
         )]
     })?;
-    let (registry_releases, registry_roots) = if has_registry_dependencies {
-        match crate::package_ecosystem::configured_registry_provider(false) {
-            Ok(provider) => {
-                let (graph, roots) =
-                    crate::package_ecosystem::materialize_package_registry_dependencies(
-                        &package_root,
-                        &provider,
-                        false,
-                    )
-                    .map_err(|error| {
-                        vec![Diagnostic::global(
-                            DiagnosticStage::Parse,
-                            format!("failed to materialize registry dependencies: {error}"),
-                        )]
-                    })?;
-                (graph.releases, roots)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                crate::package_ecosystem::materialize_locked_registry_dependencies(
-                    &package_root,
-                    false,
-                )
-                .map_err(|error| {
-                    vec![Diagnostic::global(
-                        DiagnosticStage::Parse,
-                        format!("failed to replay locked registry dependencies: {error}"),
-                    )]
-                })?
-            }
-            Err(error) => {
-                return Err(vec![Diagnostic::global(
+    let lock_exists = package_root.join("flux.lock").is_file();
+    let (registry_releases, registry_roots) = if lock_exists {
+        crate::package_ecosystem::materialize_locked_registry_dependencies(&package_root, false)
+            .map_err(|error| {
+                vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to replay locked registry dependencies: {error}"),
+                )]
+            })?
+    } else if has_registry_dependencies {
+        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
+            |error| {
+                vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
-                )]);
-            }
-        }
+                )]
+            },
+        )?;
+        let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
+            &package_root,
+            &provider,
+            false,
+        )
+        .map_err(|error| {
+            vec![Diagnostic::global(
+                DiagnosticStage::Parse,
+                format!("failed to materialize registry dependencies: {error}"),
+            )]
+        })?;
+        (graph.releases, roots)
     } else {
         (BTreeMap::new(), BTreeMap::new())
     };
@@ -2741,8 +2729,18 @@ fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>
             }
         };
         if let Some(provider) = provider {
+            let mut requirements = BTreeMap::<String, Vec<String>>::new();
+            for entry in &entries {
+                let Some(requirement) = entry.source.strip_prefix("registry:") else {
+                    continue;
+                };
+                requirements
+                    .entry(entry.package.clone())
+                    .or_default()
+                    .push(requirement.to_string());
+            }
             let graph =
-                crate::package_ecosystem::resolve_package_registry_graph(&manifest.path, &provider)
+                crate::package_ecosystem::resolve_registry_requirements(&provider, requirements)
                     .map_err(|error| {
                         vec![Diagnostic::global(
                             DiagnosticStage::Parse,

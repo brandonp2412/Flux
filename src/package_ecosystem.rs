@@ -1043,7 +1043,12 @@ pub fn package_has_registry_dependencies(target: &Path) -> io::Result<bool> {
     let manifest = package_manifest_target(target)?;
     let mut requirements = BTreeMap::<String, Vec<String>>::new();
     let mut visited_paths = BTreeSet::new();
-    collect_manifest_registry_requirements(&manifest, &mut visited_paths, &mut requirements)?;
+    collect_manifest_registry_requirements(
+        &manifest,
+        &mut visited_paths,
+        &mut requirements,
+        false,
+    )?;
     Ok(!requirements.is_empty())
 }
 
@@ -1054,9 +1059,20 @@ pub fn resolve_package_registry_graph(
     let manifest = package_manifest_target(target)?;
     let mut base_requirements = BTreeMap::<String, Vec<String>>::new();
     let mut visited_paths = BTreeSet::new();
-    collect_manifest_registry_requirements(&manifest, &mut visited_paths, &mut base_requirements)?;
-    normalize_requirements(&mut base_requirements);
+    collect_manifest_registry_requirements(
+        &manifest,
+        &mut visited_paths,
+        &mut base_requirements,
+        true,
+    )?;
+    resolve_registry_requirements(provider, base_requirements)
+}
 
+pub(crate) fn resolve_registry_requirements(
+    provider: &dyn RegistryProvider,
+    mut base_requirements: BTreeMap<String, Vec<String>>,
+) -> io::Result<ResolvedRegistryGraph> {
+    normalize_requirements(&mut base_requirements);
     let mut requirements = base_requirements.clone();
     for _ in 0..256 {
         let mut releases = BTreeMap::new();
@@ -1483,6 +1499,7 @@ fn collect_manifest_registry_requirements(
     manifest: &crate::project::PackageManifest,
     visited_paths: &mut BTreeSet<PathBuf>,
     requirements: &mut BTreeMap<String, Vec<String>>,
+    resolve_git: bool,
 ) -> io::Result<()> {
     let root = manifest
         .path
@@ -1518,6 +1535,30 @@ fn collect_manifest_registry_requirements(
                     &dependency_manifest,
                     visited_paths,
                     requirements,
+                    resolve_git,
+                )?;
+            }
+            crate::project::PackageDependency::Git { url, rev } if resolve_git => {
+                let release = resolve_git_release(name, url, rev)?;
+                let dependency_root = materialize_git_release(&release, false)?;
+                let dependency_manifest = crate::project::read_manifest(
+                    &dependency_root.join("flux.toml"),
+                )
+                .map_err(|diagnostics| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        diagnostics
+                            .into_iter()
+                            .map(|diagnostic| diagnostic.message)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                })?;
+                collect_manifest_registry_requirements(
+                    &dependency_manifest,
+                    visited_paths,
+                    requirements,
+                    resolve_git,
                 )?;
             }
             crate::project::PackageDependency::Git { .. } => {}

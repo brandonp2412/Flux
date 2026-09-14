@@ -27616,6 +27616,165 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
 }
 
 #[test]
+fn git_transitive_registry_requirements_share_the_global_solver() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-git-registry-resolution-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dependency = root.join("dependency");
+    let remote = root.join("remote");
+    let registry = root.join("registry/remote");
+    let cache = root.join("cache");
+    fs::create_dir_all(app.join("src")).expect("app source directory should be writable");
+    fs::create_dir_all(dependency.join("src"))
+        .expect("Git dependency source directory should be writable");
+    fs::create_dir_all(remote.join("src"))
+        .expect("registry dependency source directory should be writable");
+    fs::create_dir_all(&registry).expect("registry directory should be writable");
+
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nentry = \"src/lib.flux\"\n\n[dependencies]\nremote = \"~1.2.0\"\n",
+    )
+    .expect("Git dependency manifest should be writable");
+    fs::write(
+        dependency.join("src/lib.flux"),
+        "import \"pkg:remote/src/lib.flux\"\npub fn dependencyValue() -> i64 { remoteValue() }\n",
+    )
+    .expect("Git dependency source should be writable");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&dependency)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "--quiet"]);
+    git(&["config", "user.email", "flux-tests@example.test"]);
+    git(&["config", "user.name", "Flux Tests"]);
+    git(&["add", "."]);
+    git(&["commit", "--quiet", "-m", "package"]);
+
+    fs::write(
+        app.join("flux.toml"),
+        format!(
+            "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = {{ git = {:?}, rev = \"HEAD\" }}\n",
+            dependency.to_string_lossy()
+        ),
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:dep/src/lib.flux\"\nfn main() -> i64 { dependencyValue() }\n",
+    )
+    .expect("app source should be writable");
+
+    fs::write(
+        remote.join("flux.toml"),
+        "[package]\nname = \"remote\"\nversion = \"1.2.5\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("registry dependency manifest should be writable");
+    fs::write(
+        remote.join("src/lib.flux"),
+        "pub fn remoteValue() -> i64 { 42 }\n",
+    )
+    .expect("registry dependency source should be writable");
+    let archive = root.join("remote-1.2.5.fluxpkg");
+    let hash = fluxc::package_ecosystem::create_fluxpkg(&remote, &archive)
+        .expect("registry dependency archive should be reproducible");
+    let cached_archive = cache.join("sha256").join(format!("{hash}.fluxpkg"));
+    fs::create_dir_all(cached_archive.parent().expect("cache archive has parent"))
+        .expect("package cache directory should be writable");
+    fs::copy(&archive, &cached_archive).expect("registry archive should be cacheable");
+
+    let fallback_hash = "1".repeat(64);
+    for (version, sha256) in [
+        ("1.2.5", hash.as_str()),
+        ("1.4.0", fallback_hash.as_str()),
+    ] {
+        fs::write(
+            registry.join(format!("{version}.toml")),
+            format!(
+                "format_version = 1\npackage = \"remote\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/remote\"\nversion = \"{version}\"\nflux = \"*\"\nasset = \"https://invalid.example/remote-{version}.fluxpkg\"\nsha256 = \"{sha256}\"\nyanked = false\n"
+            ),
+        )
+        .expect("registry metadata should be writable");
+    }
+
+    let lock = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lock")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", root.join("registry"))
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("flux lock should run");
+    assert!(
+        lock.status.success(),
+        "Git/registry lock failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let source = fs::read_to_string(app.join("flux.lock")).expect("lockfile should be readable");
+    assert!(source.contains("source = \"registry:https://github.com/flux-lang/remote#1.2.5\""));
+    assert!(source.contains("version = \"1.2.5\""));
+    assert!(
+        !source.contains("version = \"1.4.0\""),
+        "the transitive Git requirement must participate in resolution: {source}"
+    );
+
+    fs::write(
+        registry.join("1.2.6.toml"),
+        format!(
+            "format_version = 1\npackage = \"remote\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/remote\"\nversion = \"1.2.6\"\nflux = \"*\"\nasset = \"https://invalid.example/remote-1.2.6.fluxpkg\"\nsha256 = \"{}\"\nyanked = false\n",
+            fallback_hash
+        ),
+    )
+    .expect("new registry metadata should be writable");
+    let outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("outdated")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", root.join("registry"))
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("flux outdated should run");
+    assert!(
+        outdated.status.success(),
+        "Git-transitive registry outdated check failed: {}",
+        String::from_utf8_lossy(&outdated.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&outdated.stdout)
+            .contains("outdated: remote registry 1.2.5 -> 1.2.6"),
+        "Git-transitive registry requirement must participate in online resolution: {}",
+        String::from_utf8_lossy(&outdated.stdout)
+    );
+
+    let check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .arg("--locked")
+        .env_remove("FLUX_REGISTRY_DIR")
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("locked package check should run");
+    assert!(
+        check.status.success(),
+        "locked Git-transitive registry import failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn git_dependency_locks_commit_and_replays_cached_source() {
     let root = std::env::temp_dir().join(format!("flux-git-dependency-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
