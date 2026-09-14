@@ -1344,6 +1344,12 @@ pub fn emit_c_for_target_with_source_metadata(
             "net.* APIs require a desktop/server target",
         ));
     }
+    if target != NativeTarget::Linux && runtime_usage.contains("flux__preferences_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "preferences.* currently requires the Linux desktop/server target",
+        ));
+    }
     if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1746,10 +1752,11 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_remove_directories(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#include <errno.h>\n");
     }
-    if uses_background || runtime_usage.contains("flux__fs_") {
+    if uses_background || runtime_usage.contains("flux__fs_") || runtime_usage.contains("flux__preferences_") {
         out.push_str("#include <sys/types.h>\n");
     }
     if uses_background {
@@ -1789,10 +1796,11 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__process_pid(")
         || runtime_usage.contains("flux__process_parent_pid(")
         || runtime_usage.contains("flux__fs_")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#include <unistd.h>\n");
     }
-    if runtime_usage.contains("flux__fs_") {
+    if runtime_usage.contains("flux__fs_") || runtime_usage.contains("flux__preferences_") {
         out.push_str("#include <sys/stat.h>\n");
     }
     if runtime_usage.contains("flux__fs_remove_directories(")
@@ -6214,6 +6222,115 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
 
+    if runtime_usage.contains("flux__preferences_") {
+        out.push_str(
+            r#"static const char *flux__preferences_path(void) {
+    static char path[4096];
+    static char directory[4096];
+    const char *override = getenv("FLUX_PREFERENCES_PATH");
+    if (override != NULL && override[0] != '\0') {
+        if (strlen(override) >= sizeof(path)) return NULL;
+        memcpy(path, override, strlen(override) + 1);
+        return path;
+    }
+    const char *base = getenv("XDG_CONFIG_HOME");
+    if (base == NULL || base[0] == '\0') {
+        const char *home = getenv("HOME");
+        if (home == NULL || home[0] == '\0') return NULL;
+        if (snprintf(directory, sizeof(directory), "%s/.config", home) >= (int)sizeof(directory)) return NULL;
+        (void)mkdir(directory, 0700);
+        if (snprintf(directory, sizeof(directory), "%s/.config/flux", home) >= (int)sizeof(directory)) return NULL;
+        base = directory;
+        (void)mkdir(base, 0700);
+    } else {
+        if (snprintf(directory, sizeof(directory), "%s/flux", base) >= (int)sizeof(directory)) return NULL;
+        base = directory;
+        (void)mkdir(base, 0700);
+    }
+    if (snprintf(path, sizeof(path), "%s/preferences", base) >= (int)sizeof(path)) return NULL;
+    return path;
+}
+static const char *flux__preferences_validate_key(const char *key) {
+    if (key == NULL || key[0] == '\0' || strlen(key) > 1024) return "preference key is empty or too long";
+    for (const unsigned char *cursor = (const unsigned char *)key; *cursor != 0; ++cursor) {
+        if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference key contains a forbidden control character";
+    }
+    return NULL;
+}
+static const char *flux__preferences_get(const char *key, const char *fallback, void (*callback)(const char *)) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL || fallback == NULL || callback == NULL) return invalid == NULL ? "invalid preference read arguments" : invalid;
+    const char *path = flux__preferences_path();
+    if (path == NULL) return "preference path is unavailable";
+    FILE *file = fopen(path, "r");
+    if (file == NULL && errno != ENOENT) return "failed to open preferences";
+    char line[65538];
+    char value[65537];
+    bool found = false;
+    if (file != NULL) {
+        while (fgets(line, sizeof(line), file) != NULL) {
+            size_t length = strlen(line);
+            if (length == 0 || line[length - 1] != '\n') { fclose(file); return "preference record is too long or malformed"; }
+            line[--length] = '\0';
+            if (length < 3 || line[1] != '\t') continue;
+            char *separator = strchr(line + 2, '\t');
+            if (separator == NULL) continue;
+            *separator = '\0';
+            if (strcmp(line + 2, key) != 0) continue;
+            if (line[0] == 'D') { found = false; continue; }
+            if (line[0] != 'S') continue;
+            const char *stored = separator + 1;
+            if (strlen(stored) >= sizeof(value)) { fclose(file); return "preference value is too long"; }
+            memcpy(value, stored, strlen(stored) + 1);
+            found = true;
+        }
+        if (ferror(file) || fclose(file) != 0) return "failed to read preferences";
+    }
+    callback(found ? value : fallback);
+    return NULL;
+}
+static const char *flux__preferences_append(const char *record, size_t length) {
+    const char *path = flux__preferences_path();
+    if (path == NULL) return "preference path is unavailable";
+    FILE *file = fopen(path, "a");
+    if (file == NULL) return "failed to open preferences for writing";
+    bool ok = fwrite(record, 1, length, file) == length && fflush(file) == 0 && fclose(file) == 0;
+    return ok ? NULL : "failed to write preferences";
+}
+static const char *flux__preferences_set(const char *key, const char *value) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL) return invalid;
+    if (value == NULL || strlen(value) > 65535) return "preference value is empty or too long";
+    for (const unsigned char *cursor = (const unsigned char *)value; *cursor != 0; ++cursor) {
+        if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference value contains a forbidden control character";
+    }
+    size_t key_length = strlen(key);
+    size_t value_length = strlen(value);
+    if (key_length > SIZE_MAX - value_length - 5) return "preference record is too long";
+    size_t record_length = key_length + value_length + 5;
+    char *record = malloc(record_length);
+    if (record == NULL) return "failed to allocate preference record";
+    int written = snprintf(record, record_length, "S\t%s\t%s\n", key, value);
+    const char *result = written < 0 || (size_t)written != record_length - 1 ? "failed to format preference record" : flux__preferences_append(record, record_length - 1);
+    free(record);
+    return result;
+}
+static const char *flux__preferences_remove(const char *key) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL) return invalid;
+    size_t key_length = strlen(key);
+    if (key_length > SIZE_MAX - 4) return "preference record is too long";
+    size_t record_length = key_length + 4;
+    char *record = malloc(record_length);
+    if (record == NULL) return "failed to allocate preference record";
+    int written = snprintf(record, record_length, "D\t%s\n", key);
+    const char *result = written < 0 || (size_t)written != record_length - 1 ? "failed to format preference record" : flux__preferences_append(record, record_length - 1);
+    free(record);
+    return result;
+}
+"#,
+        );
+    }
     if runtime_usage.contains("flux__str_length(") {
         out.push_str("static inline int64_t flux__str_length(const char *value) { if (value == NULL) { fputs(\"Flux runtime error: null string value\\n\", stderr); abort(); } const unsigned char *cursor = (const unsigned char *)value; uint64_t count = 0; while (*cursor != 0) { unsigned char lead = *cursor; size_t width = 0; uint32_t codepoint = 0; if (lead < 0x80u) { width = 1; codepoint = lead; } else if (lead >= 0xC2u && lead <= 0xDFu) { width = 2; codepoint = (uint32_t)(lead & 0x1Fu); } else if (lead >= 0xE0u && lead <= 0xEFu) { width = 3; codepoint = (uint32_t)(lead & 0x0Fu); } else if (lead >= 0xF0u && lead <= 0xF4u) { width = 4; codepoint = (uint32_t)(lead & 0x07u); } else { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } for (size_t index = 1; index < width; ++index) { unsigned char continuation = cursor[index]; if ((continuation & 0xC0u) != 0x80u) { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } codepoint = (codepoint << 6) | (uint32_t)(continuation & 0x3Fu); } if ((width == 3 && codepoint < 0x800u) || (width == 4 && codepoint < 0x10000u) || codepoint > 0x10FFFFu || (codepoint >= 0xD800u && codepoint <= 0xDFFFu)) { fputs(\"Flux runtime error: invalid UTF-8 string\\n\", stderr); abort(); } cursor += width; if (count == UINT64_MAX) { fputs(\"Flux runtime error: string length exceeds i64 range\\n\", stderr); abort(); } count += 1; } if (count > (uint64_t)INT64_MAX) { fputs(\"Flux runtime error: string length exceeds i64 range\\n\", stderr); abort(); } return (int64_t)count; }\n");
     }
@@ -32613,6 +32730,26 @@ fn emit_qualified_call(
     signatures: &Signatures,
 ) -> Result<(String, Vec<Type>, Option<String>), Diagnostic> {
     let name = crate::builtin_names::qualified_impl(namespace, name);
+    if namespace == "preferences" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid preferences call reached code generation"));
+        }
+        let helper = match name {
+            "get" if args.len() == 3 => "flux__preferences_get",
+            "set" if args.len() == 2 => "flux__preferences_set",
+            "remove" if args.len() == 1 => "flux__preferences_remove",
+            _ => return Err(diag(span, "invalid preferences call reached code generation")),
+        };
+        let values = args
+            .iter()
+            .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok((
+            format!("{helper}({})", values.join(", ")),
+            vec![Type::Error],
+            None,
+        ));
+    }
     if namespace == "str" {
         if !named_args.is_empty() {
             return Err(diag(span, "invalid str call reached code generation"));

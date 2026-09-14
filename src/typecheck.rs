@@ -7423,6 +7423,65 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "preferences" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("preferences.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "get" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("preferences.get expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let key = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &key, "preferences.get key")?;
+                let fallback = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &fallback, "preferences.get fallback")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(args[2].span, &expected, &callback, "preferences.get callback")?;
+                return Ok(vec![Type::Error]);
+            }
+            "set" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("preferences.set expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (index, label) in [(0, "key"), (1, "value")] {
+                    let actual = type_of_expr(&args[index], env, signatures)?;
+                    require_type(args[index].span, &Type::Str, &actual, &format!("preferences.set {label}"))?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            "remove" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("preferences.remove expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let key = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &key, "preferences.remove key")?;
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("preferences module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "process" {
         if !named_args.is_empty() {
             return Err(diag(

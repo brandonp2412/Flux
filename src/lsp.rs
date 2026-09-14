@@ -1206,6 +1206,16 @@ fn add_qualified_namespace_completions(
     namespace: &str,
     program: &crate::ast::Program,
 ) -> bool {
+    if namespace == "preferences" {
+        for (label, detail) in [
+            ("get", "fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error"),
+            ("set", "fn preferences.set(key: str, value: str) -> error"),
+            ("remove", "fn preferences.remove(key: str) -> error"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
+        return true;
+    }
     if namespace == "str" {
         push_completion_item(items, seen, "length", 3, "fn str.length(value: str) -> i64");
         push_completion_item(
@@ -3600,6 +3610,35 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 ));
+            }
+        }
+        if namespace == "preferences" {
+            match member {
+                "get" => {
+                    return Some(signature_help_for_builtin(
+                        "preferences.get",
+                        &["key: str", "fallback: str", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "set" => {
+                    return Some(signature_help_for_builtin(
+                        "preferences.set",
+                        &["key: str", "value: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "remove" => {
+                    return Some(signature_help_for_builtin(
+                        "preferences.remove",
+                        &["key: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                _ => {}
             }
         }
         if namespace == "process" {
@@ -8694,6 +8733,30 @@ mod tests {
         .expect("string slice should have signature help")
         .to_json();
         assert!(help.contains("fn str.slice(value: str, start: i64, end: i64, callback: fn(str) -> void) -> error"));
+    }
+
+    #[test]
+    fn signature_help_supports_preferences_capabilities() {
+        let uri = "file:///tmp/preferences-signatures.flux";
+        let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    preferences.get(\"theme\", \"light\", show)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("preferences.get("))
+            .expect("preference call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("preferences.get(").unwrap() + "preferences.get(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("preference get should have signature help")
+        .to_json();
+        assert!(help.contains("fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error"));
     }
 
     #[test]

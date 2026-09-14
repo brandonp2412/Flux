@@ -15598,6 +15598,72 @@ fn main() -> i64 {
 }
 
 #[test]
+fn preferences_are_typed_bounded_and_linux_native() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let write_error: error = preferences.set("theme", "dark")
+    let read_error: error = preferences.get("theme", "light", show)
+    let remove_error: error = preferences.remove("theme")
+    print(write_error)
+    print(read_error)
+    print(remove_error)
+    return 0
+}
+"#;
+
+    check_source(source).expect("preferences should typecheck");
+    let generated = compile_to_c(source).expect("preferences should lower on Linux");
+    assert!(generated.contains("flux__preferences_get("));
+    assert!(generated.contains("flux__preferences_set("));
+    assert!(generated.contains("flux__preferences_remove("));
+    assert!(generated.contains("FLUX_PREFERENCES_PATH"));
+    assert!(generated.contains("S\\t%s\\t%s\\n"));
+
+    let root = std::env::temp_dir().join(format!("flux-preferences-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("preferences fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("preferences source should be writable");
+    let binary = root.join("preferences-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("preferences binary should build");
+    assert!(
+        built.status.success(),
+        "preferences build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let preference_path = root.join("preferences.log");
+    let run = Command::new(&binary)
+        .env("FLUX_PREFERENCES_PATH", &preference_path)
+        .output()
+        .expect("preferences binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "dark\nnil\nnil\nnil\n");
+    assert!(fs::read_to_string(&preference_path)
+        .expect("preference log should be readable")
+        .contains("D\ttheme\n"));
+    let _ = fs::remove_dir_all(&root);
+
+    let program = fluxc::parser::parse(source).expect("preferences source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("preferences should typecheck");
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect_err("preferences should reject Android until a native settings store is defined");
+    assert!(android.message.contains("preferences.* currently requires the Linux"));
+}
+
+#[test]
 fn accepts_multiline_string_literals_with_indent_normalization() {
     let source = r####"
 fn main() -> i64 {
