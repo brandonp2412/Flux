@@ -457,6 +457,66 @@ app Screen(title: "Accessible Windows")
 }
 
 #[test]
+fn windows_backend_lowers_native_colors_alignment_and_minimum_layout() {
+    let source = r##"
+view Screen {
+    state foreground: str = "accent"
+    state background: str = "#102030"
+    state raised: bool = false
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Styled"
+        color: foreground
+        backgroundColor: background
+        textAlign: "center"
+        minWidth: 180
+        minHeight: 44
+        alignX: "center"
+        alignY: "end"
+    Button action at 2,1
+        text: "Change"
+        backgroundColor: "surfaceRaised"
+        onPress: raised => !raised
+}
+app Screen(title: "Styled Windows")
+"##;
+    let program = fluxc::parser::parse(source).expect("Windows styling source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows styling source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows styling source should lower to native Win32 C");
+
+    assert!(generated.contains("static bool flux__win_parse_ui_color"));
+    assert!(generated.contains("GetSysColor(COLOR_HIGHLIGHT)"));
+    assert!(generated.contains("CreateSolidBrush(next)"));
+    assert!(
+        generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORBTN:")
+    );
+    assert!(
+        generated.contains(
+            "flux__win_foreground_title = flux__win_text_color(flux__ui_state_foreground)"
+        )
+    );
+    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_title"));
+    assert!(generated.contains("flux__win_set_background(&flux__win_background_brush_action"));
+    assert!(generated.contains("WS_CHILD | WS_VISIBLE | SS_CENTER"));
+    assert!(generated.contains("minimum_width = flux__win_scale(INT64_C(180))"));
+    assert!(generated.contains("minimum_height = flux__win_scale(INT64_C(44))"));
+    assert!(generated.contains("int control_width = 1 == 3 ? available_width : minimum_width"));
+    assert!(generated.contains("if (1 == 1) x += (available_width - control_width) / 2"));
+    assert!(generated.contains("if (2 == 1) y += (available_height - control_height) / 2; else if (2 == 2) y += available_height - control_height"));
+    assert!(generated.contains("DeleteObject(flux__win_background_brush_title)"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
 fn windows_backend_uses_native_keyboard_focus_and_autofocus_semantics() {
     let source = r#"
 fn activated() -> void {
