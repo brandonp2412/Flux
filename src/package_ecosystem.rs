@@ -2340,6 +2340,46 @@ mod tests {
     }
 
     #[test]
+    fn registry_provider_backends_preserve_resolution_identity() {
+        let root = temp_root("registry-provider-equivalence");
+        let app = root.join("app");
+        let registry = root.join("registry");
+        let package = registry.join("demo");
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            app.join("flux.toml"),
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndemo = \"^1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        fs::write(package.join("versions.txt"), "1.0.0\n1.2.0\n").unwrap();
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for version in ["1.0.0", "1.2.0"] {
+            fs::write(
+                package.join(format!("{version}.toml")),
+                format!(
+                    "format_version = 1\npackage = \"demo\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/demo\"\nversion = \"{version}\"\nflux = \"*\"\nasset = \"https://mirror.example/demo-{version}.fluxpkg\"\nsha256 = \"{hash}\"\nyanked = false\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let directory = DirectoryRegistryProvider::new(&registry);
+        let static_provider =
+            StaticRegistryProvider::new(format!("file://{}", registry.display())).unwrap();
+        let directory_graph = resolve_package_registry_graph(&app, &directory).unwrap();
+        let static_graph = resolve_package_registry_graph(&app, &static_provider).unwrap();
+        assert_eq!(directory_graph, static_graph);
+        assert_eq!(directory_graph.releases["demo"].version, "1.2.0");
+        assert_eq!(
+            directory_graph.releases["demo"].asset,
+            "https://mirror.example/demo-1.2.0.fluxpkg"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn registry_graph_fetch_and_vendor_are_transitive_and_offline() {
         let _guard = CACHE_ENV_LOCK.lock().unwrap();
         let root = temp_root("registry-graph-vendor");
