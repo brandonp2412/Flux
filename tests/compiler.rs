@@ -132,7 +132,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_SIZE"));
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
-    assert!(generated.contains("EN_CHANGE && !flux__win_refreshing"));
+    assert!(generated.contains("static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_check_2"));
     assert!(generated.contains("flux__win_check_3"));
