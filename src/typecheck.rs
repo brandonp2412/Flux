@@ -5581,6 +5581,24 @@ fn type_of_partial_application(
     })
 }
 
+fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(_) => true,
+        ExprKind::Index {
+            base,
+            optional: false,
+            ..
+        }
+        | ExprKind::Slice { base, .. } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        ExprKind::Field {
+            base,
+            optional: false,
+            ..
+        } => is_zero_copy_borrow_rooted_in_named_storage(base),
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -6883,13 +6901,13 @@ pub fn type_of_expr(
                     Ok(Type::Bool)
                 }
                 UnaryOp::Borrow => {
-                    if !matches!(inner.kind, ExprKind::Var(_)) {
+                    if !is_zero_copy_borrow_rooted_in_named_storage(inner) {
                         return Err(diag(
                             expr.span,
-                            "borrow currently requires a named non-copy binding",
+                            "borrow currently requires named list storage or a zero-copy view rooted in it",
                         )
                         .with_note(
-                            "bind the owner first, then borrow that binding so its inferred lifetime can be tracked",
+                            "bind the owner first, then borrow that binding or one of its zero-copy indexing/slicing/property views so the inferred lifetime has stable storage",
                         ));
                     }
                     if !matches!(signatures.canonical_type(&ty), Type::List(_)) {

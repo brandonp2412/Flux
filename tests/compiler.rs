@@ -12538,7 +12538,7 @@ fn main() -> i64 {
     let error = check_source(temporary).expect_err("temporary storage must not be borrowed");
     assert!(error
         .message
-        .contains("borrow currently requires a named non-copy binding"));
+        .contains("borrow currently requires named list storage or a zero-copy view rooted in it"));
 
     let copy = r#"
 fn main() -> i64 {
@@ -12584,6 +12584,88 @@ fn main() -> i64 {
             .any(|error| error.message.contains("use of moved non-copy binding 'values'")),
         "borrowing a moved owner should report its moved-state read: {errors:?}"
     );
+}
+
+#[test]
+fn explicit_list_borrow_accepts_nested_projection_and_tracks_root_owner() {
+    let live = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    let view: i64[] = borrow rows[0]
+    let destination: i64[][] = rows
+    print(view[1])
+    print(destination[1][0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("a borrowed nested-list projection must keep the root owner live");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot move non-copy binding 'rows' while borrowed view 'view' is still live")
+    }));
+
+    let dead = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40]]
+    let view: i64[] = borrow rows[0]
+    print(view[1])
+    let destination: i64[][] = rows
+    print(destination[1][0])
+    return 0
+}
+"#;
+    check_source(dead).expect("the root owner may move after the explicit projection borrow dies");
+    compile_to_c(dead).expect("explicit nested-list projection borrows should lower natively");
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(dead, SourceId::new(1214))
+        .expect("projection borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let lifetime = graph
+        .borrow_lifetimes()
+        .iter()
+        .find(|lifetime| lifetime.borrower == "view" && lifetime.source == "rows")
+        .expect("the projection borrow should retain root-owner provenance");
+    assert!(!lifetime.active_before.is_empty());
+    assert!(!lifetime.starts.is_empty());
+    assert!(!lifetime.ends.is_empty());
+}
+
+#[test]
+fn explicit_list_borrow_accepts_zero_copy_slice_and_property_views() {
+    let source = r#"
+fn main() -> i64 {
+    let rows: i64[][] = [[10, 20], [30, 40], [50, 60]]
+    let tail: i64[][] = borrow rows[1:]
+    print(tail[0][0])
+    let firstRow: i64[] = borrow rows.first
+    print(firstRow[1])
+    let destination: i64[][] = rows
+    print(destination[2][0])
+    return 0
+}
+"#;
+    check_source(source).expect("zero-copy slice/property projections rooted in named storage should be borrowable");
+    compile_to_c(source).expect("zero-copy projection borrows should remain descriptor-only in native lowering");
+}
+
+#[test]
+fn explicit_list_borrow_rejects_projection_from_temporary_storage() {
+    let source = r#"
+fn main() -> i64 {
+    let view: i64[] = borrow [[10, 20], [30, 40]][0]
+    print(view[0])
+    return 0
+}
+"#;
+    let error = check_source(source)
+        .expect_err("a projection from temporary list storage must not become an explicit borrow");
+    assert!(error
+        .message
+        .contains("borrow currently requires named list storage or a zero-copy view rooted in it"));
 }
 
 #[test]
