@@ -12141,7 +12141,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("for-loop source must be a list or set, got i64")
+            .contains("for-loop source must be a list, set, or map, got i64")
     );
 
     let indexed_range = r#"
@@ -44535,6 +44535,55 @@ fn main() -> i64 {
 "#;
     let error = check_source(missing_fallback).expect_err("map matches need a fallback");
     assert!(error.message.contains("non-exhaustive map match"));
+}
+
+#[test]
+fn map_indexing_returns_optional_values_and_uses_linear_key_lookup() {
+    let source = r#"
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 1, "two": 2}
+    let present: i64? = values["one"]
+    let missing: i64? = values["missing"]
+    print(present ?? -1)
+    print(missing ?? -1)
+    return 0
+}
+"#;
+    check_source(source).expect("map indexing should typecheck");
+    let generated = compile_to_c(source).expect("map indexing should lower natively");
+    assert!(generated.contains("struct flux__map"));
+    assert!(generated.contains("struct flux__optional_i64"));
+    assert!(generated.contains("flux_list_at_unchecked"));
+    assert!(generated.contains("strcmp("));
+
+    let wrong_key = r#"
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 1}
+    let result: i64? = values[1]
+    return 0
+}
+"#;
+    let error = check_source(wrong_key).expect_err("map indexing must check key types");
+    assert!(error.message.contains("map key"));
+}
+
+#[test]
+fn map_iteration_binds_keys_and_values_in_insertion_order() {
+    let source = r#"
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 1, "two": 2}
+    var total: i64 = 0
+    for key, value in values:
+        print key
+        total = total + value
+    return total
+}
+"#;
+    check_source(source).expect("map iteration should typecheck");
+    let generated = compile_to_c(source).expect("map iteration should lower natively");
+    assert!(generated.contains("struct flux__map flux__iter_source_"));
+    assert!(generated.contains(".keys.len"));
+    assert!(generated.contains(".values"));
 }
 
 #[test]

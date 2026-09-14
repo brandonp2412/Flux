@@ -28718,12 +28718,19 @@ fn emit_block(
                 ..
             } => {
                 let source = emit_expr(iterable, env, signatures)?;
-                let (Type::List(element) | Type::Set(element)) = signatures.canonical_type(&source.ty) else {
-                    return Err(diag(
-                        stmt.span,
-                        "for-loop code generation requires a list or set source",
-                    ));
+                let source_ty = signatures.canonical_type(&source.ty);
+                let (map_key, element) = match source_ty {
+                    Type::List(element) | Type::Set(element) => (None, element),
+                    Type::Map(key, value) => (Some(key), value),
+                    _ => {
+                        return Err(diag(
+                            stmt.span,
+                            "for-loop code generation requires a list, set, or map source",
+                        ));
+                    }
                 };
+                let is_map = map_key.is_some();
+                let source_c = if is_map { "struct flux__map" } else { "struct flux__list" };
                 let source_name = format!("flux__iter_source_{}", *temp_counter);
                 *temp_counter += 1;
                 let index_is_live = index_name.as_ref().is_some_and(|index| {
@@ -28740,20 +28747,48 @@ fn emit_block(
                 let item_c = local_c_name(name);
                 let element_c = c_type(&element, signatures);
                 out.push_str(&format!(
-                    "{pad}struct flux__list {source_name} = {};\n",
+                    "{pad}{source_c} {source_name} = {};\n",
                     source.code
                 ));
                 out.push_str(&format!(
-                    "{pad}for (int64_t {index_c} = 0; {index_c} < (int64_t){source_name}.len; ++{index_c}) {{\n"
+                    "{pad}for (int64_t {index_c} = 0; {index_c} < (int64_t){source_name}.{}.len; ++{index_c}) {{\n",
+                    if is_map { "keys" } else { "len" }
                 ));
-                if item_is_live {
+                if index_is_live && let Some(index_name) = index_name {
+                    let key_type = map_key
+                        .as_ref()
+                        .map(|key| key.as_ref().clone())
+                        .unwrap_or(Type::I64);
+                    let key_c = c_type(&key_type, signatures);
+                    let key_source = if is_map {
+                        format!("{source_name}.keys")
+                    } else {
+                        source_name.clone()
+                    };
                     out.push_str(&format!(
-                        "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at_unchecked({source_name}, (size_t){index_c}, sizeof({element_c})));\n"
+                        "{pad}    {key_c} {} = *(({key_c} *)flux_list_at_unchecked({key_source}, (size_t){index_c}, sizeof({key_c})));\n",
+                        local_c_name(index_name)
+                    ));
+                }
+                if item_is_live {
+                    let value_source = if is_map {
+                        format!("{source_name}.values")
+                    } else {
+                        source_name.clone()
+                    };
+                    out.push_str(&format!(
+                        "{pad}    {element_c} {item_c} = *(({element_c} *)flux_list_at_unchecked({value_source}, (size_t){index_c}, sizeof({element_c})));\n"
                     ));
                 }
                 let mut nested = env.clone();
                 if index_is_live && let Some(index_name) = index_name {
-                    nested.insert(index_name.clone(), Type::I64);
+                    nested.insert(
+                        index_name.clone(),
+                        map_key
+                            .as_ref()
+                            .map(|key| key.as_ref().clone())
+                            .unwrap_or(Type::I64),
+                    );
                 }
                 if item_is_live {
                     nested.insert(name.clone(), *element);
@@ -31448,6 +31483,32 @@ fn emit_expr(
         } => {
             let base_value = emit_expr(base, env, signatures)?;
             let result_ty = type_of_expr(expr, env, signatures)?;
+            if !*optional && matches!(signatures.canonical_type(&base_value.ty), Type::Map(_, _)) {
+                let Type::Map(key, value) = signatures.canonical_type(&base_value.ty) else {
+                    unreachable!();
+                };
+                let index_value = emit_expr(index, env, signatures)?;
+                let result_c = c_type(&result_ty, signatures);
+                let key_c = c_type(&key, signatures);
+                let value_c = c_type(&value, signatures);
+                let base_c = c_type(&base_value.ty, signatures);
+                let base_name = format!("flux__map_index_base_{}_{}", expr.span.line, expr.span.column);
+                let key_name = format!("flux__map_index_key_{}_{}", expr.span.line, expr.span.column);
+                let result_name = format!("flux__map_index_result_{}_{}", expr.span.line, expr.span.column);
+                let equality = match signatures.canonical_type(&key) {
+                    Type::Str => format!("strcmp({key_name}, *((const char **)flux_list_at_unchecked({base_name}.keys, flux__map_index_i, sizeof({key_c})))) == 0"),
+                    Type::Bool | Type::I64 => format!("{key_name} == *(({key_c} *)flux_list_at_unchecked({base_name}.keys, flux__map_index_i, sizeof({key_c})))"),
+                    _ => return Err(diag(expr.span, "map indexing currently requires an i64, bool, or str key")),
+                };
+                let value_read = format!("*((({value_c} *)flux_list_at_unchecked({base_name}.values, flux__map_index_i, sizeof({value_c}))))");
+                return Ok(EmittedExpr {
+                    code: format!(
+                        "__extension__ ({{ {base_c} {base_name} = {}; {key_c} {key_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; for (size_t flux__map_index_i = 0; flux__map_index_i < {base_name}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} {result_name}; }})",
+                        base_value.code, index_value.code
+                    ),
+                    ty: result_ty,
+                });
+            }
             if *optional {
                 let Type::Optional(inner) = signatures.canonical_type(&base_value.ty) else {
                     return Err(diag(

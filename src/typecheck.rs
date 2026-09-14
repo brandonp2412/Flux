@@ -4685,23 +4685,24 @@ fn check_block_all(
                 body,
                 ..
             } => {
-                let element_type = match type_of_expr(iterable, env, signatures) {
+                let (key_type, element_type) = match type_of_expr(iterable, env, signatures) {
                     Ok(iterable_type) => match signatures.canonical_type(&iterable_type) {
-                        Type::List(element) | Type::Set(element) => Some(*element),
+                        Type::List(element) | Type::Set(element) => (None, Some(*element)),
+                        Type::Map(key, value) => (Some(*key), Some(*value)),
                         actual => {
                             diagnostics.push(diag(
                                 iterable.span,
                                 &format!(
-                                    "for-loop source must be a list or set, got {}",
+                                    "for-loop source must be a list, set, or map, got {}",
                                     actual.name()
                                 ),
                             ));
-                            None
+                            (None, None)
                         }
                     },
                     Err(diagnostic) => {
                         diagnostics.push(diagnostic);
-                        None
+                        (None, None)
                     }
                 };
                 let mut nested = env.clone();
@@ -4713,7 +4714,10 @@ fn check_block_all(
                             &format!("loop index '{index_name}' shadows an existing binding"),
                         ));
                     } else {
-                        nested.insert(index_name.clone(), Type::I64);
+                        nested.insert(
+                            index_name.clone(),
+                            key_type.clone().unwrap_or(Type::I64),
+                        );
                     }
                 }
                 if env.contains_key(name) {
@@ -6048,6 +6052,18 @@ pub fn type_of_expr(
         } => {
             let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
             let index_ty = type_of_expr(index, env, signatures)?;
+            if !*optional {
+                if let Type::Map(key, value) = &base_ty {
+                    require_type(index.span, key, &index_ty, "map key")?;
+                    if !matches!(value.as_ref(), Type::I64 | Type::Bool | Type::Str) {
+                        return Err(diag(
+                            expr.span,
+                            "map indexing currently requires an i64, bool, or str value",
+                        ));
+                    }
+                    return Ok(Type::Optional(value.clone()));
+                }
+            }
             require_type(index.span, &Type::I64, &index_ty, "list index")?;
             if *optional {
                 let Type::Optional(inner) = base_ty else {
