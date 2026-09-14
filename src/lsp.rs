@@ -875,12 +875,7 @@ fn completion_items_at_cursor_cached(
         return items;
     };
     add_named_argument_completions(
-        &mut items,
-        &mut seen,
-        source,
-        line_index,
-        character,
-        encoding,
+        &mut items, &mut seen, source, line_index, character, encoding,
     );
     let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
         return items;
@@ -898,9 +893,11 @@ fn completion_items_at_cursor_cached(
         {
             if matches!(
                 crate::ast::Type::parse(&type_name),
-                Some(crate::ast::Type::List(_)
-                    | crate::ast::Type::Set(_)
-                    | crate::ast::Type::Map(_, _))
+                Some(
+                    crate::ast::Type::List(_)
+                        | crate::ast::Type::Set(_)
+                        | crate::ast::Type::Map(_, _)
+                )
             ) {
                 add_list_property_completions(&mut items, &mut seen, &type_name);
             } else {
@@ -1208,7 +1205,10 @@ fn add_qualified_namespace_completions(
 ) -> bool {
     if namespace == "preferences" {
         for (label, detail) in [
-            ("get", "fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error"),
+            (
+                "get",
+                "fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error",
+            ),
             ("set", "fn preferences.set(key: str, value: str) -> error"),
             ("remove", "fn preferences.remove(key: str) -> error"),
         ] {
@@ -1218,13 +1218,34 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "crypto" {
         for (label, detail) in [
-            ("sha256", "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error"),
-            ("sha384", "fn crypto.sha384(value: str, callback: fn(str) -> void) -> error"),
-            ("sha512", "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error"),
-            ("hmacSha256", "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error"),
-            ("hmacSha512", "fn crypto.hmacSha512(key: str, value: str, callback: fn(str) -> void) -> error"),
-            ("randomHex", "fn crypto.randomHex(byteCount: i64, callback: fn(str) -> void) -> error"),
-            ("equal", "fn crypto.equal(left: str, right: str) -> (bool, error)"),
+            (
+                "sha256",
+                "fn crypto.sha256(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "sha384",
+                "fn crypto.sha384(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "sha512",
+                "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "hmacSha256",
+                "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "hmacSha512",
+                "fn crypto.hmacSha512(key: str, value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "randomHex",
+                "fn crypto.randomHex(byteCount: i64, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "equal",
+                "fn crypto.equal(left: str, right: str) -> (bool, error)",
+            ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
@@ -1232,11 +1253,26 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "tls" {
         for (label, detail) in [
-            ("wrap", "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)"),
-            ("listen", "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)"),
-            ("connect", "fn tls.connect(socket: i64, serverName: str) -> (i64, error)"),
-            ("accept", "fn tls.accept(socket: i64, certificatePath: str, privateKeyPath: str) -> (i64, error)"),
-            ("read", "fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"),
+            (
+                "wrap",
+                "fn tls.wrap(socket: i64, serverName: str, caFile: str) -> (i64, error)",
+            ),
+            (
+                "listen",
+                "fn tls.listen(socket: i64, certificate: str, key: str) -> (i64, error)",
+            ),
+            (
+                "connect",
+                "fn tls.connect(socket: i64, serverName: str) -> (i64, error)",
+            ),
+            (
+                "accept",
+                "fn tls.accept(socket: i64, certificatePath: str, privateKeyPath: str) -> (i64, error)",
+            ),
+            (
+                "read",
+                "fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+            ),
             ("write", "fn tls.write(session: i64, text: str) -> error"),
             ("close", "fn tls.close(session: i64) -> error"),
         ] {
@@ -1247,8 +1283,14 @@ fn add_qualified_namespace_completions(
     if namespace == "websocket" {
         for (label, detail) in [
             ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
-            ("readText", "fn websocket.readText(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)"),
-            ("writeText", "fn websocket.writeText(session: i64, value: str) -> error"),
+            (
+                "readText",
+                "fn websocket.readText(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
+            ),
+            (
+                "writeText",
+                "fn websocket.writeText(session: i64, value: str) -> error",
+            ),
             ("close", "fn websocket.close(session: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -1345,6 +1387,10 @@ fn add_qualified_namespace_completions(
             (
                 "writeBytesFrom",
                 "fn net.writeBytesFrom(socket: i64, bytes: i64[], offset: i64) -> (i64, bool, error)",
+            ),
+            (
+                "writeBytesTimeout",
+                "fn net.writeBytesTimeout(socket: i64, bytes: i64[], timeoutMillis: i64) -> (i64, error)",
             ),
             (
                 "writeTimeout",
@@ -2247,13 +2293,17 @@ fn leading_type_annotation(input: &str) -> Option<&str> {
             b')' => paren_depth = paren_depth.saturating_sub(1),
             b'=' | b',' if angle_depth == 0 && paren_depth == 0 => {
                 let candidate = input[..index].trim();
-                return crate::ast::Type::parse(candidate).is_some().then_some(candidate);
+                return crate::ast::Type::parse(candidate)
+                    .is_some()
+                    .then_some(candidate);
             }
             _ => {}
         }
     }
     let candidate = input.trim();
-    crate::ast::Type::parse(candidate).is_some().then_some(candidate)
+    crate::ast::Type::parse(candidate)
+        .is_some()
+        .then_some(candidate)
 }
 
 fn struct_field_for_position<'a>(
@@ -2975,14 +3025,12 @@ fn signature_help_for_document_cached(
                 "error",
             ),
             "list" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
-            "size" | "modified" | "modifiedUnixMillis" | "accessed" | "changed"
-            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
-            | "blockSize" | "allocatedSize" => (vec!["path: str"], "(i64, error)"),
+            "size" | "modified" | "modifiedUnixMillis" | "accessed" | "changed" | "permissions"
+            | "owner" | "group" | "inode" | "device" | "hardLinks" | "blockSize"
+            | "allocatedSize" => (vec!["path: str"], "(i64, error)"),
             "truncate" => (vec!["path: str", "size: i64"], "error"),
             "setPermissions" => (vec!["path: str", "permissions: i64"], "error"),
-            "setModified" | "setAccessed" => {
-                (vec!["path: str", "unixMillis: i64"], "error")
-            }
+            "setModified" | "setAccessed" => (vec!["path: str", "unixMillis: i64"], "error"),
             "setOwner" => (vec!["path: str", "owner: i64"], "error"),
             "setGroup" => (vec!["path: str", "group: i64"], "error"),
             _ => return None,
@@ -3249,6 +3297,14 @@ fn signature_help_for_document_cached(
                         "net.sendBytesProgress",
                         &["socket: i64", "bytes: i64[]", "offset: i64"],
                         "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendBytesWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.writeBytesTimeout",
+                        &["socket: i64", "bytes: i64[]", "timeoutMillis: i64"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }
@@ -3727,7 +3783,12 @@ fn signature_help_for_document_cached(
             if member == "slice" {
                 return Some(signature_help_for_builtin(
                     "str.slice",
-                    &["value: str", "start: i64", "end: i64", "callback: fn(str) -> void"],
+                    &[
+                        "value: str",
+                        "start: i64",
+                        "end: i64",
+                        "callback: fn(str) -> void",
+                    ],
                     "error",
                     active_parameter,
                 ));
@@ -3804,24 +3865,54 @@ fn signature_help_for_document_cached(
         }
         if namespace == "tls" {
             let (label, parameters, returns) = match member {
-                "wrap" => ("tls.wrap", vec!["socket: i64", "serverName: str", "caFile: str"], "(i64, error)"),
-                "listen" => ("tls.listen", vec!["socket: i64", "certificate: str", "key: str"], "(i64, error)"),
-                "read" => ("tls.read", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
+                "wrap" => (
+                    "tls.wrap",
+                    vec!["socket: i64", "serverName: str", "caFile: str"],
+                    "(i64, error)",
+                ),
+                "listen" => (
+                    "tls.listen",
+                    vec!["socket: i64", "certificate: str", "key: str"],
+                    "(i64, error)",
+                ),
+                "read" => (
+                    "tls.read",
+                    vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"],
+                    "(i64, error)",
+                ),
                 "write" => ("tls.write", vec!["session: i64", "value: str"], "error"),
                 "close" => ("tls.close", vec!["session: i64"], "error"),
                 _ => return None,
             };
-            return Some(signature_help_for_builtin(label, &parameters, returns, active_parameter));
+            return Some(signature_help_for_builtin(
+                label,
+                &parameters,
+                returns,
+                active_parameter,
+            ));
         }
         if namespace == "websocket" {
             let (label, parameters, returns) = match member {
                 "accept" => ("websocket.accept", vec!["socket: i64"], "(i64, error)"),
-                "readText" => ("websocket.readText", vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"], "(i64, error)"),
-                "writeText" => ("websocket.writeText", vec!["session: i64", "value: str"], "error"),
+                "readText" => (
+                    "websocket.readText",
+                    vec!["session: i64", "maxBytes: i64", "callback: fn(str) -> void"],
+                    "(i64, error)",
+                ),
+                "writeText" => (
+                    "websocket.writeText",
+                    vec!["session: i64", "value: str"],
+                    "error",
+                ),
                 "close" => ("websocket.close", vec!["session: i64"], "error"),
                 _ => return None,
             };
-            return Some(signature_help_for_builtin(label, &parameters, returns, active_parameter));
+            return Some(signature_help_for_builtin(
+                label,
+                &parameters,
+                returns,
+                active_parameter,
+            ));
         }
         if namespace == "process" {
             match member {
@@ -5705,9 +5796,7 @@ fn visible_view_symbol_for_position<'a>(
                 .iter()
                 .enumerate()
                 .skip(view.line)
-                .find(|(_, candidate)| {
-                    candidate.trim() == "}" && leading_spaces(candidate) == 0
-                })
+                .find(|(_, candidate)| candidate.trim() == "}" && leading_spaces(candidate) == 0)
                 .is_some_and(|(end, _)| line <= end + 1)
     })?;
     database.symbols().iter().find(|symbol| {
@@ -6479,8 +6568,7 @@ fn hover_for_document_cached(
         character,
         encoding,
         database.program(),
-    )
-    {
+    ) {
         let hovered_name = identifier_at(line, byte).unwrap_or(&property);
         let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
         let hovered_span = SourceSpan::new(line_index + 1, hovered_start + 1, hovered_name.len());
@@ -7987,7 +8075,9 @@ mod tests {
         ))
         .to_json();
         assert!(file_items.contains("\"label\":\"read\""));
-        assert!(file_items.contains("fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"));
+        assert!(file_items.contains(
+            "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"
+        ));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
@@ -8033,7 +8123,10 @@ mod tests {
         ))
         .to_json();
         assert!(directory_items.contains("fn directory.exists(path: str) -> bool"));
-        assert!(directory_items.contains("fn directory.list(path: str, callback: fn(str) -> void) -> error"));
+        assert!(
+            directory_items
+                .contains("fn directory.list(path: str, callback: fn(str) -> void) -> error")
+        );
         assert!(directory_items.contains("fn directory.modified(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.owner(path: str) -> (i64, error)"));
         assert!(directory_items.contains("fn directory.group(path: str) -> (i64, error)"));
@@ -8398,7 +8491,10 @@ mod tests {
         let collection_source = "fn main() -> i64 {\n    let values: set<i64> = {1, 2}\n    let mapping: map<i64, str> = {1: \"one\"}\n    print(values.count)\n    print(mapping.empty)\n    return 0\n}\n";
         let collection_documents =
             HashMap::from([(hover_uri.to_string(), collection_source.to_string())]);
-        for (needle, expected) in [("values.count", "property count: i64"), ("mapping.empty", "property empty: bool")] {
+        for (needle, expected) in [
+            ("values.count", "property count: i64"),
+            ("mapping.empty", "property empty: bool"),
+        ] {
             let line_index = collection_source
                 .lines()
                 .position(|line| line.contains(needle))
@@ -8934,7 +9030,9 @@ mod tests {
         )
         .expect("string slice should have signature help")
         .to_json();
-        assert!(help.contains("fn str.slice(value: str, start: i64, end: i64, callback: fn(str) -> void) -> error"));
+        assert!(help.contains(
+            "fn str.slice(value: str, start: i64, end: i64, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]
@@ -8958,7 +9056,9 @@ mod tests {
         )
         .expect("preference get should have signature help")
         .to_json();
-        assert!(help.contains("fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error"));
+        assert!(help.contains(
+            "fn preferences.get(key: str, fallback: str, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]
@@ -8967,15 +9067,31 @@ mod tests {
         let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    crypto.sha512(\"abc\", show)\n    crypto.hmacSha256(\"key\", \"value\", show)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
-            ("crypto.sha512(", "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error"),
-            ("crypto.hmacSha256(", "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error"),
+            (
+                "crypto.sha512(",
+                "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "crypto.hmacSha256(",
+                "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error",
+            ),
         ] {
-            let line_index = source.lines().position(|line| line.contains(needle)).unwrap();
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap();
             let line = source.lines().nth(line_index).unwrap();
             let cursor = line.find(needle).unwrap() + needle.len();
-            let help = signature_help_for_document(uri, source, &documents, line_index, cursor, PositionEncoding::Utf8)
-                .expect("crypto call should have signature help")
-                .to_json();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("crypto call should have signature help")
+            .to_json();
             assert!(help.contains(expected));
         }
     }
@@ -9715,8 +9831,7 @@ mod tests {
             .position(|line| line.trim() == "uri.")
             .expect("URI completion line should exist");
         let line = completion_source.lines().nth(completion_line).unwrap();
-        let completion_documents =
-            HashMap::from([(uri.to_string(), completion_source.clone())]);
+        let completion_documents = HashMap::from([(uri.to_string(), completion_source.clone())]);
         let items = JsonValue::Array(completion_items_at_cursor(
             uri,
             &completion_source,
@@ -10211,7 +10326,9 @@ mod tests {
         )
         .expect("file.read should have signature help")
         .to_json();
-        assert!(help.contains("fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"));
+        assert!(help.contains(
+            "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]
@@ -11363,7 +11480,11 @@ mod tests {
         let mut start = 0i64;
         for token in chunks {
             line += token[0];
-            start = if token[0] == 0 { start + token[1] } else { token[1] };
+            start = if token[0] == 0 {
+                start + token[1]
+            } else {
+                token[1]
+            };
             if line == 4 && start == 4 {
                 found_text = token[3] == SemanticTokenKind::Type as i64;
             }

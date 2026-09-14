@@ -549,7 +549,12 @@ fn ffi_header_type_supported_inner(
             | Type::Record(_)
             | Type::Function { .. } => false,
         },
-        Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Record(_) | Type::Function { .. } => false,
+        Type::Void
+        | Type::List(_)
+        | Type::Set(_)
+        | Type::Map(_, _)
+        | Type::Record(_)
+        | Type::Function { .. } => false,
     }
 }
 
@@ -735,7 +740,14 @@ fn emit_c_header_function_type_typedefs(
                     collect_nested_function_types(&field.ty, signatures, types, visiting);
                 }
             }
-            Type::I64 | Type::Bool | Type::Str | Type::Error | Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) => {}
+            Type::I64
+            | Type::Bool
+            | Type::Str
+            | Type::Error
+            | Type::Void
+            | Type::List(_)
+            | Type::Set(_)
+            | Type::Map(_, _) => {}
         }
     }
 
@@ -1345,7 +1357,9 @@ pub fn emit_c_for_target_with_source_metadata(
         ));
     }
     if target == NativeTarget::Android
-        && (runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__crypto_") || runtime_usage.contains("flux__websocket_"))
+        && (runtime_usage.contains("flux__tls_")
+            || runtime_usage.contains("flux__crypto_")
+            || runtime_usage.contains("flux__websocket_"))
     {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -1687,6 +1701,7 @@ fn emit_runtime_prelude(
     uses_android: bool,
     uses_windows: bool,
 ) {
+    let uses_byte_timeout = runtime_usage.contains("flux__net_send_bytes_with_timeout(");
     let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(")
         || runtime_usage.contains("flux__net_http_serve_concurrent_limit(");
     let uses_worker_wait_any = runtime_usage.contains("flux__worker_wait_any(")
@@ -1781,7 +1796,10 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <errno.h>\n");
     }
-    if uses_background || runtime_usage.contains("flux__fs_") || runtime_usage.contains("flux__preferences_") {
+    if uses_background
+        || runtime_usage.contains("flux__fs_")
+        || runtime_usage.contains("flux__preferences_")
+    {
         out.push_str("#include <sys/types.h>\n");
     }
     if uses_background {
@@ -1790,6 +1808,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__time_")
         || runtime_usage.contains("flux__locale_format_date_time(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
@@ -1845,7 +1864,10 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <fcntl.h>\n");
     }
-    if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__tls_") || runtime_usage.contains("flux__websocket_") {
+    if runtime_usage.contains("flux__net_")
+        || runtime_usage.contains("flux__tls_")
+        || runtime_usage.contains("flux__websocket_")
+    {
         out.push_str("#include <limits.h>\n");
         if !runtime_usage.contains("flux__url_") {
             out.push_str("#include <strings.h>\n");
@@ -4631,6 +4653,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_tcp_accept_many_with_timeout(")
         || runtime_usage.contains("flux__net_tcp_accept_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
@@ -4758,10 +4781,12 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         out.push_str("static inline const char *flux__net_send_text(int64_t socket_handle, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; size_t length = strlen(text); if (socket_type == SOCK_DGRAM) { if (length > (size_t)SSIZE_MAX) return \"text is too large to send\"; ssize_t sent; do { sent = send((int)socket_handle, text, length, 0); } while (sent < 0 && errno == EINTR); return sent == (ssize_t)length ? NULL : \"failed to send text\"; } if (socket_type != SOCK_STREAM) return \"unsupported socket type\"; size_t offset = 0; while (offset < length) { size_t remaining = length - offset; size_t chunk = remaining > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : remaining; ssize_t sent; do { sent = send((int)socket_handle, text + offset, chunk, MSG_NOSIGNAL); } while (sent < 0 && errno == EINTR); if (sent <= 0) return \"failed to send text\"; offset += (size_t)sent; } return NULL; }\n");
     }
     if runtime_usage.contains("flux__net_send_text_with_timeout(")
+        || runtime_usage.contains("flux__net_send_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_with_timeout(")
         || runtime_usage.contains("flux__net_send_text_parts_progress_with_timeout(")
     {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
         out.push_str(r#"static inline int64_t flux__net_monotonic_millis(void) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
@@ -4813,6 +4838,55 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
         if (ready == -2) return flux__net_result((int64_t)offset, "sendTextWithTimeout cancelled by worker scope");
         if (ready == 0) return flux__net_result((int64_t)offset, "sendTextWithTimeout timed out");
+        if (ready < 0) return flux__net_result((int64_t)offset, "failed to wait for socket writability");
+        if ((descriptor.revents & POLLNVAL) != 0) return flux__net_result((int64_t)offset, "invalid socket handle");
+        if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result((int64_t)offset, "socket closed while waiting to send");
+    }
+    return flux__net_result((int64_t)offset, NULL);
+}
+static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64_t socket_handle, struct flux__list bytes, int64_t timeout_millis) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, "writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0;
+    socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "writeBytesTimeout requires a TCP socket");
+    int accepting = 0;
+    socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_result(-1, "writeBytesTimeout requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "writeBytesTimeout requires a nonblocking TCP socket");
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    size_t offset = 0;
+    int64_t deadline = -1;
+    if (timeout_millis >= 0) {
+        int64_t now = flux__net_monotonic_millis();
+        if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_result(0, "failed to start send timeout");
+        deadline = now + timeout_millis;
+    }
+    while (offset < bytes.len) {
+        int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)offset * stride));
+        if (value < 0 || value > 255) return flux__net_result((int64_t)offset, "writeBytesTimeout byte values must be between 0 and 255");
+        unsigned char byte = (unsigned char)value;
+        ssize_t sent = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL);
+        if (sent > 0) { offset += (size_t)sent; continue; }
+        if (sent == 0) return flux__net_result((int64_t)offset, "socket made no send progress");
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return flux__net_result((int64_t)offset, "failed to write bytes");
+        int wait_millis = -1;
+        if (deadline >= 0) {
+            int64_t now = flux__net_monotonic_millis();
+            if (now < 0) return flux__net_result((int64_t)offset, "failed to query send timeout");
+            if (now >= deadline) return flux__net_result((int64_t)offset, "writeBytesTimeout timed out");
+            int64_t remaining = deadline - now;
+            wait_millis = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        }
+        struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, wait_millis);
+        if (ready == -2) return flux__net_result((int64_t)offset, "writeBytesTimeout cancelled by worker scope");
+        if (ready == 0) return flux__net_result((int64_t)offset, "writeBytesTimeout timed out");
         if (ready < 0) return flux__net_result((int64_t)offset, "failed to wait for socket writability");
         if ((descriptor.revents & POLLNVAL) != 0) return flux__net_result((int64_t)offset, "invalid socket handle");
         if ((descriptor.revents & (POLLERR | POLLHUP)) != 0) return flux__net_result((int64_t)offset, "socket closed while waiting to send");
@@ -6849,6 +6923,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || uses_list_slice;
     let uses_list_count = uses_list_take || uses_list_skip;
     let uses_list = runtime_usage.contains("struct flux__list")
+        || uses_byte_timeout
         || uses_list_at
         || uses_list_single
         || uses_list_take
@@ -6859,8 +6934,8 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         || uses_list_unchecked
         || uses_list_stride;
     let uses_map = runtime_usage.contains("struct flux__map");
-    if uses_list {
-        out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
+    if uses_list && !uses_byte_timeout {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
     }
     if runtime_usage.contains("flux__net_receive_bytes(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_bytes(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, struct flux__list)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveBytes maxBytes must be between 1 and 65536\"); unsigned char raw[(size_t)max_bytes]; int64_t buffer[(size_t)max_bytes]; ssize_t received; do { received = recv((int)socket_handle, raw, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive bytes\"); for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index]; callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }); return flux__net_result((int64_t)received, NULL); }\n");
@@ -11219,8 +11294,7 @@ fn emit_windows_native_application(
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     let uses_dynamic_colors = view.elements.iter().any(|element| {
         ["background_color", "color"].iter().any(|property_name| {
-            (property_name == &"background_color"
-                || element.kind == "Text")
+            (property_name == &"background_color" || element.kind == "Text")
                 && view_property(element, property_name)
                     .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
         })
@@ -11579,7 +11653,10 @@ fn emit_windows_native_application(
         ));
         if let Some(property) = view_property(element, "color") {
             if static_expr_str(&property.value, signatures).is_some() {
-                out.push_str(&format!(" SetTextColor(dc, flux__win_color_{}_color);", element.name));
+                out.push_str(&format!(
+                    " SetTextColor(dc, flux__win_color_{}_color);",
+                    element.name
+                ));
             } else {
                 out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_color) SetTextColor(dc, flux__win_dynamic_color_{}_color);", element.name, element.name));
             }
@@ -12039,23 +12116,37 @@ fn emit_linux_gtk_application(
     out.push_str(" if (type == 'b') { unsigned char value = 0; if (fread(&value, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Bool) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value != 0;", c_string(&state.name), ui_state_c_name(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {} = value != 0;",
+                c_string(&state.name),
+                ui_state_c_name(&state.name)
+            ));
         }
     }
     out.push_str(" } else if (type == 'i') { int64_t value = 0; if (fread(&value, sizeof(value), 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::I64) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value;", c_string(&state.name), ui_state_c_name(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {} = value;",
+                c_string(&state.name),
+                ui_state_c_name(&state.name)
+            ));
         }
     }
     out.push_str(" } else if (type == 's') { size_t length = 0; if (fread(&length, sizeof(length), 1, file) != 1 || length > (size_t)16 * 1024 * 1024) { free(name); fclose(file); remove(path); return; } char *value = malloc(length + 1); if (value == NULL || (length != 0 && fread(value, 1, length, file) != length)) { free(value); free(name); fclose(file); remove(path); return; } value[length] = '\\0'; bool adopted = false;");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Str) {
-            out.push_str(&format!(" if (strcmp(name, {}) == 0) {{", c_string(&state.name)));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0) {{",
+                c_string(&state.name)
+            ));
             if view_state_accepts_text_input_value(view, &state.name) {
                 out.push_str(&format!(" {}(value);", ui_set_state_c_name(&state.name)));
             } else {
-                out.push_str(&format!(" {} = value; adopted = true;", ui_state_c_name(&state.name)));
+                out.push_str(&format!(
+                    " {} = value; adopted = true;",
+                    ui_state_c_name(&state.name)
+                ));
             }
             out.push('}');
         }
@@ -17758,7 +17849,9 @@ fn expr_contains_await(expr: &Expr) -> bool {
         ExprKind::Pipe { input, args, .. } => {
             expr_contains_await(input) || args.iter().any(expr_contains_await)
         }
-        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => items.iter().any(expr_contains_await),
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
+            items.iter().any(expr_contains_await)
+        }
         ExprKind::ListIf {
             condition,
             value,
@@ -29305,7 +29398,11 @@ fn emit_block(
                     }
                 };
                 let is_map = map_key.is_some();
-                let source_c = if is_map { "struct flux__map" } else { "struct flux__list" };
+                let source_c = if is_map {
+                    "struct flux__map"
+                } else {
+                    "struct flux__list"
+                };
                 let source_name = format!("flux__iter_source_{}", *temp_counter);
                 *temp_counter += 1;
                 let index_is_live = index_name.as_ref().is_some_and(|index| {
@@ -29672,7 +29769,9 @@ fn emit_map_match(
 ) -> Result<(), Diagnostic> {
     let map_name = format!("flux__map_match_{}", *temp_counter);
     *temp_counter += 1;
-    out.push_str(&format!("{pad}struct flux__map {map_name} = {source_code};\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__map {map_name} = {source_code};\n"
+    ));
     let matched = format!("flux__map_match_done_{}", *temp_counter);
     *temp_counter += 1;
     out.push_str(&format!("{pad}bool {matched} = false;\n"));
@@ -29690,19 +29789,41 @@ fn emit_map_match(
                 let guard = emit_expr(guard, &nested, signatures)?;
                 out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
-                emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+                emit_block(
+                    out,
+                    &arm.body,
+                    depth + 2,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    temp_counter,
+                    context,
+                )?;
                 out.push_str(&format!("{pad}    }}\n"));
             } else {
                 out.push_str(&format!("{pad}    {matched} = true;\n"));
-                emit_block(out, &arm.body, depth + 1, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+                emit_block(
+                    out,
+                    &arm.body,
+                    depth + 1,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    temp_counter,
+                    context,
+                )?;
             }
             out.push_str(&format!("{pad}}}\n"));
             continue;
         };
         let arm_match = format!("flux__map_arm_match_{}", *temp_counter);
         *temp_counter += 1;
-        out.push_str(&format!("{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"));
-        let dead = context.dead_definition_names.get(&source_span_key(arm.span));
+        out.push_str(&format!(
+            "{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"
+        ));
+        let dead = context
+            .dead_definition_names
+            .get(&source_span_key(arm.span));
         let mut binding_temps = Vec::new();
         for entry in entries {
             let key_code = emit_expr(&entry.key, env, signatures)?.code;
@@ -29711,18 +29832,32 @@ fn emit_map_match(
             let value_temp = format!("flux__map_value_{}", *temp_counter);
             *temp_counter += 1;
             out.push_str(&format!("{pad}    bool {found} = false;\n"));
-            if entry.binding.name != "_" && !dead.is_some_and(|names| names.contains(&entry.binding.name)) {
-                out.push_str(&format!("{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"));
+            if entry.binding.name != "_"
+                && !dead.is_some_and(|names| names.contains(&entry.binding.name))
+            {
+                out.push_str(&format!(
+                    "{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"
+                ));
                 binding_temps.push((entry.binding.name.clone(), value_temp.clone()));
             }
             let equal = if *key_ty == Type::Str {
-                format!("strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0")
+                format!(
+                    "strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0"
+                )
             } else {
-                format!("(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})")
+                format!(
+                    "(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})"
+                )
             };
             out.push_str(&format!("{pad}    for (size_t flux__map_index = 0; flux__map_index < {map_name}.keys.len; ++flux__map_index) {{\n"));
-            out.push_str(&format!("{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"));
-            if !binding_temps.is_empty() && binding_temps.last().is_some_and(|(_, temp)| temp == &value_temp) {
+            out.push_str(&format!(
+                "{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"
+            ));
+            if !binding_temps.is_empty()
+                && binding_temps
+                    .last()
+                    .is_some_and(|(_, temp)| temp == &value_temp)
+            {
                 out.push_str(&format!("{pad}            {value_temp} = *(({value_c} *)flux_list_at_unchecked({map_name}.values, flux__map_index, sizeof({value_c})));\n"));
             }
             out.push_str(&format!("{pad}            break;\n{pad}        }}\n{pad}    }}\n{pad}    if (!{found}) {arm_match} = false;\n"));
@@ -29730,20 +29865,44 @@ fn emit_map_match(
         out.push_str(&format!("{pad}    if ({arm_match}) {{\n"));
         let mut nested = env.clone();
         for (name, temp) in binding_temps {
-            out.push_str(&format!("{pad}        {value_c} {} = {temp};\n", local_c_name(&name)));
+            out.push_str(&format!(
+                "{pad}        {value_c} {} = {temp};\n",
+                local_c_name(&name)
+            ));
             nested.insert(name, (*value_ty).clone());
         }
         if let Some(guard) = &arm.guard {
             let guard = emit_expr(guard, &nested, signatures)?;
-            out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard.code)));
+            out.push_str(&format!(
+                "{pad}        if ({}) {{\n",
+                c_condition(&guard.code)
+            ));
             out.push_str(&format!("{pad}            {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
-            emit_block(out, &arm.body, depth + 3, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            emit_block(
+                out,
+                &arm.body,
+                depth + 3,
+                &mut nested,
+                &mut nested_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
             out.push_str(&format!("{pad}        }}\n"));
         } else {
             out.push_str(&format!("{pad}        {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
-            emit_block(out, &arm.body, depth + 2, &mut nested, &mut nested_mutable, signatures, temp_counter, context)?;
+            emit_block(
+                out,
+                &arm.body,
+                depth + 2,
+                &mut nested,
+                &mut nested_mutable,
+                signatures,
+                temp_counter,
+                context,
+            )?;
         }
         out.push_str(&format!("{pad}    }}\n{pad}}}\n"));
     }
@@ -31748,7 +31907,9 @@ fn emit_expr(
     let emitted = match &expr.kind {
         ExprKind::Map(items) => {
             let result_ty = type_of_expr(expr, env, signatures)?;
-            let Type::Map(key, value) = &result_ty else { unreachable!() };
+            let Type::Map(key, value) = &result_ty else {
+                unreachable!()
+            };
             let key_c = c_type(key, signatures);
             let value_c = c_type(value, signatures);
             let mut keys = Vec::new();
@@ -32079,20 +32240,40 @@ fn emit_expr(
                 let key_c = c_type(&key, signatures);
                 let value_c = c_type(&value, signatures);
                 let base_c = c_type(&base_value.ty, signatures);
-                let base_name = format!("flux__map_index_base_{}_{}", expr.span.line, expr.span.column);
-                let key_name = format!("flux__map_index_key_{}_{}", expr.span.line, expr.span.column);
-                let result_name = format!("flux__map_index_result_{}_{}", expr.span.line, expr.span.column);
+                let base_name = format!(
+                    "flux__map_index_base_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let key_name = format!(
+                    "flux__map_index_key_{}_{}",
+                    expr.span.line, expr.span.column
+                );
+                let result_name = format!(
+                    "flux__map_index_result_{}_{}",
+                    expr.span.line, expr.span.column
+                );
                 let map_source = if optional_base {
                     format!("{base_name}.value")
                 } else {
                     base_name.clone()
                 };
                 let equality = match signatures.canonical_type(&key) {
-                    Type::Str => format!("strcmp({key_name}, *((const char **)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))) == 0"),
-                    Type::Bool | Type::I64 => format!("{key_name} == *(({key_c} *)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))"),
-                    _ => return Err(diag(expr.span, "map indexing currently requires an i64, bool, or str key")),
+                    Type::Str => format!(
+                        "strcmp({key_name}, *((const char **)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))) == 0"
+                    ),
+                    Type::Bool | Type::I64 => format!(
+                        "{key_name} == *(({key_c} *)flux_list_at_unchecked({map_source}.keys, flux__map_index_i, sizeof({key_c})))"
+                    ),
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            "map indexing currently requires an i64, bool, or str key",
+                        ));
+                    }
                 };
-                let value_read = format!("*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))");
+                let value_read = format!(
+                    "*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))"
+                );
                 let map_present = if optional_base {
                     format!("{base_name}.has_value && ")
                 } else {
@@ -32208,7 +32389,10 @@ fn emit_expr(
             named_args,
         } if name == "contains" => {
             if !named_args.is_empty() || args.len() != 2 {
-                return Err(diag(expr.span, "invalid contains call reached code generation"));
+                return Err(diag(
+                    expr.span,
+                    "invalid contains call reached code generation",
+                ));
             }
             let collection = emit_expr(&args[0], env, signatures)?;
             let searched = emit_expr(&args[1], env, signatures)?;
@@ -32221,9 +32405,18 @@ fn emit_expr(
                 _ => return Err(diag(expr.span, "contains requires a collection value")),
             };
             let element_c = c_type(&element, signatures);
-            let source_name = format!("flux__contains_source_{}_{}", expr.span.line, expr.span.column);
-            let searched_name = format!("flux__contains_value_{}_{}", expr.span.line, expr.span.column);
-            let result_name = format!("flux__contains_result_{}_{}", expr.span.line, expr.span.column);
+            let source_name = format!(
+                "flux__contains_source_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let searched_name = format!(
+                "flux__contains_value_{}_{}",
+                expr.span.line, expr.span.column
+            );
+            let result_name = format!(
+                "flux__contains_result_{}_{}",
+                expr.span.line, expr.span.column
+            );
             let list_source = if map {
                 format!("{source_name}.keys")
             } else {
@@ -32959,13 +33152,21 @@ fn emit_qualified_call(
     let name = crate::builtin_names::qualified_impl(namespace, name);
     if namespace == "preferences" {
         if !named_args.is_empty() {
-            return Err(diag(span, "invalid preferences call reached code generation"));
+            return Err(diag(
+                span,
+                "invalid preferences call reached code generation",
+            ));
         }
         let helper = match name {
             "get" if args.len() == 3 => "flux__preferences_get",
             "set" if args.len() == 2 => "flux__preferences_set",
             "remove" if args.len() == 1 => "flux__preferences_remove",
-            _ => return Err(diag(span, "invalid preferences call reached code generation")),
+            _ => {
+                return Err(diag(
+                    span,
+                    "invalid preferences call reached code generation",
+                ));
+            }
         };
         let values = args
             .iter()
@@ -32978,14 +33179,27 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || !matches!(name, "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512") {
+        if !named_args.is_empty()
+            || !matches!(
+                name,
+                "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512"
+            )
+        {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let expected_args = if matches!(name, "sha256" | "sha384" | "sha512") { 2 } else { 3 };
+        let expected_args = if matches!(name, "sha256" | "sha384" | "sha512") {
+            2
+        } else {
+            3
+        };
         if args.len() != expected_args {
             return Err(diag(span, "invalid crypto call reached code generation"));
         }
-        let value_index = if matches!(name, "sha256" | "sha384" | "sha512") { 0 } else { 1 };
+        let value_index = if matches!(name, "sha256" | "sha384" | "sha512") {
+            0
+        } else {
+            1
+        };
         let value = emit_expr(&args[value_index], env, signatures)?;
         if matches!(name, "sha256" | "sha384" | "sha512") {
             let callback = emit_expr(&args[1], env, signatures)?;
@@ -32994,7 +33208,11 @@ fn emit_qualified_call(
                 "sha384" => "flux__crypto_sha384",
                 _ => "flux__crypto_sha512",
             };
-            return Ok((format!("{helper}({}, {})", value.code, callback.code), vec![Type::Error], None));
+            return Ok((
+                format!("{helper}({}, {})", value.code, callback.code),
+                vec![Type::Error],
+                None,
+            ));
         }
         let key = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[2], env, signatures)?;
@@ -33003,7 +33221,11 @@ fn emit_qualified_call(
         } else {
             "flux__crypto_hmac_sha512"
         };
-        return Ok((format!("{helper}({}, {}, {})", key.code, value.code, callback.code), vec![Type::Error], None));
+        return Ok((
+            format!("{helper}({}, {}, {})", key.code, value.code, callback.code),
+            vec![Type::Error],
+            None,
+        ));
     }
     if namespace == "tls" {
         if !named_args.is_empty() {
@@ -33014,28 +33236,57 @@ fn emit_qualified_call(
                 let socket = emit_expr(&args[0], env, signatures)?;
                 let server_name = emit_expr(&args[1], env, signatures)?;
                 let ca_file = emit_expr(&args[2], env, signatures)?;
-                return Ok((format!("flux__tls_wrap({}, {}, {})", socket.code, server_name.code, ca_file.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+                return Ok((
+                    format!(
+                        "flux__tls_wrap({}, {}, {})",
+                        socket.code, server_name.code, ca_file.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
             }
             "listen" if args.len() == 3 => {
                 let socket = emit_expr(&args[0], env, signatures)?;
                 let certificate = emit_expr(&args[1], env, signatures)?;
                 let key = emit_expr(&args[2], env, signatures)?;
-                return Ok((format!("flux__tls_listen({}, {}, {})", socket.code, certificate.code, key.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+                return Ok((
+                    format!(
+                        "flux__tls_listen({}, {}, {})",
+                        socket.code, certificate.code, key.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
             }
             "read" if args.len() == 3 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let max_bytes = emit_expr(&args[1], env, signatures)?;
                 let callback = emit_expr(&args[2], env, signatures)?;
-                return Ok((format!("flux__tls_read({}, {}, {})", session.code, max_bytes.code, callback.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+                return Ok((
+                    format!(
+                        "flux__tls_read({}, {}, {})",
+                        session.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
             }
             "write" if args.len() == 2 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let value = emit_expr(&args[1], env, signatures)?;
-                return Ok((format!("flux__tls_write({}, {})", session.code, value.code), vec![Type::Error], None));
+                return Ok((
+                    format!("flux__tls_write({}, {})", session.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "close" if args.len() == 1 => {
                 let session = emit_expr(&args[0], env, signatures)?;
-                return Ok((format!("flux__tls_close({})", session.code), vec![Type::Error], None));
+                return Ok((
+                    format!("flux__tls_close({})", session.code),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             _ => return Err(diag(span, "invalid TLS call reached code generation")),
         }
@@ -33070,7 +33321,10 @@ fn emit_qualified_call(
                 let session = emit_expr(&args[0], env, signatures)?;
                 let value = emit_expr(&args[1], env, signatures)?;
                 return Ok((
-                    format!("flux__websocket_write_text({}, {})", session.code, value.code),
+                    format!(
+                        "flux__websocket_write_text({}, {})",
+                        session.code, value.code
+                    ),
                     vec![Type::Error],
                     None,
                 ));
@@ -33092,7 +33346,10 @@ fn emit_qualified_call(
         }
         if name == "length" {
             if args.len() != 1 {
-                return Err(diag(span, "invalid str.length call reached code generation"));
+                return Err(diag(
+                    span,
+                    "invalid str.length call reached code generation",
+                ));
             }
             let value = emit_expr(&args[0], env, signatures)?;
             return Ok((
@@ -33485,6 +33742,22 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Bool, Type::Error],
                     Some("flux__net_i64_bool_error".to_string()),
+                ));
+            }
+            "sendBytesWithTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_bytes_with_timeout({}, {}, {})",
+                        socket_handle.code, bytes.code, timeout.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "sendTextParts" => {
@@ -34724,7 +34997,10 @@ fn emit_qualified_call(
         }
         if name == "list" {
             if args.len() != 2 {
-                return Err(diag(span, "invalid directory.list call reached code generation"));
+                return Err(diag(
+                    span,
+                    "invalid directory.list call reached code generation",
+                ));
             }
             let path = emit_expr(&args[0], env, signatures)?;
             let callback = emit_expr(&args[1], env, signatures)?;
@@ -36108,7 +36384,10 @@ fn c_type(ty: &Type, signatures: &Signatures) -> String {
             format!("struct {}", record_c_name(&record, signatures))
         }
         Type::Optional(inner) => {
-            if matches!(signatures.canonical_type(&inner), Type::List(_) | Type::Set(_)) {
+            if matches!(
+                signatures.canonical_type(&inner),
+                Type::List(_) | Type::Set(_)
+            ) {
                 "struct flux__optional_list".to_string()
             } else if matches!(signatures.canonical_type(&inner), Type::Map(_, _)) {
                 "struct flux__optional_map".to_string()
@@ -36152,7 +36431,11 @@ fn type_mangle(ty: &Type, signatures: &Signatures) -> String {
         Type::Named(name) => format!("named_{name}"),
         Type::List(element) => format!("list_{}", type_mangle(&element, signatures)),
         Type::Set(element) => format!("set_{}", type_mangle(&element, signatures)),
-        Type::Map(key, value) => format!("map_{}_{}", type_mangle(&key, signatures), type_mangle(&value, signatures)),
+        Type::Map(key, value) => format!(
+            "map_{}_{}",
+            type_mangle(&key, signatures),
+            type_mangle(&value, signatures)
+        ),
         Type::Optional(inner) => format!("optional_{}", type_mangle(&inner, signatures)),
         Type::Record(fields) => {
             let fields = fields

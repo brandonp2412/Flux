@@ -4715,10 +4715,7 @@ fn check_block_all(
                             &format!("loop index '{index_name}' shadows an existing binding"),
                         ));
                     } else {
-                        nested.insert(
-                            index_name.clone(),
-                            key_type.clone().unwrap_or(Type::I64),
-                        );
+                        nested.insert(index_name.clone(), key_type.clone().unwrap_or(Type::I64));
                     }
                 }
                 if env.contains_key(name) {
@@ -4948,7 +4945,10 @@ fn check_block_all(
                         actual => {
                             diagnostics.push(diag(
                                 value.span,
-                                &format!("collection match requires a list or map value, got {}", actual.name()),
+                                &format!(
+                                    "collection match requires a list or map value, got {}",
+                                    actual.name()
+                                ),
                             ));
                             (None, None)
                         }
@@ -5180,7 +5180,10 @@ fn bind_list_match_pattern(
                 if env.contains_key(&entry.binding.name) {
                     return Err(diag(
                         entry.binding.span,
-                        &format!("match binding '{}' shadows an existing binding", entry.binding.name),
+                        &format!(
+                            "match binding '{}' shadows an existing binding",
+                            entry.binding.name
+                        ),
                     ));
                 }
                 env.insert(entry.binding.name.clone(), element_ty.clone());
@@ -5847,21 +5850,33 @@ pub fn type_of_expr(
         }
         ExprKind::Map(items) => {
             if items.is_empty() || items.len() % 2 != 0 {
-                return Err(diag(expr.span, "map literals require one or more key:value pairs"));
+                return Err(diag(
+                    expr.span,
+                    "map literals require one or more key:value pairs",
+                ));
             }
             let primitive = |item: &Expr| -> Result<Type, Diagnostic> {
                 if !matches!(
                     item.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
                 ) {
-                    return Err(diag(item.span, "map literals currently accept only scalar expressions"));
+                    return Err(diag(
+                        item.span,
+                        "map literals currently accept only scalar expressions",
+                    ));
                 }
                 if constant_primitive_value(item, signatures).is_none() {
-                    return Err(diag(item.span, "map literal entries must currently be compile-time primitive values"));
+                    return Err(diag(
+                        item.span,
+                        "map literal entries must currently be compile-time primitive values",
+                    ));
                 }
                 let ty = type_of_expr(item, env, signatures)?;
                 if !matches!(ty, Type::I64 | Type::Bool | Type::Str) {
-                    return Err(diag(item.span, "map keys and values must be i64, bool, or str"));
+                    return Err(diag(
+                        item.span,
+                        "map keys and values must be i64, bool, or str",
+                    ));
                 }
                 Ok(ty)
             };
@@ -5901,7 +5916,17 @@ pub fn type_of_expr(
                 ));
             };
             let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
-                if is_set && !matches!(&item.kind, ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_) | ExprKind::Call { .. } | ExprKind::QualifiedCall { .. }) {
+                if is_set
+                    && !matches!(
+                        &item.kind,
+                        ExprKind::Int(_)
+                            | ExprKind::Bool(_)
+                            | ExprKind::Str(_)
+                            | ExprKind::Var(_)
+                            | ExprKind::Call { .. }
+                            | ExprKind::QualifiedCall { .. }
+                    )
+                {
                     return Err(diag(
                         item.span,
                         "set literals currently accept only scalar expressions without spread, optional, or conditional items",
@@ -6232,7 +6257,8 @@ pub fn type_of_expr(
                     "contains expects exactly two arguments: a list, set, or map and a scalar key",
                 ));
             }
-            let collection_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let collection_ty =
+                signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
             let searched_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
             let expected = match collection_ty {
                 Type::List(element) | Type::Set(element) => *element,
@@ -7057,7 +7083,10 @@ pub fn type_of_expr(
                     _ => {
                         return Err(diag(
                             *name_span,
-                            &format!("collection type '{}' has no property '{name}'", base_ty.name()),
+                            &format!(
+                                "collection type '{}' has no property '{name}'",
+                                base_ty.name()
+                            ),
                         ));
                     }
                 }
@@ -7444,7 +7473,12 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &value, "str.slice value")?;
                 for (index, label) in [(1, "start"), (2, "end")] {
                     let bound = type_of_expr(&args[index], env, signatures)?;
-                    require_type(args[index].span, &Type::I64, &bound, &format!("str.slice {label}"))?;
+                    require_type(
+                        args[index].span,
+                        &Type::I64,
+                        &bound,
+                        &format!("str.slice {label}"),
+                    )?;
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
                 let expected = Type::Function {
@@ -7480,13 +7514,23 @@ fn check_qualified_call(
                 let key = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::Str, &key, "preferences.get key")?;
                 let fallback = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &fallback, "preferences.get fallback")?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &fallback,
+                    "preferences.get fallback",
+                )?;
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
                 let expected = Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
                 };
-                require_type(args[2].span, &expected, &callback, "preferences.get callback")?;
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "preferences.get callback",
+                )?;
                 return Ok(vec![Type::Error]);
             }
             "set" => {
@@ -7498,7 +7542,12 @@ fn check_qualified_call(
                 }
                 for (index, label) in [(0, "key"), (1, "value")] {
                     let actual = type_of_expr(&args[index], env, signatures)?;
-                    require_type(args[index].span, &Type::Str, &actual, &format!("preferences.set {label}"))?;
+                    require_type(
+                        args[index].span,
+                        &Type::Str,
+                        &actual,
+                        &format!("preferences.set {label}"),
+                    )?;
                 }
                 return Ok(vec![Type::Error]);
             }
@@ -7522,74 +7571,148 @@ fn check_qualified_call(
         }
     }
     if namespace == "crypto" {
-        if !named_args.is_empty() || !matches!(name.as_str(), "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512") {
-            return Err(diag(span, &format!("crypto.{name} accepts positional arguments only and only the supported digest functions are available")));
+        if !named_args.is_empty()
+            || !matches!(
+                name.as_str(),
+                "sha256" | "sha384" | "sha512" | "hmacSha256" | "hmacSha512"
+            )
+        {
+            return Err(diag(
+                span,
+                &format!(
+                    "crypto.{name} accepts positional arguments only and only the supported digest functions are available"
+                ),
+            ));
         }
-        let expected_args = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 2 } else { 3 };
+        let expected_args = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") {
+            2
+        } else {
+            3
+        };
         if args.len() != expected_args {
-            return Err(diag(span, &format!("crypto.{name} expects {expected_args} arguments, got {}", args.len())));
+            return Err(diag(
+                span,
+                &format!(
+                    "crypto.{name} expects {expected_args} arguments, got {}",
+                    args.len()
+                ),
+            ));
         }
-        let value_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 0 } else { 1 };
+        let value_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") {
+            0
+        } else {
+            1
+        };
         let value = type_of_expr(&args[value_index], env, signatures)?;
-        require_type(args[value_index].span, &Type::Str, &value, &format!("crypto.{name} value"))?;
-        let callback_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") { 1 } else { 2 };
+        require_type(
+            args[value_index].span,
+            &Type::Str,
+            &value,
+            &format!("crypto.{name} value"),
+        )?;
+        let callback_index = if matches!(name.as_str(), "sha256" | "sha384" | "sha512") {
+            1
+        } else {
+            2
+        };
         if name == "hmacSha256" {
             let key = type_of_expr(&args[0], env, signatures)?;
             require_type(args[0].span, &Type::Str, &key, "crypto.hmacSha256 key")?;
         }
-        let callback = signatures.canonical_type(&type_of_expr(&args[callback_index], env, signatures)?);
-        let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
-        require_type(args[callback_index].span, &expected, &callback, &format!("crypto.{name} callback"))?;
+        let callback =
+            signatures.canonical_type(&type_of_expr(&args[callback_index], env, signatures)?);
+        let expected = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        require_type(
+            args[callback_index].span,
+            &expected,
+            &callback,
+            &format!("crypto.{name} callback"),
+        )?;
         return Ok(vec![Type::Error]);
     }
     if namespace == "tls" {
         if !named_args.is_empty() {
-            return Err(diag(span, &format!("tls.{name} accepts positional arguments only")));
+            return Err(diag(
+                span,
+                &format!("tls.{name} accepts positional arguments only"),
+            ));
         }
         match name.as_str() {
             "wrap" => {
                 if args.len() != 3 {
-                    return Err(diag(span, &format!("tls.wrap expects 3 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("tls.wrap expects 3 arguments, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "tls.wrap socket")?;
                 let server_name = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &server_name, "tls.wrap serverName")?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &server_name,
+                    "tls.wrap serverName",
+                )?;
                 let ca_file = type_of_expr(&args[2], env, signatures)?;
                 require_type(args[2].span, &Type::Str, &ca_file, "tls.wrap caFile")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "listen" => {
                 if args.len() != 3 {
-                    return Err(diag(span, &format!("tls.listen expects 3 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("tls.listen expects 3 arguments, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "tls.listen socket")?;
                 let certificate = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &certificate, "tls.listen certificate")?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &certificate,
+                    "tls.listen certificate",
+                )?;
                 let key = type_of_expr(&args[2], env, signatures)?;
                 require_type(args[2].span, &Type::Str, &key, "tls.listen key")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "read" => {
                 if args.len() != 3 {
-                    return Err(diag(span, &format!("tls.read expects 3 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("tls.read expects 3 arguments, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "tls.read session")?;
                 let max_bytes = type_of_expr(&args[1], env, signatures)?;
                 require_type(args[1].span, &Type::I64, &max_bytes, "tls.read maxBytes")?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)) {
-                    return Err(diag(args[1].span, "tls.read maxBytes must be between 1 and 65536"));
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "tls.read maxBytes must be between 1 and 65536",
+                    ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
                 require_type(args[2].span, &expected, &callback, "tls.read callback")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "write" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("tls.write expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("tls.write expects 2 arguments, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "tls.write session")?;
@@ -7599,23 +7722,37 @@ fn check_qualified_call(
             }
             "close" => {
                 if args.len() != 1 {
-                    return Err(diag(span, &format!("tls.close expects 1 argument, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("tls.close expects 1 argument, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "tls.close session")?;
                 return Ok(vec![Type::Error]);
             }
-            _ => return Err(diag(*name_span, &format!("tls module has no function '{name}'"))),
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("tls module has no function '{name}'"),
+                ));
+            }
         }
     }
     if namespace == "websocket" {
         if !named_args.is_empty() {
-            return Err(diag(span, &format!("websocket.{name} accepts positional arguments only")));
+            return Err(diag(
+                span,
+                &format!("websocket.{name} accepts positional arguments only"),
+            ));
         }
         match name.as_str() {
             "accept" => {
                 if args.len() != 1 {
-                    return Err(diag(span, &format!("websocket.accept expects 1 argument, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("websocket.accept expects 1 argument, got {}", args.len()),
+                    ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &socket, "websocket.accept socket")?;
@@ -7623,39 +7760,93 @@ fn check_qualified_call(
             }
             "readText" => {
                 if args.len() != 3 {
-                    return Err(diag(span, &format!("websocket.readText expects 3 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("websocket.readText expects 3 arguments, got {}", args.len()),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.readText session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.readText session",
+                )?;
                 let max_bytes = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &max_bytes, "websocket.readText maxBytes")?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)) {
-                    return Err(diag(args[1].span, "websocket.readText maxBytes must be between 1 and 65536"));
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "websocket.readText maxBytes",
+                )?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "websocket.readText maxBytes must be between 1 and 65536",
+                    ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
-                require_type(args[2].span, &expected, &callback, "websocket.readText callback")?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "websocket.readText callback",
+                )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "writeText" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("websocket.writeText expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "websocket.writeText expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.writeText session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.writeText session",
+                )?;
                 let value = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &value, "websocket.writeText value")?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &value,
+                    "websocket.writeText value",
+                )?;
                 return Ok(vec![Type::Error]);
             }
             "close" => {
                 if args.len() != 1 {
-                    return Err(diag(span, &format!("websocket.close expects 1 argument, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("websocket.close expects 1 argument, got {}", args.len()),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.close session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.close session",
+                )?;
                 return Ok(vec![Type::Error]);
             }
-            _ => return Err(diag(*name_span, &format!("websocket module has no function '{name}'"))),
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("websocket module has no function '{name}'"),
+                ));
+            }
         }
     }
     if namespace == "process" {
@@ -8389,15 +8580,76 @@ fn check_qualified_call(
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.writeBytesFrom socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.writeBytesFrom socket",
+                )?;
                 let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "net.writeBytesFrom bytes")?;
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "net.writeBytesFrom bytes",
+                )?;
                 let offset = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::I64, &offset, "net.writeBytesFrom offset")?;
-                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if value < 0) {
-                    return Err(diag(args[2].span, "net.writeBytesFrom offset must be non-negative"));
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &offset,
+                    "net.writeBytesFrom offset",
+                )?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if value < 0)
+                {
+                    return Err(diag(
+                        args[2].span,
+                        "net.writeBytesFrom offset must be non-negative",
+                    ));
                 }
                 return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
+            "sendBytesWithTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "net.writeBytesTimeout expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.writeBytesTimeout socket",
+                )?;
+                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "net.writeBytesTimeout bytes",
+                )?;
+                let timeout = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &timeout,
+                    "net.writeBytesTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "net.writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Error]);
             }
             "sendTextParts" => {
                 if args.len() != 2 {
@@ -8890,7 +9142,12 @@ fn check_qualified_call(
                 let handle = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::I64, &handle, "net.receiveBytes socket")?;
                 let max_bytes = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &max_bytes, "net.receiveBytes maxBytes")?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "net.receiveBytes maxBytes",
+                )?;
                 if matches!(
                     constant_primitive_value(&args[1], signatures),
                     Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
@@ -8905,7 +9162,12 @@ fn check_qualified_call(
                     params: vec![Type::I64, Type::List(Box::new(Type::I64))],
                     returns: Vec::new(),
                 };
-                require_type(args[2].span, &expected, &callback, "net.receiveBytes callback")?;
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "net.receiveBytes callback",
+                )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "receiveTextFromWithTimeout" => {
@@ -10744,7 +11006,12 @@ fn check_qualified_call(
                 let path_type = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::Str, &path_type, "file.read path")?;
                 let max_bytes_type = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &max_bytes_type, "file.read maxBytes")?;
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes_type,
+                    "file.read maxBytes",
+                )?;
                 if let Some(ConstantValue::I64(max_bytes)) =
                     constant_primitive_value(&args[1], signatures)
                 {
