@@ -11,8 +11,8 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 565
-- Reported overall progress: **76%**
+- Completed baseline units: 566
+- Reported overall progress: **77%**
 - Current net scope growth after the baseline: 123 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
