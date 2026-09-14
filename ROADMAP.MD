@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 567
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 123 checkbox items
+- Current net scope growth after the baseline: 125 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -403,9 +403,11 @@ Flux has no generics, so common containers need compiler-known/specialized imple
   - [x] Optional keyed lookup through `map[key]` and `map?[key]`, including exact key typing, missing-key results as `value?`, absent-map short-circuiting, native string/scalar equality, and allocation-free linear lookup.
   - [x] Map iteration through `for key, value in map`, preserving insertion order and binding keys/values directly from native storage.
   - [x] Scalar membership queries through `contains(collection, key)` for lists, sets, and map keys, with exact static typing and allocation-free native scans.
+  - [x] Read-only map cardinality properties: `.count`, `.empty`, and `.nonempty` type-check, lower directly to native key storage, and are exposed through LSP completion/hover.
 - [ ] Sets.
   - [x] Bootstrap typed `set<T>` literals with primitive compile-time values, insertion-order-preserving deduplication, deterministic iteration, and native list-descriptor lowering.
   - [x] Scalar membership queries through `contains(set, key)` with exact key typing and allocation-free native scans.
+  - [x] Read-only set cardinality properties: `.count`, `.empty`, and `.nonempty` type-check, lower directly to the native list descriptor, and are exposed through LSP completion/hover.
 - [ ] Byte buffers.
 - [ ] Paths and filesystem APIs.
   - [x] Bootstrap compiler-owned filesystem capabilities: the ordinary API is now split into short `file.*` / `directory.*` operations (`file.exists`, `file.write`, `file.append`, `file.copy`, `file.rename`, `file.remove`, `directory.exists`, `directory.create`, recursive `directory.createAll`, `directory.remove`, and recursive `directory.removeAll`) while the older `fs.*` spellings remain accepted for compatibility. All are strictly typed, lower directly to native/POSIX filesystem primitives, return explicit Flux `error` values for mutations, participate in LSP qualified completion/signature help, and tree-shake completely when unreachable. Recursive directory creation validates existing path components are directories and releases its temporary native path buffer on every exit path; recursive removal does not follow directory symlinks and releases per-entry traversal buffers on every path.
