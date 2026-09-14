@@ -194,18 +194,36 @@ def ordered_accessible_applications(atspi, process_id):
     return applications
 
 
-def find_showing_accessible(root, atspi, role, name):
+def find_showing_accessible(root, atspi, name):
     for node in accessible_nodes(root):
         try:
-            if (
-                node.get_role_name() == role
-                and node.get_name() == name
-                and accessible_is_showing(node, atspi)
-            ):
+            if node.get_name() == name and accessible_is_showing(node, atspi):
                 return node
         except Exception:
             continue
     return None
+
+
+def accessibility_snapshot(atspi, limit=40):
+    entries = []
+    for application in accessible_applications(atspi):
+        try:
+            app_name = application.get_name() or "<unnamed-app>"
+            app_pid = application.get_process_id()
+        except Exception:
+            app_name = "<unknown-app>"
+            app_pid = "?"
+        for node in accessible_nodes(application):
+            try:
+                name = node.get_name()
+                if not name or not accessible_is_showing(node, atspi):
+                    continue
+                entries.append(f"{app_name}[{app_pid}] {node.get_role_name()}={name!r}")
+                if len(entries) >= limit:
+                    return "; ".join(entries)
+            except Exception:
+                continue
+    return "; ".join(entries) if entries else "<no showing named accessibility nodes>"
 
 
 def wait_for_ui(process, atspi, timeout, state):
@@ -216,16 +234,15 @@ def wait_for_ui(process, atspi, timeout, state):
                 f"{process.args[0]} exited before native UI reached '{state}'"
             )
         for application in ordered_accessible_applications(atspi, process.pid):
-            frame = find_showing_accessible(
-                application, atspi, "frame", "Flux Native UI Benchmark"
-            )
-            button = find_showing_accessible(application, atspi, "button", "Toggle")
-            label = find_showing_accessible(application, atspi, "label", state)
-            if frame is not None and button is not None and label is not None:
+            button = find_showing_accessible(application, atspi, "Toggle")
+            label = find_showing_accessible(application, atspi, state)
+            if button is not None and label is not None:
                 return button
         time.sleep(0.005)
+    observed = accessibility_snapshot(atspi)
     raise RuntimeError(
-        f"timed out after {timeout:.1f}s waiting for {process.args[0]} native UI '{state}'"
+        f"timed out after {timeout:.1f}s waiting for {process.args[0]} native UI '{state}'; "
+        f"observed: {observed}"
     )
 
 
