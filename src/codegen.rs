@@ -17998,10 +17998,11 @@ fn async_continuation_plan(
             else {
                 return None;
             };
-            if optional_presence_promotion(cond, &env, &mutable, signatures)
-                .is_some_and(|(_, _, present_in_then)| !present_in_then)
+            let mut nested_outer_env = env.clone();
+            if let Some((name, inner, false)) =
+                optional_presence_promotion(cond, &env, &mutable, signatures)
             {
-                return None;
+                nested_outer_env.insert(name, inner);
             }
             let [nested_stmt] = else_body.as_slice() else {
                 return None;
@@ -18016,11 +18017,11 @@ fn async_continuation_plan(
             else {
                 return None;
             };
-            let mut nested_then_env = env.clone();
+            let mut nested_then_env = nested_outer_env.clone();
             if let Some(binding) = nested_binding {
-                let Type::Optional(inner) = signatures
-                    .canonical_type(&typecheck::type_of_expr(nested_cond, &env, signatures).ok()?)
-                else {
+                let Type::Optional(inner) = signatures.canonical_type(
+                    &typecheck::type_of_expr(nested_cond, &nested_outer_env, signatures).ok()?,
+                ) else {
                     return None;
                 };
                 let inner = signatures.canonical_type(&inner);
@@ -18053,7 +18054,7 @@ fn async_continuation_plan(
                 collect_async_saved_locals(
                     nested_else_body,
                     last_await,
-                    &env,
+                    &nested_outer_env,
                     signatures,
                     &mut locals,
                     &mut mutable,
@@ -22582,6 +22583,15 @@ fn emit_async_nested_branch_continuation_function(
         4,
     )?;
     out.push_str(&format!("{pad}}} else {{\n"));
+    let mut nested_outer_env = outer_env.clone();
+    if let Some((name, inner, false, temp)) = &promotion {
+        out.push_str(&format!(
+            "{pad}    {} {} = {temp}.value;\n",
+            c_type(inner, signatures),
+            local_c_name(name)
+        ));
+        nested_outer_env.insert(name.clone(), inner.clone());
+    }
     emit_source_line(out, nested_cond.span, context.source_paths);
     emit_async_suspend_expr(
         out,
@@ -22591,7 +22601,7 @@ fn emit_async_nested_branch_continuation_function(
         1,
         function,
         plan,
-        &outer_env,
+        &nested_outer_env,
         signatures,
     )?;
     out.push_str(&format!("{pad}}}\n"));
@@ -22614,9 +22624,24 @@ fn emit_async_nested_branch_continuation_function(
         nested_cond.span,
     )?;
     let first_nested_state = 2;
-    let mut nested_then_env = outer_env.clone();
+    let mut nested_resume_scope = false;
+    let mut nested_outer_env = outer_env.clone();
+    if let Some((name, inner, false, _)) = &promotion {
+        let promoted_temp = format!("flux__optional_resume_promotion_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}{} {promoted_temp} = {}.value;\n{pad}{{\n{pad}    {} {} = {promoted_temp};\n",
+            c_type(inner, signatures),
+            local_c_name(name),
+            c_type(inner, signatures),
+            local_c_name(name)
+        ));
+        nested_outer_env.insert(name.clone(), inner.clone());
+        nested_resume_scope = true;
+    }
+    let mut nested_then_env = nested_outer_env.clone();
     let mut nested_then_mutable = outer_mutable.clone();
-    let mut nested_else_env = outer_env.clone();
+    let mut nested_else_env = nested_outer_env.clone();
     let mut nested_else_mutable = outer_mutable.clone();
     let nested_condition = if let Some(binding) = nested_binding {
         let (temp, inner) = emit_async_completed_optional_await(
@@ -22766,6 +22791,9 @@ fn emit_async_nested_branch_continuation_function(
                 state_context,
             )?;
         }
+        out.push_str(&format!("{pad}}}\n"));
+    }
+    if nested_resume_scope {
         out.push_str(&format!("{pad}}}\n"));
     }
     emit_async_nested_branch_tail(
