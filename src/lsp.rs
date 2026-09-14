@@ -2136,11 +2136,7 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
             && let Some((name, after_name)) = rest.split_once(':')
             && name.trim() == value_name
         {
-            let type_name = after_name
-                .split(['=', ','])
-                .next()
-                .map(str::trim)
-                .filter(|name| crate::ast::Type::parse(name).is_some())?;
+            let type_name = leading_type_annotation(after_name)?;
             return Some(type_name.to_string());
         }
         if indent == 0 && (trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ")) {
@@ -2151,11 +2147,7 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
                     continue;
                 };
                 if name.trim() == value_name {
-                    let type_name = ty
-                        .split('=')
-                        .next()
-                        .map(str::trim)
-                        .filter(|name| crate::ast::Type::parse(name).is_some())?;
+                    let type_name = leading_type_annotation(ty)?;
                     return Some(type_name.to_string());
                 }
             }
@@ -2163,6 +2155,26 @@ fn visible_value_type_name(source: &str, line_index: usize, value_name: &str) ->
         }
     }
     None
+}
+
+fn leading_type_annotation(input: &str) -> Option<&str> {
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    for (index, byte) in input.bytes().enumerate() {
+        match byte {
+            b'<' => angle_depth += 1,
+            b'>' => angle_depth = angle_depth.saturating_sub(1),
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'=' | b',' if angle_depth == 0 && paren_depth == 0 => {
+                let candidate = input[..index].trim();
+                return crate::ast::Type::parse(candidate).is_some().then_some(candidate);
+            }
+            _ => {}
+        }
+    }
+    let candidate = input.trim();
+    crate::ast::Type::parse(candidate).is_some().then_some(candidate)
 }
 
 fn struct_field_for_position<'a>(
@@ -8102,6 +8114,33 @@ mod tests {
         .expect("list first property should have hover")
         .to_json();
         assert!(first_hover.contains("property first: i64"));
+    }
+
+    #[test]
+    fn set_and_map_property_completion_use_collection_contracts() {
+        let uri = "file:///tmp/collection-property-completion.flux";
+        let source = "fn main() -> i64 {\n    let values: set<i64> = {1, 2}\n    let mapping: map<i64, str> = {1: \"one\"}\n    values.\n    mapping.\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for receiver in ["values.", "mapping."] {
+            let line_index = source
+                .lines()
+                .position(|line| line.trim() == receiver)
+                .expect("collection completion line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let items = JsonValue::Array(completion_items_at_cursor(
+                uri,
+                source,
+                &documents,
+                Some(line_index),
+                Some(line.len()),
+                PositionEncoding::Utf8,
+            ))
+            .to_json();
+            assert!(items.contains("\"label\":\"count\""), "{receiver}: {items}");
+            assert!(items.contains("\"label\":\"empty\""));
+            assert!(items.contains("\"label\":\"nonempty\""));
+            assert!(!items.contains("\"label\":\"first\""));
+        }
     }
 
     #[test]
