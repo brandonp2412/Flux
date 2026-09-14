@@ -1111,7 +1111,7 @@ The first Flux package ecosystem must require **no Flux-operated hosting bill or
 
 - [ ] Reproducible builds.
   - [x] Same-host/same-toolchain native reproducibility for current debug/profile/release modes: generated C is streamed to Clang over stdin so PID-specific temporary source paths cannot leak into DWARF, and cache-isolated builds of identical Flux source are regression-tested as byte-identical in every mode.
-  - [ ] Cross-machine/toolchain reproducibility contract with pinned compiler/SDK/runtime identities, normalized environment inputs, dependency lockfiles, and documented verification metadata.
+  - [ ] Cross-machine/toolchain reproducibility contract with pinned compiler/SDK/runtime identities, normalized environment inputs, dependency lockfiles, and documented verification metadata. Bootstrap evidence metadata is now emitted by `flux build --reproducibility <path>` with generated-source, manifest/root-lock, target/sysroot, compiler/linker, and normalized environment fingerprints; an authoritative cross-machine verifier and explicit SDK/runtime pin format remain pending.
 - [x] CI-friendly machine output through `fluxc check --json`, preserving a clean stdout JSON contract with no human diagnostic text on stderr; `flux check --json` / `flux analyze --json` now emit the same explicitly versioned diagnostics envelope.
 
 # Milestone 27 — Distribution

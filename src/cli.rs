@@ -102,6 +102,7 @@ impl NativeTargetOptions {
 #[derive(Debug)]
 struct BuildOptions {
     output: Option<PathBuf>,
+    reproducibility: Option<PathBuf>,
     mode: BuildMode,
     native_target: NativeTargetOptions,
     locked: bool,
@@ -2591,6 +2592,12 @@ fn build_workspace_targets(target: &Path, options: BuildOptions) -> Result<(), C
                 .to_string(),
         ));
     }
+    if targets.len() > 1 && options.reproducibility.is_some() {
+        return Err(CliError::Message(
+            "workspace builds cannot use one shared reproducibility metadata path; build each member separately"
+                .to_string(),
+        ));
+    }
     for package in targets {
         fluxc::project::ensure_lockfile(&package, options.locked).map_err(|diagnostics| {
             diagnostics
@@ -2602,6 +2609,7 @@ fn build_workspace_targets(target: &Path, options: BuildOptions) -> Result<(), C
         build_native_target(
             &package,
             options.output.clone(),
+            options.reproducibility.clone(),
             options.mode,
             options.native_target.clone(),
         )?;
@@ -2612,6 +2620,7 @@ fn build_workspace_targets(target: &Path, options: BuildOptions) -> Result<(), C
 fn build_native_target(
     path: &Path,
     explicit_output: Option<PathBuf>,
+    reproducibility: Option<PathBuf>,
     mode: BuildMode,
     native_target: NativeTargetOptions,
 ) -> Result<(), CliError> {
@@ -2652,6 +2661,9 @@ fn build_native_target(
         native_package.as_ref(),
         false,
     )?;
+    if let Some(metadata) = reproducibility {
+        write_reproducibility_metadata(&metadata, path, &generated, mode, &native_target)?;
+    }
     println!("built ({}): {}", mode.name(), output.display());
     Ok(())
 }
@@ -5814,6 +5826,7 @@ fn parse_native_target_triple(value: &str) -> Result<String, String> {
 
 fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOptions, String> {
     let mut output = None;
+    let mut reproducibility = None;
     let mut mode = default_mode;
     let mut mode_seen = false;
     let mut native_target = NativeTargetOptions::default();
@@ -5829,6 +5842,16 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
                     return Err("'-o' requires an output path".to_string());
                 };
                 output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--reproducibility" => {
+                if reproducibility.is_some() {
+                    return Err("reproducibility metadata path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'--reproducibility' requires an output path".to_string());
+                };
+                reproducibility = Some(PathBuf::from(path));
                 index += 2;
             }
             "--mode" => {
@@ -5871,13 +5894,14 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
             }
             flag => {
                 return Err(format!(
-                    "unknown build option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--target <triple>', '--sysroot <directory>', or '--locked'"
+                    "unknown build option '{flag}'; expected '-o <path>', '--reproducibility <path>', '--mode <debug|profile|release>', '--target <triple>', '--sysroot <directory>', or '--locked'"
                 ));
             }
         }
     }
     Ok(BuildOptions {
         output,
+        reproducibility,
         mode,
         native_target,
         locked,
@@ -9477,6 +9501,97 @@ fn native_cache_metadata_path(cache: &Path) -> PathBuf {
     cache.with_extension("meta")
 }
 
+fn reproducibility_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn reproducibility_file_hash(path: &Path) -> Option<String> {
+    fs::read(path)
+        .ok()
+        .map(|bytes| format!("{:016x}", reproducibility_hash(&bytes)))
+}
+
+fn metadata_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn write_reproducibility_metadata(
+    output: &Path,
+    target: &Path,
+    generated: &str,
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Result<(), CliError> {
+    let manifest_path = if target.is_dir() {
+        Some(target.join("flux.toml"))
+    } else if target.file_name().and_then(|name| name.to_str()) == Some("flux.toml") {
+        Some(target.to_path_buf())
+    } else {
+        None
+    };
+    let manifest_hash = manifest_path
+        .as_deref()
+        .and_then(reproducibility_file_hash)
+        .unwrap_or_else(|| "none".to_string());
+    let lock_root = manifest_path
+        .as_deref()
+        .and_then(|_| fluxc::project::workspace_package_targets(target).ok())
+        .and_then(|targets| targets.first().cloned())
+        .and_then(|manifest| manifest.parent().map(Path::to_path_buf));
+    let lock_hash = lock_root
+        .or_else(|| manifest_path.as_deref().and_then(Path::parent).map(Path::to_path_buf))
+        .map(|root| root.join("flux.lock"))
+        .and_then(|path| reproducibility_file_hash(&path))
+        .unwrap_or_else(|| "none".to_string());
+    let gtk = generated.contains("#include <gtk/gtk.h>");
+    let sqlite = generated.contains("#include <sqlite3.h>");
+    let toolchain = native_toolchain_cache_identity(gtk, sqlite, native_target)
+        .map_err(CliError::Message)?;
+    let sysroot_hash = native_sysroot_cache_identity(native_target.sysroot.as_deref());
+    let mut metadata = String::new();
+    metadata.push_str("format = \"flux-reproducibility-v1\"\n");
+    metadata.push_str(&format!("flux_version = \"{}\"\n", env!("CARGO_PKG_VERSION")));
+    metadata.push_str(&format!("mode = \"{}\"\n", mode.name()));
+    metadata.push_str(&format!("source_hash = \"{:016x}\"\n", reproducibility_hash(generated.as_bytes())));
+    metadata.push_str(&format!("manifest_hash = \"{manifest_hash}\"\n"));
+    metadata.push_str(&format!("lock_hash = \"{lock_hash}\"\n"));
+    metadata.push_str(&format!(
+        "target = \"{}\"\n",
+        metadata_value(native_target.triple.as_deref().unwrap_or("host"))
+    ));
+    metadata.push_str(&format!("sysroot_hash = \"{sysroot_hash}\"\n"));
+    metadata.push_str(&format!("toolchain = \"{}\"\n", metadata_value(&toolchain)));
+    for key in ["SOURCE_DATE_EPOCH", "LC_ALL", "TZ"] {
+        let value = env::var(key).unwrap_or_default();
+        metadata.push_str(&format!("env_{key} = \"{}\"\n", metadata_value(&value)));
+    }
+    if let Some(parent) = output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::Message(format!(
+                "failed to create reproducibility metadata directory '{}': {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    fs::write(output, metadata).map_err(|error| {
+        CliError::Message(format!(
+            "failed to write reproducibility metadata '{}': {error}",
+            output.display()
+        ))
+    })?;
+    Ok(())
+}
+
 fn native_cache_file_identity(path: &Path) -> io::Result<(u64, u64)> {
     let mut file = fs::File::open(path)?;
     let mut hash = 0xcbf29ce484222325u64;
@@ -9711,7 +9826,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -10810,6 +10925,7 @@ app OverlayDemo(title: "Overlay")
         let options = build_options(&args, BuildMode::Release).expect("options should parse");
         assert_eq!(options.mode, BuildMode::Profile);
         assert_eq!(options.output.as_deref(), Some(std::path::Path::new("app")));
+        assert!(options.reproducibility.is_none());
         assert_eq!(
             options.native_target.triple.as_deref(),
             Some("x86_64-unknown-linux-gnu")
@@ -10834,6 +10950,7 @@ app OverlayDemo(title: "Overlay")
         let default = build_options(&[], BuildMode::Debug).expect("defaults should parse");
         assert_eq!(default.mode, BuildMode::Debug);
         assert!(default.output.is_none());
+        assert!(default.reproducibility.is_none());
         assert_eq!(default.native_target, NativeTargetOptions::default());
         assert!(!default.locked);
         assert_eq!(

@@ -25475,6 +25475,37 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
             "{mode} builds of identical Flux source should be byte-identical"
         );
     }
+    let metadata_binary = root.join("metadata-binary");
+    let metadata = root.join("metadata.toml");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source)
+        .args(["--mode", "release", "-o", metadata_binary.to_str().unwrap(), "--reproducibility"])
+        .arg(&metadata)
+        .output()
+        .expect("reproducibility metadata build should run");
+    assert!(
+        built.status.success(),
+        "metadata build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let metadata_source = fs::read_to_string(&metadata).expect("metadata should be readable");
+    for field in [
+        "format = \"flux-reproducibility-v1\"",
+        "flux_version = ",
+        "mode = \"release\"",
+        "source_hash = ",
+        "manifest_hash = \"none\"",
+        "lock_hash = \"none\"",
+        "target = \"host\"",
+        "sysroot_hash = \"none\"",
+        "toolchain = ",
+        "env_SOURCE_DATE_EPOCH = ",
+        "env_LC_ALL = ",
+        "env_TZ = ",
+    ] {
+        assert!(metadata_source.contains(field), "metadata missing {field}");
+    }
     let _ = fs::remove_dir_all(&root);
 }
 
