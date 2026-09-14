@@ -11573,7 +11573,7 @@ app OverlayDemo(title: "Overlay")
             "if (maxWidthChars >= 0) view.setMaxEms(maxWidthChars == 0 ? Integer.MAX_VALUE : maxWidthChars);"
         ));
         assert!(activity.contains("getAssets().open(assetSource)"));
-        assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(input)"));
+        assert!(activity.contains("Drawable.createFromStream(input, assetSource)"));
         assert!(activity.contains("setAccessibilityActionLabels"));
         assert!(activity.contains("AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK"));
         assert!(activity.contains("AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK"));
