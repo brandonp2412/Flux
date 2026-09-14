@@ -1282,6 +1282,7 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "websocket" {
         for (label, detail) in [
+            ("connect", "fn websocket.connect(socket: i64, host: str) -> (i64, error)"),
             ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
             (
                 "readText",
@@ -3893,6 +3894,11 @@ fn signature_help_for_document_cached(
         }
         if namespace == "websocket" {
             let (label, parameters, returns) = match member {
+                "connect" => (
+                    "websocket.connect",
+                    vec!["socket: i64", "host: str"],
+                    "(i64, error)",
+                ),
                 "accept" => ("websocket.accept", vec!["socket: i64"], "(i64, error)"),
                 "readText" => (
                     "websocket.readText",

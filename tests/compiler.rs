@@ -46225,6 +46225,33 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_client_handshake_surface_is_typed_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let (session, handshakeError) = websocket.connect(3, "localhost")
+    if handshakeError != nil:
+        return 1
+    let (_bytes, readError) = websocket.readText(session, 1024, fn(value: str) { print(value) })
+    if readError != nil:
+        return 2
+    let writeError: error = websocket.writeText(session, "hello")
+    if writeError != nil:
+        return 3
+    let closeError: error = websocket.close(session)
+    if closeError != nil:
+        return 4
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket client surface should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket client surface should lower");
+    assert!(generated.contains("flux__websocket_connect("));
+    assert!(generated.contains("/dev/urandom"));
+    assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
+    assert!(generated.contains("flux__websocket_is_client(session)"));
+}
+
+#[test]
 fn websocket_server_reads_fragmented_text_and_answers_ping() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket probe should bind");
     let port = probe.local_addr().unwrap().port();

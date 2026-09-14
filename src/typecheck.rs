@@ -7747,6 +7747,22 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "connect" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "websocket.connect expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &socket, "websocket.connect socket")?;
+                let host = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &host, "websocket.connect host")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "accept" => {
                 if args.len() != 1 {
                     return Err(diag(
