@@ -1209,6 +1209,8 @@ Verified Milestone 28 bounded request-state follow-up: concurrent HTTP serving n
 
 Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` lets headless/server code wait for and consume whichever direct child finishes first without a separate completion observation plus join sequence. The operation uses the same compiler-owned completion signalling as concurrent HTTP serving, preserves exact child failure propagation and structured-scope ownership, and avoids application-side polling. Efficient I/O remains unchecked because binary buffers, general queued socket backpressure, and task-integrated event-loop I/O are still required.
 
+# Verified WebSocket server follow-up: the native text reader now accepts RFC 6455 fragmented text messages, validates continuation sequencing and reserved bits, handles masked ping/pong control frames while a message is in flight, preserves one bounded callback-scoped aggregate, and rejects message-size overflow without introducing escaping storage. Binary frames, richer control/lifecycle semantics, client support, and task-integrated event-loop scheduling remain pending.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
