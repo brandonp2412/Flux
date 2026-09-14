@@ -8790,6 +8790,25 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_supports_audited_crypto_capabilities() {
+        let uri = "file:///tmp/crypto-signatures.flux";
+        let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    crypto.sha512(\"abc\", show)\n    crypto.hmacSha256(\"key\", \"value\", show)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("crypto.sha512(", "fn crypto.sha512(value: str, callback: fn(str) -> void) -> error"),
+            ("crypto.hmacSha256(", "fn crypto.hmacSha256(key: str, value: str, callback: fn(str) -> void) -> error"),
+        ] {
+            let line_index = source.lines().position(|line| line.contains(needle)).unwrap();
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(uri, source, &documents, line_index, cursor, PositionEncoding::Utf8)
+                .expect("crypto call should have signature help")
+                .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
     fn signature_help_supports_process_capabilities() {
         let uri = "file:///tmp/process-signatures.flux";
         let source = "fn main() -> i64 {\n    print(process.pid())\n    print(process.parentPid())\n    print(process.cpuMillis())\n    print(process.peakResidentMemoryBytes())\n    print(process.terminationRequested())\n    process.exit(0)\n    print(process.hasEnv(\"HOME\"))\n    print(process.env(\"HOME\", \"missing\"))\n    return 0\n}\n";
