@@ -12502,6 +12502,23 @@ fn main() -> i64 {
         tail_borrows.contains("tail", "source"),
         "the zero-copy tail lifetime should remain active through its final read"
     );
+    let tail_start = graph
+        .borrow_starts()
+        .iter()
+        .find(|start| start.borrower == "tail" && start.source == "source")
+        .expect("normalized ownership IR should expose the edge where the tail borrow starts");
+    assert!(
+        graph
+            .borrow_state_before(tail_start.from)
+            .is_some_and(|state| !state.contains("tail", "source")),
+        "the explicit start edge must leave a state where the borrow is not yet live"
+    );
+    assert!(
+        graph
+            .borrow_state_before(tail_start.to)
+            .is_some_and(|state| state.contains("tail", "source")),
+        "the explicit start edge must enter a state where the borrow is live"
+    );
     let destination_read = graph
         .nodes()
         .iter()
@@ -12844,6 +12861,23 @@ fn main() -> i64 {
             .any(|state| !state.contains("projected", "source")),
         "the sibling owned branch must not inherit the borrowed branch lifetime"
     );
+    let branch_start = graph
+        .borrow_starts()
+        .iter()
+        .find(|start| start.borrower == "projected" && start.source == "source")
+        .expect("the borrowed branch should expose an explicit projected -> source start edge");
+    assert!(
+        graph
+            .borrow_state_before(branch_start.from)
+            .is_some_and(|state| !state.contains("projected", "source")),
+        "the branch-local borrow must be absent before its explicit start edge"
+    );
+    assert!(
+        graph
+            .borrow_state_before(branch_start.to)
+            .is_some_and(|state| state.contains("projected", "source")),
+        "the branch-local borrow must be live immediately after its explicit start edge"
+    );
     let branch_end = graph
         .borrow_ends()
         .iter()
@@ -12854,6 +12888,52 @@ fn main() -> i64 {
             .borrow_state_before(branch_end.to)
             .is_some_and(|state| !state.contains("projected", "source")),
         "the branch-local borrow must be dead immediately after its explicit end edge"
+    );
+}
+
+#[test]
+fn loop_local_borrow_lifetime_boundaries_end_before_owner_move() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20, 30]
+    for index in 0..2:
+        let tail: i64[] = values[1:]
+        print(tail[index])
+    let destination: i64[] = values
+    print(destination[0])
+    return 0
+}
+"#;
+
+    check_source(source)
+        .expect("loop-local views should release their owner borrow before the post-loop move");
+    compile_to_c(source).expect("loop-local borrow lifetime boundaries should lower natively");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1210))
+        .expect("loop-local borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let start = graph
+        .borrow_starts()
+        .iter()
+        .find(|start| start.borrower == "tail" && start.source == "values")
+        .expect("the loop-local tail borrow should expose a start edge");
+    let end = graph
+        .borrow_ends()
+        .iter()
+        .find(|end| end.borrower == "tail" && end.source == "values")
+        .expect("the loop-local tail borrow should expose an end edge");
+    assert!(
+        graph
+            .borrow_state_before(start.to)
+            .is_some_and(|state| state.contains("tail", "values")),
+        "the loop-local borrow must be live after its start edge"
+    );
+    assert!(
+        graph
+            .borrow_state_before(end.to)
+            .is_some_and(|state| !state.contains("tail", "values")),
+        "the loop-local borrow must be dead after its end edge"
     );
 }
 
