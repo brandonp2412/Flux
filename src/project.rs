@@ -7,6 +7,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
+const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -60,6 +61,7 @@ impl ProjectAnalysis {
             if fs::rename(&temporary, &path).is_err() {
                 let _ = fs::remove_file(&temporary);
             }
+            prune_codegen_cache(path.parent(), &path);
         }
         Ok(generated)
     }
@@ -137,6 +139,33 @@ fn stable_bytes_hash_with_seed(bytes: &[u8], mut hash: u64) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash ^ 0xff
+}
+
+fn prune_codegen_cache(directory: Option<&Path>, current: &Path) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut artifacts = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.path() != current
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("codegen-") && name.ends_with(".c"))
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in artifacts.into_iter().skip(PROJECT_CODEGEN_CACHE_LIMIT - 1) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

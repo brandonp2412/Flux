@@ -26859,6 +26859,24 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
         fs::read_dir(&cache_dir).expect("cache directory should remain readable").count(),
         2
     );
+
+    for value in 3..=12 {
+        fs::write(
+            &entry,
+            format!("fn main() -> i64 {{\n    print({value})\n    return 0\n}}\n"),
+        )
+        .expect("repeatedly updated entry should be writable");
+        let analysis = fluxc::project::analyze(&entry).expect("repeated analysis should succeed");
+        analysis
+            .emit_c_cached(&entry)
+            .expect("repeated codegen should succeed");
+    }
+    assert!(
+        fs::read_dir(&cache_dir)
+            .expect("pruned cache directory should remain readable")
+            .count()
+            <= 8
+    );
     let _ = fs::remove_dir_all(root);
 }
 
