@@ -6835,6 +6835,9 @@ static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t 
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
     }
+    if runtime_usage.contains("flux__net_receive_bytes(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_receive_bytes(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, struct flux__list)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveBytes maxBytes must be between 1 and 65536\"); unsigned char raw[(size_t)max_bytes]; int64_t buffer[(size_t)max_bytes]; ssize_t received; do { received = recv((int)socket_handle, raw, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive bytes\"); for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index]; callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }); return flux__net_result((int64_t)received, NULL); }\n");
+    }
     if uses_map {
         out.push_str("struct flux__map { struct flux__list keys; struct flux__list values; };\n");
     }
@@ -33531,6 +33534,22 @@ fn emit_qualified_call(
                             "flux__net_receive_text({}, {}, {})",
                             socket_handle.code, max_bytes.code, callback.code
                         ),
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "readBytes" | "receiveBytes" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_receive_bytes({}, {}, {})",
+                        socket_handle.code, max_bytes.code, callback.code
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),

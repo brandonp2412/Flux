@@ -45780,3 +45780,40 @@ app Screen
     assert!(generated.contains("signal(SIGTERM, flux__ui_reload_signal)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
 }
+
+#[test]
+fn binary_socket_reads_preserve_nul_bytes_in_borrowed_byte_views() {
+    let source = r#"
+fn consume(_socket: i64, bytes: i64[]) -> void {
+    print(bytes.count)
+}
+fn main() -> i64 {
+    let (received, failure) = net.readBytes(1, 64, consume)
+    print(received)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("binary socket read callback should typecheck");
+    let generated = compile_to_c(source).expect("binary socket read should lower");
+    assert!(generated.contains("flux__net_receive_bytes("));
+    assert!(generated.contains("void (*callback)(int64_t, struct flux__list)"));
+    assert!(generated.contains("buffer[index] = (int64_t)raw[index]"));
+    assert!(!generated.contains("memchr(buffer, '\\0'"));
+    let c_path = std::env::temp_dir().join(format!(
+        "flux-receive-bytes-{}.c",
+        std::process::id()
+    ));
+    fs::write(&c_path, &generated).expect("binary socket C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate binary socket C");
+    assert!(
+        compile.status.success(),
+        "binary socket C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}

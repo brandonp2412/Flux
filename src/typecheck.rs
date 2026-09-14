@@ -8844,6 +8844,34 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "readBytes" | "receiveBytes" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("net.receiveBytes expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "net.receiveBytes socket")?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &max_bytes, "net.receiveBytes maxBytes")?;
+                if matches!(
+                    constant_primitive_value(&args[1], signatures),
+                    Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[1].span,
+                        "net.receiveBytes maxBytes must be between 1 and 65536",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64, Type::List(Box::new(Type::I64))],
+                    returns: Vec::new(),
+                };
+                require_type(args[2].span, &expected, &callback, "net.receiveBytes callback")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "receiveTextFromWithTimeout" => {
                 if args.len() != 4 {
                     return Err(diag(
