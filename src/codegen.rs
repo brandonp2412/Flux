@@ -10750,22 +10750,27 @@ fn emit_windows_native_application(
                 continue;
             }
             if let Some(property) = view_property(element, property_name) {
-                let value = static_expr_str(&property.value, signatures).ok_or_else(|| {
-                    diag(
-                        property.value.span,
-                        &format!("{property_name} must be a compile-time string on Windows"),
-                    )
-                })?;
-                let color = windows_colorref(&value).ok_or_else(|| {
-                    diag(
-                        property.value.span,
-                        &format!("{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"),
-                    )
-                })?;
-                out.push_str(&format!(
-                    "static HBRUSH flux__win_brush_{}_{} = NULL;\nstatic const COLORREF flux__win_color_{}_{} = {};\n",
-                    element.name, property_name, element.name, property_name, color
-                ));
+                if let Some(value) = static_expr_str(&property.value, signatures) {
+                    let color = windows_colorref(&value).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            &format!("{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"),
+                        )
+                    })?;
+                    out.push_str(&format!(
+                        "static HBRUSH flux__win_brush_{}_{} = NULL;\nstatic const COLORREF flux__win_color_{}_{} = {};\n",
+                        element.name,
+                        property_name,
+                        element.name,
+                        property_name,
+                        color
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "static HBRUSH flux__win_dynamic_brush_{}_{} = NULL;\nstatic COLORREF flux__win_dynamic_color_{}_{} = 0;\nstatic bool flux__win_dynamic_has_color_{}_{} = false;\n",
+                        element.name, property_name, element.name, property_name, element.name, property_name
+                    ));
+                }
             }
         }
     }
@@ -10781,6 +10786,19 @@ fn emit_windows_native_application(
                     "if (flux__win_brush_{}_background_color != NULL) {{ DeleteObject(flux__win_brush_{}_background_color); flux__win_brush_{}_background_color = NULL; }}\n",
                     element.name, element.name, element.name
                 ));
+            }
+            for property_name in ["background_color", "color"] {
+                if property_name == "color" && element.kind != "Text" {
+                    continue;
+                }
+                if let Some(property) = view_property(element, property_name)
+                    && static_expr_str(&property.value, signatures).is_none()
+                {
+                    out.push_str(&format!(
+                        "if (flux__win_dynamic_brush_{}_{} != NULL) {{ DeleteObject(flux__win_dynamic_brush_{}_{}); flux__win_dynamic_brush_{}_{} = NULL; }}\n",
+                        element.name, property_name, element.name, property_name, element.name, property_name
+                    ));
+                }
             }
         }
         out.push_str("}\n");
@@ -10852,6 +10870,18 @@ fn emit_windows_native_application(
     );
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
+    let uses_dynamic_colors = view.elements.iter().any(|element| {
+        ["background_color", "color"].iter().any(|property_name| {
+            (property_name == &"background_color"
+                || element.kind == "Text")
+                && view_property(element, property_name)
+                    .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
+        })
+    });
+    if uses_dynamic_colors {
+        out.push_str("static bool flux__win_parse_color(const char *value, COLORREF *result) { if (value == NULL || result == NULL) return false; if (strcmp(value, \"surface\") == 0) { *result = RGB(248, 249, 250); return true; } if (strcmp(value, \"surfaceRaised\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"text\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"textMuted\") == 0) { *result = RGB(87, 96, 106); return true; } if (strcmp(value, \"accent\") == 0) { *result = RGB(9, 105, 218); return true; } if (strcmp(value, \"onAccent\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"outline\") == 0) { *result = RGB(208, 215, 222); return true; } if (strcmp(value, \"danger\") == 0) { *result = RGB(207, 34, 46); return true; } if (strcmp(value, \"success\") == 0) { *result = RGB(26, 127, 55); return true; } if (strcmp(value, \"warning\") == 0) { *result = RGB(154, 103, 0); return true; } if (strcmp(value, \"shadow\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"transparent\") == 0) { *result = GetSysColor(COLOR_WINDOW); return true; } size_t length = strlen(value); if (length != 7 && length != 9) return false; if (value[0] != '#') return false; for (size_t index = 1; index < 7; index += 1) if (!isxdigit((unsigned char)value[index])) return false; char *end = NULL; unsigned long red = strtoul(value + 1, &end, 16); unsigned long green = strtoul(value + 3, &end, 16); unsigned long blue = strtoul(value + 5, &end, 16); (void)end; *result = RGB((BYTE)red, (BYTE)green, (BYTE)blue); return true; }\n");
+        out.push_str("static void flux__win_set_dynamic_background(HWND control, HBRUSH *brush, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || brush == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(next); *current = next; *has_color = *brush != NULL; InvalidateRect(control, NULL, TRUE); } }\nstatic void flux__win_set_dynamic_text_color(HWND control, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { *current = next; *has_color = true; InvalidateRect(control, NULL, TRUE); } }\n");
+    }
     if view.elements.iter().any(|element| element.kind == "Image") {
         out.push_str("static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; if (strncmp(source, \"asset://\", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\\0' || *relative == '/' || strstr(relative, \"..\") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\\\'); if (separator == NULL) return NULL; *separator = '\\0'; size_t size = strlen(module) + strlen(\"\\\\assets\\\\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, \"%s\\\\assets\\\\%s\", module, relative); return path; }\nstatic void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source) { if (control == NULL || current == NULL) return; char *path = flux__win_image_source_path(source); if (path == NULL || path[0] == '\\0') { free(path); if (*current != NULL) { SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, 0); DeleteObject(*current); *current = NULL; } return; } HBITMAP next = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); free(path); if (next == NULL) return; HBITMAP previous = (HBITMAP)SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)next); if (previous != NULL && previous != next) DeleteObject(previous); *current = next; }\n");
     }
@@ -11061,6 +11091,25 @@ fn emit_windows_native_application(
     }
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);
+        if let Some(property) = view_property(element, "background_color")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_dynamic_background({variable}, &flux__win_dynamic_brush_{}_background_color, &flux__win_dynamic_color_{}_background_color, &flux__win_dynamic_has_color_{}_background_color, {value});\n",
+                element.name, element.name, element.name
+            ));
+        }
+        if element.kind == "Text"
+            && let Some(property) = view_property(element, "color")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_dynamic_text_color({variable}, &flux__win_dynamic_color_{}_color, &flux__win_dynamic_has_color_{}_color, {value});\n",
+                element.name, element.name
+            ));
+        }
         let text_property = match element.kind.as_str() {
             "Text" | "Button" | "Header" => Some("text"),
             "Image" => Some("source"),
@@ -11182,13 +11231,18 @@ fn emit_windows_native_application(
             ui_widget_c_name(&element.name)
         ));
         if let Some(property) = view_property(element, "color") {
-            let value = static_expr_str(&property.value, signatures).expect("validated Windows text color");
-            let color = windows_colorref(&value).expect("validated Windows text color");
-            out.push_str(&format!(" SetTextColor(dc, flux__win_color_{}_color);", element.name));
-            let _ = color;
+            if static_expr_str(&property.value, signatures).is_some() {
+                out.push_str(&format!(" SetTextColor(dc, flux__win_color_{}_color);", element.name));
+            } else {
+                out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_color) SetTextColor(dc, flux__win_dynamic_color_{}_color);", element.name, element.name));
+            }
         }
-        if view_property(element, "background_color").is_some() {
-            out.push_str(&format!(" if (flux__win_brush_{}_background_color == NULL) flux__win_brush_{}_background_color = CreateSolidBrush(flux__win_color_{}_background_color); return (LRESULT)flux__win_brush_{}_background_color; }}\n", element.name, element.name, element.name, element.name));
+        if let Some(property) = view_property(element, "background_color") {
+            if static_expr_str(&property.value, signatures).is_some() {
+                out.push_str(&format!(" if (flux__win_brush_{}_background_color == NULL) flux__win_brush_{}_background_color = CreateSolidBrush(flux__win_color_{}_background_color); return (LRESULT)flux__win_brush_{}_background_color; }}\n", element.name, element.name, element.name, element.name));
+            } else {
+                out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_background_color) return (LRESULT)flux__win_dynamic_brush_{}_background_color; }}\n", element.name, element.name));
+            }
         } else {
             out.push_str(" return (LRESULT)GetSysColorBrush(COLOR_WINDOW); }\n");
         }

@@ -257,6 +257,36 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
 }
 
 #[test]
+fn windows_backend_refreshes_dynamic_color_properties_in_place() {
+    let source = r##"
+view Screen {
+    state tint: str = "#1f2328"
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Dynamic color"
+        color: tint
+        backgroundColor: tint
+}
+app Screen
+"##;
+    let program = fluxc::parser::parse(source).expect("dynamic Windows color source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("dynamic Windows color source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic Windows colors should lower");
+    assert!(generated.contains("flux__win_parse_color"));
+    assert!(generated.contains("flux__win_set_dynamic_background"));
+    assert!(generated.contains("flux__win_set_dynamic_text_color"));
+    assert!(generated.contains("&flux__win_dynamic_brush_title_background_color"));
+    assert!(generated.contains("&flux__win_dynamic_color_title_color"));
+}
+
+#[test]
 fn windows_platform_bindings_lower_directly_and_reject_other_targets() {
     let source = r#"
 fn main() -> i64 {
