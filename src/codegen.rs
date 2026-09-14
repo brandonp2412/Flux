@@ -11488,35 +11488,42 @@ fn emit_linux_gtk_application(
     out.push_str(" if (fwrite(magic, sizeof(magic), 1, file) != 1 || fwrite(&count, sizeof(count), 1, file) != 1) { fclose(file); remove(temporary); return; }");
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
+        let source_name = c_string(&state.name);
+        out.push_str(&format!(" {{ const char *name = {source_name}; uint32_t name_length = (uint32_t)strlen(name); if (fwrite(&name_length, sizeof(name_length), 1, file) != 1 || (name_length != 0 && fwrite(name, 1, name_length, file) != name_length)) {{ fclose(file); remove(temporary); return; }}"));
         match signatures.canonical_type(&state.ty) {
-            Type::Bool => out.push_str(&format!(" {{ unsigned char type = 'b'; unsigned char value = {state_name} ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&value, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
-            Type::I64 => out.push_str(&format!(" {{ unsigned char type = 'i'; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
-            Type::Str => out.push_str(&format!(" {{ unsigned char type = 's'; const char *value = {state_name} == NULL ? \"\" : {state_name}; size_t length = strlen(value); if (fwrite(&type, 1, 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} }}")),
+            Type::Bool => out.push_str(&format!(" unsigned char type = 'b'; unsigned char value = {state_name} ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&value, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
+            Type::I64 => out.push_str(&format!(" unsigned char type = 'i'; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
+            Type::Str => out.push_str(&format!(" unsigned char type = 's'; const char *value = {state_name} == NULL ? \"\" : {state_name}; size_t length = strlen(value); if (fwrite(&type, 1, 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} }}")),
             _ => unreachable!("Linux state types are validated before lowering"),
         }
     }
     out.push_str(" if (fclose(file) != 0) { remove(temporary); return; } if (rename(temporary, path) != 0) remove(temporary); }\n");
-    out.push_str("static void flux__ui_restore_reload_state(void) { const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXS\", 4) != 0 || fread(&count, sizeof(count), 1, file) != 1 || count != ");
-    out.push_str(&format!("{}", view.states.len()));
-    out.push_str(") { fclose(file); remove(path); return; }");
+    out.push_str("static void flux__ui_restore_reload_state(void) { const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXS\", 4) != 0 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); if (name == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length)) { free(name); fclose(file); remove(path); return; } name[name_length] = '\\0'; unsigned char type = 0; if (fread(&type, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
+    out.push_str(" if (type == 'b') { unsigned char value = 0; if (fread(&value, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
-        let state_name = ui_state_c_name(&state.name);
-        match signatures.canonical_type(&state.ty) {
-            Type::Bool => out.push_str(&format!(" {{ unsigned char type = 0, value = 0; if (fread(&type, 1, 1, file) != 1 || type != 'b' || fread(&value, 1, 1, file) != 1) {{ fclose(file); remove(path); return; }} {state_name} = value != 0; }}")),
-            Type::I64 => out.push_str(&format!(" {{ unsigned char type = 0; if (fread(&type, 1, 1, file) != 1 || type != 'i' || fread(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(path); return; }} }}")),
-            Type::Str => {
-                out.push_str(&format!(" {{ unsigned char type = 0; size_t length = 0; if (fread(&type, 1, 1, file) != 1 || type != 's' || fread(&length, sizeof(length), 1, file) != 1 || length > (size_t)16 * 1024 * 1024) {{ fclose(file); remove(path); return; }} char *value = malloc(length + 1); if (value == NULL || (length != 0 && fread(value, 1, length, file) != length)) {{ free(value); fclose(file); remove(path); return; }} value[length] = '\\0';"));
-                if view_state_accepts_text_input_value(view, &state.name) {
-                    out.push_str(&format!(" {}(value); free(value);", ui_set_state_c_name(&state.name)));
-                } else {
-                    out.push_str(&format!(" {state_name} = value;"));
-                }
-                out.push_str(" }");
-            }
-            _ => unreachable!("Linux state types are validated before lowering"),
+        if matches!(signatures.canonical_type(&state.ty), Type::Bool) {
+            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value != 0;", c_string(&state.name), ui_state_c_name(&state.name)));
         }
     }
-    out.push_str(" fclose(file); remove(path); }\n");
+    out.push_str(" } else if (type == 'i') { int64_t value = 0; if (fread(&value, sizeof(value), 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
+    for state in &view.states {
+        if matches!(signatures.canonical_type(&state.ty), Type::I64) {
+            out.push_str(&format!(" if (strcmp(name, {}) == 0) {} = value;", c_string(&state.name), ui_state_c_name(&state.name)));
+        }
+    }
+    out.push_str(" } else if (type == 's') { size_t length = 0; if (fread(&length, sizeof(length), 1, file) != 1 || length > (size_t)16 * 1024 * 1024) { free(name); fclose(file); remove(path); return; } char *value = malloc(length + 1); if (value == NULL || (length != 0 && fread(value, 1, length, file) != length)) { free(value); free(name); fclose(file); remove(path); return; } value[length] = '\\0'; bool adopted = false;");
+    for state in &view.states {
+        if matches!(signatures.canonical_type(&state.ty), Type::Str) {
+            out.push_str(&format!(" if (strcmp(name, {}) == 0) {{", c_string(&state.name)));
+            if view_state_accepts_text_input_value(view, &state.name) {
+                out.push_str(&format!(" {}(value);", ui_set_state_c_name(&state.name)));
+            } else {
+                out.push_str(&format!(" {} = value; adopted = true;", ui_state_c_name(&state.name)));
+            }
+            out.push('}');
+        }
+    }
+    out.push_str(" if (!adopted) free(value); } else { free(name); fclose(file); remove(path); return; } free(name); } fclose(file); remove(path); }\n");
     out.push_str("static volatile sig_atomic_t flux__ui_reload_requested = 0; static void flux__ui_reload_signal(int signal_number) { (void)signal_number; flux__ui_reload_requested = 1; } static gboolean flux__ui_reload_poll(gpointer data) { (void)data; if (!flux__ui_reload_requested) return G_SOURCE_CONTINUE; flux__ui_save_reload_state(); GApplication *application = g_application_get_default(); if (application != NULL) g_application_quit(application); return G_SOURCE_REMOVE; }\n");
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);

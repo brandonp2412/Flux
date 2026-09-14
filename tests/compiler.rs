@@ -44453,6 +44453,8 @@ app Screen
     assert!(generated.contains("FLUX_RELOAD_STATE_PATH"));
     assert!(generated.contains("'F','L','X','S'"));
     assert!(generated.contains("uint32_t count = 3;"));
+    assert!(generated.contains("const char *name = \"enabled\""));
+    assert!(generated.contains("const char *name = \"count\""));
     assert!(generated.contains("flux__ui_state_enabled ? 1 : 0"));
     assert!(generated.contains("fwrite(&flux__ui_state_count"));
     assert!(generated.contains("flux__ui_state_message = value"));
