@@ -45904,3 +45904,22 @@ fn binary_socket_write_delivers_nul_and_high_bytes_without_text_conversion() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\n3\nnil\nnil\n");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn resumable_binary_socket_writes_preserve_offsets_and_nonblocking_contract() {
+    let source = r#"
+fn main() -> i64 {
+    let (offset, complete, failure) = net.writeBytesFrom(1, [65, 0, 255], 0)
+    print(offset)
+    print(complete)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("resumable binary write should typecheck");
+    let generated = compile_to_c(source).expect("resumable binary write should lower");
+    assert!(generated.contains("flux__net_send_bytes_progress("));
+    assert!(generated.contains("writeBytesFrom requires a nonblocking TCP socket"));
+    assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
+    assert!(generated.contains(".v0 = offset"));
+}

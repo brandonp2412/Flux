@@ -8381,6 +8381,24 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "sendBytesProgress" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("net.writeBytesFrom expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "net.writeBytesFrom socket")?;
+                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "net.writeBytesFrom bytes")?;
+                let offset = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::I64, &offset, "net.writeBytesFrom offset")?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if value < 0) {
+                    return Err(diag(args[2].span, "net.writeBytesFrom offset must be non-negative"));
+                }
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
             "sendTextParts" => {
                 if args.len() != 2 {
                     return Err(diag(

@@ -6841,6 +6841,9 @@ static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t 
     if runtime_usage.contains("flux__net_send_bytes(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"writeBytes requires a TCP socket\"); ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; int64_t sent = 0; for (size_t index = 0; index < bytes.len; ++index) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) return flux__net_result(sent, \"writeBytes byte values must be between 0 and 255\"); unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) return flux__net_result(sent, \"failed to write bytes\"); if (written == 0) return flux__net_result(sent, \"socket closed while writing bytes\"); sent += written; } return flux__net_result(sent, NULL); }\n");
     }
+    if runtime_usage.contains("flux__net_send_bytes_progress(") {
+        out.push_str("static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress(int64_t socket_handle, struct flux__list bytes, int64_t offset) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL }; if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = \"invalid socket handle\"; return result; } if (offset < 0) { result.v2 = \"writeBytesFrom offset must be non-negative\"; return result; } int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = \"failed to inspect socket type\"; return result; } if (socket_type != SOCK_STREAM) { result.v2 = \"writeBytesFrom requires a TCP socket\"; return result; } int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0 || (flags & O_NONBLOCK) == 0) { result.v2 = \"writeBytesFrom requires a nonblocking TCP socket\"; return result; } if ((uint64_t)offset > (uint64_t)bytes.len) { result.v2 = \"writeBytesFrom offset exceeds byte length\"; return result; } ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; while ((uint64_t)result.v0 < (uint64_t)bytes.len) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)result.v0 * stride)); if (value < 0 || value > 255) { result.v2 = \"writeBytesFrom byte values must be between 0 and 255\"; return result; } unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return result; result.v2 = \"failed to write bytes\"; return result; } if (written == 0) { result.v2 = \"socket closed while writing bytes\"; return result; } result.v0 += written; } result.v1 = true; return result; }\n");
+    }
     if uses_map {
         out.push_str("struct flux__map { struct flux__list keys; struct flux__list values; };\n");
     }
@@ -33393,6 +33396,22 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "sendBytesProgress" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                let offset = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_bytes_progress({}, {}, {})",
+                        socket_handle.code, bytes.code, offset.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "sendTextParts" => {
