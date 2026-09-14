@@ -10507,7 +10507,10 @@ fn emit_windows_native_application(
     let uses_accessibility = view.elements.iter().any(|element| {
         view_property(element, "accessibility_label").is_some()
             || view_property(element, "accessibility_description").is_some()
+            || view_property(element, "accessibility_value").is_some()
             || view_property(element, "accessibility_role").is_some()
+            || view_property(element, "accessibility_action_label").is_some()
+            || view_property(element, "accessibility_hidden").is_some()
     });
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
@@ -10854,6 +10857,22 @@ fn emit_windows_native_application(
             out.push_str(&format!(
                 "flux__win_accessibility_set_description({variable}, {value});\n"
             ));
+        }
+        if let Some(property) = view_property(element, "accessibility_value") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!("if ({variable} != NULL && flux__win_accessibility != NULL) {{ wchar_t *flux__win_accessibility_value = flux__win_accessibility_wide({value}); if (flux__win_accessibility_value != NULL) {{ (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, {variable}, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_VALUE, flux__win_accessibility_value); free(flux__win_accessibility_value); }} }}\n"));
+        }
+        if let Some(property) = view_property(element, "accessibility_action_label") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!("if ({variable} != NULL && flux__win_accessibility != NULL) {{ wchar_t *flux__win_accessibility_action = flux__win_accessibility_wide({value}); if (flux__win_accessibility_action != NULL) {{ (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, {variable}, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DEFAULTACTION, flux__win_accessibility_action); free(flux__win_accessibility_action); }} }}\n"));
+        }
+        if let Some(property) = view_property(element, "accessibility_hidden") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!("if ({variable} != NULL && flux__win_accessibility != NULL) {{ if ({value}) {{ VARIANT flux__win_accessibility_state; VariantInit(&flux__win_accessibility_state); flux__win_accessibility_state.vt = VT_I4; flux__win_accessibility_state.lVal = STATE_SYSTEM_INVISIBLE; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, {variable}, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_STATE, flux__win_accessibility_state); VariantClear(&flux__win_accessibility_state); }} else {{ const MSAAPROPID flux__win_accessibility_state_property = PROPID_ACC_STATE; (void)flux__win_accessibility->lpVtbl->ClearHwndProps(flux__win_accessibility, {variable}, OBJID_CLIENT, CHILDID_SELF, &flux__win_accessibility_state_property, 1); }} }}\n"));
+        }
+        if let Some(property) = view_property(element, "focusable") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!("if ({variable} != NULL) {{ LONG_PTR flux__win_focus_style = GetWindowLongPtrA({variable}, GWL_STYLE); LONG_PTR flux__win_focus_next = ({value}) ? (flux__win_focus_style | WS_TABSTOP) : (flux__win_focus_style & ~((LONG_PTR)WS_TABSTOP)); if (flux__win_focus_next != flux__win_focus_style) SetWindowLongPtrA({variable}, GWL_STYLE, flux__win_focus_next); }}\n"));
         }
         if element.kind == "TextInput" {
             if let Some(property) = view_property(element, "placeholder") {

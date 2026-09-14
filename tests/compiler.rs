@@ -218,6 +218,8 @@ fn windows_backend_applies_native_typography_and_accessibility_annotations() {
     let source = r#"
 view Screen {
     state accessibleName: str = "Current title"
+    state accessibleValue: str = "Ready"
+    state accessibilityHidden: bool = false
     grid columns: 1fr
     grid rows: auto auto
     Text title at 1,1
@@ -233,8 +235,13 @@ view Screen {
         accessibilityRole: "heading"
     Button action at 2,1
         text: "Continue"
+        onPress: accessibilityHidden => !accessibilityHidden
         accessibilityLabel: "Continue action"
+        accessibilityValue: accessibleValue
         accessibilityRole: "button"
+        accessibilityActionLabel: "Continue"
+        accessibilityHidden: accessibilityHidden
+        focusable: !accessibilityHidden
 }
 app Screen(title: "Accessible Windows")
 "#;
@@ -255,10 +262,19 @@ app Screen(title: "Accessible Windows")
     assert!(generated.contains("SetHwndPropStr"));
     assert!(generated.contains("PROPID_ACC_NAME"));
     assert!(generated.contains("PROPID_ACC_DESCRIPTION"));
+    assert!(generated.contains("PROPID_ACC_VALUE"));
+    assert!(generated.contains("PROPID_ACC_DEFAULTACTION"));
     assert!(generated.contains("PROPID_ACC_ROLE"));
+    assert!(generated.contains("PROPID_ACC_STATE"));
+    assert!(generated.contains("STATE_SYSTEM_INVISIBLE"));
+    assert!(generated.contains("ClearHwndProps"));
     assert!(generated.contains("ROLE_SYSTEM_STATICTEXT"));
     assert!(generated.contains("ROLE_SYSTEM_PUSHBUTTON"));
     assert!(generated.contains("flux__ui_state_accessibleName"));
+    assert!(generated.contains("flux__ui_state_accessibleValue"));
+    assert!(generated.contains("flux__ui_state_accessibilityHidden"));
+    assert!(generated.contains("GetWindowLongPtrA(flux__ui_action, GWL_STYLE)"));
+    assert!(generated.contains("WS_TABSTOP"));
     assert!(generated.contains("CreateFontW(-flux__win_scale(INT64_C(30))"));
     assert!(generated.contains("FW_NORMAL, TRUE, TRUE, TRUE"));
     assert!(generated.contains("WM_SETFONT"));
