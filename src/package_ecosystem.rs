@@ -21,6 +21,16 @@ pub struct RegistryRelease {
     pub yanked: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRelease {
+    pub package: String,
+    pub url: String,
+    pub requested_rev: String,
+    pub commit: String,
+    pub version: Option<String>,
+    pub sha256: String,
+}
+
 pub trait RegistryProvider {
     fn versions(&self, package: &str) -> io::Result<Vec<String>>;
     fn release(&self, package: &str, version: &str) -> io::Result<RegistryRelease>;
@@ -431,6 +441,228 @@ pub fn verify_cached_fluxpkg(expected_sha256: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+fn git_repository_cache(url: &str) -> io::Result<PathBuf> {
+    if url.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Git dependency URL cannot be empty",
+        ));
+    }
+    Ok(package_cache_root()?
+        .join("git")
+        .join(sha256_bytes(url.as_bytes()))
+        .join("repo.git"))
+}
+
+fn ensure_git_repository(url: &str, offline: bool) -> io::Result<PathBuf> {
+    let repository = git_repository_cache(url)?;
+    if repository.join("HEAD").is_file() {
+        return Ok(repository);
+    }
+    if offline {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Git dependency '{url}' is not cached while offline"),
+        ));
+    }
+    if let Some(parent) = repository.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let output = Command::new("git")
+        .arg("init")
+        .arg("--bare")
+        .arg(&repository)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "failed to initialize Git package cache for '{url}': {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(repository)
+}
+
+fn resolve_git_commit(
+    repository: &Path,
+    url: &str,
+    rev: &str,
+    offline: bool,
+) -> io::Result<String> {
+    if !offline {
+        let output = Command::new("git")
+            .arg("--git-dir")
+            .arg(repository)
+            .args(["fetch", "--force", "--quiet", "--no-tags"])
+            .arg(url)
+            .arg(rev)
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "failed to fetch Git dependency '{url}#{rev}': {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+    }
+    let reference = if offline { rev } else { "FETCH_HEAD" };
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(["rev-parse", "--verify"])
+        .arg(format!("{reference}^{{commit}}"))
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Git revision '{rev}' is not available in the package cache"),
+        ));
+    }
+    let commit = String::from_utf8(output.stdout)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Git commit identity is not UTF-8",
+            )
+        })?
+        .trim()
+        .to_ascii_lowercase();
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid Git commit identity '{commit}'"),
+        ));
+    }
+    Ok(commit)
+}
+
+fn create_git_fluxpkg(
+    repository: &Path,
+    commit: &str,
+) -> io::Result<(String, crate::project::PackageManifest)> {
+    let work = package_cache_root()?.join("git-export");
+    fs::create_dir_all(&work)?;
+    let source = work.join(format!(".{}-{}.source", std::process::id(), &commit[..12]));
+    let tar_path = work.join(format!(".{}-{}.tar", std::process::id(), &commit[..12]));
+    let archive_path = work.join(format!(".{}-{}.fluxpkg", std::process::id(), &commit[..12]));
+    let _ = fs::remove_dir_all(&source);
+    let _ = fs::remove_file(&tar_path);
+    let _ = fs::remove_file(&archive_path);
+    fs::create_dir(&source)?;
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(["archive", "--format=tar", "--output"])
+        .arg(&tar_path)
+        .arg(commit)
+        .output()?;
+    if !output.status.success() {
+        let _ = fs::remove_dir_all(&source);
+        return Err(io::Error::other(format!(
+            "failed to archive Git package commit '{commit}'"
+        )));
+    }
+    let output = Command::new("tar")
+        .args(["--no-same-owner", "--no-same-permissions", "-xf"])
+        .arg(&tar_path)
+        .arg("-C")
+        .arg(&source)
+        .output()?;
+    let _ = fs::remove_file(&tar_path);
+    if !output.status.success() {
+        let _ = fs::remove_dir_all(&source);
+        return Err(io::Error::other(format!(
+            "failed to extract Git package commit '{commit}'"
+        )));
+    }
+    reject_symlinks(&source, &source)?;
+    let manifest =
+        crate::project::read_manifest(&source.join("flux.toml")).map_err(|diagnostics| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.message)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })?;
+    let digest = create_fluxpkg(&source, &archive_path)?;
+    cache_fluxpkg(&archive_path, &digest)?;
+    let _ = fs::remove_file(&archive_path);
+    let _ = fs::remove_dir_all(&source);
+    Ok((digest, manifest))
+}
+
+pub fn resolve_git_release(package_hint: &str, url: &str, rev: &str) -> io::Result<GitRelease> {
+    if package_hint.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Git dependency name cannot be empty",
+        ));
+    }
+    let repository = ensure_git_repository(url, false)?;
+    let commit = resolve_git_commit(&repository, url, rev, false)?;
+    let (sha256, manifest) = create_git_fluxpkg(&repository, &commit)?;
+    Ok(GitRelease {
+        package: manifest.name,
+        url: url.to_string(),
+        requested_rev: rev.to_string(),
+        commit,
+        version: manifest.version,
+        sha256,
+    })
+}
+
+pub fn fetch_git_release(release: &GitRelease, offline: bool) -> io::Result<PathBuf> {
+    match verify_cached_fluxpkg(&release.sha256) {
+        Ok(path) => return Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if offline {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "Git package {} at {} is not cached while offline",
+                release.package, release.commit
+            ),
+        ));
+    }
+    let repository = ensure_git_repository(&release.url, false)?;
+    let commit = resolve_git_commit(&repository, &release.url, &release.commit, false)?;
+    let (sha256, manifest) = create_git_fluxpkg(&repository, &commit)?;
+    if commit != release.commit
+        || sha256 != release.sha256
+        || manifest.name != release.package
+        || manifest.version != release.version
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Git dependency '{}' no longer matches its immutable lock identity",
+                release.package
+            ),
+        ));
+    }
+    verify_cached_fluxpkg(&release.sha256)
+}
+
+pub fn materialize_git_release(release: &GitRelease, offline: bool) -> io::Result<PathBuf> {
+    let root = package_cache_root()?.join("sources").join(&release.sha256);
+    if root.join("flux.toml").is_file() {
+        return Ok(root);
+    }
+    let archive = fetch_git_release(release, offline)?;
+    match extract_fluxpkg(&archive, &release.sha256, &root) {
+        Ok(_) => Ok(root),
+        Err(error)
+            if error.kind() == io::ErrorKind::AlreadyExists && root.join("flux.toml").is_file() =>
+        {
+            Ok(root)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn fetch_registry_release(release: &RegistryRelease, offline: bool) -> io::Result<PathBuf> {
     match verify_cached_fluxpkg(&release.sha256) {
         Ok(path) => return Ok(path),
@@ -676,6 +908,47 @@ pub fn materialize_locked_registry_dependencies(
         );
     }
     Ok((releases, roots))
+}
+
+pub fn materialize_locked_git_dependencies(
+    target: &Path,
+    offline: bool,
+) -> io::Result<(BTreeMap<String, GitRelease>, BTreeMap<String, PathBuf>)> {
+    let releases = crate::project::locked_git_releases(target).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    let mut roots = BTreeMap::new();
+    for (key, release) in &releases {
+        roots.insert(key.clone(), materialize_git_release(release, offline)?);
+    }
+    Ok((releases, roots))
+}
+
+pub fn fetch_locked_git_dependencies(
+    target: &Path,
+    offline: bool,
+) -> io::Result<BTreeMap<String, GitRelease>> {
+    let releases = crate::project::locked_git_releases(target).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    for release in releases.values() {
+        fetch_git_release(release, offline)?;
+    }
+    Ok(releases)
 }
 
 pub fn fetch_locked_registry_dependencies(

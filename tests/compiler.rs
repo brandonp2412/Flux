@@ -27013,7 +27013,7 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     }
     fs::write(
         app.join("flux.toml"),
-        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath = { path = \"../math\", version = \"^1.2.0\" }\nremote = \"~3.4.0\"\nsource = { git = \"https://example.test/source.git\", rev = \"abc123\" }\n",
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath = { path = \"../math\", version = \"^1.2.0\" }\nremote = \"~3.4.0\"\n",
     )
     .expect("app manifest should be writable");
     fs::write(
@@ -27069,7 +27069,6 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     assert!(first.contains("id = \"math/util\""));
     assert!(first.contains("source = \"path:../util\""));
     assert!(first.contains("source = \"registry:~3.4.0\""));
-    assert!(first.contains("source = \"git:https://example.test/source.git#abc123\""));
 
     let tree = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("tree")
@@ -27087,7 +27086,6 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
         "math 1.4.3 [path:../math]",
         "util 2.0.0 [path:../util]",
         "remote [registry:~3.4.0]",
-        "source [git:https://example.test/source.git#abc123]",
     ] {
         assert!(
             tree.contains(expected),
@@ -27271,6 +27269,112 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
 }
 
 #[test]
+fn git_dependency_locks_commit_and_replays_cached_source() {
+    let root = std::env::temp_dir().join(format!("flux-git-dependency-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    let dependency = root.join("dependency");
+    let cache = root.join("cache");
+    fs::create_dir_all(app.join("src")).expect("app directory should be writable");
+    fs::create_dir_all(dependency.join("src")).expect("dependency directory should be writable");
+    fs::write(
+        dependency.join("flux.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nentry = \"src/lib.flux\"\n",
+    )
+    .expect("dependency manifest should be writable");
+    fs::write(
+        dependency.join("src/lib.flux"),
+        "pub fn dependencyValue() -> i64 { 42 }\n",
+    )
+    .expect("dependency source should be writable");
+
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&dependency)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    git(&["init", "--quiet"]);
+    git(&["config", "user.email", "flux-tests@example.test"]);
+    git(&["config", "user.name", "Flux Tests"]);
+    git(&["add", "."]);
+    git(&["commit", "--quiet", "-m", "package"]);
+    let commit = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+        .expect("commit should be UTF-8")
+        .trim()
+        .to_string();
+
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("app manifest should be writable");
+    fs::write(
+        app.join("src/main.flux"),
+        "import \"pkg:dep/src/lib.flux\"\nfn main() -> i64 { dependencyValue() }\n",
+    )
+    .expect("app source should be writable");
+
+    let add = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("add")
+        .arg(&app)
+        .arg("dep")
+        .arg("--git")
+        .arg(&dependency)
+        .arg("--rev")
+        .arg("HEAD")
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("flux add should run");
+    assert!(
+        add.status.success(),
+        "flux add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let lock_source = fs::read_to_string(app.join("flux.lock")).expect("lockfile should exist");
+    assert!(lock_source.contains(&format!("@{commit}")));
+    assert!(lock_source.contains("sha256 = \""));
+
+    fs::remove_dir_all(&dependency).expect("original Git repository should be removable");
+    let _ = fs::remove_dir_all(cache.join("sources"));
+    let fetch = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("fetch")
+        .arg(&app)
+        .arg("--offline")
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("offline flux fetch should run");
+    assert!(
+        fetch.status.success(),
+        "offline Git fetch failed: {}",
+        String::from_utf8_lossy(&fetch.stderr)
+    );
+    assert!(String::from_utf8_lossy(&fetch.stdout).contains(&format!("git:{commit}")));
+    let check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("check")
+        .arg(&app)
+        .arg("--locked")
+        .env("FLUX_PACKAGE_CACHE_DIR", &cache)
+        .output()
+        .expect("flux check should run");
+    assert!(
+        check.status.success(),
+        "cached Git replay failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn dependency_add_remove_commands_update_manifest_and_lock() {
     let root = std::env::temp_dir().join(format!("flux-package-add-remove-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -27355,18 +27459,20 @@ fn dependency_add_remove_commands_update_manifest_and_lock() {
         .arg(&app)
         .arg("source")
         .arg("--git")
-        .arg("https://example.test/source.git")
+        .arg(root.join("missing-git"))
         .arg("--rev")
-        .arg("abc123")
+        .arg("HEAD")
         .output()
         .expect("flux add git should run");
-    assert!(add_git.status.success());
+    assert!(!add_git.status.success());
+    let manifest = fs::read_to_string(app.join("flux.toml")).expect("manifest should be readable");
+    assert!(!manifest.contains("source ="));
     let lock =
         fs::read_to_string(app.join("flux.lock")).expect("updated lockfile should be readable");
     assert!(lock.contains("source = \"registry:~3.4.0\""));
-    assert!(lock.contains("source = \"git:https://example.test/source.git#abc123\""));
+    assert!(!lock.contains("git:"));
 
-    for dependency in ["remote", "source", "dep"] {
+    for dependency in ["remote", "dep"] {
         let remove = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("remove")
             .arg(&app)

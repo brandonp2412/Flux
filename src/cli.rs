@@ -408,6 +408,15 @@ fn run() -> Result<(), CliError> {
             }
             let target = Path::new(&args[1]);
             let offline = args.get(2).is_some_and(|value| value == "--offline");
+            fluxc::project::ensure_lockfile(target, offline).map_err(|diagnostics| {
+                CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
             let releases = match fluxc::package_ecosystem::configured_registry_provider(offline) {
                 Ok(provider) => fluxc::package_ecosystem::fetch_package_dependencies(
                     target,
@@ -421,13 +430,22 @@ fn run() -> Result<(), CliError> {
                 Err(error) => Err(error),
             }
             .map_err(|error| CliError::Message(error.to_string()))?;
-            if releases.is_empty() {
-                println!("fetched: no registry dependencies");
+            let git_releases =
+                fluxc::package_ecosystem::fetch_locked_git_dependencies(target, offline)
+                    .map_err(|error| CliError::Message(error.to_string()))?;
+            if releases.is_empty() && git_releases.is_empty() {
+                println!("fetched: no remote dependencies");
             } else {
                 for release in releases.values() {
                     println!(
                         "fetched: {} {} sha256:{}",
                         release.package, release.version, release.sha256
+                    );
+                }
+                for release in git_releases.values() {
+                    println!(
+                        "fetched: {} git:{} sha256:{}",
+                        release.package, release.commit, release.sha256
                     );
                 }
             }

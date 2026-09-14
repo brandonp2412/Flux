@@ -625,6 +625,18 @@ fn load_report_with_overlays_and_parse_cache(
     } else {
         (BTreeMap::new(), BTreeMap::new())
     };
+    let (git_releases, git_roots) =
+        if package_name.is_some() && module_root.join("flux.lock").is_file() {
+            crate::package_ecosystem::materialize_locked_git_dependencies(&module_root, false)
+                .map_err(|error| {
+                    vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!("failed to replay locked Git dependencies: {error}"),
+                    )]
+                })?
+        } else {
+            (BTreeMap::new(), BTreeMap::new())
+        };
     let package_scopes = package_name
         .as_ref()
         .map(|name| {
@@ -648,6 +660,8 @@ fn load_report_with_overlays_and_parse_cache(
         package_scopes,
         registry_releases,
         registry_roots,
+        git_releases,
+        git_roots,
         native_target,
         overlays: overlays.clone(),
         parse_cache,
@@ -760,6 +774,17 @@ pub fn analyze_package_test(
     } else {
         (BTreeMap::new(), BTreeMap::new())
     };
+    let (git_releases, git_roots) = if package_root.join("flux.lock").is_file() {
+        crate::package_ecosystem::materialize_locked_git_dependencies(&package_root, false)
+            .map_err(|error| {
+                vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!("failed to replay locked Git dependencies: {error}"),
+                )]
+            })?
+    } else {
+        (BTreeMap::new(), BTreeMap::new())
+    };
     let mut loader = Loader {
         loaded: HashSet::new(),
         stack: Vec::new(),
@@ -777,6 +802,8 @@ pub fn analyze_package_test(
         }],
         registry_releases,
         registry_roots,
+        git_releases,
+        git_roots,
         native_target: codegen::NativeTarget::Linux,
         overlays: HashMap::new(),
         parse_cache: None,
@@ -2268,6 +2295,7 @@ fn validate_lockfile(manifest: &PackageManifest) -> Result<(), Vec<Diagnostic>> 
 
 fn collect_manifest_lock_entries(
     manifest: &PackageManifest,
+    resolve_git: bool,
 ) -> Result<Vec<LockedDependency>, Vec<Diagnostic>> {
     let mut entries = Vec::new();
     let mut active = HashSet::new();
@@ -2286,13 +2314,20 @@ fn collect_manifest_lock_entries(
             via: "<root>".to_string(),
         },
     )]);
-    collect_locked_dependencies(manifest, "", &mut active, &mut resolved, &mut entries)?;
+    collect_locked_dependencies(
+        manifest,
+        "",
+        &mut active,
+        &mut resolved,
+        &mut entries,
+        resolve_git,
+    )?;
     Ok(entries)
 }
 
 fn validate_lockfile_source(manifest: &PackageManifest, source: &str) -> Result<(), String> {
     let actual = parse_lockfile(source)?;
-    let expected = collect_manifest_lock_entries(manifest).map_err(|diagnostics| {
+    let expected = collect_manifest_lock_entries(manifest, false).map_err(|diagnostics| {
         diagnostics
             .into_iter()
             .map(|diagnostic| diagnostic.message)
@@ -2306,6 +2341,18 @@ fn validate_lockfile_source(manifest: &PackageManifest, source: &str) -> Result<
     let mut registry_identity = BTreeMap::<&str, (&str, &str, &str, &str)>::new();
 
     for entry in &actual {
+        if exact_git_source(entry).is_some() {
+            let sha256 = entry
+                .sha256
+                .as_deref()
+                .ok_or_else(|| format!("locked Git package '{}' has no sha256", entry.package))?;
+            if !valid_lock_sha256(sha256) {
+                return Err(format!(
+                    "locked Git package '{}' has invalid sha256 '{sha256}'",
+                    entry.package
+                ));
+            }
+        }
         if let Some((repository, version)) = exact_registry_source(entry) {
             let sha256 = entry.sha256.as_deref().ok_or_else(|| {
                 format!("locked registry package '{}' has no sha256", entry.package)
@@ -2349,7 +2396,40 @@ fn validate_lockfile_source(manifest: &PackageManifest, source: &str) -> Result<
                     expected_entry.id
                 )
             })?;
-        if let Some(requirement) = expected_entry.source.strip_prefix("registry:") {
+        if let Some(expected_git) = expected_entry.source.strip_prefix("git:") {
+            if *actual_entry == expected_entry {
+                continue;
+            }
+            let (expected_url, expected_rev) = expected_git.rsplit_once('#').ok_or_else(|| {
+                format!(
+                    "invalid Git dependency identity '{}'",
+                    expected_entry.source
+                )
+            })?;
+            let (actual_url, actual_rev, _commit) =
+                exact_git_source(actual_entry).ok_or_else(|| {
+                    format!(
+                        "Git dependency '{}' is not pinned to an immutable commit",
+                        expected_entry.id
+                    )
+                })?;
+            if actual_url != expected_url || actual_rev != expected_rev {
+                return Err(format!(
+                    "Git dependency '{}' no longer matches the package manifest source",
+                    expected_entry.id
+                ));
+            }
+            if actual_entry
+                .sha256
+                .as_deref()
+                .is_none_or(|sha256| !valid_lock_sha256(sha256))
+            {
+                return Err(format!(
+                    "Git dependency '{}' has no valid immutable content hash",
+                    expected_entry.id
+                ));
+            }
+        } else if let Some(requirement) = expected_entry.source.strip_prefix("registry:") {
             if actual_entry.package != expected_entry.package {
                 return Err(format!(
                     "dependency '{}' changed package identity from '{}' to '{}'",
@@ -2383,7 +2463,8 @@ fn validate_lockfile_source(manifest: &PackageManifest, source: &str) -> Result<
         if expected.iter().any(|entry| entry.id == actual_entry.id) {
             continue;
         }
-        if exact_registry_source(actual_entry).is_none() {
+        if exact_registry_source(actual_entry).is_none() && exact_git_source(actual_entry).is_none()
+        {
             return Err(format!(
                 "lockfile contains undeclared dependency '{}'",
                 actual_entry.id
@@ -2531,6 +2612,20 @@ fn exact_registry_source(entry: &LockedDependency) -> Option<(&str, &str)> {
     Some((repository, version))
 }
 
+fn exact_git_source(entry: &LockedDependency) -> Option<(&str, &str, &str)> {
+    let source = entry.source.strip_prefix("git:")?;
+    let (requested, commit) = source.rsplit_once("@")?;
+    let (url, requested_rev) = requested.rsplit_once("#")?;
+    if url.is_empty()
+        || requested_rev.is_empty()
+        || commit.len() != 40
+        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some((url, requested_rev, commit))
+}
+
 fn valid_lock_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -2580,8 +2675,56 @@ pub fn locked_registry_releases(
     Ok(releases)
 }
 
+pub fn locked_git_releases(
+    target: &Path,
+) -> Result<BTreeMap<String, crate::package_ecosystem::GitRelease>, Vec<Diagnostic>> {
+    let manifest = read_package_manifest_target(target, "locked Git dependency replay")?;
+    validate_lockfile(&manifest)?;
+    let root = manifest
+        .path
+        .parent()
+        .expect("canonical manifest path has a parent");
+    let source = fs::read_to_string(root.join("flux.lock")).map_err(|error| {
+        vec![Diagnostic::global(
+            DiagnosticStage::Parse,
+            format!("failed to read package lockfile: {error}"),
+        )]
+    })?;
+    let entries = parse_lockfile(&source)
+        .map_err(|message| vec![Diagnostic::global(DiagnosticStage::Parse, message)])?;
+    let mut releases = BTreeMap::new();
+    for entry in entries {
+        let Some((url, requested_rev, commit)) = exact_git_source(&entry) else {
+            continue;
+        };
+        let release = crate::package_ecosystem::GitRelease {
+            package: entry.package.clone(),
+            url: url.to_string(),
+            requested_rev: requested_rev.to_string(),
+            commit: commit.to_string(),
+            version: entry.version.clone(),
+            sha256: entry
+                .sha256
+                .clone()
+                .expect("validated Git lock entry has sha256"),
+        };
+        let key = format!("{url}#{requested_rev}");
+        if let Some(previous) = releases.insert(key.clone(), release.clone()) {
+            if previous != release {
+                return Err(vec![Diagnostic::global(
+                    DiagnosticStage::Parse,
+                    format!(
+                        "Git dependency source '{key}' resolves to conflicting lock identities"
+                    ),
+                )]);
+            }
+        }
+    }
+    Ok(releases)
+}
+
 fn render_lockfile(manifest: &PackageManifest) -> Result<String, Vec<Diagnostic>> {
-    let mut entries = collect_manifest_lock_entries(manifest)?;
+    let mut entries = collect_manifest_lock_entries(manifest, true)?;
 
     if entries
         .iter()
@@ -2670,6 +2813,7 @@ fn collect_locked_dependencies(
     active: &mut HashSet<PathBuf>,
     resolved: &mut BTreeMap<String, ResolvedDependency>,
     entries: &mut Vec<LockedDependency>,
+    resolve_git: bool,
 ) -> Result<(), Vec<Diagnostic>> {
     let root = manifest
         .path
@@ -2703,27 +2847,86 @@ fn collect_locked_dependencies(
                 });
             }
             PackageDependency::Git { url, rev } => {
+                if !resolve_git {
+                    register_dependency_resolution(
+                        resolved,
+                        name,
+                        ResolvedDependency {
+                            source: ResolvedDependencySource::Git {
+                                url: url.clone(),
+                                rev: rev.clone(),
+                            },
+                            version: None,
+                            requirement: None,
+                            via: id.clone(),
+                        },
+                    )?;
+                    entries.push(LockedDependency {
+                        id,
+                        package: name.clone(),
+                        version: None,
+                        source: format!("git:{url}#{rev}"),
+                        sha256: None,
+                        asset: None,
+                    });
+                    continue;
+                }
+                let release = crate::package_ecosystem::resolve_git_release(name, url, rev)
+                    .map_err(|error| {
+                        vec![Diagnostic::global(
+                            DiagnosticStage::Parse,
+                            format!("failed to resolve Git dependency '{id}': {error}"),
+                        )]
+                    })?;
                 register_dependency_resolution(
                     resolved,
-                    name,
+                    &release.package,
                     ResolvedDependency {
                         source: ResolvedDependencySource::Git {
-                            url: url.clone(),
-                            rev: rev.clone(),
+                            url: release.url.clone(),
+                            rev: release.commit.clone(),
                         },
-                        version: None,
+                        version: release.version.clone(),
                         requirement: None,
                         via: id.clone(),
                     },
                 )?;
                 entries.push(LockedDependency {
-                    id,
-                    package: name.clone(),
-                    version: None,
-                    source: format!("git:{url}#{rev}"),
-                    sha256: None,
+                    id: id.clone(),
+                    package: release.package.clone(),
+                    version: release.version.clone(),
+                    source: format!(
+                        "git:{}#{}@{}",
+                        release.url, release.requested_rev, release.commit
+                    ),
+                    sha256: Some(release.sha256.clone()),
                     asset: None,
                 });
+                let dependency_root = crate::package_ecosystem::materialize_git_release(
+                    &release, true,
+                )
+                .map_err(|error| {
+                    vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!("failed to materialize Git dependency '{id}': {error}"),
+                    )]
+                })?;
+                let dependency_manifest = read_manifest(&dependency_root.join("flux.toml"))?;
+                if !active.insert(dependency_root.clone()) {
+                    return Err(vec![Diagnostic::global(
+                        DiagnosticStage::Parse,
+                        format!("cyclic Git dependency detected at dependency path '{id}'"),
+                    )]);
+                }
+                collect_locked_dependencies(
+                    &dependency_manifest,
+                    &id,
+                    active,
+                    resolved,
+                    entries,
+                    resolve_git,
+                )?;
+                active.remove(&dependency_root);
             }
             PackageDependency::Path { path, requirement } => {
                 let dependency_manifest = root.join(path).join("flux.toml");
@@ -2779,7 +2982,14 @@ fn collect_locked_dependencies(
                         ),
                     )]);
                 }
-                collect_locked_dependencies(&dependency_manifest, &id, active, resolved, entries)?;
+                collect_locked_dependencies(
+                    &dependency_manifest,
+                    &id,
+                    active,
+                    resolved,
+                    entries,
+                    resolve_git,
+                )?;
                 active.remove(&dependency_root);
             }
         }
@@ -3675,6 +3885,8 @@ struct Loader<'a> {
     package_scopes: Vec<PackageScope>,
     registry_releases: BTreeMap<String, crate::package_ecosystem::RegistryRelease>,
     registry_roots: BTreeMap<String, PathBuf>,
+    git_releases: BTreeMap<String, crate::package_ecosystem::GitRelease>,
+    git_roots: BTreeMap<String, PathBuf>,
     native_target: codegen::NativeTarget,
     overlays: HashMap<PathBuf, String>,
     parse_cache: Option<&'a mut ModuleParseCache>,
@@ -4048,15 +4260,48 @@ impl Loader<'_> {
                 }
                 (manifest, dependency_root)
             }
-            PackageDependency::Git { .. } => {
-                self.diagnostics.push(Diagnostic::new(
-                    DiagnosticStage::Parse,
-                    span,
-                    format!(
-                        "package dependency '{dependency_name}' requires revision-pinned Git transport before it can be imported"
-                    ),
-                ));
-                return None;
+            PackageDependency::Git { url, rev } => {
+                let key = format!("{url}#{rev}");
+                let Some(release) = self.git_releases.get(&key) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!("Git dependency '{dependency_name}' is missing an immutable flux.lock entry"),
+                    ));
+                    return None;
+                };
+                let Some(dependency_root) = self.git_roots.get(&key).cloned() else {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!("Git dependency '{dependency_name}' is not materialized in the package cache"),
+                    ));
+                    return None;
+                };
+                let manifest = match read_manifest(&dependency_root.join("flux.toml")) {
+                    Ok(manifest) => manifest,
+                    Err(diagnostics) => {
+                        let detail = diagnostics
+                            .first()
+                            .map(|diagnostic| diagnostic.message.as_str())
+                            .unwrap_or("invalid dependency manifest");
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticStage::Parse,
+                            span,
+                            format!("failed to load Git dependency '{dependency_name}': {detail}"),
+                        ));
+                        return None;
+                    }
+                };
+                if manifest.name != release.package || manifest.version != release.version {
+                    self.diagnostics.push(Diagnostic::new(
+                        DiagnosticStage::Parse,
+                        span,
+                        format!("Git dependency '{dependency_name}' materialized with a manifest that does not match flux.lock"),
+                    ));
+                    return None;
+                }
+                (manifest, dependency_root)
             }
         };
         if let Some(existing) = self
