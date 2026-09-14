@@ -9796,7 +9796,6 @@ fn build_native_configured(
         Vec::new()
     };
     let crypto = c_source.contains("#include <openssl/sha.h>");
-    let secure = c_source.contains("#include <libsecret/secret.h>");
     let crypto_cflags = if crypto { pkg_config_flags("--cflags", "openssl")? } else { Vec::new() };
     let crypto_libs = if crypto { pkg_config_flags("--libs", "openssl")? } else { Vec::new() };
     let mut native_cflags = gtk_cflags;
@@ -9985,8 +9984,7 @@ fn write_reproducibility_metadata(
         .unwrap_or_else(|| "none".to_string());
     let gtk = generated.contains("#include <gtk/gtk.h>");
     let sqlite = generated.contains("#include <sqlite3.h>");
-    let secure = generated.contains("#include <libsecret/secret.h>");
-    let toolchain = native_toolchain_cache_identity(gtk, sqlite, false, secure, native_target)
+    let toolchain = native_toolchain_cache_identity(gtk, sqlite, native_target)
         .map_err(CliError::Message)?;
     let sysroot_hash = native_sysroot_cache_identity(native_target.sysroot.as_deref());
     let mut metadata = String::new();
