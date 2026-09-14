@@ -38,14 +38,20 @@ impl ProjectAnalysis {
     pub fn emit_c_cached(&self, target: &Path) -> Result<String, Diagnostic> {
         let fingerprint = codegen_cache_fingerprint(self);
         let path = codegen_cache_path(target, fingerprint);
-        let header = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}\n");
+        let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
         if let Ok(cached) = fs::read_to_string(&path)
-            && let Some(generated) = cached.strip_prefix(&header)
+            && let Some((header, generated)) = cached.split_once('\n')
+            && let Some(checksum) = header.strip_prefix(&header_prefix)
+            && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
         {
             return Ok(generated.to_string());
         }
 
         let generated = self.emit_c()?;
+        let header = format!(
+            "{header_prefix}{:016x}\n",
+            stable_bytes_hash(generated.as_bytes())
+        );
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -103,12 +109,7 @@ fn codegen_cache_path(target: &Path, fingerprint: u64) -> PathBuf {
 fn codegen_cache_fingerprint(analysis: &ProjectAnalysis) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     let mut add = |bytes: &[u8]| {
-        for byte in bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        hash ^= 0xff;
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = stable_bytes_hash_with_seed(bytes, hash);
     };
     add(PROJECT_CODEGEN_CACHE_VERSION.as_bytes());
     for source in &analysis.sources {
@@ -124,6 +125,18 @@ fn codegen_cache_fingerprint(analysis: &ProjectAnalysis) -> u64 {
         }
     }
     hash
+}
+
+fn stable_bytes_hash(bytes: &[u8]) -> u64 {
+    stable_bytes_hash_with_seed(bytes, 0xcbf29ce484222325)
+}
+
+fn stable_bytes_hash_with_seed(bytes: &[u8], mut hash: u64) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^ 0xff
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -26836,6 +26836,18 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
     assert!(cached_artifact.starts_with("flux-project-codegen-v1:"));
     assert!(cached_artifact.len() > "flux-project-codegen-v1:\n".len());
 
+    fs::write(artifacts[0].path(), format!("{}corrupt", cached_artifact.lines().next().unwrap()))
+        .expect("cache artifact should be tamperable for the regression");
+    let repaired = analysis
+        .emit_c_cached(&entry)
+        .expect("tampered codegen should be regenerated");
+    assert_eq!(first, repaired);
+    assert!(
+        fs::read_to_string(artifacts[0].path())
+            .expect("repaired cache should be readable")
+            .contains("\n#include")
+    );
+
     fs::write(&entry, "fn main() -> i64 {\n    print(2)\n    return 0\n}\n")
         .expect("updated entry should be writable");
     let updated = fluxc::project::analyze(&entry).expect("updated analysis should succeed");
