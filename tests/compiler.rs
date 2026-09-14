@@ -3325,10 +3325,14 @@ fn main() -> i64 {
     check_source(source).expect("structured concurrent HTTP server should typecheck");
     let generated = compile_to_c(source).expect("structured concurrent HTTP server should lower");
     assert!(generated.contains("flux__net_http_serve_concurrent("));
-    assert!(generated.contains("flux__worker_start_with(flux__net_http_concurrent_entry"));
+    assert!(generated.contains("flux__worker_start_with_state(flux__net_http_concurrent_entry"));
     assert!(generated.contains("int64_t handles[64]"));
     assert!(generated.contains("size_t payload_slots[64]"));
     assert!(generated.contains("struct flux__http_concurrent_payload payloads[64]"));
+    assert!(generated.contains("struct flux__worker_state worker_states[64]"));
+    assert!(generated.contains("&worker_states[payload_index]"));
+    assert!(generated.contains("state->heap_owned = heap_owned"));
+    assert!(generated.contains("if (heap_owned) free(state)"));
     assert!(generated.contains(
         "flux__net_http_concurrent_payload_slot(payload_slots, pending, (size_t)max_concurrent)"
     ));
@@ -3609,7 +3613,9 @@ fn main() -> i64 {
     assert!(generated.contains("if (pending == (size_t)max_concurrent)"));
     assert!(generated.contains("while (pending < (size_t)max_concurrent)"));
     assert!(generated.contains("struct flux__http_concurrent_payload payloads[64]"));
+    assert!(generated.contains("struct flux__worker_state worker_states[64]"));
     assert!(generated.contains("payload_slots[pending] = payload_index"));
+    assert!(generated.contains("&worker_states[payload_index]"));
     assert!(generated.contains("flux__net_poll_cancellable(&queued, 1, 0)"));
     assert!(generated.contains("http.serveConcurrentLimit maxConcurrent must be between 1 and 64"));
 
