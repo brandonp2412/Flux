@@ -7603,7 +7603,8 @@ __FLUX_PICKER_METHODS__
                 return;
             }
             try (java.io.InputStream stream = getAssets().open(assetName)) {
-                view.setImageBitmap(android.graphics.BitmapFactory.decodeStream(stream));
+                android.graphics.drawable.Drawable drawable = android.graphics.drawable.Drawable.createFromStream(stream, assetName);
+                view.setImageDrawable(drawable);
             } catch (java.io.IOException error) {
                 view.setImageDrawable(null);
             }
@@ -7612,7 +7613,8 @@ __FLUX_PICKER_METHODS__
         if (!source.contains("://")) {
             String assetSource = source.startsWith("assets/") ? source.substring(7) : source;
             try (java.io.InputStream input = getAssets().open(assetSource)) {
-                view.setImageBitmap(android.graphics.BitmapFactory.decodeStream(input));
+                android.graphics.drawable.Drawable drawable = android.graphics.drawable.Drawable.createFromStream(input, assetSource);
+                view.setImageDrawable(drawable);
                 return;
             } catch (java.io.IOException ignored) {
             }
@@ -11309,7 +11311,8 @@ app OverlayDemo(title: "Overlay")
         assert!(activity.contains("styleImageFit(view, fit);"));
         assert!(activity.contains("source.startsWith(\"asset://\")"));
         assert!(activity.contains("getAssets().open(assetName)"));
-        assert!(activity.contains("android.graphics.BitmapFactory.decodeStream(stream)"));
+        assert!(activity.contains("Drawable.createFromStream(stream, assetName)"));
+        assert!(activity.contains("Drawable.createFromStream(input, assetSource)"));
     }
 
     #[test]
