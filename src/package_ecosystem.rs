@@ -1561,7 +1561,43 @@ fn collect_manifest_registry_requirements(
                     resolve_git,
                 )?;
             }
-            crate::project::PackageDependency::Git { .. } => {}
+            crate::project::PackageDependency::Git { url, rev } => {
+                let release = resolve_git_release(name, url, rev).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to resolve Git dependency '{name}' while collecting registry requirements: {error}"
+                        ),
+                    )
+                })?;
+                let dependency_root = materialize_git_release(&release, true).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to materialize Git dependency '{name}' while collecting registry requirements: {error}"
+                        ),
+                    )
+                })?;
+                let dependency_manifest = crate::project::read_manifest(
+                    &dependency_root.join("flux.toml"),
+                )
+                .map_err(|diagnostics| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        diagnostics
+                            .into_iter()
+                            .map(|diagnostic| diagnostic.message)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                })?;
+                collect_manifest_registry_requirements(
+                    &dependency_manifest,
+                    visited_paths,
+                    requirements,
+                    false,
+                )?;
+            }
         }
     }
     Ok(())
@@ -2651,6 +2687,84 @@ mod tests {
         assert!(vendor_lock.contains("source = \"git:"));
         assert!(vendor_lock.contains("sha256 = \""));
         unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_resolution_includes_git_transitive_requirements() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let root = temp_root("git-transitive-registry");
+        let app = root.join("app");
+        let dependency = root.join("dependency");
+        let registry = root.join("registry");
+        let cache = root.join("cache");
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::create_dir_all(dependency.join("src")).unwrap();
+        fs::create_dir_all(registry.join("util")).unwrap();
+        fs::write(
+            dependency.join("flux.toml"),
+            "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nentry = \"src/lib.flux\"\n\n[dependencies]\nutil = \"^2.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dependency.join("src/lib.flux"),
+            "pub fn value() -> i64 { 42 }\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "flux-tests@example.test"],
+            vec!["config", "user.name", "Flux Tests"],
+            vec!["add", "."],
+            vec!["commit", "--quiet", "-m", "package"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&dependency)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {:?} failed", args);
+        }
+        fs::write(
+            app.join("flux.toml"),
+            format!(
+                "[package]\nname = \"app\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = {{ git = {:?}, rev = \"HEAD\" }}\n",
+                dependency.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        fs::write(registry.join("util/versions.txt"), "2.0.0\n2.3.0\n").unwrap();
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for version in ["2.0.0", "2.3.0"] {
+            fs::write(
+                registry.join(format!("util/{version}.toml")),
+                format!(
+                    "format_version = 1\npackage = \"util\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/util\"\nversion = \"{version}\"\nflux = \"*\"\nasset = \"https://invalid.example/util-{version}.fluxpkg\"\nsha256 = \"{hash}\"\nyanked = false\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        unsafe {
+            std::env::set_var("FLUX_PACKAGE_CACHE_DIR", &cache);
+            std::env::set_var("FLUX_REGISTRY_DIR", &registry);
+        }
+        assert!(package_has_registry_dependencies(&app).unwrap());
+        let provider = DirectoryRegistryProvider::new(&registry);
+        let graph = resolve_package_registry_graph(&app, &provider).unwrap();
+        assert_eq!(graph.releases["util"].version, "2.3.0");
+        crate::project::write_lockfile(&app).unwrap();
+        let lock = fs::read_to_string(app.join("flux.lock")).unwrap();
+        assert!(lock.contains("id = \"dep/util\""));
+        assert!(lock.contains("package = \"util\""));
+        assert!(lock.contains("version = \"2.3.0\""));
+        assert!(lock.contains("source = \"registry:https://github.com/flux-lang/util#2.3.0\""));
+        unsafe {
+            std::env::remove_var("FLUX_REGISTRY_DIR");
+            std::env::remove_var("FLUX_PACKAGE_CACHE_DIR");
+        }
         let _ = fs::remove_dir_all(root);
     }
 
