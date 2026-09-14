@@ -1692,6 +1692,7 @@ fn emit_runtime_prelude(
     let uses_worker_wait_any = runtime_usage.contains("flux__worker_wait_any(")
         || runtime_usage.contains("flux__worker_join_any(");
     let uses_worker_completion_wait = uses_http_concurrent || uses_worker_wait_any;
+    let uses_http_request_workers = uses_http_concurrent;
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
         || uses_http_concurrent;
