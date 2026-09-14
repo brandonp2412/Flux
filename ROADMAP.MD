@@ -13,7 +13,7 @@ Stable overall-progress baseline:
 - Baseline roadmap units: 739 checkbox items
 - Completed baseline units: 568
 - Reported overall progress: **77%**
-- Current net scope growth after the baseline: 133 checkbox items
+- Current net scope growth after the baseline: 134 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
 
 At the **start of every Flux development session**:
@@ -988,6 +988,7 @@ Web is a supported target, not the implementation substrate for native apps. The
 - [ ] Files. Bootstrap scalar file/directory metadata includes size, modification/access/inode-change times, permission bits, numeric owner/group IDs, inode/device identities, and hard-link counts with explicit errors and no escaping borrowed data. Native callback-free mutation covers file truncation, file/directory permission and modification/access-time updates, and directory rename with path-kind/range validation and explicit errors; access-time reads preserve native millisecond precision. Bounded callback-scoped text reads through `file.read(path, maxBytes, callback) -> error` validate limits, reject binary/NUL data, and never expose the temporary buffer beyond the exact callback. Callback-scoped directory enumeration through `directory.list(path, callback) -> error` lends each entry name synchronously while the directory handle remains owned by the native helper. Owned reads, directory listings, byte I/O, and owned path values remain sequenced behind the owned-string/collection work.
 - [ ] Preferences/settings.
 - [ ] Secure storage.
+  - [x] Android application secure key/value storage: `android.secureStore` / `android.store`, `android.secureRead` / `android.load`, and `android.secureRemove` / `android.erase` use an API-23+ Android Keystore AES-GCM key with authenticated ciphertext in private app preferences; reads lend plaintext only for the exact callback scope, failures return `false`, and generated Java/JNI support is tree-shaken when unreachable. Desktop secure storage remains pending.
 - [x] SQLite interface.
 - [ ] Database driver/plugin model.
 - [ ] HTTP client.
