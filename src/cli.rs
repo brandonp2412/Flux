@@ -64,12 +64,6 @@ impl BuildMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeBuildOutcome {
-    Cached,
-    Compiled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeInstrumentation {
     None,
     Gprof,
@@ -2916,7 +2910,6 @@ fn build_static_executable(
         Some(native_package),
         true,
     )
-    .map(|_| ())
     .map_err(|error| {
         CliError::Message(format!(
             "static package requires a target toolchain with static C runtime support: {error}"
@@ -4787,25 +4780,19 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             "source change detected; recompiling",
         );
         eprintln!("reload: source change detected; recompiling");
-        let analysis_result = analysis_cache.analyze_with_overlays(target, &HashMap::new());
-        let analysis_outcome = analysis_cache.last_outcome();
-        if let Some(outcome) = analysis_outcome {
-            eprintln!("reload: {}", development_analysis_summary(outcome));
-        }
-        let analysis = match analysis_result {
+        let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
             Ok(analysis) => analysis,
             Err(diagnostics) => {
                 let (_, sources) = fluxc::project::check_with_sources(target);
                 report_diagnostics(target, &diagnostics, &sources);
                 watch_paths = merge_watch_paths(target, &watch_paths, &sources);
                 fingerprints = watch_fingerprints(&watch_paths);
-                write_development_status_with_analysis(
+                write_development_status(
                     target,
                     "compile_error",
                     generation,
                     mode,
                     "compile failed; keeping the last good process",
-                    analysis_outcome,
                 );
                 status_state = "compile_error";
                 eprintln!("reload: compile failed; keeping the last good process");
@@ -4819,42 +4806,29 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 report_diagnostics(target, &[diagnostic], &sources);
                 watch_paths = merge_watch_paths(target, &watch_paths, &sources);
                 fingerprints = watch_fingerprints(&watch_paths);
-                write_development_status_with_analysis(
+                write_development_status(
                     target,
                     "compile_error",
                     generation,
                     mode,
                     "compile failed; keeping the last good process",
-                    analysis_outcome,
                 );
                 status_state = "compile_error";
                 eprintln!("reload: compile failed; keeping the last good process");
                 continue;
             }
         };
-        let codegen_outcome = analysis_cache.last_codegen_outcome();
-        if let Some(outcome) = codegen_outcome {
-            eprintln!("reload: {}", development_codegen_summary(outcome));
-        }
         generation += 1;
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
-        let native_outcome = match build_native_with_outcome(
-            &generated,
-            &next_binary,
-            mode,
-            native_package.as_ref(),
-        ) {
-            Ok(outcome) => outcome,
-            Err(message) => {
-                write_development_status(target, "compile_error", generation, mode, &message);
-                status_state = "compile_error";
-                eprintln!("reload: {message}");
-                let _ = fs::remove_file(&next_binary);
-                continue;
-            }
-        };
-        eprintln!("reload: {}", development_native_summary(native_outcome));
+        if let Err(message) = build_native(&generated, &next_binary, mode, native_package.as_ref())
+        {
+            write_development_status(target, "compile_error", generation, mode, &message);
+            status_state = "compile_error";
+            eprintln!("reload: {message}");
+            let _ = fs::remove_file(&next_binary);
+            continue;
+        }
 
         stop_child_for_reload(&mut child);
         let previous_binary = std::mem::replace(&mut binary, next_binary);
@@ -4862,15 +4836,12 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
-        write_development_status_with_build(
+        write_development_status(
             target,
             "restarted",
             generation,
             mode,
             "rebuilt and restarted after source change",
-            analysis_outcome,
-            codegen_outcome,
-            Some(native_outcome),
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
@@ -4884,68 +4855,6 @@ fn write_development_status(
     mode: BuildMode,
     message: &str,
 ) {
-    write_development_status_with_analysis(target, state, generation, mode, message, None);
-}
-
-fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
-    match outcome {
-        fluxc::project::ProjectAnalysisOutcome::Cached => {
-            "analysis reused cached graph".to_string()
-        }
-        fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules } => format!(
-            "incremental analysis rechecked {rechecked_modules} module{}",
-            if rechecked_modules == 1 { "" } else { "s" }
-        ),
-        fluxc::project::ProjectAnalysisOutcome::Full => {
-            "analysis performed full typecheck".to_string()
-        }
-    }
-}
-
-fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -> &'static str {
-    match outcome {
-        fluxc::project::ProjectCodegenOutcome::Cached => "codegen reused cached C",
-        fluxc::project::ProjectCodegenOutcome::Full => "codegen emitted full C",
-    }
-}
-
-fn development_native_summary(outcome: NativeBuildOutcome) -> &'static str {
-    match outcome {
-        NativeBuildOutcome::Cached => "native build reused cached artifact",
-        NativeBuildOutcome::Compiled => "native build compiled with clang",
-    }
-}
-
-fn write_development_status_with_analysis(
-    target: &Path,
-    state: &str,
-    generation: usize,
-    mode: BuildMode,
-    message: &str,
-    analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
-) {
-    write_development_status_with_build(
-        target,
-        state,
-        generation,
-        mode,
-        message,
-        analysis_outcome,
-        None,
-        None,
-    );
-}
-
-fn write_development_status_with_build(
-    target: &Path,
-    state: &str,
-    generation: usize,
-    mode: BuildMode,
-    message: &str,
-    analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
-    codegen_outcome: Option<fluxc::project::ProjectCodegenOutcome>,
-    native_outcome: Option<NativeBuildOutcome>,
-) {
     let Ok(path) = fluxc::project::development_status_path(target) else {
         return;
     };
@@ -4953,37 +4862,12 @@ fn write_development_status_with_build(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let analysis_fields = match analysis_outcome {
-        Some(fluxc::project::ProjectAnalysisOutcome::Cached) => {
-            ",\"analysis\":\"cached\",\"rechecked_modules\":0".to_string()
-        }
-        Some(fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules }) => {
-            format!(",\"analysis\":\"incremental\",\"rechecked_modules\":{rechecked_modules}")
-        }
-        Some(fluxc::project::ProjectAnalysisOutcome::Full) => {
-            ",\"analysis\":\"full\",\"rechecked_modules\":0".to_string()
-        }
-        None => String::new(),
-    };
-    let codegen_fields = match codegen_outcome {
-        Some(fluxc::project::ProjectCodegenOutcome::Cached) => ",\"codegen\":\"cached\"",
-        Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"",
-        None => "",
-    };
-    let native_fields = match native_outcome {
-        Some(NativeBuildOutcome::Cached) => ",\"native_build\":\"cached\"",
-        Some(NativeBuildOutcome::Compiled) => ",\"native_build\":\"compiled\"",
-        None => "",
-    };
     let payload = format!(
-        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{}{}{} }}\n",
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}}}\n",
         json_string(state),
         json_string(mode.name()),
         std::process::id(),
         json_string(message),
-        analysis_fields,
-        codegen_fields,
-        native_fields,
     );
     let temp = path.with_file_name(format!(
         ".{}.{}.tmp",
@@ -9686,15 +9570,6 @@ fn build_native(
     mode: BuildMode,
     native_package: Option<&fluxc::project::NativePackageConfig>,
 ) -> Result<(), String> {
-    build_native_with_outcome(c_source, output, mode, native_package).map(|_| ())
-}
-
-fn build_native_with_outcome(
-    c_source: &str,
-    output: &Path,
-    mode: BuildMode,
-    native_package: Option<&fluxc::project::NativePackageConfig>,
-) -> Result<NativeBuildOutcome, String> {
     build_native_configured(
         c_source,
         output,
@@ -9722,7 +9597,6 @@ fn build_native_instrumented(
         native_package,
         false,
     )
-    .map(|_| ())
 }
 
 fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
@@ -9761,7 +9635,7 @@ fn build_native_configured(
     native_target: &NativeTargetOptions,
     native_package: Option<&fluxc::project::NativePackageConfig>,
     static_link: bool,
-) -> Result<NativeBuildOutcome, String> {
+) -> Result<(), String> {
     if let Some(sysroot) = native_target.sysroot.as_deref()
         && !sysroot.is_dir()
     {
@@ -9847,7 +9721,7 @@ fn build_native_configured(
                 output.display()
             )
         })?;
-        return Ok(NativeBuildOutcome::Cached);
+        return Ok(());
     }
     if cache_enabled && cache.exists() {
         let _ = fs::remove_file(&cache);
@@ -9924,7 +9798,7 @@ fn build_native_configured(
             }
         }
     }
-    Ok(NativeBuildOutcome::Compiled)
+    Ok(())
 }
 
 fn native_cache_metadata_path(cache: &Path) -> PathBuf {
