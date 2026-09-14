@@ -9860,7 +9860,11 @@ fn check_qualified_call(
                     &body_callback,
                     &format!("http.{name} bodyCallback"),
                 )?;
-                return Ok(vec![Type::Error]);
+                return Ok(if name == "serveWorker" {
+                    vec![Type::I64, Type::Error]
+                } else {
+                    vec![Type::Error]
+                });
             }
             "receiveResponseHeadWithHeaders" => {
                 if args.len() != 4 {

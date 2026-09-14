@@ -6536,6 +6536,12 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
         out.push_str("static int64_t flux__worker_next_id = INT64_C(1);\n");
         out.push_str("static int64_t flux__worker_next_scope_id = INT64_C(-1);\n");
         out.push_str("static _Thread_local int64_t flux__worker_current_id = INT64_C(0);\n");
+        out.push_str("static _Thread_local const char *flux__worker_current_error = NULL;\n");
+        if uses_http_request_workers {
+            out.push_str("static inline void flux__worker_interrupt_cancel_fd(int fd) { if (fd >= 0) shutdown(fd, SHUT_RDWR); }\n");
+        } else {
+            out.push_str("#define flux__worker_interrupt_cancel_fd(fd) ((void)(fd))\n");
+        }
         out.push_str("static struct flux__worker_state *flux__worker_find_locked(int64_t id) { struct flux__worker_state *state = flux__worker_head; while (state != NULL && state->id != id) state = state->next; return state; }\n");
         out.push_str("static bool flux__worker_descends_from_locked(struct flux__worker_state *state, int64_t ancestor_id) { int64_t parent_id = state->parent_id; while (parent_id > 0) { if (parent_id == ancestor_id) return true; struct flux__worker_state *parent = flux__worker_find_locked(parent_id); if (parent == NULL) return false; parent_id = parent->parent_id; } return false; }\n");
         out.push_str("static const char *flux__worker_join_children(void);\n");
