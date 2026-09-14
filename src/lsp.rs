@@ -2991,14 +2991,6 @@ fn signature_help_for_document_cached(
     let prefix = source.get(..absolute.min(source.len()))?;
     let (call_name, active_parameter) = active_call(prefix)?;
     let implementation_call_name = crate::builtin_names::global_impl(call_name);
-    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
-    let standalone_database;
-    let database = if let Some((database, _)) = project_analysis.as_ref() {
-        database
-    } else {
-        standalone_database = analyzed_document(uri, source)?;
-        &standalone_database
-    };
     if call_name == "print" {
         return Some(signature_help_for_builtin(
             "print",
@@ -4530,6 +4522,14 @@ fn signature_help_for_document_cached(
                 ));
             }
         }
+        let project_analysis = analyzed_project_document_cached(uri, documents, cache);
+        let standalone_database;
+        let database = if let Some((database, _)) = project_analysis.as_ref() {
+            database
+        } else {
+            standalone_database = analyzed_document(uri, source)?;
+            &standalone_database
+        };
         if let Some(definition) = database.signatures().enum_type(namespace)
             && let Some(variant) = definition.variant(member)
         {
@@ -4549,6 +4549,14 @@ fn signature_help_for_document_cached(
             active_parameter,
         ));
     }
+    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
+    let standalone_database;
+    let database = if let Some((database, _)) = project_analysis.as_ref() {
+        database
+    } else {
+        standalone_database = analyzed_document(uri, source)?;
+        &standalone_database
+    };
     if database.signatures().interface(call_name).is_some() {
         return Some(signature_help_for_interface_pack(
             call_name,
@@ -10246,7 +10254,7 @@ mod tests {
                 cursor,
                 PositionEncoding::Utf8,
             )
-            .expect("filesystem call should have signature help")
+            .unwrap_or_else(|| panic!("filesystem call {needle} should have signature help"))
             .to_json();
             assert!(help.contains(expected));
         }
