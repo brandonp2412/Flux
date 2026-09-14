@@ -26288,6 +26288,16 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
         "workspace build failed: {}",
         String::from_utf8_lossy(&build.stderr)
     );
+    let check = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .args(["check"])
+        .arg(&root)
+        .output()
+        .expect("workspace check should run");
+    assert!(
+        check.status.success(),
+        "workspace check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
     for package in [root.join("src/main"), root.join("apps/one/src/main"), root.join("libs/two/src/main"), root.join("libs/shared/src/main")] {
         assert!(package.is_file(), "workspace package binary should exist: {}", package.display());
         let _ = fs::remove_file(package);
