@@ -187,13 +187,17 @@ fn windows_backend_validates_against_available_wine_headers() {
         return;
     }
     let source = r#"
+fn stopAfterStart() -> void {
+    process.exit(0)
+}
+
 view Screen {
     grid columns: 1fr
     grid rows: auto
     Text title at 1,1
         text: "Cross target"
 }
-app Screen(title: "Windows syntax")
+app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
     let program = fluxc::parser::parse(source).expect("Windows cross-target source should parse");
     let signatures = fluxc::typecheck::check(&program).expect("Windows cross-target source should typecheck");
