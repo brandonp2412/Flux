@@ -627,69 +627,6 @@ fn run() -> Result<(), CliError> {
                 )),
             }
         }
-        "fetch" => {
-            let path = require_target(&args)?;
-            if args.len() != 2 {
-                return Err(CliError::Message(
-                    "fetch syntax is 'fetch <package-dir|flux.toml>'".to_string(),
-                ));
-            }
-            match fluxc::project::fetch_dependencies(path) {
-                Ok(count) => {
-                    println!("fetched: {count} local path dependencies");
-                    Ok(())
-                }
-                Err(diagnostics) => Err(CliError::Message(
-                    diagnostics
-                        .into_iter()
-                        .map(|diagnostic| diagnostic.message)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )),
-            }
-        }
-        "update" => {
-            let path = require_target(&args)?;
-            if args.len() != 2 {
-                return Err(CliError::Message(
-                    "update syntax is 'update <package-dir|flux.toml>'".to_string(),
-                ));
-            }
-            match fluxc::project::update_dependencies(path) {
-                Ok(lock_path) => {
-                    println!("updated: {}", lock_path.display());
-                    Ok(())
-                }
-                Err(diagnostics) => Err(CliError::Message(
-                    diagnostics
-                        .into_iter()
-                        .map(|diagnostic| diagnostic.message)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )),
-            }
-        }
-        "outdated" => {
-            let path = require_target(&args)?;
-            if args.len() != 2 {
-                return Err(CliError::Message(
-                    "outdated syntax is 'outdated <package-dir|flux.toml>'".to_string(),
-                ));
-            }
-            match fluxc::project::outdated_dependencies(path) {
-                Ok(report) => {
-                    println!("{report}");
-                    Ok(())
-                }
-                Err(diagnostics) => Err(CliError::Message(
-                    diagnostics
-                        .into_iter()
-                        .map(|diagnostic| diagnostic.message)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )),
-            }
-        }
         "check" | "analyze" => {
             let path = require_target(&args)?;
             let options = analysis_options(&args[0], &args[2..])?;
