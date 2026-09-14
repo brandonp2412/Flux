@@ -344,6 +344,7 @@ impl ControlFlowLiveState {
 pub struct OwnershipBorrowedBinding {
     pub definition: ControlFlowDefinitionId,
     pub borrower: String,
+    pub source_definition: ControlFlowDefinitionId,
     pub source: String,
     pub origin: SourceSpan,
 }
@@ -359,6 +360,7 @@ pub struct OwnershipBorrowStart {
     pub to: ControlFlowNodeId,
     pub definition: ControlFlowDefinitionId,
     pub borrower: String,
+    pub source_definition: ControlFlowDefinitionId,
     pub source: String,
     pub origin: SourceSpan,
 }
@@ -369,6 +371,7 @@ pub struct OwnershipBorrowEnd {
     pub to: ControlFlowNodeId,
     pub definition: ControlFlowDefinitionId,
     pub borrower: String,
+    pub source_definition: ControlFlowDefinitionId,
     pub source: String,
     pub origin: SourceSpan,
 }
@@ -377,6 +380,7 @@ pub struct OwnershipBorrowEnd {
 pub struct OwnershipBorrowLifetime {
     pub definition: ControlFlowDefinitionId,
     pub borrower: String,
+    pub source_definition: ControlFlowDefinitionId,
     pub source: String,
     pub origin: SourceSpan,
     pub active_before: Vec<ControlFlowNodeId>,
@@ -395,10 +399,14 @@ impl ControlFlowBorrowState {
             .any(|borrow| borrow.borrower == borrower && borrow.source == source)
     }
 
-    fn contains_definition(&self, definition: ControlFlowDefinitionId, source: &str) -> bool {
-        self.borrows
-            .iter()
-            .any(|borrow| borrow.definition == definition && borrow.source == source)
+    fn contains_definition(
+        &self,
+        definition: ControlFlowDefinitionId,
+        source_definition: ControlFlowDefinitionId,
+    ) -> bool {
+        self.borrows.iter().any(|borrow| {
+            borrow.definition == definition && borrow.source_definition == source_definition
+        })
     }
 }
 
@@ -652,6 +660,19 @@ impl ControlFlowGraph {
             .is_some_and(ControlFlowMoveState::reachable)
     }
 
+    pub fn definition_reaches_before(
+        &self,
+        id: ControlFlowNodeId,
+        name: &str,
+        definition: ControlFlowDefinitionId,
+    ) -> bool {
+        self.reaching_definitions_before
+            .get(id.0)
+            .and_then(Option::as_ref)
+            .and_then(|reaching| reaching.get(name))
+            .is_some_and(|definitions| definitions.contains(&definition))
+    }
+
     pub fn borrowed_definition_span(&self, name: &str, source: &str) -> Option<SourceSpan> {
         let mut visiting = HashSet::new();
         self.borrowed_definition_span_inner(name, source, &mut visiting)
@@ -896,6 +917,123 @@ impl ControlFlowGraph {
                     || self.value_depends_on_borrow_source(*else_value, source, visiting)
             }
             _ => false,
+        }
+    }
+
+    fn definition_id_borrow_source_definitions(
+        &self,
+        definition: ControlFlowDefinitionId,
+        source: &str,
+        visiting: &mut HashSet<ControlFlowDefinitionId>,
+    ) -> BTreeSet<ControlFlowDefinitionId> {
+        if !visiting.insert(definition) {
+            return BTreeSet::new();
+        }
+        let mut sources = BTreeSet::new();
+        if let Some(value) = self.definition_borrow_source_value(definition) {
+            self.collect_value_borrow_source_definitions(value, source, visiting, &mut sources);
+        }
+        if let Some(value) = self.definition_value(definition) {
+            self.collect_value_borrow_source_definitions(value, source, visiting, &mut sources);
+        }
+        visiting.remove(&definition);
+        sources
+    }
+
+    fn collect_value_borrow_source_definitions(
+        &self,
+        value: ControlFlowValueId,
+        source: &str,
+        visiting: &mut HashSet<ControlFlowDefinitionId>,
+        sources: &mut BTreeSet<ControlFlowDefinitionId>,
+    ) {
+        if !self.is_value_reachable(value) {
+            return;
+        }
+        let Some(value) = self.value(value) else {
+            return;
+        };
+        let mut visit =
+            |value| self.collect_value_borrow_source_definitions(value, source, visiting, sources);
+        match &value.kind {
+            ControlFlowValueKind::List { items } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) => {
+                for item in items {
+                    visit(*item);
+                }
+            }
+            ControlFlowValueKind::ListSpread { value } => visit(*value),
+            ControlFlowValueKind::ListIf {
+                value, else_value, ..
+            } => {
+                visit(*value);
+                if let Some(else_value) = else_value {
+                    visit(*else_value);
+                }
+            }
+            ControlFlowValueKind::ListComprehension { value: body, .. } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_))) =>
+            {
+                visit(*body);
+            }
+            ControlFlowValueKind::NameRead { name, definitions } => {
+                if name == source {
+                    sources.extend(definitions.iter().copied());
+                }
+                for definition in definitions {
+                    sources.extend(self.definition_id_borrow_source_definitions(
+                        *definition,
+                        source,
+                        visiting,
+                    ));
+                }
+            }
+            ControlFlowValueKind::Slice { base, .. }
+            | ControlFlowValueKind::Index { base, .. }
+            | ControlFlowValueKind::Field { base, .. }
+                if matches!(value.ty, Type::List(_)) =>
+            {
+                visit(*base);
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "take" | "skip" | "chunked"
+                ) =>
+            {
+                if let Some(argument) = arguments.first() {
+                    visit(*argument);
+                }
+            }
+            ControlFlowValueKind::Call { callee, arguments }
+                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                    && matches!(
+                        crate::builtin_names::global_impl(callee),
+                        "filter" | "where" | "flatten" | "concat"
+                    ) =>
+            {
+                let retained = if crate::builtin_names::global_impl(callee) == "concat" {
+                    arguments.iter().take(2)
+                } else {
+                    arguments.iter().take(1)
+                };
+                for argument in retained {
+                    visit(*argument);
+                }
+            }
+            ControlFlowValueKind::Match { arms, .. }
+            | ControlFlowValueKind::ListMatch { arms, .. } => {
+                for arm in arms {
+                    visit(*arm);
+                }
+            }
+            ControlFlowValueKind::Conditional {
+                then_value,
+                else_value,
+                ..
+            } => {
+                visit(*then_value);
+                visit(*else_value);
+            }
+            _ => {}
         }
     }
 }
@@ -4122,12 +4260,13 @@ fn compute_borrow_starts(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowStart> 
             continue;
         };
         for borrow in to_state.borrows() {
-            if !from_state.contains_definition(borrow.definition, &borrow.source) {
+            if !from_state.contains_definition(borrow.definition, borrow.source_definition) {
                 starts.push(OwnershipBorrowStart {
                     from: edge.from,
                     to: edge.to,
                     definition: borrow.definition,
                     borrower: borrow.borrower.clone(),
+                    source_definition: borrow.source_definition,
                     source: borrow.source.clone(),
                     origin: borrow.origin,
                 });
@@ -4139,6 +4278,7 @@ fn compute_borrow_starts(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowStart> 
             .cmp(&right.from)
             .then_with(|| left.to.cmp(&right.to))
             .then_with(|| left.borrower.cmp(&right.borrower))
+            .then_with(|| left.source_definition.cmp(&right.source_definition))
             .then_with(|| left.source.cmp(&right.source))
             .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
     });
@@ -4159,12 +4299,13 @@ fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
             continue;
         };
         for borrow in from_state.borrows() {
-            if !to_state.contains_definition(borrow.definition, &borrow.source) {
+            if !to_state.contains_definition(borrow.definition, borrow.source_definition) {
                 ends.push(OwnershipBorrowEnd {
                     from: edge.from,
                     to: edge.to,
                     definition: borrow.definition,
                     borrower: borrow.borrower.clone(),
+                    source_definition: borrow.source_definition,
                     source: borrow.source.clone(),
                     origin: borrow.origin,
                 });
@@ -4176,6 +4317,7 @@ fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
             .cmp(&right.from)
             .then_with(|| left.to.cmp(&right.to))
             .then_with(|| left.borrower.cmp(&right.borrower))
+            .then_with(|| left.source_definition.cmp(&right.source_definition))
             .then_with(|| left.source.cmp(&right.source))
             .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
     });
@@ -4184,16 +4326,19 @@ fn compute_borrow_ends(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowEnd> {
 }
 
 fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLifetime> {
-    let mut lifetimes =
-        BTreeMap::<(ControlFlowDefinitionId, String), OwnershipBorrowLifetime>::new();
+    let mut lifetimes = BTreeMap::<
+        (ControlFlowDefinitionId, ControlFlowDefinitionId),
+        OwnershipBorrowLifetime,
+    >::new();
 
     for (node_index, state) in graph.borrow_states_before.iter().enumerate() {
         for borrow in state.borrows() {
             lifetimes
-                .entry((borrow.definition, borrow.source.clone()))
+                .entry((borrow.definition, borrow.source_definition))
                 .or_insert_with(|| OwnershipBorrowLifetime {
                     definition: borrow.definition,
                     borrower: borrow.borrower.clone(),
+                    source_definition: borrow.source_definition,
                     source: borrow.source.clone(),
                     origin: borrow.origin,
                     active_before: Vec::new(),
@@ -4206,12 +4351,12 @@ fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLife
     }
 
     for start in &graph.borrow_starts {
-        if let Some(lifetime) = lifetimes.get_mut(&(start.definition, start.source.clone())) {
+        if let Some(lifetime) = lifetimes.get_mut(&(start.definition, start.source_definition)) {
             lifetime.starts.push(start.clone());
         }
     }
     for end in &graph.borrow_ends {
-        if let Some(lifetime) = lifetimes.get_mut(&(end.definition, end.source.clone())) {
+        if let Some(lifetime) = lifetimes.get_mut(&(end.definition, end.source_definition)) {
             lifetime.ends.push(end.clone());
         }
     }
@@ -4235,7 +4380,8 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
         );
     }
 
-    let mut sources_by_definition = BTreeMap::<ControlFlowDefinitionId, Vec<String>>::new();
+    let mut sources_by_definition =
+        BTreeMap::<ControlFlowDefinitionId, Vec<(ControlFlowDefinitionId, String)>>::new();
     for node in &graph.nodes {
         for (index, definition) in node.definitions.iter().enumerate() {
             if !matches!(definition.ty, Type::List(_)) {
@@ -4251,10 +4397,15 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
                     continue;
                 }
                 let mut visiting = HashSet::new();
-                if graph.definition_id_borrows_from(id, source, &mut visiting) {
-                    sources.push(source.clone());
-                }
+                sources.extend(
+                    graph
+                        .definition_id_borrow_source_definitions(id, source, &mut visiting)
+                        .into_iter()
+                        .map(|source_definition| (source_definition, source.clone())),
+                );
             }
+            sources.sort();
+            sources.dedup();
             if !sources.is_empty() {
                 sources_by_definition.insert(id, sources);
             }
@@ -4291,11 +4442,14 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
                     let Some(sources) = sources_by_definition.get(definition) else {
                         continue;
                     };
-                    borrows.extend(sources.iter().map(|source| OwnershipBorrowedBinding {
-                        definition: *definition,
-                        borrower: borrower.clone(),
-                        source: source.clone(),
-                        origin,
+                    borrows.extend(sources.iter().map(|(source_definition, source)| {
+                        OwnershipBorrowedBinding {
+                            definition: *definition,
+                            borrower: borrower.clone(),
+                            source_definition: *source_definition,
+                            source: source.clone(),
+                            origin,
+                        }
                     }));
                 }
             }
@@ -4303,6 +4457,7 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
                 left.definition
                     .cmp(&right.definition)
                     .then_with(|| left.borrower.cmp(&right.borrower))
+                    .then_with(|| left.source_definition.cmp(&right.source_definition))
                     .then_with(|| left.source.cmp(&right.source))
                     .then_with(|| span_key(left.origin).cmp(&span_key(right.origin)))
             });

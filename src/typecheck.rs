@@ -5045,6 +5045,11 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
                 .borrow_lifetimes_before(node.id)
                 .filter(|lifetime| {
                     lifetime.source == ownership_move.source
+                        && graph.definition_reaches_before(
+                            node.id,
+                            &ownership_move.source,
+                            lifetime.source_definition,
+                        )
                         && lifetime.borrower != ownership_move.source
                         && lifetime.borrower != ownership_move.destination
                 })

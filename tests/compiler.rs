@@ -12957,6 +12957,66 @@ fn main() -> i64 {
 }
 
 #[test]
+fn sibling_borrow_source_definitions_keep_identity() {
+    let source = r#"
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn main() -> i64 {
+    if positive(1):
+        let source: i64[] = [10, 20, 30]
+        let view: i64[] = source[1:]
+        print(view[0])
+    else:
+        let source: i64[] = [40, 50, 60]
+        let view: i64[] = source[1:]
+        print(view[0])
+    return 0
+}
+"#;
+
+    check_source(source).expect("sibling source definitions should typecheck");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1212))
+        .expect("sibling source lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let lifetimes = graph
+        .borrow_lifetimes()
+        .iter()
+        .filter(|lifetime| lifetime.borrower == "view" && lifetime.source == "source")
+        .collect::<Vec<_>>();
+    assert_eq!(lifetimes.len(), 2);
+    assert_ne!(
+        lifetimes[0].source_definition, lifetimes[1].source_definition,
+        "same-named owners in sibling scopes must retain distinct source definition identity"
+    );
+}
+
+#[test]
+fn borrow_source_definition_identity_preserves_live_owner_move_rejection() {
+    let source = r#"
+fn main() -> i64 {
+    let source: i64[] = [40, 50, 60]
+    let view: i64[] = source[1:]
+    let destination: i64[] = source
+    print(view[0])
+    print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(source).expect_err(
+        "moving the exact owner definition while its view is live must remain rejected",
+    );
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "cannot move non-copy binding 'source' while borrowed view 'view' is still live",
+        )
+    }));
+}
+
+#[test]
 fn loop_local_borrow_lifetime_boundaries_end_before_owner_move() {
     let source = r#"
 fn main() -> i64 {
