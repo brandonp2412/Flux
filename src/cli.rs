@@ -9712,6 +9712,15 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     if c_source.contains("CoTaskMemFree(") || c_source.contains("CoCreateInstance(") {
         libraries.push("-lole32");
     }
+    if c_source.contains("BCryptOpenAlgorithmProvider(") || c_source.contains("BCryptGenRandom(") {
+        libraries.push("-lbcrypt");
+    }
+    if c_source.contains("CredWriteW(")
+        || c_source.contains("CredReadW(")
+        || c_source.contains("CredDeleteW(")
+    {
+        libraries.push("-ladvapi32");
+    }
     libraries
 }
 
@@ -9790,7 +9799,8 @@ fn build_native_configured(
     let cache_enabled = native_package.map_or(true, |native_package| {
         native_package.libraries.is_empty() && native_package.search_paths.is_empty()
     });
-    let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
+    let toolchain_identity =
+        native_toolchain_cache_identity(gtk, sqlite, crypto, secure, native_target)?;
     let cache = native_build_cache_path_configured(
         c_source,
         mode,
@@ -10166,6 +10176,8 @@ fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
 fn native_toolchain_cache_identity(
     gtk: bool,
     sqlite: bool,
+    crypto: bool,
+    secure: bool,
     native_target: &NativeTargetOptions,
 ) -> Result<String, String> {
     let clang = command_first_line("clang", &["--version"])?;
@@ -10189,6 +10201,14 @@ fn native_toolchain_cache_identity(
     if sqlite {
         let sqlite_version = command_first_line("pkg-config", &["--modversion", "sqlite3"])?;
         identity.push_str(&format!("\nsqlite3={sqlite_version}"));
+    }
+    if crypto {
+        let openssl_version = command_first_line("pkg-config", &["--modversion", "openssl"])?;
+        identity.push_str(&format!("\nopenssl={openssl_version}"));
+    }
+    if secure {
+        let libsecret_version = command_first_line("pkg-config", &["--modversion", "libsecret-1"])?;
+        identity.push_str(&format!("\nlibsecret={libsecret_version}"));
     }
     Ok(identity)
 }
@@ -11471,6 +11491,12 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(
             windows_native_system_libraries("ShellExecuteW("),
             vec!["-lshell32"]
+        );
+        assert_eq!(
+            windows_native_system_libraries(
+                "BCryptOpenAlgorithmProvider( BCryptGenRandom( CredWriteW( CredReadW( CredDeleteW("
+            ),
+            vec!["-lbcrypt", "-ladvapi32"]
         );
         assert!(windows_native_system_libraries("int main(void) { return 0; }").is_empty());
     }
