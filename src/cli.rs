@@ -995,6 +995,15 @@ fn run() -> Result<(), CliError> {
             }
             run_doctor()
         }
+        "verify-reproducibility" => {
+            if args.len() != 3 {
+                return Err(CliError::Message(
+                    "verify-reproducibility syntax is 'verify-reproducibility <metadata-a> <metadata-b>'"
+                        .to_string(),
+                ));
+            }
+            verify_reproducibility_metadata(Path::new(&args[1]), Path::new(&args[2]))
+        }
         "clean" => {
             let path = require_target(&args)?;
             if args.len() != 2 {
@@ -2662,7 +2671,14 @@ fn build_native_target(
         false,
     )?;
     if let Some(metadata) = reproducibility {
-        write_reproducibility_metadata(&metadata, path, &generated, mode, &native_target)?;
+        write_reproducibility_metadata(
+            &metadata,
+            &output,
+            path,
+            &generated,
+            mode,
+            &native_target,
+        )?;
     }
     println!("built ({}): {}", mode.name(), output.display());
     Ok(())
@@ -9525,6 +9541,7 @@ fn metadata_value(value: &str) -> String {
 
 fn write_reproducibility_metadata(
     output: &Path,
+    artifact: &Path,
     target: &Path,
     generated: &str,
     mode: BuildMode,
@@ -9561,6 +9578,13 @@ fn write_reproducibility_metadata(
     metadata.push_str(&format!("flux_version = \"{}\"\n", env!("CARGO_PKG_VERSION")));
     metadata.push_str(&format!("mode = \"{}\"\n", mode.name()));
     metadata.push_str(&format!("source_hash = \"{:016x}\"\n", reproducibility_hash(generated.as_bytes())));
+    let artifact_hash = reproducibility_file_hash(artifact).ok_or_else(|| {
+        CliError::Message(format!(
+            "failed to hash reproducibility artifact '{}'",
+            artifact.display()
+        ))
+    })?;
+    metadata.push_str(&format!("artifact_hash = \"{artifact_hash}\"\n"));
     metadata.push_str(&format!("manifest_hash = \"{manifest_hash}\"\n"));
     metadata.push_str(&format!("lock_hash = \"{lock_hash}\"\n"));
     metadata.push_str(&format!(
@@ -9569,6 +9593,16 @@ fn write_reproducibility_metadata(
     ));
     metadata.push_str(&format!("sysroot_hash = \"{sysroot_hash}\"\n"));
     metadata.push_str(&format!("toolchain = \"{}\"\n", metadata_value(&toolchain)));
+    metadata.push_str(&format!(
+        "compiler_identity = \"{:016x}\"\n",
+        reproducibility_hash(toolchain.as_bytes())
+    ));
+    metadata.push_str(&format!("sdk_identity = \"{sysroot_hash}\"\n"));
+    metadata.push_str(&format!(
+        "runtime_identity = \"{}-{}\"\n",
+        env::consts::OS,
+        env::consts::ARCH
+    ));
     for key in ["SOURCE_DATE_EPOCH", "LC_ALL", "TZ"] {
         let value = env::var(key).unwrap_or_default();
         metadata.push_str(&format!("env_{key} = \"{}\"\n", metadata_value(&value)));
@@ -9590,6 +9624,110 @@ fn write_reproducibility_metadata(
         ))
     })?;
     Ok(())
+}
+
+fn parse_reproducibility_metadata(
+    path: &Path,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let source = fs::read_to_string(path).map_err(|error| {
+        CliError::Message(format!(
+            "failed to read reproducibility metadata '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let mut fields = BTreeMap::new();
+    for (index, raw_line) in source.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
+            CliError::Message(format!(
+                "invalid reproducibility metadata line {} in '{}'",
+                index + 1,
+                path.display()
+            ))
+        })?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(CliError::Message(format!(
+                "invalid reproducibility metadata key '{key}' in '{}'",
+                path.display()
+            )));
+        }
+        let raw_value = raw_value.trim();
+        if raw_value.len() < 2
+            || !raw_value.starts_with('"')
+            || !raw_value.ends_with('"')
+        {
+            return Err(CliError::Message(format!(
+                "reproducibility metadata value for '{key}' must be quoted in '{}'",
+                path.display()
+            )));
+        }
+        let mut value = String::new();
+        let mut chars = raw_value[1..raw_value.len() - 1].chars();
+        while let Some(character) = chars.next() {
+            if character != '\\' {
+                value.push(character);
+                continue;
+            }
+            value.push(match chars.next() {
+                Some('n') => '\n',
+                Some('r') => '\r',
+                Some('\\') => '\\',
+                Some(character) => {
+                    return Err(CliError::Message(format!(
+                        "unsupported escape '\\{character}' in reproducibility metadata '{}'",
+                        path.display()
+                    )));
+                }
+                None => {
+                    return Err(CliError::Message(format!(
+                        "unterminated escape in reproducibility metadata '{}'",
+                        path.display()
+                    )));
+                }
+            });
+        }
+        if fields.insert(key.to_string(), value).is_some() {
+            return Err(CliError::Message(format!(
+                "duplicate reproducibility metadata key '{key}' in '{}'",
+                path.display()
+            )));
+        }
+    }
+    if fields.get("format").map(String::as_str) != Some("flux-reproducibility-v1") {
+        return Err(CliError::Message(format!(
+            "unsupported or missing reproducibility metadata format in '{}'",
+            path.display()
+        )));
+    }
+    Ok(fields)
+}
+
+fn verify_reproducibility_metadata(left: &Path, right: &Path) -> Result<(), CliError> {
+    let left_fields = parse_reproducibility_metadata(left)?;
+    let right_fields = parse_reproducibility_metadata(right)?;
+    let mut mismatches = Vec::<String>::new();
+    for key in left_fields.keys().chain(right_fields.keys()) {
+        if left_fields.get(key) != right_fields.get(key) && !mismatches.contains(key) {
+            mismatches.push(key.clone());
+        }
+    }
+    if mismatches.is_empty() {
+        println!("reproducibility verified: metadata and artifacts match");
+        Ok(())
+    } else {
+        Err(CliError::Message(format!(
+            "reproducibility mismatch for field(s): {}",
+            mismatches.join(", ")
+        )))
+    }
 }
 
 fn native_cache_file_identity(path: &Path) -> io::Result<(u64, u64)> {
@@ -9826,7 +9964,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),

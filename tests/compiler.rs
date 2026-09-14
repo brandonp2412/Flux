@@ -25500,12 +25500,42 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
         "target = \"host\"",
         "sysroot_hash = \"none\"",
         "toolchain = ",
+        "compiler_identity = ",
+        "sdk_identity = \"none\"",
+        "runtime_identity = ",
         "env_SOURCE_DATE_EPOCH = ",
         "env_LC_ALL = ",
         "env_TZ = ",
     ] {
         assert!(metadata_source.contains(field), "metadata missing {field}");
     }
+    let metadata_binary_second = root.join("metadata-binary-second");
+    let metadata_second = root.join("metadata-second.toml");
+    let second_build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source)
+        .args([
+            "--mode",
+            "release",
+            "-o",
+            metadata_binary_second.to_str().unwrap(),
+            "--reproducibility",
+        ])
+        .arg(&metadata_second)
+        .output()
+        .expect("second reproducibility metadata build should run");
+    assert!(second_build.status.success());
+    let verify = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["verify-reproducibility"])
+        .arg(&metadata)
+        .arg(&metadata_second)
+        .output()
+        .expect("reproducibility verifier should run");
+    assert!(
+        verify.status.success(),
+        "reproducibility verification failed: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
