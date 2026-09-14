@@ -1027,6 +1027,8 @@ fn is_function_header_prefix(text: &str) -> bool {
         || text.starts_with("async fn ")
         || text.starts_with("pub fn ")
         || text.starts_with("pub async fn ")
+        || text.starts_with("extern c ")
+        || text.starts_with("unsafe extern c ")
 }
 
 fn parenthesis_delta(text: &str) -> i32 {

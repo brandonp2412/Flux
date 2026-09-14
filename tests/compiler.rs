@@ -22784,12 +22784,12 @@ fn formatter_contract_has_a_stable_discoverable_version() {
 
 #[test]
 fn formatter_wraps_long_function_signatures_and_round_trips() {
-    let source = "interface Calculator {\n    fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n}\n\nfn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64 {\n    return first_value + second_value + third_value\n}\n";
+    let source = "interface Calculator {\n    fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n}\n\nextern c \"calculate\" fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n\nfn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64 {\n    return first_value + second_value + third_value\n}\n";
     let formatted = fluxc::formatter::format_source(source)
         .expect("long function signatures should format");
     assert!(formatted.lines().all(|line| line.len() <= 80));
     assert_eq!(formatted.lines().filter(|line| line.len() > 80).count(), 0);
-    assert!(formatted.matches("fn calculate_with_a_deliberately_long_name(\n").count() >= 2);
+    assert!(formatted.matches("fn calculate_with_a_deliberately_long_name(\n").count() >= 3);
     fluxc::parser::parse_all(&formatted).expect("wrapped formatter output should reparse");
 }
 

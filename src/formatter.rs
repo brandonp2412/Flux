@@ -433,10 +433,12 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         };
         lines.insert(
             function.line,
-            format!(
-                "{visibility}{unsafe_prefix}extern c \"{symbol}\" fn {}({params}) -> {}",
-                function.name,
-                format_return_types(&function.returns)
+            format_function_header(
+                &format!("{visibility}{unsafe_prefix}extern c \"{symbol}\" fn "),
+                &function.name,
+                &param_parts,
+                &format_return_types(&function.returns),
+                "",
             ),
         );
         return;
