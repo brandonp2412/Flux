@@ -1712,6 +1712,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#define _POSIX_C_SOURCE 200809L\n");
     }
@@ -1815,6 +1816,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
+        || runtime_usage.contains("flux__preferences_")
     {
         out.push_str("#include <fcntl.h>\n");
     }
@@ -6293,8 +6295,11 @@ static const char *flux__preferences_append(const char *record, size_t length) {
     if (record == NULL || length > 1048576u) return "preference record exceeds storage limit";
     const char *path = flux__preferences_path();
     if (path == NULL) return "preference path is unavailable";
-    FILE *file = fopen(path, "a");
-    if (file == NULL) return "failed to open preferences for writing";
+    int descriptor = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (descriptor < 0) return "failed to open preferences for writing";
+    (void)fchmod(descriptor, 0600);
+    FILE *file = fdopen(descriptor, "a");
+    if (file == NULL) { close(descriptor); return "failed to open preferences for writing"; }
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return "failed to seek preferences"; }
     long current = ftell(file);
     if (current < 0 || (uint64_t)current > UINT64_C(1048576) || length > UINT64_C(1048576) - (uint64_t)current) { fclose(file); return "preferences file exceeds 1 MiB storage limit"; }

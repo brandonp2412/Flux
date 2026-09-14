@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
@@ -15649,6 +15651,12 @@ fn main() -> i64 {
     assert!(fs::read_to_string(&preference_path)
         .expect("preference log should be readable")
         .contains("D\ttheme\n"));
+    #[cfg(unix)]
+    assert_eq!(fs::metadata(&preference_path)
+        .expect("preference metadata should be readable")
+        .permissions()
+        .mode()
+        & 0o777, 0o600);
     let _ = fs::remove_dir_all(&root);
 
     let program = fluxc::parser::parse(source).expect("preferences source should parse");
