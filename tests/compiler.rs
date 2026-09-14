@@ -27375,6 +27375,67 @@ fn git_dependency_locks_commit_and_replays_cached_source() {
 }
 
 #[test]
+fn dependency_update_outdated_and_vendor_commands_are_first_class() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-package-update-outdated-vendor-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let app = root.join("app");
+    fs::create_dir_all(app.join("src")).expect("package directory should be writable");
+    fs::write(
+        app.join("flux.toml"),
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("manifest should be writable");
+    fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+        .expect("entry should be writable");
+
+    let outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("outdated")
+        .arg(&app)
+        .output()
+        .expect("flux outdated should run");
+    assert!(
+        outdated.status.success(),
+        "flux outdated failed: {}",
+        String::from_utf8_lossy(&outdated.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&outdated.stdout).trim(),
+        "outdated: none"
+    );
+
+    let update = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("update")
+        .arg(&app)
+        .output()
+        .expect("flux update should run");
+    assert!(
+        update.status.success(),
+        "flux update failed: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(String::from_utf8_lossy(&update.stdout).contains("updated:"));
+    assert!(app.join("flux.lock").is_file());
+
+    let vendor = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("vendor")
+        .arg(&app)
+        .output()
+        .expect("flux vendor should run");
+    assert!(
+        vendor.status.success(),
+        "flux vendor failed: {}",
+        String::from_utf8_lossy(&vendor.stderr)
+    );
+    assert!(String::from_utf8_lossy(&vendor.stdout).contains("packages: 0"));
+    assert!(app.join("vendor/flux.vendor.lock").is_file());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn dependency_add_remove_commands_update_manifest_and_lock() {
     let root = std::env::temp_dir().join(format!("flux-package-add-remove-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

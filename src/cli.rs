@@ -451,6 +451,51 @@ fn run() -> Result<(), CliError> {
             }
             Ok(())
         }
+        "update" => {
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "update syntax is 'update <package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            let target = Path::new(&args[1]);
+            let lock_path = fluxc::package_ecosystem::update_package_dependencies(target)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            println!("updated: {}", lock_path.display());
+            Ok(())
+        }
+        "outdated" => {
+            if args.len() != 2 {
+                return Err(CliError::Message(
+                    "outdated syntax is 'outdated <package-dir|flux.toml>'".to_string(),
+                ));
+            }
+            let target = Path::new(&args[1]);
+            fluxc::project::ensure_lockfile(target, true).map_err(|diagnostics| {
+                CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
+            let outdated = fluxc::package_ecosystem::outdated_package_dependencies(target)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            if outdated.is_empty() {
+                println!("outdated: none");
+            } else {
+                for dependency in outdated {
+                    println!(
+                        "outdated: {} {} {} -> {}",
+                        dependency.package,
+                        dependency.source,
+                        dependency.current,
+                        dependency.latest
+                    );
+                }
+            }
+            Ok(())
+        }
         "vendor" => {
             if args.len() < 2 {
                 return Err(CliError::Message(
@@ -500,17 +545,23 @@ fn run() -> Result<(), CliError> {
                     .to_path_buf()
             };
             let destination = output.unwrap_or_else(|| package_root.join("vendor"));
-            let provider = fluxc::package_ecosystem::configured_registry_provider(offline)
-                .map_err(|error| CliError::Message(error.to_string()))?;
-            let graph = fluxc::package_ecosystem::vendor_package_dependencies(
+            fluxc::project::ensure_lockfile(target, offline).map_err(|diagnostics| {
+                CliError::Message(
+                    diagnostics
+                        .into_iter()
+                        .map(|diagnostic| diagnostic.message)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            })?;
+            let vendored = fluxc::package_ecosystem::vendor_locked_package_dependencies(
                 target,
-                &provider,
                 &destination,
                 offline,
             )
             .map_err(|error| CliError::Message(error.to_string()))?;
             println!("vendored: {}", destination.display());
-            println!("packages: {}", graph.releases.len());
+            println!("packages: {}", vendored.registry.len() + vendored.git.len());
             Ok(())
         }
         "lock" => {
@@ -8863,7 +8914,7 @@ fn usage() -> String {
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
-        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
+        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} update <package-dir|flux.toml> | {command} outdated <package-dir|flux.toml> | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
     )
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),

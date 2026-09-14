@@ -794,6 +794,20 @@ pub struct ResolvedRegistryGraph {
     pub releases: BTreeMap<String, RegistryRelease>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutdatedDependency {
+    pub package: String,
+    pub source: String,
+    pub current: String,
+    pub latest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VendoredPackages {
+    pub registry: BTreeMap<String, RegistryRelease>,
+    pub git: BTreeMap<String, GitRelease>,
+}
+
 pub fn package_has_registry_dependencies(target: &Path) -> io::Result<bool> {
     let manifest = package_manifest_target(target)?;
     let mut requirements = BTreeMap::<String, Vec<String>>::new();
@@ -981,6 +995,180 @@ pub fn fetch_package_dependencies(
         fetch_registry_release(release, offline)?;
     }
     Ok(graph)
+}
+
+pub fn update_package_dependencies(target: &Path) -> io::Result<PathBuf> {
+    if package_has_registry_dependencies(target)? {
+        configured_registry_provider(false)?;
+    }
+    let lock_path = crate::project::write_lockfile(target).map_err(|diagnostics| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    for release in crate::project::locked_registry_releases(target)
+        .map_err(diagnostics_to_io)?
+        .values()
+    {
+        fetch_registry_release(release, false)?;
+    }
+    for release in crate::project::locked_git_releases(target)
+        .map_err(diagnostics_to_io)?
+        .values()
+    {
+        fetch_git_release(release, false)?;
+    }
+    Ok(lock_path)
+}
+
+pub fn outdated_package_dependencies(target: &Path) -> io::Result<Vec<OutdatedDependency>> {
+    let manifest = package_manifest_target(target)?;
+    if manifest.dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let has_registry = package_has_registry_dependencies(target)?;
+    let locked_registry =
+        crate::project::locked_registry_releases(target).map_err(diagnostics_to_io)?;
+    let locked_git = crate::project::locked_git_releases(target).map_err(diagnostics_to_io)?;
+    let mut outdated = Vec::new();
+
+    if has_registry || !locked_registry.is_empty() {
+        let provider = configured_registry_provider(false)?;
+        let latest = resolve_package_registry_graph(target, &provider)?;
+        for (package, current) in &locked_registry {
+            let Some(candidate) = latest.releases.get(package) else {
+                continue;
+            };
+            if candidate.version != current.version {
+                outdated.push(OutdatedDependency {
+                    package: package.clone(),
+                    source: "registry".to_string(),
+                    current: current.version.clone(),
+                    latest: candidate.version.clone(),
+                });
+            }
+        }
+    }
+
+    for current in locked_git.values() {
+        let candidate =
+            resolve_git_release(&current.package, &current.url, &current.requested_rev)?;
+        if candidate.commit != current.commit {
+            outdated.push(OutdatedDependency {
+                package: current.package.clone(),
+                source: "git".to_string(),
+                current: current.commit.clone(),
+                latest: candidate.commit,
+            });
+        }
+    }
+
+    outdated.sort_by(|left, right| {
+        left.package
+            .cmp(&right.package)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    Ok(outdated)
+}
+
+pub fn vendor_locked_package_dependencies(
+    target: &Path,
+    destination: &Path,
+    offline: bool,
+) -> io::Result<VendoredPackages> {
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "vendor destination '{}' already exists",
+                destination.display()
+            ),
+        ));
+    }
+    let manifest = package_manifest_target(target)?;
+    let (registry, git) = if manifest.dependencies.is_empty() {
+        (BTreeMap::new(), BTreeMap::new())
+    } else {
+        (
+            fetch_locked_registry_dependencies(target, offline)?,
+            fetch_locked_git_dependencies(target, offline)?,
+        )
+    };
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("vendor");
+    let temporary = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temporary);
+    fs::create_dir(&temporary)?;
+
+    let result = (|| -> io::Result<()> {
+        let packages = temporary.join("packages");
+        fs::create_dir(&packages)?;
+        let mut vendor_lock =
+            String::from("# Generated by Flux vendor. Do not edit.\nformat_version = 1\n");
+        for release in registry.values() {
+            let package_root = packages.join(&release.package).join(&release.version);
+            materialize_registry_release(release, &package_root, true)?;
+            vendor_lock.push_str("\n[[package]]\n");
+            vendor_lock.push_str(&format!("name = {:?}\n", release.package));
+            vendor_lock.push_str(&format!("version = {:?}\n", release.version));
+            vendor_lock.push_str("source = \"registry\"\n");
+            vendor_lock.push_str(&format!("sha256 = {:?}\n", release.sha256));
+            vendor_lock.push_str(&format!("asset = {:?}\n", release.asset));
+        }
+        for release in git.values() {
+            let identity = release
+                .version
+                .clone()
+                .unwrap_or_else(|| format!("git-{}", &release.commit[..12]));
+            let package_root = packages.join(&release.package).join(identity);
+            let archive = fetch_git_release(release, true)?;
+            extract_fluxpkg(&archive, &release.sha256, &package_root)?;
+            vendor_lock.push_str("\n[[package]]\n");
+            vendor_lock.push_str(&format!("name = {:?}\n", release.package));
+            if let Some(version) = &release.version {
+                vendor_lock.push_str(&format!("version = {:?}\n", version));
+            }
+            vendor_lock.push_str(&format!(
+                "source = {:?}\n",
+                format!(
+                    "git:{}#{}@{}",
+                    release.url, release.requested_rev, release.commit
+                )
+            ));
+            vendor_lock.push_str(&format!("sha256 = {:?}\n", release.sha256));
+        }
+        fs::write(temporary.join("flux.vendor.lock"), vendor_lock)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, destination) {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(error);
+    }
+    Ok(VendoredPackages { registry, git })
+}
+
+fn diagnostics_to_io(diagnostics: Vec<crate::Diagnostic>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 pub fn vendor_package_dependencies(
@@ -1894,6 +2082,143 @@ mod tests {
         fs::remove_file(cache.join("sha256").join(format!("{hash}.fluxpkg"))).unwrap();
         let error = fetch_registry_release(&release, true).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_outdated_and_update_follow_latest_compatible_release() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let root = temp_root("registry-update-outdated");
+        let app = root.join("app");
+        let registry = root.join("registry");
+        let cache = root.join("cache");
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::write(
+            app.join("flux.toml"),
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndemo = \"^1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        unsafe {
+            std::env::set_var("FLUX_PACKAGE_CACHE_DIR", &cache);
+            std::env::set_var("FLUX_REGISTRY_DIR", &registry);
+        }
+
+        let add_release = |version: &str| {
+            let package_root = root.join(format!("demo-{version}"));
+            fs::create_dir_all(package_root.join("src")).unwrap();
+            fs::write(
+                package_root.join("flux.toml"),
+                format!(
+                    "[package]\nname = \"demo\"\nversion = \"{version}\"\nentry = \"src/lib.flux\"\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                package_root.join("src/lib.flux"),
+                "pub fn value() -> i64 { 1 }\n",
+            )
+            .unwrap();
+            let archive = root.join(format!("demo-{version}.fluxpkg"));
+            let sha256 = create_fluxpkg(&package_root, &archive).unwrap();
+            cache_fluxpkg(&archive, &sha256).unwrap();
+            let package_index = registry.join("demo");
+            fs::create_dir_all(&package_index).unwrap();
+            fs::write(
+                package_index.join(format!("{version}.toml")),
+                format!(
+                    "format_version = 1\npackage = \"demo\"\nowner = \"flux-lang\"\nrepository = \"https://github.com/flux-lang/demo\"\nversion = \"{version}\"\nflux = \"*\"\nasset = \"https://invalid.example/demo-{version}.fluxpkg\"\nsha256 = \"{sha256}\"\nyanked = false\n"
+                ),
+            )
+            .unwrap();
+        };
+
+        add_release("1.0.0");
+        crate::project::write_lockfile(&app).unwrap();
+        assert!(
+            fs::read_to_string(app.join("flux.lock"))
+                .unwrap()
+                .contains("version = \"1.0.0\"")
+        );
+        add_release("1.1.0");
+        let outdated = outdated_package_dependencies(&app).unwrap();
+        assert_eq!(outdated.len(), 1);
+        assert_eq!(outdated[0].package, "demo");
+        assert_eq!(outdated[0].source, "registry");
+        assert_eq!(outdated[0].current, "1.0.0");
+        assert_eq!(outdated[0].latest, "1.1.0");
+
+        update_package_dependencies(&app).unwrap();
+        assert!(
+            fs::read_to_string(app.join("flux.lock"))
+                .unwrap()
+                .contains("version = \"1.1.0\"")
+        );
+        assert!(outdated_package_dependencies(&app).unwrap().is_empty());
+
+        unsafe {
+            std::env::remove_var("FLUX_REGISTRY_DIR");
+            std::env::remove_var("FLUX_PACKAGE_CACHE_DIR");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn locked_git_vendor_is_self_contained_and_offline() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let root = temp_root("git-vendor-offline");
+        let app = root.join("app");
+        let dependency = root.join("dependency");
+        let cache = root.join("cache");
+        fs::create_dir_all(app.join("src")).unwrap();
+        fs::create_dir_all(dependency.join("src")).unwrap();
+        fs::write(
+            dependency.join("flux.toml"),
+            "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nentry = \"src/lib.flux\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dependency.join("src/lib.flux"),
+            "pub fn value() -> i64 { 42 }\n",
+        )
+        .unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "flux-tests@example.test"],
+            vec!["config", "user.name", "Flux Tests"],
+            vec!["add", "."],
+            vec!["commit", "--quiet", "-m", "package"],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&dependency)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {:?} failed", args);
+        }
+        fs::write(
+            app.join("flux.toml"),
+            format!(
+                "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = {{ git = {:?}, rev = \"HEAD\" }}\n",
+                dependency.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        fs::write(app.join("src/main.flux"), "fn main() -> i64 { 0 }\n").unwrap();
+        unsafe { std::env::set_var("FLUX_PACKAGE_CACHE_DIR", &cache) };
+        crate::project::write_lockfile(&app).unwrap();
+        fs::remove_dir_all(&dependency).unwrap();
+        let vendor = root.join("vendor");
+        let vendored = vendor_locked_package_dependencies(&app, &vendor, true).unwrap();
+        assert_eq!(vendored.registry.len(), 0);
+        assert_eq!(vendored.git.len(), 1);
+        assert!(vendor.join("packages/dep/1.0.0/flux.toml").is_file());
+        let vendor_lock = fs::read_to_string(vendor.join("flux.vendor.lock")).unwrap();
+        assert!(vendor_lock.contains("name = \"dep\""));
+        assert!(vendor_lock.contains("source = \"git:"));
+        assert!(vendor_lock.contains("sha256 = \""));
         unsafe { std::env::remove_var("FLUX_PACKAGE_CACHE_DIR") };
         let _ = fs::remove_dir_all(root);
     }
