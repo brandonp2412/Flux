@@ -148,7 +148,7 @@ view Screen {
     grid columns: 1fr
     grid rows: 1fr
     Image logo at 1,1
-        source: "logo.bmp"
+        source: "asset://logo.bmp"
         alt: "Flux logo"
         fit: "contain"
 }
@@ -165,6 +165,8 @@ app Screen(title: "Image")
     .expect("Windows image source should lower to native Win32 C");
     assert!(generated.contains("static HBITMAP flux__win_bitmap_logo = NULL;"));
     assert!(generated.contains("LoadImageA(NULL, path, IMAGE_BITMAP"));
+    assert!(generated.contains("GetModuleFileNameA"));
+    assert!(generated.contains("\\\\assets\\\\%s"));
     assert!(generated.contains("STM_SETIMAGE"));
     assert!(generated.contains("LR_CREATEDIBSECTION"));
     assert!(generated.contains("SS_BITMAP | SS_CENTERIMAGE"));
