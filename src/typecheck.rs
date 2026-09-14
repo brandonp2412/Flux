@@ -9633,11 +9633,11 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::I64, &actual, "worker.done handle")?;
                 return Ok(vec![Type::Bool, Type::Error]);
             }
-            "waitAny" => {
+            "waitAny" | "joinAny" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
-                        &format!("worker.waitAny expects 1 argument, got {}", args.len()),
+                        &format!("worker.{name} expects 1 argument, got {}", args.len()),
                     ));
                 }
                 let actual = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
@@ -9645,7 +9645,7 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::List(Box::new(Type::I64)),
                     &actual,
-                    "worker.waitAny handles",
+                    &format!("worker.{name} handles"),
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }

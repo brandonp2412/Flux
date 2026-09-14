@@ -7473,10 +7473,31 @@ fn main() -> i64 {
     let slowJoinError: error = worker.join(slowHandle)
     if slowJoinError != nil:
         return 8
+    let (joinSlowHandle, joinSlowError) = worker.start(slow)
+    if joinSlowError != nil:
+        return 9
+    let (joinFastHandle, joinFastError) = worker.start(fast)
+    if joinFastError != nil:
+        return 10
+    let joinHandles: i64[] = [joinSlowHandle, joinFastHandle]
+    let (joinedHandle, joinAnyError) = worker.joinAny(joinHandles)
+    if joinAnyError != nil:
+        return 11
+    if joinedHandle != joinFastHandle:
+        return 12
+    let joinedDoneError: error = worker.join(joinedHandle)
+    if joinedDoneError == nil:
+        return 13
+    let remainingJoinError: error = worker.join(joinSlowHandle)
+    if remainingJoinError != nil:
+        return 14
     let empty: i64[] = handles[0:0]
     let (_emptyHandle, emptyError) = worker.waitAny(empty)
     if emptyError == nil:
-        return 9
+        return 15
+    let (_emptyJoined, emptyJoinError) = worker.joinAny(empty)
+    if emptyJoinError == nil:
+        return 16
     return 0
 }
 "#;
@@ -7486,6 +7507,7 @@ fn main() -> i64 {
         compile_to_c(source).expect("worker completion observation should lower natively");
     assert!(generated.contains("flux__worker_done_result"));
     assert!(generated.contains("flux__worker_wait_any"));
+    assert!(generated.contains("flux__worker_join_any"));
     assert!(generated.contains("static pthread_cond_t flux__worker_changed"));
 
     let root = std::env::temp_dir().join(format!(
@@ -7542,10 +7564,26 @@ fn main() -> i64 {
             .contains("worker.waitAny handles: expected i64[]")
     );
 
+    let invalid_join_any = r#"
+fn main() -> i64 {
+    let handles: bool[] = [true]
+    let (_completed, _error) = worker.joinAny(handles)
+    return 0
+}
+"#;
+    let error =
+        check_source(invalid_join_any).expect_err("worker.joinAny should require i64 handles");
+    assert!(
+        error
+            .message
+            .contains("worker.joinAny handles: expected i64[]")
+    );
+
     let dead = r#"
 fn hidden() -> void {
     let handles: i64[] = [1]
     let (_completed, _error) = worker.waitAny(handles)
+    let (_joined, _joinError) = worker.joinAny(handles)
 }
 fn main() -> i64 {
     return 0
@@ -7555,6 +7593,7 @@ fn main() -> i64 {
     let dead_generated =
         compile_to_c(dead).expect("dead worker completion helpers should tree-shake");
     assert!(!dead_generated.contains("flux__worker_wait_any"));
+    assert!(!dead_generated.contains("flux__worker_join_any"));
     assert!(!dead_generated.contains("static pthread_cond_t flux__worker_changed"));
 
     let _ = fs::remove_dir_all(&root);

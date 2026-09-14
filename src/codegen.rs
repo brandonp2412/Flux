@@ -1664,8 +1664,9 @@ fn emit_runtime_prelude(
 ) {
     let uses_http_concurrent = runtime_usage.contains("flux__net_http_serve_concurrent(")
         || runtime_usage.contains("flux__net_http_serve_concurrent_limit(");
-    let uses_worker_completion_wait =
-        uses_http_concurrent || runtime_usage.contains("flux__worker_wait_any(");
+    let uses_worker_wait_any = runtime_usage.contains("flux__worker_wait_any(")
+        || runtime_usage.contains("flux__worker_join_any(");
+    let uses_worker_completion_wait = uses_http_concurrent || uses_worker_wait_any;
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
         || uses_http_concurrent;
@@ -6428,8 +6429,11 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if uses_list {
         out.push_str("struct flux__list { void *data; size_t len; ptrdiff_t stride; };\n");
     }
-    if runtime_usage.contains("flux__worker_wait_any(") {
+    if uses_worker_wait_any {
         out.push_str("static struct flux__worker_i64_error flux__worker_wait_any(struct flux__list handles) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (handles.len == 0) { result.v1 = \"worker.waitAny requires at least one handle\"; return result; } ptrdiff_t stride = handles.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : handles.stride; pthread_mutex_lock(&flux__worker_mutex); for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = handle > 0 ? flux__worker_find_locked(handle) : NULL; if (handle <= 0) { result.v1 = \"worker.waitAny received an invalid handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state == NULL) { result.v1 = \"worker.waitAny received an unknown or already joined handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->parent_id != flux__worker_current_id) { result.v1 = \"worker.waitAny handle is outside the current worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->joining) { result.v1 = \"worker.waitAny cannot observe a handle already being joined\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } } for (;;) { for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { result.v1 = \"worker.waitAny handle disappeared before completion\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->done) { result.v0 = handle; pthread_mutex_unlock(&flux__worker_mutex); return result; } } struct flux__worker_state *current = flux__worker_find_locked(flux__worker_current_id); if (current != NULL && current->cancel_requested) { result.v1 = \"worker.waitAny cancelled by worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex); } }\n");
+    }
+    if runtime_usage.contains("flux__worker_join_any(") {
+        out.push_str("static struct flux__worker_i64_error flux__worker_join_any(struct flux__list handles) { struct flux__worker_i64_error result = flux__worker_wait_any(handles); if (result.v1 != NULL) return result; result.v1 = flux__worker_join(result.v0); return result; }\n");
     }
     if runtime_usage.contains("struct flux__optional_list") {
         out.push_str("struct flux__optional_list { bool has_value; struct flux__list value; };\n");
@@ -32059,13 +32063,18 @@ fn emit_qualified_call(
                     Some("flux__worker_bool_error".to_string()),
                 ));
             }
-            "waitAny" => {
+            "waitAny" | "joinAny" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid worker call reached code generation"));
                 }
                 let handles = emit_expr(&args[0], env, signatures)?;
+                let helper = if name == "joinAny" {
+                    "flux__worker_join_any"
+                } else {
+                    "flux__worker_wait_any"
+                };
                 return Ok((
-                    format!("flux__worker_wait_any({})", handles.code),
+                    format!("{}({})", helper, handles.code),
                     vec![Type::I64, Type::Error],
                     Some("flux__worker_i64_error".to_string()),
                 ));
