@@ -36,7 +36,7 @@ jobs:
           ' bash "$registry" 2>&1 | tee "$log"; then
             exit 0
           fi
-          detail="$(rg '^FAILED:|RuntimeError:|timed out after|command failed' "$log" | tail -n 8)"
+          detail="$(grep -E '^FAILED:|RuntimeError:|timed out after|command failed' "$log" | tail -n 8 || true)"
           if [[ -z "$detail" ]]; then
             detail="$(tail -n 16 "$log")"
           fi
