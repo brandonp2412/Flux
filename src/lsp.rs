@@ -1367,9 +1367,18 @@ fn add_qualified_namespace_completions(
                 "listen",
                 "fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)",
             ),
+            ("accept", "fn net.accept(listener: i64) -> (i64, error)"),
             (
-                "accept",
-                "fn net.accept(listener: i64, *, count: i64, wait: i64, callback: fn(i64) -> void) -> socket result",
+                "acceptTimeout",
+                "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
+                "acceptMany",
+                "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)",
+            ),
+            (
+                "acceptManyTimeout",
+                "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)",
             ),
             ("port", "fn net.port(socket: i64) -> (i64, error)"),
             (
@@ -1380,65 +1389,158 @@ fn add_qualified_namespace_completions(
                 "local",
                 "fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error",
             ),
+            ("write", "fn net.write(socket: i64, text: str) -> error"),
             (
-                "write",
-                "fn net.write(socket: i64, text: str, *, parts: str[], at: i64, wait: i64, host: str, port: i64) -> write result",
+                "writeTimeout",
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
+                "writeFrom",
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)",
+            ),
+            (
+                "writeFromTimeout",
+                "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
+                "writeParts",
+                "fn net.writeParts(socket: i64, parts: str[]) -> error",
+            ),
+            (
+                "writePartsFrom",
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)",
+            ),
+            (
+                "writePartsTimeout",
+                "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)",
+            ),
+            (
+                "writePartsFromTimeout",
+                "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
+                "writeTo",
+                "fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error",
+            ),
+            (
+                "writePartsTo",
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error",
             ),
             (
                 "read",
-                "fn net.read(socket: i64, maxBytes: i64, callback: fn, *, count: i64, wait: i64, from: bool) -> read result",
+                "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             (
-                "blocking",
-                "fn net.blocking(socket: i64, enabled: bool) -> error",
+                "readTimeout",
+                "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "readMany",
+                "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)",
+            ),
+            (
+                "readManyTimeout",
+                "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "readManyFrom",
+                "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+            ),
+            (
+                "readManyFromTimeout",
+                "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "readFrom",
+                "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+            ),
+            (
+                "readFromTimeout",
+                "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+            ),
+            (
+                "nonblocking",
+                "fn net.nonblocking(socket: i64, enabled: bool) -> error",
             ),
             (
                 "noDelay",
                 "fn net.noDelay(socket: i64, enabled: bool) -> error",
             ),
-            ("alive", "fn net.alive(socket: i64, enabled: bool) -> error"),
+            (
+                "keepAlive",
+                "fn net.keepAlive(socket: i64, enabled: bool) -> error",
+            ),
             (
                 "readable",
-                "fn net.readable(socket: i64, wait: i64) -> (bool, error)",
+                "fn net.readable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
                 "writable",
-                "fn net.writable(socket: i64, wait: i64) -> (bool, error)",
+                "fn net.writable(socket: i64, timeoutMillis: i64) -> (bool, error)",
             ),
             (
-                "ready",
-                "fn net.ready(sockets: i64[], wait: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
+                "readableMany",
+                "fn net.readableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
-                "close",
-                "fn net.close(socket: i64, *, read: bool, write: bool) -> error",
+                "writableMany",
+                "fn net.writableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
+            (
+                "readyMany",
+                "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
+            ),
+            ("closeRead", "fn net.closeRead(socket: i64) -> error"),
+            ("closeWrite", "fn net.closeWrite(socket: i64) -> error"),
+            ("close", "fn net.close(socket: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
         return true;
     }
     if namespace == "url" {
-        for (label, detail) in [
-            (
-                "parse",
-                "fn url.parse(url: str, callback: fn(str, str, i64, str) -> void) -> error",
-            ),
-            (
-                "decode",
-                "fn url.decode(value: str, callback: fn(str) -> void, *, form: bool) -> error",
-            ),
-            (
-                "encode",
-                "fn url.encode(value: str, callback: fn(str) -> void, *, form: bool) -> error",
-            ),
-            (
-                "query",
-                "fn url.query(query: str, callback: fn(str, str) -> void) -> error",
-            ),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
+        push_completion_item(
+            items,
+            seen,
+            "parse",
+            3,
+            "fn url.parse(url: str, callback: fn(str, str, i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "decode",
+            3,
+            "fn url.decode(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encode",
+            3,
+            "fn url.encode(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "decodeForm",
+            3,
+            "fn url.decodeForm(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encodeForm",
+            3,
+            "fn url.encodeForm(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "query",
+            3,
+            "fn url.query(query: str, callback: fn(str, str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "uri" {
@@ -1452,34 +1554,97 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "http" {
-        for (label, detail) in [
-            (
-                "read",
-                "fn http.read(socket: i64, maxBytes: i64, callback: fn, *, headers: fn, bodyBytes: i64, body: fn) -> request result",
-            ),
-            (
-                "response",
-                "fn http.response(socket: i64, maxBytes: i64, response: fn, headers: fn, *, bodyBytes: i64, body: fn) -> response result",
-            ),
-            (
-                "request",
-                "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false, *, headers: str) -> error",
-            ),
-            (
-                "respond",
-                "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false, *, headers: str) -> error",
-            ),
-            (
-                "serve",
-                "fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, request: fn, headers: fn, body: fn, *, parallel: bool, limit: i64) -> error",
-            ),
-            (
-                "once",
-                "fn http.once(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, request: fn, headers: fn, body: fn) -> error",
-            ),
-        ] {
-            push_completion_item(items, seen, label, 3, detail);
-        }
+        push_completion_item(
+            items,
+            seen,
+            "readRequest",
+            3,
+            "fn http.readRequest(socket: i64, maxBytes: i64, callback: fn(i64, str, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readRequestHeaders",
+            3,
+            "fn http.readRequestHeaders(socket: i64, maxBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readRequestBody",
+            3,
+            "fn http.readRequestBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "serve",
+            3,
+            "fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "serveOnce",
+            3,
+            "fn http.serveOnce(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "serveConcurrent",
+            3,
+            "fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "serveConcurrentLimit",
+            3,
+            "fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readResponse",
+            3,
+            "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readResponseBody",
+            3,
+            "fn http.readResponseBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "request",
+            3,
+            "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "requestHeaders",
+            3,
+            "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "respond",
+            3,
+            "fn http.respond(socket: i64, status: i64, contentType: str, body: str, keepAlive: bool = false) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "respondHeaders",
+            3,
+            "fn http.respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+        );
         return true;
     }
     if namespace == "browser" {
@@ -1661,34 +1826,61 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "time" {
-        for (label, detail) in [
-            ("now", "fn time.now() -> i64"),
-            ("steady", "fn time.steady() -> i64"),
-            ("sleep", "fn time.sleep(durationMs: i64) -> void"),
-            (
-                "after",
-                "fn time.after(durationMs: i64, callback: fn() -> void) -> (i64, error)",
-            ),
-            (
-                "every",
-                "fn time.every(durationMs: i64, callback: fn() -> void) -> (i64, error)",
-            ),
-            ("until", "fn time.until(deadlineMillis: i64) -> void"),
-            (
-                "utc",
-                "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
-            ),
-            ("year", "fn time.year(unixMillis: i64) -> i64"),
-            ("month", "fn time.month(unixMillis: i64) -> i64"),
-            ("day", "fn time.day(unixMillis: i64) -> i64"),
-            ("hour", "fn time.hour(unixMillis: i64) -> i64"),
-            ("minute", "fn time.minute(unixMillis: i64) -> i64"),
-            ("second", "fn time.second(unixMillis: i64) -> i64"),
-            ("millis", "fn time.millis(unixMillis: i64) -> i64"),
-            ("weekday", "fn time.weekday(unixMillis: i64) -> i64"),
-            ("yearday", "fn time.yearday(unixMillis: i64) -> i64"),
+        push_completion_item(items, seen, "now", 3, "fn time.now() -> i64");
+        push_completion_item(items, seen, "monotonic", 3, "fn time.monotonic() -> i64");
+        push_completion_item(
+            items,
+            seen,
+            "sleep",
+            3,
+            "fn time.sleep(durationMs: i64) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "after",
+            3,
+            "fn time.after(durationMs: i64, callback: fn() -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "every",
+            3,
+            "fn time.every(durationMs: i64, callback: fn() -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "sleepUntil",
+            3,
+            "fn time.sleepUntil(deadlineMillis: i64) -> void",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "utc",
+            3,
+            "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
+        );
+        for member in [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millis",
+            "weekday",
+            "dayOfYear",
         ] {
-            push_completion_item(items, seen, label, 3, detail);
+            push_completion_item(
+                items,
+                seen,
+                member,
+                3,
+                &format!("fn time.{member}(unixMillis: i64) -> i64"),
+            );
         }
         return true;
     }
@@ -1696,16 +1888,13 @@ fn add_qualified_namespace_completions(
         for (label, detail) in [
             ("exists", "fn file.exists(path: str) -> bool"),
             ("size", "fn file.size(path: str) -> (i64, error)"),
-            (
-                "modified",
-                "fn file.modified(path: str, unixMillis: i64?) -> time/error",
-            ),
-            (
-                "accessed",
-                "fn file.accessed(path: str, unixMillis: i64?) -> time/error",
-            ),
+            ("modified", "fn file.modified(path: str) -> (i64, error)"),
+            ("accessed", "fn file.accessed(path: str) -> (i64, error)"),
             ("changed", "fn file.changed(path: str) -> (i64, error)"),
-            ("mode", "fn file.mode(path: str, mode: i64?) -> mode/error"),
+            (
+                "permissions",
+                "fn file.permissions(path: str) -> (i64, error)",
+            ),
             ("owner", "fn file.owner(path: str) -> (i64, error)"),
             ("group", "fn file.group(path: str) -> (i64, error)"),
             ("inode", "fn file.inode(path: str) -> (i64, error)"),
@@ -1727,6 +1916,26 @@ fn add_qualified_namespace_completions(
             (
                 "truncate",
                 "fn file.truncate(path: str, size: i64) -> error",
+            ),
+            (
+                "setPermissions",
+                "fn file.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
+                "setModified",
+                "fn file.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setAccessed",
+                "fn file.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setOwner",
+                "fn file.setOwner(path: str, owner: i64) -> error",
+            ),
+            (
+                "setGroup",
+                "fn file.setGroup(path: str, group: i64) -> error",
             ),
             (
                 "copy",
@@ -1755,24 +1964,33 @@ fn add_qualified_namespace_completions(
             ),
             (
                 "modified",
-                "fn directory.modified(path: str, unixMillis: i64?) -> time/error",
+                "fn directory.modified(path: str) -> (i64, error)",
             ),
             (
                 "accessed",
-                "fn directory.accessed(path: str, unixMillis: i64?) -> time/error",
+                "fn directory.accessed(path: str) -> (i64, error)",
             ),
             ("changed", "fn directory.changed(path: str) -> (i64, error)"),
             (
-                "mode",
-                "fn directory.mode(path: str, mode: i64?) -> mode/error",
+                "permissions",
+                "fn directory.permissions(path: str) -> (i64, error)",
             ),
             ("owner", "fn directory.owner(path: str) -> (i64, error)"),
             ("group", "fn directory.group(path: str) -> (i64, error)"),
             ("inode", "fn directory.inode(path: str) -> (i64, error)"),
             ("device", "fn directory.device(path: str) -> (i64, error)"),
-            ("links", "fn directory.links(path: str) -> (i64, error)"),
-            ("block", "fn directory.block(path: str) -> (i64, error)"),
-            ("space", "fn directory.space(path: str) -> (i64, error)"),
+            (
+                "hardLinks",
+                "fn directory.hardLinks(path: str) -> (i64, error)",
+            ),
+            (
+                "blockSize",
+                "fn directory.blockSize(path: str) -> (i64, error)",
+            ),
+            (
+                "allocatedSize",
+                "fn directory.allocatedSize(path: str) -> (i64, error)",
+            ),
             ("create", "fn directory.create(path: str) -> error"),
             ("createAll", "fn directory.createAll(path: str) -> error"),
             ("sync", "fn directory.sync(path: str) -> error"),
@@ -1780,7 +1998,18 @@ fn add_qualified_namespace_completions(
                 "rename",
                 "fn directory.rename(source: str, destination: str) -> error",
             ),
-            ("remove", "fn directory.remove(path: str) -> error"),
+            (
+                "setPermissions",
+                "fn directory.setPermissions(path: str, permissions: i64) -> error",
+            ),
+            (
+                "setModified",
+                "fn directory.setModified(path: str, unixMillis: i64) -> error",
+            ),
+            (
+                "setAccessed",
+                "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
+            ),
             (
                 "setOwner",
                 "fn directory.setOwner(path: str, owner: i64) -> error",
@@ -1789,7 +2018,8 @@ fn add_qualified_namespace_completions(
                 "setGroup",
                 "fn directory.setGroup(path: str, group: i64) -> error",
             ),
-            ("erase", "fn directory.erase(path: str) -> error"),
+            ("remove", "fn directory.remove(path: str) -> error"),
+            ("removeAll", "fn directory.removeAll(path: str) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
@@ -1941,20 +2171,13 @@ fn add_qualified_namespace_completions(
     if namespace == "android" {
         for binding in crate::android_bindings::ANDROID_BINDINGS {
             let name = crate::builtin_names::qualified("android", binding.name);
-            let detail = match name {
-                "keyboard" => "fn android.keyboard(visible: bool) -> void".to_string(),
-                "record" => "fn android.record(path: str?) -> bool".to_string(),
-                "notify" => "fn android.notify(channelId: str, notificationId: i64, title: str, body: str, *, label: str, url: str) -> void".to_string(),
-                _ => {
-                    let params = binding
-                        .params
-                        .iter()
-                        .map(|param| param.signature)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("fn android.{name}({params}) -> {}", binding.return_name())
-                }
-            };
+            let params = binding
+                .params
+                .iter()
+                .map(|param| param.signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!("fn android.{name}({params}) -> {}", binding.return_name());
             push_completion_item(items, seen, name, 3, &detail);
         }
         return true;
@@ -7613,33 +7836,96 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        for expected in [
-            "fn net.connect(host: str, port: i64) -> (i64, error)",
-            "fn net.udp(host: str, port: i64) -> (i64, error)",
-            "fn net.bind(host: str, port: i64) -> (i64, error)",
-            "fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)",
-            "fn net.accept(listener: i64, *, count: i64, wait: i64, callback: fn(i64) -> void) -> socket result",
-            "fn net.port(socket: i64) -> (i64, error)",
-            "fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error",
-            "fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error",
-            "fn net.write(socket: i64, text: str, *, parts: str[], at: i64, wait: i64, host: str, port: i64) -> write result",
-            "fn net.read(socket: i64, maxBytes: i64, callback: fn, *, count: i64, wait: i64, from: bool) -> read result",
-            "fn net.blocking(socket: i64, enabled: bool) -> error",
-            "fn net.noDelay(socket: i64, enabled: bool) -> error",
-            "fn net.alive(socket: i64, enabled: bool) -> error",
-            "fn net.readable(socket: i64, wait: i64) -> (bool, error)",
-            "fn net.writable(socket: i64, wait: i64) -> (bool, error)",
-            "fn net.ready(sockets: i64[], wait: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
-            "fn net.close(socket: i64, *, read: bool, write: bool) -> error",
-        ] {
-            assert!(
-                net_items.contains(expected),
-                "missing compact network completion: {expected}"
-            );
-        }
-        assert!(!net_items.contains("acceptManyTimeout"));
-        assert!(!net_items.contains("writePartsFromTimeout"));
-        assert!(!net_items.contains("readManyFromTimeout"));
+        assert!(net_items.contains("fn net.connect(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.udp(host: str, port: i64) -> (i64, error)"));
+        assert!(net_items.contains("fn net.bind(host: str, port: i64) -> (i64, error)"));
+        assert!(
+            net_items.contains("fn net.listen(host: str, port: i64, backlog: i64) -> (i64, error)")
+        );
+        assert!(net_items.contains("fn net.accept(listener: i64) -> (i64, error)"));
+        assert!(net_items.contains(
+            "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains("fn net.port(socket: i64) -> (i64, error)"));
+        assert!(
+            net_items.contains("fn net.peer(socket: i64, callback: fn(str, i64) -> void) -> error")
+        );
+        assert!(
+            net_items
+                .contains("fn net.local(socket: i64, callback: fn(str, i64) -> void) -> error")
+        );
+        assert!(net_items.contains("fn net.write(socket: i64, text: str) -> error"));
+        assert!(net_items.contains(
+            "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains("fn net.writeParts(socket: i64, parts: str[]) -> error"));
+        assert!(net_items.contains(
+            "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64) -> (i64, bool, error)"
+        ));
+        assert!(
+            net_items
+                .contains("fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error")
+        );
+        assert!(net_items.contains(
+            "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error"
+        ));
+        assert!(net_items.contains(
+            "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains(
+            "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)"
+        ));
+        assert!(net_items.contains("fn net.nonblocking(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.noDelay(socket: i64, enabled: bool) -> error"));
+        assert!(net_items.contains("fn net.keepAlive(socket: i64, enabled: bool) -> error"));
+        assert!(
+            net_items.contains("fn net.readable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+        );
+        assert!(
+            net_items.contains("fn net.writable(socket: i64, timeoutMillis: i64) -> (bool, error)")
+        );
+        assert!(net_items.contains(
+            "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)"
+        ));
+        assert!(net_items.contains("fn net.closeRead(socket: i64) -> error"));
+        assert!(net_items.contains("fn net.closeWrite(socket: i64) -> error"));
+        assert!(net_items.contains("fn net.close(socket: i64) -> error"));
 
         let locale_line = source
             .lines()
@@ -7692,23 +7978,23 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        for expected in [
-            "fn time.now() -> i64",
-            "fn time.steady() -> i64",
-            "fn time.sleep(durationMs: i64) -> void",
-            "fn time.after(durationMs: i64, callback: fn() -> void) -> (i64, error)",
-            "fn time.every(durationMs: i64, callback: fn() -> void) -> (i64, error)",
-            "fn time.until(deadlineMillis: i64) -> void",
-            "fn time.yearday(unixMillis: i64) -> i64",
-        ] {
-            assert!(
-                time_items.contains(expected),
-                "missing compact time completion: {expected}"
-            );
-        }
-        assert!(!time_items.contains("monotonic"));
-        assert!(!time_items.contains("sleepUntil"));
-        assert!(!time_items.contains("dayOfYear"));
+        assert!(time_items.contains("fn time.now() -> i64"));
+        assert!(time_items.contains("fn time.monotonic() -> i64"));
+        assert!(time_items.contains("fn time.sleep(durationMs: i64) -> void"));
+        assert!(
+            time_items
+                .contains("fn time.after(durationMs: i64, callback: fn() -> void) -> (i64, error)")
+        );
+        assert!(
+            time_items
+                .contains("fn time.every(durationMs: i64, callback: fn() -> void) -> (i64, error)")
+        );
+        assert!(time_items.contains("fn time.sleepUntil(deadlineMillis: i64) -> void"));
+        assert!(time_items.contains("fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64"));
+        assert!(time_items.contains("fn time.year(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.millis(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.weekday(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
 
         let file_line = source
             .lines()
@@ -8907,9 +9193,9 @@ mod tests {
         .to_json();
         assert!(
             help.contains(
-                "fn net.write(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)"
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -&gt; (i64, error)"
             ) || help.contains(
-                "fn net.write(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
+                "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)"
             )
         );
     }
@@ -8938,9 +9224,9 @@ mod tests {
         .to_json();
         assert!(
             help.contains(
-                "fn net.write(socket: i64, text: str, offset: i64) -&gt; (i64, bool, error)"
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -&gt; (i64, bool, error)"
             ) || help.contains(
-                "fn net.write(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
+                "fn net.writeFrom(socket: i64, text: str, offset: i64) -> (i64, bool, error)"
             )
         );
     }
@@ -8953,11 +9239,11 @@ mod tests {
         for (needle, expected) in [
             (
                 "net.writeFromTimeout(",
-                "fn net.write(socket: i64, text: str, offset: i64, timeoutMillis: i64)",
+                "fn net.writeFromTimeout(socket: i64, text: str, offset: i64, timeoutMillis: i64)",
             ),
             (
                 "net.writePartsFromTimeout(",
-                "fn net.write(socket: i64, parts: str[], offset: i64, timeoutMillis: i64)",
+                "fn net.writePartsFromTimeout(socket: i64, parts: str[], offset: i64, timeoutMillis: i64)",
             ),
         ] {
             let line_index = source
@@ -9004,8 +9290,8 @@ mod tests {
         .expect("scatter/gather call should have signature help")
         .to_json();
         assert!(
-            help.contains("fn net.write(socket: i64, parts: str[]) -&gt; error")
-                || help.contains("fn net.write(socket: i64, parts: str[]) -> error")
+            help.contains("fn net.writeParts(socket: i64, parts: str[]) -&gt; error")
+                || help.contains("fn net.writeParts(socket: i64, parts: str[]) -> error")
         );
     }
 
@@ -9033,9 +9319,9 @@ mod tests {
         .to_json();
         assert!(
             help.contains(
-                "fn net.write(socket: i64, parts: str[], offset: i64) -&gt; (i64, bool, error)"
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -&gt; (i64, bool, error)"
             ) || help.contains(
-                "fn net.write(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
+                "fn net.writePartsFrom(socket: i64, parts: str[], offset: i64) -> (i64, bool, error)"
             )
         );
     }
@@ -9064,9 +9350,10 @@ mod tests {
         .to_json();
         assert!(
             help.contains(
-                "fn net.write(socket: i64, host: str, port: i64, parts: str[]) -&gt; error"
-            ) || help
-                .contains("fn net.write(socket: i64, host: str, port: i64, parts: str[]) -> error")
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -&gt; error"
+            ) || help.contains(
+                "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error"
+            )
         );
     }
 
@@ -9103,7 +9390,7 @@ mod tests {
             ),
             (
                 "net.sendTextTo(",
-                "fn net.write(socket: i64, host: str, port: i64, text: str) -> error",
+                "fn net.writeTo(socket: i64, host: str, port: i64, text: str) -> error",
             ),
             (
                 "net.receiveText(",
@@ -9111,11 +9398,11 @@ mod tests {
             ),
             (
                 "net.receiveTextFrom(",
-                "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
+                "fn net.readFrom(socket: i64, maxBytes: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)",
             ),
             (
                 "net.setNonblocking(",
-                "fn net.blocking(socket: i64, enabled: bool) -> error",
+                "fn net.nonblocking(socket: i64, enabled: bool) -> error",
             ),
             (
                 "net.waitReadable(",
@@ -9127,18 +9414,24 @@ mod tests {
             ),
             (
                 "net.waitReadableMany(",
-                "fn net.readable(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "fn net.readableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
                 "net.waitWritableMany(",
-                "fn net.writable(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
+                "fn net.writableMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, error)",
             ),
             (
                 "net.waitReadyMany(",
-                "fn net.ready(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
+                "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
             ),
-            ("net.shutdownRead(", "fn net.close(socket: i64) -> error"),
-            ("net.shutdownWrite(", "fn net.close(socket: i64) -> error"),
+            (
+                "net.shutdownRead(",
+                "fn net.closeRead(socket: i64) -> error",
+            ),
+            (
+                "net.shutdownWrite(",
+                "fn net.closeWrite(socket: i64) -> error",
+            ),
             ("net.close(", "fn net.close(socket: i64) -> error"),
         ] {
             let line_index = source
@@ -9169,31 +9462,31 @@ mod tests {
         for (needle, expected) in [
             (
                 "net.acceptTimeout(",
-                "fn net.accept(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
+                "fn net.acceptTimeout(listener: i64, timeoutMillis: i64) -> (i64, bool, error)",
             ),
             (
                 "net.acceptManyTimeout(",
-                "fn net.accept(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)",
+                "fn net.acceptManyTimeout(listener: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.readTimeout(",
-                "fn net.read(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+                "fn net.readTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.readManyTimeout(",
-                "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
+                "fn net.readManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.readFromTimeout(",
-                "fn net.read(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+                "fn net.readFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.readManyFromTimeout(",
-                "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
+                "fn net.readManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, bool, error)",
             ),
             (
                 "net.writePartsTimeout(",
-                "fn net.write(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)",
+                "fn net.writePartsTimeout(socket: i64, parts: str[], timeoutMillis: i64) -> (i64, error)",
             ),
         ] {
             let line_index = source
@@ -9239,9 +9532,9 @@ mod tests {
         .expect("receiveTextMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+            "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
         ));
     }
 
@@ -9268,9 +9561,9 @@ mod tests {
         .expect("receiveTextFromMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -&gt; void) -&gt; (i64, error)"
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.read(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
+            "fn net.readManyFrom(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str, str, i64) -> void) -> (i64, error)"
         ));
     }
 
@@ -9297,9 +9590,9 @@ mod tests {
         .expect("tcpAcceptMany call should have signature help")
         .to_json();
         assert!(help.contains(
-            "fn net.accept(listener: i64, maxCount: i64, callback: fn(i64) -&gt; void) -&gt; (i64, error)"
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
-            "fn net.accept(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
+            "fn net.acceptMany(listener: i64, maxCount: i64, callback: fn(i64) -> void) -> (i64, error)"
         ));
     }
 
@@ -9348,8 +9641,8 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(completion.contains("fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, request: fn, headers: fn, body: fn, *, parallel: bool, limit: i64) -> error"));
-        assert!(!completion.contains("serveConcurrent"));
+        assert!(completion.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+        assert!(completion.contains("fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
 
         let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {\n}\nfn header(_socket: i64, _name: str, _value: str) -> void {\n}\nfn body(_socket: i64, _body: str) -> void {\n}\nfn main() -> i64 {\n    print(http.serveConcurrent(1, 4096, 1024, request, header, body))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
@@ -9370,7 +9663,7 @@ mod tests {
         )
         .expect("serveConcurrent call should have signature help")
         .to_json();
-        assert!(help.contains("fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+        assert!(help.contains("fn http.serveConcurrent(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
 
         let limited_source = source.replace(
             "http.serveConcurrent(1, 4096, 1024, request, header, body)",
@@ -9394,7 +9687,7 @@ mod tests {
         )
         .expect("serveConcurrentLimit call should have signature help")
         .to_json();
-        assert!(limited_help.contains("fn http.serve(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
+        assert!(limited_help.contains("fn http.serveConcurrentLimit(listener: i64, maxHeadBytes: i64, maxBodyBytes: i64, maxConcurrent: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> error"));
     }
 
     #[test]
@@ -9413,7 +9706,7 @@ mod tests {
             ),
             (
                 "http.sendTextRequestWithHeaders(",
-                "fn http.request(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+                "fn http.requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.sendTextResponse(",
@@ -9421,15 +9714,15 @@ mod tests {
             ),
             (
                 "http.sendTextResponseWithHeaders(",
-                "fn http.respond(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
+                "fn http.respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool = false) -> error",
             ),
             (
                 "http.receiveResponseHeadWithHeaders(",
-                "fn http.response(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+                "fn http.readResponse(socket: i64, maxBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void) -> (i64, error)",
             ),
             (
                 "http.receiveResponseWithTextBody(",
-                "fn http.response(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
+                "fn http.readResponseBody(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void) -> (i64, error)",
             ),
         ] {
             let line_index = source
@@ -9516,11 +9809,11 @@ mod tests {
             ),
             (
                 "url.decodeFormComponent(",
-                "fn url.decode(value: str, callback: fn(str) -> void) -> error",
+                "fn url.decodeForm(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.encodeFormComponent(",
-                "fn url.encode(value: str, callback: fn(str) -> void) -> error",
+                "fn url.encodeForm(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.parseFormQuery(",
@@ -9620,16 +9913,21 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
+        assert!(completion_items.contains("fn worker.start(work: fn() -> void) -> (i64, error)"));
         assert!(
-            completion_items.contains("fn worker.start(work: fn, argument: i64?) -> (i64, error)")
+            completion_items.contains(
+                "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)"
+            )
         );
-        assert!(completion_items.contains("fn worker.join(handle: i64?) -> error"));
+        assert!(completion_items.contains("fn worker.join(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.done(handle: i64) -> (bool, error)"));
         assert!(completion_items.contains("fn worker.failure(handle: i64) -> error"));
         assert!(completion_items.contains("fn worker.waitAny(handles: i64[]) -> (i64, error)"));
         assert!(completion_items.contains("fn worker.joinAny(handles: i64[]) -> (i64, error)"));
-        assert!(completion_items.contains("fn worker.cancel(handle: i64?) -> error/void"));
-        assert!(completion_items.contains("fn worker.stopped() -> bool"));
+        assert!(completion_items.contains("fn worker.joinAll() -> error"));
+        assert!(completion_items.contains("fn worker.cancel(handle: i64) -> error"));
+        assert!(completion_items.contains("fn worker.cancelAll() -> void"));
+        assert!(completion_items.contains("fn worker.cancelled() -> bool"));
 
         let uri = "file:///tmp/worker-signatures.flux";
         let source = "fn work() -> void {\n}\nfn workWith(_value: i64) -> void {\n}\nfn main() -> i64 {\n    let (handle, startError) = worker.start(work)\n    print(startError)\n    let (withHandle, withError) = worker.startWith(workWith, 1)\n    print(withError)\n    let handles: i64[] = [handle, withHandle]\n    let (completed, waitError) = worker.waitAny(handles)\n    print(waitError)\n    let (joined, joinAnyError) = worker.joinAny(handles)\n    print(joined)\n    print(joinAnyError)\n    let (isDone, doneError) = worker.done(completed)\n    print(isDone)\n    print(doneError)\n    print(worker.cancel(withHandle))\n    worker.cancelChildren()\n    print(worker.cancelled())\n    print(worker.joinChildren())\n    print(worker.join(withHandle))\n    print(worker.join(handle))\n    return 0\n}\n";
@@ -9645,7 +9943,7 @@ mod tests {
             ),
             (
                 "worker.startWith(",
-                "fn worker.start(work: fn(i64) -> void, argument: i64) -> (i64, error)",
+                "fn worker.startWith(work: fn(i64) -> void, argument: i64) -> (i64, error)",
             ),
             (
                 "worker.waitAny(",
@@ -9661,9 +9959,9 @@ mod tests {
             ),
             ("worker.failure(", "fn worker.failure(handle: i64) -> error"),
             ("worker.cancel(", "fn worker.cancel(handle: i64) -> error"),
-            ("worker.cancelChildren(", "fn worker.cancel() -> void"),
-            ("worker.cancelled(", "fn worker.stopped() -> bool"),
-            ("worker.joinChildren(", "fn worker.join() -> error"),
+            ("worker.cancelChildren(", "fn worker.cancelAll() -> void"),
+            ("worker.cancelled(", "fn worker.cancelled() -> bool"),
+            ("worker.joinChildren(", "fn worker.joinAll() -> error"),
             ("worker.join(", "fn worker.join(handle: i64) -> error"),
         ] {
             let line_index = source
@@ -9756,7 +10054,7 @@ mod tests {
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("time.unixMillis(", "fn time.now() -> i64"),
-            ("time.monotonicMillis(", "fn time.steady() -> i64"),
+            ("time.monotonicMillis(", "fn time.monotonic() -> i64"),
             (
                 "time.sleepMillis(",
                 "fn time.sleep(durationMs: i64) -> void",
@@ -9771,7 +10069,7 @@ mod tests {
             ),
             (
                 "time.sleepUntilMonotonic(",
-                "fn time.until(deadlineMillis: i64) -> void",
+                "fn time.sleepUntil(deadlineMillis: i64) -> void",
             ),
             (
                 "time.utcUnixMillis(",
@@ -9886,7 +10184,7 @@ mod tests {
             ),
             (
                 "directory.createAll(",
-                "fn directory.make(path: str) -> error",
+                "fn directory.createAll(path: str) -> error",
             ),
             ("directory.sync(", "fn directory.sync(path: str) -> error"),
             (
@@ -9895,7 +10193,7 @@ mod tests {
             ),
             (
                 "directory.removeAll(",
-                "fn directory.erase(path: str) -> error",
+                "fn directory.removeAll(path: str) -> error",
             ),
             ("fs.exists(", "fn fs.exists(path: str) -> bool"),
             ("fs.isFile(", "fn fs.isFile(path: str) -> bool"),
@@ -10029,15 +10327,15 @@ mod tests {
             ),
             (
                 "file.setPermissions(",
-                "fn file.mode(path: str, permissions: i64) -> error",
+                "fn file.setPermissions(path: str, permissions: i64) -> error",
             ),
             (
                 "file.setModified(",
-                "fn file.modified(path: str, unixMillis: i64) -> error",
+                "fn file.setModified(path: str, unixMillis: i64) -> error",
             ),
             (
                 "file.setAccessed(",
-                "fn file.accessed(path: str, unixMillis: i64) -> error",
+                "fn file.setAccessed(path: str, unixMillis: i64) -> error",
             ),
             (
                 "file.setOwner(",
@@ -10053,15 +10351,15 @@ mod tests {
             ),
             (
                 "directory.setPermissions(",
-                "fn directory.mode(path: str, permissions: i64) -> error",
+                "fn directory.setPermissions(path: str, permissions: i64) -> error",
             ),
             (
                 "directory.setModified(",
-                "fn directory.modified(path: str, unixMillis: i64) -> error",
+                "fn directory.setModified(path: str, unixMillis: i64) -> error",
             ),
             (
                 "directory.setAccessed(",
-                "fn directory.accessed(path: str, unixMillis: i64) -> error",
+                "fn directory.setAccessed(path: str, unixMillis: i64) -> error",
             ),
             (
                 "directory.setOwner(",
@@ -10177,11 +10475,11 @@ mod tests {
             ),
             (
                 "file.permissions(",
-                "fn file.mode(path: str) -> (i64, error)",
+                "fn file.permissions(path: str) -> (i64, error)",
             ),
             (
                 "directory.permissions(",
-                "fn directory.mode(path: str) -> (i64, error)",
+                "fn directory.permissions(path: str) -> (i64, error)",
             ),
             ("file.owner(", "fn file.owner(path: str) -> (i64, error)"),
             (
@@ -10205,27 +10503,27 @@ mod tests {
             ),
             (
                 "file.hardLinks(",
-                "fn file.links(path: str) -> (i64, error)",
+                "fn file.hardLinks(path: str) -> (i64, error)",
             ),
             (
                 "directory.hardLinks(",
-                "fn directory.links(path: str) -> (i64, error)",
+                "fn directory.hardLinks(path: str) -> (i64, error)",
             ),
             (
                 "file.blockSize(",
-                "fn file.block(path: str) -> (i64, error)",
+                "fn file.blockSize(path: str) -> (i64, error)",
             ),
             (
                 "directory.blockSize(",
-                "fn directory.block(path: str) -> (i64, error)",
+                "fn directory.blockSize(path: str) -> (i64, error)",
             ),
             (
                 "file.allocatedSize(",
-                "fn file.space(path: str) -> (i64, error)",
+                "fn file.allocatedSize(path: str) -> (i64, error)",
             ),
             (
                 "directory.allocatedSize(",
-                "fn directory.space(path: str) -> (i64, error)",
+                "fn directory.allocatedSize(path: str) -> (i64, error)",
             ),
         ] {
             let line_index = source
@@ -10468,11 +10766,11 @@ mod tests {
             ),
             (
                 "android.notificationPermissionGranted(",
-                "fn android.canNotify() -> bool",
+                "fn android.noticeAllowed() -> bool",
             ),
             (
                 "android.requestNotificationPermission(",
-                "fn android.askNotify() -> void",
+                "fn android.askNotice() -> void",
             ),
             (
                 "android.notify(",
@@ -10480,11 +10778,11 @@ mod tests {
             ),
             (
                 "android.notifyUrlAction(",
-                "fn android.notify(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void",
+                "fn android.notifyUrl(channelId: str, notificationId: i64, title: str, body: str, actionLabel: str, url: str) -> void",
             ),
             (
                 "android.cancelNotification(",
-                "fn android.unnotify(notificationId: i64) -> void",
+                "fn android.cancelNotice(notificationId: i64) -> void",
             ),
         ] {
             let line_index = source
@@ -10533,7 +10831,7 @@ mod tests {
         )
         .expect("notification settings call should have signature help")
         .to_json();
-        assert!(help.contains("fn android.notices() -> void"));
+        assert!(help.contains("fn android.noticeSettings() -> void"));
     }
 
     #[test]
@@ -10875,7 +11173,7 @@ mod tests {
         )
         .expect("clipboard call should have signature help")
         .to_json();
-        assert!(help.contains("fn android.copy(text: str) -> void"));
+        assert!(help.contains("fn android.clipboard(text: str) -> void"));
     }
 
     #[test]

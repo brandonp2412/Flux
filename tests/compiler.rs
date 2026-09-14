@@ -32,102 +32,6 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
-fn compact_builtin_surface_typechecks() {
-    let source = r#"
-fn onText(_socket: i64, _text: str) -> void {
-}
-
-fn onPeer(_socket: i64, _text: str, _host: str, _port: i64) -> void {
-}
-
-fn onSocket(_socket: i64) -> void {
-}
-
-fn onReady(_socket: i64, _readable: bool, _writable: bool) -> void {
-}
-
-fn onRequest(_socket: i64, _method: str, _target: str, _version: str) -> void {
-}
-
-fn onHeader(_socket: i64, _name: str, _value: str) -> void {
-}
-
-fn onBody(_socket: i64, _body: str) -> void {
-}
-
-fn onResponse(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
-}
-
-fn onUrl(_value: str) -> void {
-}
-
-fn work(_value: i64) -> void {
-}
-
-fn main() -> i64 {
-    let (_accepted, _acceptTimedOut, _acceptError) = net.accept(1, wait: 10)
-    let (_acceptedCount, _acceptManyError) = net.accept(1, count: 2, callback: onSocket)
-    let (_readBytes, _readTimedOut, _readError) = net.read(1, 64, onText, wait: 10)
-    let (_peerBytes, _peerTimedOut, _peerError) = net.read(1, 64, onPeer, from: true, count: 2, wait: 10)
-    let (_writeNext, _writeDone, _writeError) = net.write(1, "hello", at: 0, wait: 10)
-    let (_partsNext, _partsDone, _partsError) = net.write(1, parts: ["hello", "world"], at: 0, wait: 10)
-    let _blockingError: error = net.blocking(1, true)
-    let _aliveError: error = net.alive(1, true)
-    let (_readableCount, _readableError) = net.readable([1], 10, onSocket)
-    let (_writableCount, _writableError) = net.writable([1], 10, onSocket)
-    let (_readyCount, _readyError) = net.ready([1], 10, onReady)
-    let _halfCloseError: error = net.close(1, read: true)
-
-    let (_requestBytes, _requestError) = http.read(1, 4096, onRequest, headers: onHeader)
-    let (_requestBodyBytes, _requestBodyError) = http.read(1, 4096, onRequest, bodyBytes: 1024, headers: onHeader, body: onBody)
-    let (_responseBytes, _responseError) = http.response(1, 4096, onResponse, onHeader)
-    let (_responseBodyBytes, _responseBodyError) = http.response(1, 4096, onResponse, onHeader, bodyBytes: 1024, body: onBody)
-    let _requestSendError: error = http.request(1, "GET", "/", "example.test", "text/plain", "", headers: "x-test: yes")
-    let _respondError: error = http.respond(1, 200, "text/plain", "ok", headers: "x-test: yes")
-    let _serveError: error = http.serve(1, 4096, 1024, onRequest, onHeader, onBody, parallel: true)
-    let _onceError: error = http.once(1, 4096, 1024, onRequest, onHeader, onBody)
-
-    let _encoded: error = url.encode("a b", onUrl, form: true)
-    let _decoded: error = url.decode("a+b", onUrl, form: true)
-
-    let (_worker, _workerError) = worker.start(work, 1)
-    let _joinAllError: error = worker.join()
-    worker.cancel()
-    print(worker.stopped())
-
-    let clock: i64 = time.steady()
-    time.until(clock)
-    print(time.yearday(time.now()))
-
-    let (_mode, _modeError) = file.mode("x")
-    let _setModeError: error = file.mode("x", 384)
-    let (_modified, _modifiedError) = file.modified("x")
-    let _setModifiedError: error = file.modified("x", 0)
-    let (_accessed, _accessedError) = directory.accessed("x")
-    let _setAccessedError: error = directory.accessed("x", 0)
-    let (_space, _spaceError) = file.space("x")
-    let (_links, _linksError) = file.links("x")
-    let (_block, _blockError) = directory.block("x")
-    let _makeError: error = directory.make("x")
-    let _eraseError: error = directory.erase("x")
-
-    android.notices()
-    android.copy("text")
-    print(android.canNotify())
-    android.askNotify()
-    android.keyboard(true)
-    print(android.record("recording.raw"))
-    print(android.record())
-    android.notify("main", 1, "title", "body", label: "Open", url: "https://example.test")
-    android.unnotify(1)
-    return 0
-}
-"#;
-
-    check_source(source).expect("compact builtin surface should typecheck");
-}
-
-#[test]
 fn extern_c_imports_lower_to_exact_native_symbols_with_safe_boundaries() {
     let source = r#"
 extern c "flux_test_double" fn nativeDouble(value: i64) -> i64
@@ -4685,30 +4589,13 @@ fn main() -> i64 {{
 #[test]
 fn canonical_short_platform_api_names_typecheck_and_lower() {
     let headless = r#"
-fn textRead(_socket: i64, _text: str) -> void {
-}
-fn requestRead(_socket: i64, _method: str, _target: str, _version: str) -> void {
-}
-fn headerRead(_socket: i64, _name: str, _value: str) -> void {
-}
 fn main() -> i64 {
     let (socket, connectError) = net.connect("127.0.0.1", 80)
     let (listener, listenError) = net.listen("127.0.0.1", 0, 8)
     let (accepted, acceptError) = net.accept(listener)
-    let (_timedAccepted, _timedOut, _timedAcceptError) = net.accept(listener, wait: 0)
-    let (_readBytes, _readTimedOut, _readError) = net.read(socket, 64, textRead, wait: 0)
-    let (_writeNext, _writeDone, _writeError) = net.write(socket, "hello", at: 0, wait: 0)
-    let _blockingError: error = net.blocking(socket, true)
-    let _aliveError: error = net.alive(socket, true)
-    let _halfCloseError: error = net.close(socket, read: true)
-    let (_requestBytes, _requestError) = http.read(socket, 4096, requestRead, headers: headerRead)
-    let _requestSendError: error = http.request(socket, "GET", "/", "example.test", "text/plain", "", headers: "x-test: yes")
-    let _responseSendError: error = http.respond(socket, 200, "text/plain", "ok", headers: "x-test: yes")
-    let _modeError: error = file.mode("/tmp/flux-short-api", 384)
-    let _makeError: error = directory.make("/tmp/flux-short-api-dir")
-    let now: i64 = time.steady()
-    time.until(now)
     time.sleep(0)
+    print(http.request(socket, "GET", "/", "example.test", "text/plain", ""))
+    print(http.respond(socket, 200, "text/plain", "ok"))
     print(socket)
     print(connectError)
     print(accepted)
@@ -4724,20 +4611,9 @@ fn main() -> i64 {
         "flux__net_tcp_connect(",
         "flux__net_tcp_listen(",
         "flux__net_tcp_accept(",
-        "flux__net_tcp_accept_with_timeout(",
-        "flux__net_receive_text_with_timeout(",
-        "flux__net_send_text_progress_with_timeout(",
-        "flux__net_set_nonblocking(",
-        "flux__net_set_keep_alive(",
-        "flux__net_shutdown_read(",
-        "flux__net_http_receive_request_head_with_headers(",
-        "flux__net_http_send_text_request_with_headers(",
-        "flux__net_http_send_text_response_with_headers(",
-        "flux__fs_file_set_permissions(",
-        "flux__fs_create_directories(",
-        "flux__time_monotonic_millis(",
-        "flux__time_sleep_until_monotonic(",
         "flux__time_sleep_millis(",
+        "flux__net_http_send_text_request_v2(",
+        "flux__net_http_send_text_response(",
     ] {
         assert!(
             generated.contains(helper),
@@ -36654,16 +36530,16 @@ fn started() -> void {
     android.finish()
     android.open("https://example.com")
     android.settings()
-    android.notices()
+    android.noticeSettings()
     android.share("hello from Flux")
-    android.copy("copied from Flux")
+    android.clipboard("copied from Flux")
     print(android.record("/data/local/tmp/flux-recording.m4a"))
-    print(android.record())
+    print(android.stopRecord())
     print(android.store("token", "secret"))
     print(android.load("token", secureValue))
     print(android.erase("token"))
-    android.keyboard(true)
-    android.keyboard(false)
+    android.showKeyboard()
+    android.hideKeyboard()
     android.next()
     android.next(true)
     android.prior()
@@ -36679,11 +36555,11 @@ fn started() -> void {
     print(android.allowed("android.permission.CAMERA"))
     android.ask("android.permission.CAMERA")
     android.channel("updates", "Updates", "Flux update notifications")
-    print(android.canNotify())
-    android.askNotify()
+    print(android.noticeAllowed())
+    android.askNotice()
     android.notify("updates", 7, "Flux", "Native Android notification")
-    android.notify("updates", 8, "Flux", "Open the Flux site", label: "Open", url: "https://example.com")
-    android.unnotify(7)
+    android.notifyUrl("updates", 8, "Flux", "Open the Flux site", "Open", "https://example.com")
+    android.cancelNotice(7)
     print("started")
 }
 fn resumed() -> void {

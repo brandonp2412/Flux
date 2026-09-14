@@ -16,7 +16,7 @@ Pass `--accessibility` to run the native UI test with an additional compiler-own
 
 ## Deterministic time
 
-Pass `--deterministic-time` to `flux test` when a test depends on clocks or structured timers. The test process starts with monotonic time at `0` and Unix time at `946684800000` (2000-01-01T00:00:00Z). `time.sleep` and `time.until` advance virtual time immediately instead of waiting for wall time. `time.after` and `time.every` use deadlines on the same virtual clock, so advancing time wakes due timer workers; normal builds and tests without the flag continue to use the native platform clocks and sleeps.
+Pass `--deterministic-time` to `flux test` when a test depends on clocks or structured timers. The test process starts with monotonic time at `0` and Unix time at `946684800000` (2000-01-01T00:00:00Z). `time.sleep` / `time.sleepMillis` and `time.sleepUntil` / `time.sleepUntilMonotonic` advance virtual time immediately instead of waiting for wall time. `time.after` and `time.every` use deadlines on the same virtual clock, so advancing time wakes due timer workers; normal builds and tests without the flag continue to use the native platform clocks and sleeps.
 
 The deterministic clock is compiler-owned test infrastructure selected by the `flux test` runner through a test-build macro injected into generated native C only for that invocation. Ordinary builds compile the test-clock selector to false rather than performing a runtime environment lookup. Flux application source does not gain a mutable clock object, and unreachable time support still tree-shakes normally.
 
