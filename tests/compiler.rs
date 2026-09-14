@@ -214,6 +214,61 @@ app Screen(title: "Stateful Windows", width: 720, height: 480)
 }
 
 #[test]
+fn windows_backend_applies_native_typography_and_accessibility_annotations() {
+    let source = r#"
+view Screen {
+    state accessibleName: str = "Current title"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Flux"
+        variant: "title"
+        size: 30
+        bold: false
+        italic: true
+        underline: true
+        strikethrough: true
+        accessibilityLabel: accessibleName
+        accessibilityDescription: "Primary screen heading"
+        accessibilityRole: "heading"
+    Button action at 2,1
+        text: "Continue"
+        accessibilityLabel: "Continue action"
+        accessibilityRole: "button"
+}
+app Screen(title: "Accessible Windows")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows accessibility source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows accessibility source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows accessibility source should lower to native Win32 C");
+
+    assert!(generated.contains("#include <oleacc.h>"));
+    assert!(generated.contains("CoInitializeEx(NULL, COINIT_APARTMENTTHREADED)"));
+    assert!(generated.contains("CoCreateInstance(&CLSID_AccPropServices"));
+    assert!(generated.contains("SetHwndPropStr"));
+    assert!(generated.contains("PROPID_ACC_NAME"));
+    assert!(generated.contains("PROPID_ACC_DESCRIPTION"));
+    assert!(generated.contains("PROPID_ACC_ROLE"));
+    assert!(generated.contains("ROLE_SYSTEM_STATICTEXT"));
+    assert!(generated.contains("ROLE_SYSTEM_PUSHBUTTON"));
+    assert!(generated.contains("flux__ui_state_accessibleName"));
+    assert!(generated.contains("CreateFontW(-flux__win_scale(INT64_C(30))"));
+    assert!(generated.contains("FW_NORMAL, TRUE, TRUE, TRUE"));
+    assert!(generated.contains("WM_SETFONT"));
+    assert!(generated.contains("flux__win_apply_fonts();"));
+    assert!(generated.contains("CoUninitialize()"));
+    assert!(!generated.contains("method_channel"));
+    assert!(!generated.contains("plugin_registry"));
+}
+
+#[test]
 fn windows_text_input_supports_controlled_state_submit_and_native_edit_options() {
     let source = r#"
 fn submitted(value: str) -> void {

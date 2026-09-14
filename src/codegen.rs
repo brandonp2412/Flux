@@ -1836,6 +1836,9 @@ fn emit_runtime_prelude(
     }
     if uses_windows {
         out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
+        if runtime_usage.contains("IAccPropServices") {
+            out.push_str("#include <initguid.h>\n#include <oleacc.h>\n");
+        }
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
@@ -10501,6 +10504,11 @@ fn emit_windows_native_application(
             ));
         }
     }
+    let uses_accessibility = view.elements.iter().any(|element| {
+        view_property(element, "accessibility_label").is_some()
+            || view_property(element, "accessibility_description").is_some()
+            || view_property(element, "accessibility_role").is_some()
+    });
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -10512,6 +10520,9 @@ fn emit_windows_native_application(
         "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical <= 0) return (int)logical; int64_t scaled = (logical * (int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); return scaled > INT32_MAX ? INT32_MAX : (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { return ((int64_t)physical * INT64_C(96) + (int64_t)flux__win_dpi / INT64_C(2)) / (int64_t)flux__win_dpi; }\n");
+    if uses_accessibility {
+        out.push_str("static IAccPropServices *flux__win_accessibility = NULL;\nstatic bool flux__win_com_should_uninitialize = false;\nstatic wchar_t *flux__win_accessibility_wide(const char *text) { if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\nstatic void flux__win_accessibility_init(void) { HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); if (SUCCEEDED(initialized)) flux__win_com_should_uninitialize = true; else if (initialized != RPC_E_CHANGED_MODE) return; (void)CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC_SERVER, &IID_IAccPropServices, (void **)&flux__win_accessibility); }\nstatic void flux__win_accessibility_set_name(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_NAME, wide); free(wide); }\nstatic void flux__win_accessibility_set_description(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DESCRIPTION, wide); free(wide); }\nstatic void flux__win_accessibility_set_role(HWND control, LONG role) { if (control == NULL || flux__win_accessibility == NULL) return; VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = role; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_ROLE, value); VariantClear(&value); }\nstatic void flux__win_accessibility_shutdown(void) { if (flux__win_accessibility != NULL) { flux__win_accessibility->lpVtbl->Release(flux__win_accessibility); flux__win_accessibility = NULL; } if (flux__win_com_should_uninitialize) { CoUninitialize(); flux__win_com_should_uninitialize = false; } }\n");
+    }
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         match signatures.canonical_type(&state.ty) {
@@ -10600,6 +10611,74 @@ fn emit_windows_native_application(
             "static HWND {} = NULL;\n",
             ui_widget_c_name(&element.name)
         ));
+        if element.kind == "Text" {
+            out.push_str(&format!(
+                "static HFONT flux__win_font_{} = NULL;\n",
+                element.name
+            ));
+        }
+    }
+    if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str("static void flux__win_apply_fonts(void) {\n");
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| element.kind == "Text")
+        {
+            let (default_size, default_bold, _, _) = text_semantic_typography(element, signatures)?;
+            let size = match view_property(element, "size") {
+                Some(property) => {
+                    static_expr_i64(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Windows Text.size must be a compile-time i64 value",
+                        )
+                    })?
+                }
+                None => default_size,
+            };
+            if size <= 0 || size > i64::from(i32::MAX) {
+                return Err(diag(
+                    view_property(element, "size")
+                        .map(|property| property.value.span)
+                        .unwrap_or(element.kind_span),
+                    "Text.size must be greater than zero and fit within a 32-bit signed integer",
+                ));
+            }
+            let boolean_style = |name: &str, default: bool| -> Result<bool, Diagnostic> {
+                match view_property(element, name) {
+                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            &format!("bootstrap Windows Text.{name} must be a compile-time bool value"),
+                        )
+                    }),
+                    None => Ok(default),
+                }
+            };
+            let bold = boolean_style("bold", default_bold)?;
+            let italic = boolean_style("italic", false)?;
+            let underline = boolean_style("underline", false)?;
+            let strikethrough = boolean_style("strikethrough", false)?;
+            let font = format!("flux__win_font_{}", element.name);
+            let widget = ui_widget_c_name(&element.name);
+            out.push_str(&format!(
+                "if ({font} != NULL) {{ DeleteObject({font}); {font} = NULL; }} {font} = CreateFontW(-flux__win_scale(INT64_C({size})), 0, 0, 0, {}, {}, {}, {}, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L\"Segoe UI\"); if ({font} != NULL && {widget} != NULL) SendMessageW({widget}, WM_SETFONT, (WPARAM){font}, TRUE);\n",
+                if bold { "FW_BOLD" } else { "FW_NORMAL" },
+                if italic { "TRUE" } else { "FALSE" },
+                if underline { "TRUE" } else { "FALSE" },
+                if strikethrough { "TRUE" } else { "FALSE" }
+            ));
+        }
+        out.push_str("}\nstatic void flux__win_delete_fonts(void) {\n");
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| element.kind == "Text")
+        {
+            out.push_str(&format!("if (flux__win_font_{} != NULL) {{ DeleteObject(flux__win_font_{}); flux__win_font_{} = NULL; }}\n", element.name, element.name, element.name));
+        }
+        out.push_str("}\n");
     }
     out.push_str(
         "static bool flux__win_refreshing = false;\nstatic void flux__win_refresh(void);\n",
@@ -10764,6 +10843,18 @@ fn emit_windows_native_application(
                 "if ({variable} != NULL) EnableWindow({variable}, ({value}) ? TRUE : FALSE);\n"
             ));
         }
+        if let Some(property) = view_property(element, "accessibility_label") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_accessibility_set_name({variable}, {value});\n"
+            ));
+        }
+        if let Some(property) = view_property(element, "accessibility_description") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_accessibility_set_description({variable}, {value});\n"
+            ));
+        }
         if element.kind == "TextInput" {
             if let Some(property) = view_property(element, "placeholder") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
@@ -10851,8 +10942,18 @@ fn emit_windows_native_application(
             out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) flux__win_tap_{index}(); return 0;\n", 1000 + index));
         }
     }
-    out.push_str("default: break; } break; case WM_SIZE: { int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); } return 0; case WM_DPICHANGED: { UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {0}; if (GetClientRect(hwnd, &client)) { int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); } flux__win_refresh(); } return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; } return DefWindowProcA(hwnd, message, wparam, lparam); }\n");
-    out.push_str("static int flux__win_run(void) { flux__win_enable_dpi_awareness(); flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {0}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n");
+    let dpi_font_refresh = if view.elements.iter().any(|element| element.kind == "Text") {
+        " flux__win_apply_fonts();"
+    } else {
+        ""
+    };
+    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n"));
+    let accessibility_init = if uses_accessibility {
+        " flux__win_accessibility_init();"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
@@ -10952,6 +11053,31 @@ fn emit_windows_native_application(
             "0".to_string()
         };
         out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {text}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        if let Some(property) = view_property(element, "accessibility_role") {
+            let role = static_expr_str(&property.value, signatures).ok_or_else(|| {
+                diag(
+                    property.value.span,
+                    "bootstrap Windows accessibilityRole must be a compile-time string value",
+                )
+            })?;
+            let native_role = match role.as_str() {
+                "label" | "heading" => "ROLE_SYSTEM_STATICTEXT",
+                "button" => "ROLE_SYSTEM_PUSHBUTTON",
+                "textBox" => "ROLE_SYSTEM_TEXT",
+                "checkbox" | "switch" => "ROLE_SYSTEM_CHECKBUTTON",
+                "radio" => "ROLE_SYSTEM_RADIOBUTTON",
+                "image" => "ROLE_SYSTEM_GRAPHIC",
+                _ => {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows accessibilityRole is not supported by the native role mapping",
+                    ));
+                }
+            };
+            out.push_str(&format!(
+                "flux__win_accessibility_set_role({variable}, {native_role});\n"
+            ));
+        }
         if element.kind == "TextInput" {
             let multiline = match view_property(element, "multiline") {
                 Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
@@ -10987,11 +11113,22 @@ fn emit_windows_native_application(
             }
         }
     }
-    out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); } flux__win_refresh();\n");
+    out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }");
+    if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str(" flux__win_apply_fonts();");
+    }
+    out.push_str(" flux__win_refresh();\n");
     if let Some(function) = application_metadata_function(application, "on_start") {
         out.push_str(&format!("{}();\n", function_c_name(function)));
     }
-    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } return result < 0 ? 1 : (int)message.wParam; }\n");
+    out.push_str("ShowWindow(flux__windows_active_window, SW_SHOW); UpdateWindow(flux__windows_active_window); MSG message = {0}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) { TranslateMessage(&message); DispatchMessageA(&message); } int exit_code = result < 0 ? 1 : (int)message.wParam;");
+    if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str(" flux__win_delete_fonts();");
+    }
+    if uses_accessibility {
+        out.push_str(" flux__win_accessibility_shutdown();");
+    }
+    out.push_str(" return exit_code; }\n");
     out.push_str("int main(void) { return flux__win_run(); }\n");
     Ok(())
 }

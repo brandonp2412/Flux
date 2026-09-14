@@ -8576,7 +8576,7 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     {
         libraries.push("-lshell32");
     }
-    if c_source.contains("CoTaskMemFree(") {
+    if c_source.contains("CoTaskMemFree(") || c_source.contains("CoCreateInstance(") {
         libraries.push("-lole32");
     }
     libraries
@@ -9684,6 +9684,9 @@ app OverlayDemo(title: "Overlay")
             integrated,
             vec!["-luser32", "-lcomdlg32", "-lshell32", "-lole32"]
         );
+        let accessible =
+            windows_native_system_libraries("CreateWindowExA( GetDeviceCaps( CoCreateInstance(");
+        assert_eq!(accessible, vec!["-luser32", "-lgdi32", "-lole32"]);
 
         assert_eq!(
             windows_native_system_libraries("ShellExecuteW("),
