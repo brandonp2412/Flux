@@ -17,6 +17,10 @@ pub enum Type {
         params: Vec<Type>,
         returns: Vec<Type>,
     },
+    Record {
+        positional: Vec<Type>,
+        named: Vec<(String, Type)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -176,6 +180,15 @@ impl Type {
                     ),
                 };
                 format!("fn({params}) -> {returns}")
+            }
+            Self::Record { positional, named } => {
+                let mut fields = positional.iter().map(Type::name).collect::<Vec<_>>();
+                fields.extend(
+                    named
+                        .iter()
+                        .map(|(name, ty)| format!("{name}: {}", ty.name())),
+                );
+                format!("record({})", fields.join(", "))
             }
         }
     }
@@ -870,6 +883,10 @@ pub enum ExprKind {
         name_span: SourceSpan,
         base: Option<Box<Expr>>,
         fields: Vec<StructLiteralField>,
+    },
+    RecordLiteral {
+        positional: Vec<Expr>,
+        named: Vec<NamedArg>,
     },
     QualifiedCall {
         namespace: String,

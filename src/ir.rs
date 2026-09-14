@@ -88,6 +88,10 @@ pub enum ControlFlowValueKind {
         base: Option<ControlFlowValueId>,
         fields: Vec<(String, ControlFlowValueId)>,
     },
+    RecordLiteral {
+        positional: Vec<ControlFlowValueId>,
+        named: Vec<(String, ControlFlowValueId)>,
+    },
     QualifiedCall {
         namespace: String,
         name: String,
@@ -2164,6 +2168,20 @@ impl<'a> ControlFlowBuilder<'a> {
                     base,
                     fields,
                 }
+            }
+            ExprKind::RecordLiteral { positional, named } => {
+                let positional = positional
+                    .iter()
+                    .filter_map(|value| self.lower_scalar_expr(producer, value))
+                    .collect();
+                let named = named
+                    .iter()
+                    .filter_map(|field| {
+                        self.lower_scalar_expr(producer, &field.value)
+                            .map(|value| (field.name.clone(), value))
+                    })
+                    .collect();
+                ControlFlowValueKind::RecordLiteral { positional, named }
             }
             ExprKind::QualifiedCall {
                 namespace,
