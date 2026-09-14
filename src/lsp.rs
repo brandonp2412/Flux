@@ -1328,6 +1328,10 @@ fn add_qualified_namespace_completions(
             ),
             ("write", "fn net.write(socket: i64, text: str) -> error"),
             (
+                "writeBytes",
+                "fn net.writeBytes(socket: i64, bytes: i64[]) -> (i64, error)",
+            ),
+            (
                 "writeTimeout",
                 "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
             ),
@@ -3214,6 +3218,14 @@ fn signature_help_for_document_cached(
                         "net.sendText",
                         &["socket: i64", "text: str"],
                         "error",
+                        active_parameter,
+                    ));
+                }
+                "sendBytes" => {
+                    return Some(signature_help_for_builtin(
+                        "net.sendBytes",
+                        &["socket: i64", "bytes: i64[]"],
+                        "(i64, error)",
                         active_parameter,
                     ));
                 }

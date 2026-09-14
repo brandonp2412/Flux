@@ -45787,6 +45787,7 @@ fn binary_socket_reads_preserve_nul_bytes_in_borrowed_byte_views() {
 fn consume(_socket: i64, bytes: i64[]) -> void {
     print(bytes.count)
 }
+
 fn main() -> i64 {
     let (received, failure) = net.readBytes(1, 64, consume)
     print(received)
@@ -45816,4 +45817,90 @@ fn main() -> i64 {
         String::from_utf8_lossy(&compile.stderr)
     );
     let _ = fs::remove_file(c_path);
+}
+
+#[test]
+fn binary_socket_writes_validate_borrowed_byte_views_and_preserve_progress() {
+    let source = r#"
+fn main() -> i64 {
+    let (written, failure) = net.writeBytes(1, [65, 0, 255])
+    print(written)
+    print(failure)
+    return 0
+}
+
+"#;
+    check_source(source).expect("binary socket write should typecheck");
+    let generated = compile_to_c(source).expect("binary socket write should lower");
+    assert!(generated.contains("flux__net_send_bytes("));
+    assert!(generated.contains("writeBytes byte values must be between 0 and 255"));
+    assert!(generated.contains("MSG_NOSIGNAL"));
+    assert!(generated.contains("bytes.stride"));
+    let c_path = std::env::temp_dir().join(format!(
+        "flux-send-bytes-{}.c",
+        std::process::id()
+    ));
+    fs::write(&c_path, &generated).expect("binary socket C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate binary socket C");
+    assert!(
+        compile.status.success(),
+        "binary socket C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}
+
+#[test]
+fn binary_socket_write_delivers_nul_and_high_bytes_without_text_conversion() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binary-write listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, connectError) = net.connect("127.0.0.1", {port})
+    print(connectError)
+    let (written, writeError) = net.writeBytes(socket, [65, 0, 255])
+    print(written)
+    print(writeError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    let root = std::env::temp_dir().join(format!("flux-net-binary-write-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("binary-write fixture should be writable");
+    let source_path = root.join("binary-write.flux");
+    fs::write(&source_path, &source).expect("binary-write source should be writable");
+    let binary = root.join("binary-write");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .args(["-o"])
+        .arg(&binary)
+        .output()
+        .expect("binary-write binary should build");
+    assert!(
+        built.status.success(),
+        "binary-write build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Flux binary client should connect");
+        let mut bytes = [0_u8; 3];
+        stream
+            .read_exact(&mut bytes)
+            .expect("binary write should deliver all bytes");
+        assert_eq!(bytes, [65, 0, 255]);
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("binary-write binary should run");
+    server.join().expect("binary-write server should finish");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\n3\nnil\nnil\n");
+    let _ = fs::remove_dir_all(&root);
 }

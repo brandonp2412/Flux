@@ -8363,6 +8363,24 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::Str, &text, "net.sendText text")?;
                 return Ok(vec![Type::Error]);
             }
+            "sendBytes" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("net.writeBytes expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &handle, "net.writeBytes socket")?;
+                let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "net.writeBytes bytes",
+                )?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "sendTextParts" => {
                 if args.len() != 2 {
                     return Err(diag(

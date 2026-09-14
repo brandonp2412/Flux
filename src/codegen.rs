@@ -6838,6 +6838,9 @@ static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t 
     if runtime_usage.contains("flux__net_receive_bytes(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_bytes(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, struct flux__list)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveBytes maxBytes must be between 1 and 65536\"); unsigned char raw[(size_t)max_bytes]; int64_t buffer[(size_t)max_bytes]; ssize_t received; do { received = recv((int)socket_handle, raw, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive bytes\"); for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index]; callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }); return flux__net_result((int64_t)received, NULL); }\n");
     }
+    if runtime_usage.contains("flux__net_send_bytes(") {
+        out.push_str("static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"writeBytes requires a TCP socket\"); ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; int64_t sent = 0; for (size_t index = 0; index < bytes.len; ++index) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) return flux__net_result(sent, \"writeBytes byte values must be between 0 and 255\"); unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) return flux__net_result(sent, \"failed to write bytes\"); if (written == 0) return flux__net_result(sent, \"socket closed while writing bytes\"); sent += written; } return flux__net_result(sent, NULL); }\n");
+    }
     if uses_map {
         out.push_str("struct flux__map { struct flux__list keys; struct flux__list values; };\n");
     }
@@ -33375,6 +33378,21 @@ fn emit_qualified_call(
                     ),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "sendBytes" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_bytes({}, {})",
+                        socket_handle.code, bytes.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "sendTextParts" => {
