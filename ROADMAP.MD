@@ -11,7 +11,7 @@ Stable overall-progress baseline:
 - Baseline date: 2026-09-10
 - Baseline commit: `7d219b1`
 - Baseline roadmap units: 739 checkbox items
-- Completed baseline units: 566
+- Completed baseline units: 567
 - Reported overall progress: **77%**
 - Current net scope growth after the baseline: 123 checkbox items
 - New roadmap items after the baseline are scope growth and do not increase the 739-unit denominator.
@@ -328,7 +328,7 @@ Verified chained top-level coalescing follow-up: multiple top-level `optional ??
 Verified mixed straight-line suspension follow-up: top-level direct awaits and lazy `optional ??= await asyncCall(...)` statements can alternate in one continuation state machine instead of forcing the function onto the blocking body path. Both present and absent optional paths preserve source order into later direct awaits, and native regression coverage exercises coalescing → direct await → coalescing → direct await with both missing and already-present values.
 
 - [x] Async functions lowered to compiler-owned native state machines/tasks rather than callback-shaped source APIs or a mandatory VM/runtime object hierarchy.
-- [ ] `await` suspension syntax that yields the awaited function's ordinary declared return values and is valid only in an async context.
+- [x] `await` syntax yields the awaited function's ordinary declared return values and is valid only in an async context; supported placements lower through compiler-owned continuations, while the documented safe blocking fallback remains for unsplit/ownership-sensitive placements.
   - Current continuation coverage keeps mixed top-level direct awaits and `optional ??= await asyncCall(...)` points non-blocking; supported split `if`/`else`, enum-match, ownership-safe list-match, `while`, and integer range `for` bodies may likewise continue from coalescing suspension into later direct/coalescing suspension. One nested `else`/`elif` branch with an awaited boolean/optional-binding condition may continue non-blockingly through direct/coalescing awaits in either arm. Copy/Send-safe `let`/`var` locals plus typed multi-value, inferred record, and struct destructuring declarations may cross top-level conditional suspension points; list destructuring, `for`-each loops, deeper nested branch chains, ownership-sensitive list-match bindings, and other unsplit placements remain on the safe blocking fallback.
 - [x] Async failures returned explicitly through normal Flux `error` values/multi-value returns, not thrown as exceptions or hidden in rejected promises.
 - [ ] Streams/sequences as explicit types/capabilities.
