@@ -2195,7 +2195,7 @@ fn struct_field_for_position<'a>(
         .find(|field| field.name == field_name)
 }
 
-fn list_property_for_position(
+fn collection_property_for_position(
     source: &str,
     line_index: usize,
     character: usize,
@@ -2207,13 +2207,18 @@ fn list_property_for_position(
     let property = identifier_at(line, byte)?;
     let receiver = member_receiver_at_cursor(source, line_index, character, encoding)?;
     let type_name = member_receiver_type_name(source, line_index, &receiver, program)?;
-    let crate::ast::Type::List(element) = crate::ast::Type::parse(&type_name)? else {
-        return None;
-    };
-    let ty = match crate::builtin_names::list_member_impl(property) {
-        "length" => crate::ast::Type::I64,
-        "isEmpty" | "isNotEmpty" => crate::ast::Type::Bool,
-        "first" | "last" | "single" => *element,
+    let ty = match crate::ast::Type::parse(&type_name)? {
+        crate::ast::Type::List(element) => match crate::builtin_names::list_member_impl(property) {
+            "length" => crate::ast::Type::I64,
+            "isEmpty" | "isNotEmpty" => crate::ast::Type::Bool,
+            "first" | "last" | "single" => *element,
+            _ => return None,
+        },
+        crate::ast::Type::Set(_) | crate::ast::Type::Map(_, _) => match property {
+            "count" => crate::ast::Type::I64,
+            "empty" | "nonempty" => crate::ast::Type::Bool,
+            _ => return None,
+        },
         _ => return None,
     };
     Some((property.to_string(), ty))
@@ -6202,8 +6207,13 @@ fn hover_for_document_cached(
     };
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte = byte_offset_for_encoded_column(line, character, encoding);
-    if let Some((property, ty)) =
-        list_property_for_position(source, line_index, character, encoding, database.program())
+    if let Some((property, ty)) = collection_property_for_position(
+        source,
+        line_index,
+        character,
+        encoding,
+        database.program(),
+    )
     {
         let hovered_name = identifier_at(line, byte).unwrap_or(&property);
         let hovered_start = identifier_start_at(line, byte).unwrap_or(byte);
@@ -8114,6 +8124,29 @@ mod tests {
         .expect("list first property should have hover")
         .to_json();
         assert!(first_hover.contains("property first: i64"));
+
+        let collection_source = "fn main() -> i64 {\n    let values: set<i64> = {1, 2}\n    let mapping: map<i64, str> = {1: \"one\"}\n    print(values.count)\n    print(mapping.empty)\n    return 0\n}\n";
+        let collection_documents =
+            HashMap::from([(hover_uri.to_string(), collection_source.to_string())]);
+        for (needle, expected) in [("values.count", "property count: i64"), ("mapping.empty", "property empty: bool")] {
+            let line_index = collection_source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("collection hover line should exist");
+            let line = collection_source.lines().nth(line_index).unwrap();
+            let character = line.find(needle.split('.').next_back().unwrap()).unwrap() + 2;
+            let hover = hover_for_document(
+                hover_uri,
+                collection_source,
+                &collection_documents,
+                line_index,
+                character,
+                PositionEncoding::Utf8,
+            )
+            .expect("collection property should have hover")
+            .to_json();
+            assert!(hover.contains(expected));
+        }
     }
 
     #[test]
