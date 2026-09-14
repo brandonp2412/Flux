@@ -33073,12 +33073,13 @@ fn emit_expr(
                 }
                 rendered.push(emitted.code);
             }
+            let rendered_len = rendered.len();
             let element_c = c_type(element, signatures);
             EmittedExpr {
                 code: format!(
                     "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {}, .stride = sizeof({element_c}) }})",
                     rendered.join(", "),
-                    items.len()
+                    rendered_len
                 ),
                 ty: result_ty,
             }

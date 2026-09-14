@@ -11169,6 +11169,15 @@ app OverlayDemo(title: "Overlay")
         let _ = std::fs::remove_file(&binary);
         assert_eq!(output.status.code(), Some(86));
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // The managed Linux runner may execute children under ptrace, which
+        // LeakSanitizer explicitly does not support. Keep strict leak checks
+        // when LSan is operational, but avoid treating that host limitation
+        // as a compiler regression.
+        if stderr.contains("LeakSanitizer has encountered a fatal error")
+            && stderr.contains("does not work under ptrace")
+        {
+            return;
+        }
         assert!(stderr.contains("LeakSanitizer: detected memory leaks"));
         assert!(stderr.contains("32 byte(s) leaked"));
     }

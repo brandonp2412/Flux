@@ -45858,6 +45858,7 @@ fn main() -> i64 {
         .expect("set literal should lower to native C");
     assert!(generated.contains("struct flux__list"));
     assert!(generated.contains("INT64_C(1), INT64_C(2), INT64_C(3)"));
+    assert!(generated.contains(".len = 3"), "deduplicated set length must match storage");
     assert!(!generated.contains("INT64_C(1), INT64_C(2), INT64_C(1), INT64_C(3)"));
 }
 

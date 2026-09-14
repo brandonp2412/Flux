@@ -2991,6 +2991,49 @@ fn signature_help_for_document_cached(
     let prefix = source.get(..absolute.min(source.len()))?;
     let (call_name, active_parameter) = active_call(prefix)?;
     let implementation_call_name = crate::builtin_names::global_impl(call_name);
+    // Built-in signatures remain useful while unrelated document diagnostics
+    // prevent construction of the semantic database.
+    if let Some((namespace, member)) = call_name.split_once('.')
+        && matches!(namespace, "file" | "directory" | "fs")
+    {
+        let (params, returns) = match member {
+            "exists" => (vec!["path: str"], "bool"),
+            "isFile" | "isDirectory" => (vec!["path: str"], "bool"),
+            "createDirectory" | "createDirectories" | "removeFile" | "removeDirectory"
+            | "removeDirectories" => (vec!["path: str"], "error"),
+            "writeText" | "appendText" | "write" | "append" => {
+                (vec!["path: str", "text: str"], "error")
+            }
+            "rename" | "copyFile" | "copy" | "link" => {
+                (vec!["source: str", "destination: str"], "error")
+            }
+            "create" | "createAll" | "remove" | "removeAll" | "sync" | "syncData" => {
+                (vec!["path: str"], "error")
+            }
+            "read" => (
+                vec!["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
+                "error",
+            ),
+            "list" => (vec!["path: str", "callback: fn(str) -> void"], "error"),
+            "size" | "modified" | "modifiedUnixMillis" | "accessed" | "changed"
+            | "permissions" | "owner" | "group" | "inode" | "device" | "hardLinks"
+            | "blockSize" | "allocatedSize" => (vec!["path: str"], "(i64, error)"),
+            "truncate" => (vec!["path: str", "size: i64"], "error"),
+            "setPermissions" => (vec!["path: str", "permissions: i64"], "error"),
+            "setModified" | "setAccessed" => {
+                (vec!["path: str", "unixMillis: i64"], "error")
+            }
+            "setOwner" => (vec!["path: str", "owner: i64"], "error"),
+            "setGroup" => (vec!["path: str", "group: i64"], "error"),
+            _ => return None,
+        };
+        return Some(signature_help_for_builtin(
+            call_name,
+            &params,
+            returns,
+            active_parameter,
+        ));
+    }
     let project_analysis = analyzed_project_document_cached(uri, documents, cache);
     let standalone_database;
     let database = if let Some((database, _)) = project_analysis.as_ref() {
