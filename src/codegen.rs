@@ -6290,10 +6290,14 @@ static const char *flux__preferences_get(const char *key, const char *fallback, 
     return NULL;
 }
 static const char *flux__preferences_append(const char *record, size_t length) {
+    if (record == NULL || length > 1048576u) return "preference record exceeds storage limit";
     const char *path = flux__preferences_path();
     if (path == NULL) return "preference path is unavailable";
     FILE *file = fopen(path, "a");
     if (file == NULL) return "failed to open preferences for writing";
+    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return "failed to seek preferences"; }
+    long current = ftell(file);
+    if (current < 0 || (uint64_t)current > UINT64_C(1048576) || length > UINT64_C(1048576) - (uint64_t)current) { fclose(file); return "preferences file exceeds 1 MiB storage limit"; }
     bool ok = fwrite(record, 1, length, file) == length && fflush(file) == 0 && fclose(file) == 0;
     return ok ? NULL : "failed to write preferences";
 }
