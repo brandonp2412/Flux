@@ -16798,7 +16798,7 @@ fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
 
 fn block_branch_await_indices(
     block: &[Stmt],
-    allow_trailing_coalescing: bool,
+    allow_await_after_coalescing: bool,
 ) -> Option<Vec<usize>> {
     let mut await_indices = Vec::new();
     let mut saw_coalescing_await = false;
@@ -16807,7 +16807,7 @@ fn block_branch_await_indices(
             continue;
         }
         if let Some(await_expr) = direct_await_expr(stmt) {
-            if saw_coalescing_await {
+            if saw_coalescing_await && !allow_await_after_coalescing {
                 return None;
             }
             direct_await_call(await_expr)?;
@@ -16816,7 +16816,7 @@ fn block_branch_await_indices(
         }
         let await_expr = coalescing_assignment_await_expr(stmt)?;
         direct_await_call(await_expr)?;
-        if saw_coalescing_await || (!allow_trailing_coalescing && index + 1 != block.len()) {
+        if saw_coalescing_await && !allow_await_after_coalescing {
             return None;
         }
         saw_coalescing_await = true;
@@ -21695,6 +21695,66 @@ fn emit_async_branch_suspend(
     Ok(true)
 }
 
+fn emit_async_conditional_present_sequence(
+    out: &mut String,
+    pad: &str,
+    function: &Function,
+    signatures: &Signatures,
+    plan: &AsyncContinuationPlan,
+    block: &[Stmt],
+    await_indices: &[usize],
+    current_offset: usize,
+    first_state: usize,
+    env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
+    temp_counter: &mut usize,
+    context: BlockEmitContext<'_>,
+) -> Result<bool, Diagnostic> {
+    let mut segment_start = await_indices[current_offset] + 1;
+    let depth = pad.len() / 4;
+    for next_offset in current_offset + 1..await_indices.len() {
+        let await_index = await_indices[next_offset];
+        emit_block(
+            out,
+            &block[segment_start..await_index],
+            depth,
+            env,
+            mutable,
+            signatures,
+            temp_counter,
+            context,
+        )?;
+        let stmt = &block[await_index];
+        emit_source_line(out, stmt.span, context.source_paths);
+        let conditional_suspend = emit_async_branch_suspend(
+            out,
+            pad,
+            stmt,
+            first_state + next_offset,
+            function,
+            plan,
+            env,
+            mutable,
+            signatures,
+        )?;
+        if !conditional_suspend {
+            return Ok(false);
+        }
+        segment_start = await_index + 1;
+    }
+    emit_block(
+        out,
+        &block[segment_start..],
+        depth,
+        env,
+        mutable,
+        signatures,
+        temp_counter,
+        context,
+    )?;
+    Ok(true)
+}
+
 fn emit_async_branch_resume_states(
     out: &mut String,
     function: &Function,
@@ -21813,37 +21873,44 @@ fn emit_async_branch_resume_states(
             if conditional_suspend {
                 let mut present_env = branch_env.clone();
                 let mut present_mutable = branch_mutable.clone();
-                emit_block(
+                let reaches_tail = emit_async_conditional_present_sequence(
                     out,
-                    &await_block[await_index + 1..],
-                    4,
+                    "                ",
+                    function,
+                    signatures,
+                    plan,
+                    await_block,
+                    await_indices,
+                    offset + 1,
+                    first_state,
                     &mut present_env,
                     &mut present_mutable,
-                    signatures,
                     temp_counter,
                     state_context,
                 )?;
-                let mut present_fallthrough_env = outer_env.clone();
-                let mut present_fallthrough_mutable = outer_mutable.clone();
-                emit_block(
-                    out,
-                    &function.body[tail_start..],
-                    3,
-                    &mut present_fallthrough_env,
-                    &mut present_fallthrough_mutable,
-                    signatures,
-                    temp_counter,
-                    state_context,
-                )?;
-                if function.returns.is_empty() {
-                    out.push_str(&format!(
-                        "{pad}{}(flux__task);\n{pad}return;\n",
-                        async_finish_c_name(&function.name)
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
-                    ));
+                if reaches_tail {
+                    let mut present_fallthrough_env = outer_env.clone();
+                    let mut present_fallthrough_mutable = outer_mutable.clone();
+                    emit_block(
+                        out,
+                        &function.body[tail_start..],
+                        3,
+                        &mut present_fallthrough_env,
+                        &mut present_fallthrough_mutable,
+                        signatures,
+                        temp_counter,
+                        state_context,
+                    )?;
+                    if function.returns.is_empty() {
+                        out.push_str(&format!(
+                            "{pad}{}(flux__task);\n{pad}return;\n",
+                            async_finish_c_name(&function.name)
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{pad}fputs(\"Flux runtime error: async continuation reached end without return\\n\", stderr);\n{pad}abort();\n"
+                        ));
+                    }
                 }
             }
             previous_await = await_index;
@@ -22372,13 +22439,18 @@ fn emit_async_branch_continuation_function(
         if conditional_suspend {
             let mut present_env = then_env.clone();
             let mut present_mutable = then_mutable.clone();
-            emit_block(
+            let _ = emit_async_conditional_present_sequence(
                 out,
-                &body[first_await + 1..],
-                4,
+                "                ",
+                function,
+                signatures,
+                plan,
+                body,
+                &branch.then_await_indices,
+                0,
+                first_branch_state,
                 &mut present_env,
                 &mut present_mutable,
-                signatures,
                 temp_counter,
                 state_context,
             )?;
@@ -22435,13 +22507,18 @@ fn emit_async_branch_continuation_function(
             if conditional_suspend {
                 let mut present_env = else_env.clone();
                 let mut present_mutable = else_mutable.clone();
-                emit_block(
+                let _ = emit_async_conditional_present_sequence(
                     out,
-                    &else_body[first_await + 1..],
-                    4,
+                    "                ",
+                    function,
+                    signatures,
+                    plan,
+                    else_body,
+                    &branch.else_await_indices,
+                    0,
+                    first_branch_state + branch.then_await_indices.len(),
                     &mut present_env,
                     &mut present_mutable,
-                    signatures,
                     temp_counter,
                     state_context,
                 )?;
@@ -22604,27 +22681,34 @@ fn emit_async_while_condition_body(
             signatures,
         )?;
         if conditional_suspend {
-            emit_block(
+            let reaches_continue = emit_async_conditional_present_sequence(
                 out,
-                &body[first_await + 1..],
-                4,
+                "                ",
+                function,
+                signatures,
+                plan,
+                body,
+                &while_plan.body_await_indices,
+                0,
+                first_body_state,
                 &mut body_env,
                 &mut body_mutable,
-                signatures,
                 temp_counter,
                 context,
             )?;
-            emit_async_save_locals(
-                out,
-                "                ",
-                &plan.locals,
-                &body_env,
-                signatures,
-                awaited_stmt.span,
-            )?;
-            out.push_str(&format!(
-                "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
-            ));
+            if reaches_continue {
+                emit_async_save_locals(
+                    out,
+                    "                ",
+                    &plan.locals,
+                    &body_env,
+                    signatures,
+                    awaited_stmt.span,
+                )?;
+                out.push_str(&format!(
+                    "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+                ));
+            }
         }
     } else {
         emit_block(
@@ -22798,27 +22882,34 @@ fn emit_async_while_resume_states(
             if conditional_suspend {
                 let mut present_env = body_env.clone();
                 let mut present_mutable = body_mutable.clone();
-                emit_block(
+                let reaches_continue = emit_async_conditional_present_sequence(
                     out,
-                    &body[next_await_index + 1..],
-                    3,
+                    pad,
+                    function,
+                    signatures,
+                    plan,
+                    body,
+                    await_indices,
+                    offset + 1,
+                    first_state,
                     &mut present_env,
                     &mut present_mutable,
-                    signatures,
                     temp_counter,
                     state_context,
                 )?;
-                emit_async_save_locals(
-                    out,
-                    pad,
-                    &plan.locals,
-                    &present_env,
-                    signatures,
-                    next_stmt.span,
-                )?;
-                out.push_str(&format!(
-                    "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
-                ));
+                if reaches_continue {
+                    emit_async_save_locals(
+                        out,
+                        pad,
+                        &plan.locals,
+                        &present_env,
+                        signatures,
+                        next_stmt.span,
+                    )?;
+                    out.push_str(&format!(
+                        "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
+                    ));
+                }
             }
             previous_await = next_await_index;
             segment_start = next_await_index + 1;
@@ -23129,27 +23220,34 @@ fn emit_async_for_range_iteration(
             signatures,
         )?;
         if conditional_suspend {
-            emit_block(
+            let reaches_continue = emit_async_conditional_present_sequence(
                 out,
-                &body[first_await + 1..],
-                4,
+                "                ",
+                function,
+                signatures,
+                plan,
+                body,
+                &for_plan.body_await_indices,
+                0,
+                first_body_state,
                 &mut body_env,
                 &mut body_mutable,
-                signatures,
                 temp_counter,
                 context,
             )?;
-            emit_async_save_locals(
-                out,
-                "                ",
-                &plan.locals,
-                &body_env,
-                signatures,
-                awaited_stmt.span,
-            )?;
-            out.push_str(&format!(
-                "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
-            ));
+            if reaches_continue {
+                emit_async_save_locals(
+                    out,
+                    "                ",
+                    &plan.locals,
+                    &body_env,
+                    signatures,
+                    awaited_stmt.span,
+                )?;
+                out.push_str(&format!(
+                    "{pad}    flux__task->state = {continue_state};\n{pad}    continue;\n"
+                ));
+            }
         }
     } else {
         emit_block(
@@ -23275,27 +23373,34 @@ fn emit_async_for_range_resume_states(
             if conditional_suspend {
                 let mut present_env = body_env.clone();
                 let mut present_mutable = body_mutable.clone();
-                emit_block(
+                let reaches_continue = emit_async_conditional_present_sequence(
                     out,
-                    &body[next_await_index + 1..],
-                    3,
+                    pad,
+                    function,
+                    signatures,
+                    plan,
+                    body,
+                    await_indices,
+                    offset + 1,
+                    first_body_state,
                     &mut present_env,
                     &mut present_mutable,
-                    signatures,
                     temp_counter,
                     state_context,
                 )?;
-                emit_async_save_locals(
-                    out,
-                    pad,
-                    &plan.locals,
-                    &present_env,
-                    signatures,
-                    next_stmt.span,
-                )?;
-                out.push_str(&format!(
-                    "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
-                ));
+                if reaches_continue {
+                    emit_async_save_locals(
+                        out,
+                        pad,
+                        &plan.locals,
+                        &present_env,
+                        signatures,
+                        next_stmt.span,
+                    )?;
+                    out.push_str(&format!(
+                        "{pad}flux__task->state = {continue_state};\n{pad}continue;\n"
+                    ));
+                }
             }
             previous_await = next_await_index;
             segment_start = next_await_index + 1;
@@ -23907,26 +24012,33 @@ fn emit_async_match_continuation_function(
                 if conditional_suspend {
                     let mut present_env = arm_env.clone();
                     let mut present_mutable = arm_mutable.clone();
-                    emit_block(
+                    let reaches_tail = emit_async_conditional_present_sequence(
                         out,
-                        &arm.body[first_await + 1..],
-                        body_depth,
-                        &mut present_env,
-                        &mut present_mutable,
-                        signatures,
-                        temp_counter,
-                        state_context,
-                    )?;
-                    emit_async_match_tail(
-                        out,
+                        &suspend_pad,
                         function,
                         signatures,
-                        match_plan,
-                        &outer_env,
-                        &outer_mutable,
+                        plan,
+                        &arm.body,
+                        await_indices,
+                        0,
+                        next_state,
+                        &mut present_env,
+                        &mut present_mutable,
                         temp_counter,
                         state_context,
                     )?;
+                    if reaches_tail {
+                        emit_async_match_tail(
+                            out,
+                            function,
+                            signatures,
+                            match_plan,
+                            &outer_env,
+                            &outer_mutable,
+                            temp_counter,
+                            state_context,
+                        )?;
+                    }
                 }
                 resume_envs.push((arm_index, next_state, arm_env, arm_mutable));
                 next_state += await_indices.len();
@@ -24033,26 +24145,33 @@ fn emit_async_match_continuation_function(
                 if conditional_suspend {
                     let mut present_env = arm_env.clone();
                     let mut present_mutable = arm_mutable.clone();
-                    emit_block(
+                    let reaches_tail = emit_async_conditional_present_sequence(
                         out,
-                        &arm.body[next_await_index + 1..],
-                        3,
-                        &mut present_env,
-                        &mut present_mutable,
-                        signatures,
-                        temp_counter,
-                        state_context,
-                    )?;
-                    emit_async_match_tail(
-                        out,
+                        pad,
                         function,
                         signatures,
-                        match_plan,
-                        &outer_env,
-                        &outer_mutable,
+                        plan,
+                        &arm.body,
+                        await_indices,
+                        offset + 1,
+                        first_state,
+                        &mut present_env,
+                        &mut present_mutable,
                         temp_counter,
                         state_context,
                     )?;
+                    if reaches_tail {
+                        emit_async_match_tail(
+                            out,
+                            function,
+                            signatures,
+                            match_plan,
+                            &outer_env,
+                            &outer_mutable,
+                            temp_counter,
+                            state_context,
+                        )?;
+                    }
                 }
                 previous_await = next_await_index;
                 segment_start = next_await_index + 1;
@@ -24236,26 +24355,33 @@ fn emit_async_list_match_continuation_function(
             if conditional_suspend {
                 let mut present_env = arm_env.clone();
                 let mut present_mutable = arm_mutable.clone();
-                emit_block(
+                let reaches_tail = emit_async_conditional_present_sequence(
                     out,
-                    &arm.body[first_await + 1..],
-                    body_depth,
-                    &mut present_env,
-                    &mut present_mutable,
-                    signatures,
-                    temp_counter,
-                    state_context,
-                )?;
-                emit_async_list_match_tail(
-                    out,
+                    &suspend_pad,
                     function,
                     signatures,
-                    match_plan,
-                    &outer_env,
-                    &outer_mutable,
+                    plan,
+                    &arm.body,
+                    await_indices,
+                    0,
+                    next_state,
+                    &mut present_env,
+                    &mut present_mutable,
                     temp_counter,
                     state_context,
                 )?;
+                if reaches_tail {
+                    emit_async_list_match_tail(
+                        out,
+                        function,
+                        signatures,
+                        match_plan,
+                        &outer_env,
+                        &outer_mutable,
+                        temp_counter,
+                        state_context,
+                    )?;
+                }
             }
             resume_envs.push((arm_index, next_state, arm_env, arm_mutable));
             next_state += await_indices.len();
@@ -24356,26 +24482,33 @@ fn emit_async_list_match_continuation_function(
                 if conditional_suspend {
                     let mut present_env = arm_env.clone();
                     let mut present_mutable = arm_mutable.clone();
-                    emit_block(
+                    let reaches_tail = emit_async_conditional_present_sequence(
                         out,
-                        &arm.body[next_await_index + 1..],
-                        3,
-                        &mut present_env,
-                        &mut present_mutable,
-                        signatures,
-                        temp_counter,
-                        state_context,
-                    )?;
-                    emit_async_list_match_tail(
-                        out,
+                        pad,
                         function,
                         signatures,
-                        match_plan,
-                        &outer_env,
-                        &outer_mutable,
+                        plan,
+                        &arm.body,
+                        await_indices,
+                        offset + 1,
+                        first_state,
+                        &mut present_env,
+                        &mut present_mutable,
                         temp_counter,
                         state_context,
                     )?;
+                    if reaches_tail {
+                        emit_async_list_match_tail(
+                            out,
+                            function,
+                            signatures,
+                            match_plan,
+                            &outer_env,
+                            &outer_mutable,
+                            temp_counter,
+                            state_context,
+                        )?;
+                    }
                 }
                 previous_await = next_await_index;
                 segment_start = next_await_index + 1;

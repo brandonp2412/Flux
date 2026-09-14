@@ -41722,6 +41722,122 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn async_coalescing_before_later_awaits_in_split_branches_stays_nonblocking() {
+    let source = r#"
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+async fn step(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn branch(flag: bool, initial: i64?, trailing: i64?) -> i64 {
+    var value: i64? = initial
+    var later: i64? = trailing
+    if flag:
+        value ??= await step(5)
+        let middle: i64 = await step(value ?? 0)
+        later ??= await step(6)
+        return middle + (later ?? 0)
+    else:
+        return 0
+}
+
+async fn chooseEnum(choice: Choice, initial: i64?, trailing: i64?) -> i64 {
+    var value: i64? = initial
+    var later: i64? = trailing
+    match choice:
+        Choice.Value(item):
+            value ??= await step(12)
+            let middle: i64 = await step(value ?? item)
+            later ??= await step(13)
+            return middle + (later ?? 0)
+        Choice.Empty():
+            return 0
+}
+
+async fn chooseList(item: i64, initial: i64?, trailing: i64?) -> i64 {
+    var value: i64? = initial
+    var later: i64? = trailing
+    match [item]:
+        [entry]:
+            value ??= await step(22)
+            let middle: i64 = await step(value ?? entry)
+            later ??= await step(23)
+            return middle + (later ?? 0)
+        _:
+            return 0
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let seven: i64? = 7
+    let eight: i64? = 8
+    let first: i64 = await branch(true, missing, missing)
+    let second: i64 = await branch(true, seven, eight)
+    let third: i64 = await chooseEnum(Choice.Value(2), missing, missing)
+    let fourth: i64 = await chooseEnum(Choice.Value(2), seven, eight)
+    let fifth: i64 = await chooseList(3, missing, missing)
+    let sixth: i64 = await chooseList(3, seven, eight)
+    return first + second + third + fourth + fifth + sixth
+}
+"#;
+
+    check_source(source)
+        .expect("conditional suspension before later split awaits should typecheck");
+    let generated = compile_to_c(source)
+        .expect("conditional suspension before later split awaits should use continuation states");
+    assert!(generated.contains("flux__async_resume_branch"));
+    assert!(generated.contains("flux__async_resume_chooseEnum"));
+    assert!(generated.contains("flux__async_resume_chooseList"));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(5), flux__async_resume_branch, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(12), flux__async_resume_chooseEnum, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(22), flux__async_resume_chooseList, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-before-later-awaits-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("conditional split suspension fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-before-later-awaits");
+    fs::write(&source_path, source)
+        .expect("conditional split suspension source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("conditional split suspension binary should build");
+    assert!(
+        built.status.success(),
+        "conditional split suspension build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("conditional split suspension binary should run");
+    assert_eq!(output.status.code(), Some(126));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "5\n5\n6\n7\n12\n12\n13\n7\n22\n22\n23\n7\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn async_coalescing_assignment_inside_loop_shapes_stays_lazy_and_nonblocking() {
     let source = r#"
 async fn fallback(value: i64) -> i64 {
@@ -41891,6 +42007,97 @@ async fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "1\n8\n2\n1\n2\n1\n9\n2\n1\n2\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn async_coalescing_before_later_awaits_inside_loops_stays_nonblocking() {
+    let source = r#"
+async fn step(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn fillWhile(initial: i64?, trailing: i64?) -> i64 {
+    var value: i64? = initial
+    var later: i64? = trailing
+    var index: i64 = 0
+    var result: i64 = 0
+    while index < 1:
+        value ??= await step(31)
+        let middle: i64 = await step(value ?? 0)
+        later ??= await step(32)
+        result = middle + (later ?? 0)
+        index = index + 1
+    return result
+}
+
+async fn fillRange(initial: i64?, trailing: i64?) -> i64 {
+    var value: i64? = initial
+    var later: i64? = trailing
+    var result: i64 = 0
+    for index in 0..1:
+        value ??= await step(41)
+        let middle: i64 = await step(value ?? index)
+        later ??= await step(42)
+        result = middle + (later ?? 0)
+    return result
+}
+
+async fn main() -> i64 {
+    let missing: i64? = none
+    let seven: i64? = 7
+    let eight: i64? = 8
+    let first: i64 = await fillWhile(missing, missing)
+    let second: i64 = await fillWhile(seven, eight)
+    let third: i64 = await fillRange(missing, missing)
+    let fourth: i64 = await fillRange(seven, eight)
+    return first + second + third + fourth
+}
+"#;
+
+    check_source(source).expect("conditional loop suspension before later awaits should typecheck");
+    let generated = compile_to_c(source)
+        .expect("conditional loop suspension before later awaits should use continuation states");
+    assert!(generated.contains("flux__async_resume_fillWhile"));
+    assert!(generated.contains("flux__async_resume_fillRange"));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(31), flux__async_resume_fillWhile, flux__task)"
+    ));
+    assert!(generated.contains(
+        "flux__async_start_cont_step(INT64_C(41), flux__async_resume_fillRange, flux__task)"
+    ));
+    assert!(!generated.contains("flux__async_await_step(flux__async_start_step"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-async-coalescing-before-later-loop-awaits-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("conditional loop suspension fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-coalescing-before-later-loop-awaits");
+    fs::write(&source_path, source).expect("conditional loop suspension source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("conditional loop suspension binary should build");
+    assert!(
+        built.status.success(),
+        "conditional loop suspension build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("conditional loop suspension binary should run");
+    assert_eq!(output.status.code(), Some(176));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "31\n31\n32\n7\n41\n41\n42\n7\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
