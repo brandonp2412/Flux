@@ -123,7 +123,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
-    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)"));
+    assert!(
+        generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)")
+    );
     assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
     assert!(
         generated
@@ -136,7 +138,9 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_SIZE"));
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
-    assert!(generated.contains("static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"));
+    assert!(generated.contains(
+        "static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"
+    ));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_click_2"));
     assert!(generated.contains("flux__win_click_3"));
@@ -25415,11 +25419,17 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &log,
         &[
             "version-two",
+            "reload: incremental analysis rechecked 1 module",
             "reload: rebuilt and restarted after source change",
         ],
         Duration::from_secs(5),
     );
     wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
+    let status = fs::read_to_string(&status_path).expect("run status should remain readable");
+    assert!(status.contains("\"analysis\":\"incremental\""));
+    assert!(status.contains("\"rechecked_modules\":1"));
+    assert!(status.contains("\"codegen\":\"full\""));
+    assert!(status.contains("\"native_build\":"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -27872,12 +27882,35 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let overlays = std::collections::HashMap::new();
-    cache
+    let initial = cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("first analysis should succeed");
-    cache
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+    );
+    let initial_c = cache
+        .emit_c_for_target_cached(&entry, &initial, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial codegen should succeed");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+    let reused = cache
         .analyze_with_overlays(&entry, &overlays)
         .expect("unchanged analysis should be reused");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Cached)
+    );
+    let reused_c = cache
+        .emit_c_for_target_cached(&entry, &reused, fluxc::codegen::NativeTarget::Linux)
+        .expect("unchanged codegen should be reused");
+    assert_eq!(initial_c, reused_c);
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Cached)
+    );
     assert_eq!(
         cache.stats(),
         fluxc::project::ProjectAnalysisCacheStats { hits: 1, misses: 1 }
@@ -28066,6 +28099,12 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let diagnostics = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect_err("body-only type errors must be caught by incremental checking");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1,
+        })
+    );
     assert!(
         diagnostics
             .iter()
@@ -28087,6 +28126,12 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("valid body-only edit should reuse the prior typed graph");
+    assert_eq!(
+        cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1,
+        })
+    );
     assert_eq!(
         cache.incremental_typecheck_stats(),
         fluxc::project::IncrementalTypecheckStats {
@@ -29252,10 +29297,7 @@ fn git_transitive_registry_requirements_share_the_global_solver() {
     fs::copy(&archive, &cached_archive).expect("registry archive should be cacheable");
 
     let fallback_hash = "1".repeat(64);
-    for (version, sha256) in [
-        ("1.2.5", hash.as_str()),
-        ("1.4.0", fallback_hash.as_str()),
-    ] {
+    for (version, sha256) in [("1.2.5", hash.as_str()), ("1.4.0", fallback_hash.as_str())] {
         fs::write(
             registry.join(format!("{version}.toml")),
             format!(
