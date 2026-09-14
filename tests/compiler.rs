@@ -9940,6 +9940,7 @@ fn hidden() -> void {
     print(file.write("/tmp/unused-flux-file", "unused"))
     print(directory.createAll("/tmp/unused-flux-directory/nested"))
 }
+
 fn main() -> i64 {
     return 0
 }
@@ -9988,6 +9989,81 @@ fn main() -> i64 {
         );
     }
 
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn file_read_lends_bounded_text_to_a_callback() {
+    let root = std::env::temp_dir().join(format!("flux-file-read-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("file read fixture should be writable");
+    let content = root.join("content.txt");
+    fs::write(&content, "hello").expect("file read fixture content should be writable");
+    let escaped = content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn show(text: str) -> void {{
+    print(text)
+}}
+fn main() -> i64 {{
+    let readError: error = file.read("{}", 32, show)
+    print(readError)
+    return 0
+}}
+"#,
+        escaped
+    );
+    check_source(&source).expect("file.read should typecheck");
+    let generated = compile_to_c(&source).expect("file.read should lower natively");
+    assert!(generated.contains("flux__fs_read_text"));
+
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("file read source should be writable");
+    let binary = root.join("file-read-api");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("file read binary should build");
+    assert!(
+        built.status.success(),
+        "file read build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("file read binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "hello\nnil\n");
+
+    let invalid = r#"
+fn show(_text: str) -> void {
+}
+fn main() -> i64 {
+    let _failure: error = file.read("content.txt", 0, show)
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("zero file.read limit should fail");
+    assert!(error.message.contains("file.read maxBytes must be in 1..=65536"));
+
+    let dead = r#"
+fn show(_text: str) -> void {
+}
+fn hidden() -> void {
+    print(file.read("unused.txt", 16, show))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let dead_generated = compile_to_c(dead).expect("dead file.read should lower");
+    assert!(!dead_generated.contains("flux__fs_read_text"));
     let _ = fs::remove_dir_all(&root);
 }
 

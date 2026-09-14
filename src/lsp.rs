@@ -1784,6 +1784,10 @@ fn add_qualified_namespace_completions(
                 "allocatedSize",
                 "fn file.allocatedSize(path: str) -> (i64, error)",
             ),
+            (
+                "read",
+                "fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error",
+            ),
             ("write", "fn file.write(path: str, text: str) -> error"),
             ("append", "fn file.append(path: str, text: str) -> error"),
             (
@@ -3842,6 +3846,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("file.{member}"),
                         &["path: str", "text: str"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "read" => {
+                    return Some(signature_help_for_builtin(
+                        "file.read",
+                        &["path: str", "maxBytes: i64", "callback: fn(str) -> void"],
                         "error",
                         active_parameter,
                     ));
@@ -7662,7 +7674,8 @@ mod tests {
             PositionEncoding::Utf8,
         ))
         .to_json();
-        assert!(!file_items.contains("\"label\":\"read\""));
+        assert!(file_items.contains("\"label\":\"read\""));
+        assert!(file_items.contains("fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"));
         assert!(file_items.contains("fn file.exists(path: str) -> bool"));
         assert!(file_items.contains("fn file.size(path: str) -> (i64, error)"));
         assert!(file_items.contains("fn file.modified(path: str) -> (i64, error)"));
@@ -9691,6 +9704,30 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_bounded_file_reads() {
+        let uri = "file:///tmp/file-read-signatures.flux";
+        let source = "fn show(_text: str) -> void {\n}\nfn main() -> i64 {\n    print(file.read(\"a\", 1024, show))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("file.read("))
+            .unwrap();
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("file.read(").unwrap() + "file.read(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("file.read should have signature help")
+        .to_json();
+        assert!(help.contains("fn file.read(path: str, maxBytes: i64, callback: fn(str) -> void) -> error"));
     }
 
     #[test]

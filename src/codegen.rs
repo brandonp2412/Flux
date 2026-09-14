@@ -6440,6 +6440,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__fs_append_text(") {
         out.push_str("static inline const char *flux__fs_append_text(const char *path, const char *text) { return flux__fs_write_text_mode(path, text, \"ab\"); }\n");
     }
+    if runtime_usage.contains("flux__fs_read_text(") {
+        out.push_str("static inline const char *flux__fs_read_text(const char *path, int64_t max_bytes, void (*callback)(const char *)) { if (path == NULL || callback == NULL || max_bytes < 1 || max_bytes > INT64_C(65536)) return \"invalid file read arguments\"; FILE *file = fopen(path, \"rb\"); if (file == NULL) return \"failed to open file for reading\"; size_t capacity = (size_t)max_bytes; char *buffer = (char *)malloc(capacity + 1); if (buffer == NULL) { fclose(file); return \"failed to allocate file read buffer\"; } size_t count = fread(buffer, 1, capacity, file); if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; } if (count == capacity && fgetc(file) != EOF) { free(buffer); fclose(file); return \"file exceeds read limit\"; } if (memchr(buffer, 0, count) != NULL) { free(buffer); fclose(file); return \"file contains NUL bytes and is not valid text\"; } buffer[count] = '\\0'; if (fclose(file) != 0) { free(buffer); return \"failed to close file after reading\"; } callback(buffer); free(buffer); return NULL; }\n");
+    }
 
     if runtime_usage.contains("flux_print_i64(") {
         out.push_str("static inline void flux_print_i64(int64_t value) { printf(\"%lld\\n\", (long long)value); }\n");
@@ -33420,6 +33423,22 @@ fn emit_qualified_call(
                 };
                 return Ok((
                     format!("{helper}({}, {})", path.code, text.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "read" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid file.read call reached code generation"));
+                }
+                let path = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__fs_read_text({}, {}, {})",
+                        path.code, max_bytes.code, callback.code
+                    ),
                     vec![Type::Error],
                     None,
                 ));
