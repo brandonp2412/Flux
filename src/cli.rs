@@ -9499,11 +9499,7 @@ fn native_build_cache_path_configured(
     static_link: bool,
 ) -> PathBuf {
     let target = native_target.triple.as_deref().unwrap_or("");
-    let sysroot = native_target
-        .sysroot
-        .as_deref()
-        .map(|path| path.to_string_lossy())
-        .unwrap_or_default();
+    let sysroot = native_sysroot_cache_identity(native_target.sysroot.as_deref());
     let mut hash = 0xcbf29ce484222325u64;
     for bytes in [
         b"flux-native-cache-v5".as_slice(),
@@ -9528,6 +9524,82 @@ fn native_build_cache_path_configured(
         hash = hash.wrapping_mul(0x100000001b3);
     }
     native_build_cache_dir().join(format!("{hash:016x}"))
+}
+
+fn native_sysroot_cache_identity(sysroot: Option<&Path>) -> String {
+    let Some(sysroot) = sysroot else {
+        return "none".to_string();
+    };
+    // `/` is the host filesystem rather than a relocatable SDK/sysroot. Walking
+    // it would traverse procfs and the user's entire machine, and the host
+    // compiler identity already captures the supported native toolchain path.
+    if sysroot == Path::new("/") {
+        return "host-root".to_string();
+    }
+    let mut files = Vec::new();
+    collect_sysroot_cache_entries(sysroot, sysroot, &mut files);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hash = 0xcbf29ce484222325u64;
+    for (relative, kind, content) in files {
+        for bytes in [relative.as_bytes(), kind.as_bytes(), &content] {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+fn collect_sysroot_cache_entries(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<(String, String, Vec<u8>)>,
+) {
+    let Ok(read_dir) = fs::read_dir(directory) else {
+        entries.push((
+            directory
+                .strip_prefix(root)
+                .unwrap_or(directory)
+                .to_string_lossy()
+                .into_owned(),
+            "unreadable".to_string(),
+            Vec::new(),
+        ));
+        return;
+    };
+    for entry in read_dir.filter_map(Result::ok) {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let Ok(file_type) = entry.file_type() else {
+            entries.push((relative, "unknown".to_string(), Vec::new()));
+            continue;
+        };
+        if file_type.is_dir() {
+            entries.push((relative.clone(), "directory".to_string(), Vec::new()));
+            collect_sysroot_cache_entries(root, &path, entries);
+        } else if file_type.is_file() {
+            entries.push((
+                relative,
+                "file".to_string(),
+                fs::read(&path).unwrap_or_default(),
+            ));
+        } else if file_type.is_symlink() {
+            entries.push((
+                relative,
+                "symlink".to_string(),
+                fs::read_link(&path)
+                    .map(|target| target.to_string_lossy().as_bytes().to_vec())
+                    .unwrap_or_default(),
+            ));
+        }
+    }
 }
 
 fn native_build_cache_dir() -> PathBuf {
@@ -10383,6 +10455,42 @@ app OverlayDemo(title: "Overlay")
         assert_ne!(plain, sysrooted);
         assert_ne!(plain, different_clang);
         assert_ne!(plain, different_gtk);
+    }
+
+    #[test]
+    fn native_build_cache_changes_when_sysroot_contents_change() {
+        let root = std::env::temp_dir().join(format!("flux-sysroot-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("include")).expect("sysroot should be writable");
+        let header = root.join("include/feature.h");
+        std::fs::write(&header, "#define FEATURE 1\n").expect("sysroot header should be writable");
+        let target = NativeTargetOptions {
+            triple: None,
+            sysroot: Some(root.clone()),
+        };
+        let first = native_build_cache_path_configured(
+            "int main(void) { return 0; }",
+            BuildMode::Release,
+            NativeInstrumentation::None,
+            &target,
+            "clang=stable",
+            &[],
+            &[],
+            false,
+        );
+        std::fs::write(&header, "#define FEATURE 2\n").expect("sysroot header should change");
+        let second = native_build_cache_path_configured(
+            "int main(void) { return 0; }",
+            BuildMode::Release,
+            NativeInstrumentation::None,
+            &target,
+            "clang=stable",
+            &[],
+            &[],
+            false,
+        );
+        assert_ne!(first, second);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
