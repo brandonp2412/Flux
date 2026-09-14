@@ -489,7 +489,7 @@ fn format_function_header(
         format!("-> {returns} {suffix}")
     };
     let inline = format!("{prefix}{name}({}) {return_suffix}", params.join(", "));
-    if inline.len() <= MAX_LINE_WIDTH || params.len() < 2 {
+    if inline.len() <= MAX_LINE_WIDTH {
         return inline;
     }
     format!(

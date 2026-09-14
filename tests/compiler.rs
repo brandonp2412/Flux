@@ -22794,6 +22794,15 @@ fn formatter_wraps_long_function_signatures_and_round_trips() {
 }
 
 #[test]
+fn formatter_wraps_a_single_oversized_parameter() {
+    let source = "fn calculate_with_a_deliberately_long_function_name_that_exceeds_the_line_width(value: i64) -> i64 {\n    return 0\n}\n";
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("single oversized parameter should format");
+    assert!(formatted.lines().all(|line| line.len() <= 80));
+    fluxc::parser::parse_all(&formatted).expect("wrapped signature should reparse");
+}
+
+#[test]
 fn semantic_database_exposes_structural_control_flow_graphs_with_source_spans() {
     let source_id = SourceId::new(1305);
     let source = r#"
