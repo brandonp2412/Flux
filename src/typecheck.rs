@@ -781,6 +781,7 @@ pub fn check_all_with_package_constants(
             function.name.as_str(),
             "print"
                 | "error"
+                | "contains"
                 | "take"
                 | "skip"
                 | "any"
@@ -6203,6 +6204,41 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "contains" => {
+            if !named_args.is_empty() || args.len() != 2 {
+                return Err(diag(
+                    expr.span,
+                    "contains expects exactly two arguments: a list, set, or map and a scalar key",
+                ));
+            }
+            let collection_ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            let searched_ty = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+            let expected = match collection_ty {
+                Type::List(element) | Type::Set(element) => *element,
+                Type::Map(key, _) => *key,
+                other => {
+                    return Err(diag(
+                        args[0].span,
+                        &format!(
+                            "contains expects a list, set, or map as its first argument, got {}",
+                            other.name()
+                        ),
+                    ));
+                }
+            };
+            if !matches!(expected, Type::I64 | Type::Bool | Type::Str) {
+                return Err(diag(
+                    args[0].span,
+                    "contains currently supports only i64, bool, or str collection keys",
+                ));
+            }
+            require_type(args[1].span, &expected, &searched_ty, "contains key")?;
+            Ok(Type::Bool)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "chunked" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "chunked does not accept named arguments"));
@@ -7262,6 +7298,7 @@ pub(crate) fn value_types_of_expr(
                 || matches!(
                     name.as_str(),
                     "bind"
+                        | "contains"
                         | "take"
                         | "skip"
                         | "any"

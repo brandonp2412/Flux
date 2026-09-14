@@ -31629,6 +31629,55 @@ fn emit_expr(
                 "list comprehensions currently lower only when bound directly to an immutable local 'let'",
             ));
         }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "contains" => {
+            if !named_args.is_empty() || args.len() != 2 {
+                return Err(diag(expr.span, "invalid contains call reached code generation"));
+            }
+            let collection = emit_expr(&args[0], env, signatures)?;
+            let searched = emit_expr(&args[1], env, signatures)?;
+            let collection_ty = signatures.canonical_type(&collection.ty);
+            let (source_c, source, element, map) = match collection_ty {
+                Type::List(element) | Type::Set(element) => {
+                    ("struct flux__list", collection.code, element, false)
+                }
+                Type::Map(key, _) => ("struct flux__map", collection.code, key, true),
+                _ => return Err(diag(expr.span, "contains requires a collection value")),
+            };
+            let element_c = c_type(&element, signatures);
+            let source_name = format!("flux__contains_source_{}_{}", expr.span.line, expr.span.column);
+            let searched_name = format!("flux__contains_value_{}_{}", expr.span.line, expr.span.column);
+            let result_name = format!("flux__contains_result_{}_{}", expr.span.line, expr.span.column);
+            let list_source = if map {
+                format!("{source_name}.keys")
+            } else {
+                source_name.clone()
+            };
+            let equality = match signatures.canonical_type(&element) {
+                Type::Str => format!(
+                    "strcmp({searched_name}, *((const char **)flux_list_at_unchecked({list_source}, flux__contains_i, sizeof({element_c})))) == 0"
+                ),
+                Type::Bool | Type::I64 => format!(
+                    "{searched_name} == *(({element_c} *)flux_list_at_unchecked({list_source}, flux__contains_i, sizeof({element_c})))"
+                ),
+                _ => return Err(diag(expr.span, "contains requires a scalar collection key")),
+            };
+            let length = if map {
+                format!("{source_name}.keys.len")
+            } else {
+                format!("{source_name}.len")
+            };
+            EmittedExpr {
+                code: format!(
+                    "__extension__ ({{ {source_c} {source_name} = {source}; {element_c} {searched_name} = {}; bool {result_name} = false; for (size_t flux__contains_i = 0; flux__contains_i < {length}; ++flux__contains_i) {{ if ({equality}) {{ {result_name} = true; break; }} }} {result_name}; }})",
+                    searched.code
+                ),
+                ty: Type::Bool,
+            }
+        }
         ExprKind::Call { name, .. } if name == "chunked" => {
             return Err(diag(
                 expr.span,

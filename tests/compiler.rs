@@ -44647,6 +44647,68 @@ fn main() -> i64 {
 }
 
 #[test]
+fn contains_checks_list_set_and_map_scalars_natively() {
+    let source = r#"
+fn main() -> i64 {
+    let values: set<str> = {"one", "two", "one"}
+    let mapping: map<i64, str> = {1: "one", 2: "two"}
+    if contains(values, "two"):
+        print "set-hit"
+    if contains(mapping, 2):
+        print "map-hit"
+    if contains([3, 4], 5):
+        print "unexpected"
+    return 0
+}
+"#;
+    check_source(source).expect("contains should typecheck for all collections");
+    let generated = compile_to_c(source).expect("contains should lower natively");
+    assert!(generated.contains("flux__contains_result_"));
+    assert!(generated.contains("strcmp("));
+    assert!(generated.contains("flux_list_at_unchecked"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-contains-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("contains fixture should be writable");
+    let c_path = root.join("contains.c");
+    let exe_path = root.join("contains");
+    fs::write(&c_path, generated).expect("generated contains C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile contains");
+    assert!(
+        compile.status.success(),
+        "contains C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("contains program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "set-hit\nmap-hit\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let wrong_key = r#"
+fn main() -> i64 {
+    let values: set<i64> = {1, 2}
+    if contains(values, true):
+        return 1
+    return 0
+}
+"#;
+    let error = check_source(wrong_key).expect_err("contains must enforce scalar key types");
+    assert!(error.message.contains("contains key"));
+}
+
+#[test]
 fn map_iteration_binds_keys_and_values_in_insertion_order() {
     let source = r#"
 fn main() -> i64 {

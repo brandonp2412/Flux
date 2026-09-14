@@ -677,6 +677,13 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     push_completion_item(
         &mut items,
         &mut seen,
+        "contains",
+        3,
+        "fn contains(collection: list | set | map, key: scalar) -> bool",
+    );
+    push_completion_item(
+        &mut items,
+        &mut seen,
         "take",
         3,
         "fn take(list: T[], count: i64) -> T[]",
