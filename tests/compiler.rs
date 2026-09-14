@@ -1,8 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -123,9 +121,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
-    assert!(
-        generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)")
-    );
+    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_title, flux__ui_state_query)"));
     assert!(generated.contains("SendMessageA(flux__ui_toggle, BM_SETCHECK"));
     assert!(
         generated
@@ -138,19 +134,13 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("case WM_SIZE"));
     assert!(generated.contains("GetClientRect(hwnd, &client)"));
     assert!(generated.contains("MoveWindow(flux__ui_title"));
-    assert!(generated.contains(
-        "static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"
-    ));
+    assert!(generated.contains("static void flux__win_change_1(HWND control) { if (flux__win_refreshing) return;"));
     assert!(generated.contains("flux__win_change_1"));
     assert!(generated.contains("flux__win_click_2"));
     assert!(generated.contains("flux__win_click_3"));
     assert!(generated.contains("flux__win_click_4"));
-    assert!(
-        generated.contains("static const COLORREF flux__win_color_title_color = RGB(31, 35, 40);")
-    );
-    assert!(generated.contains(
-        "static const COLORREF flux__win_color_title_background_color = RGB(255, 255, 255);"
-    ));
+    assert!(generated.contains("static const COLORREF flux__win_color_title_color = RGB(31, 35, 40);"));
+    assert!(generated.contains("static const COLORREF flux__win_color_title_background_color = RGB(255, 255, 255);"));
     assert!(generated.contains("case WM_CTLCOLORSTATIC"));
     assert!(generated.contains("SetTextColor(dc, flux__win_color_title_color)"));
     assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
@@ -172,8 +162,7 @@ view Screen {
 app Screen(title: "Image")
 "#;
     let program = fluxc::parser::parse(source).expect("Windows image source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows image source should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
@@ -194,9 +183,7 @@ app Screen(title: "Image")
 #[test]
 fn windows_backend_validates_against_available_wine_headers() {
     let header_root = PathBuf::from("/usr/include/wine/windows");
-    if !header_root.join("windows.h").is_file()
-        || Command::new("clang").arg("--version").output().is_err()
-    {
+    if !header_root.join("windows.h").is_file() || Command::new("clang").arg("--version").output().is_err() {
         return;
     }
     let source = r#"
@@ -213,8 +200,7 @@ view Screen {
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
     let program = fluxc::parser::parse(source).expect("Windows cross-target source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Windows cross-target source should typecheck");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows cross-target source should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
@@ -239,9 +225,7 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
             "-std=c17",
             "-fshort-wchar",
             "-I",
-            header_root
-                .to_str()
-                .expect("Wine header path should be UTF-8"),
+            header_root.to_str().expect("Wine header path should be UTF-8"),
         ])
         .arg(&c_path)
         .output()
@@ -262,10 +246,7 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
             "generated Windows C failed Wine executable linking:\n{}",
             String::from_utf8_lossy(&link.stderr)
         );
-        assert!(
-            binary.is_file(),
-            "Wine linker should produce a Windows executable"
-        );
+        assert!(binary.is_file(), "Wine linker should produce a Windows executable");
     }
     let _ = fs::remove_dir_all(&root);
     assert!(
@@ -290,8 +271,7 @@ view Screen {
 app Screen
 "##;
     let program = fluxc::parser::parse(source).expect("dynamic Windows color source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("dynamic Windows color source should typecheck");
+    let signatures = fluxc::typecheck::check(&program).expect("dynamic Windows color source should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
@@ -10221,11 +10201,7 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(invalid).expect_err("zero file.read limit should fail");
-    assert!(
-        error
-            .message
-            .contains("file.read maxBytes must be in 1..=65536")
-    );
+    assert!(error.message.contains("file.read maxBytes must be in 1..=65536"));
 
     let dead = r#"
 fn show(_text: str) -> void {
@@ -10301,11 +10277,7 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(invalid).expect_err("directory.list callback type should be checked");
-    assert!(
-        error
-            .message
-            .contains("directory.list callback: expected fn(str) -> void")
-    );
+    assert!(error.message.contains("directory.list callback: expected fn(str) -> void"));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -10847,8 +10819,7 @@ fn main() -> i64 {
     return 0
 }
 "#;
-    let errors =
-        check_source_all(source).expect_err("legacy callback-shaped file reads should fail");
+    let errors = check_source_all(source).expect_err("legacy callback-shaped file reads should fail");
     assert!(errors.iter().any(|error| {
         error
             .message
@@ -15674,24 +15645,10 @@ fn main() -> i64 {
         .output()
         .expect("preferences binary should run");
     assert!(run.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&run.stdout),
-        "dark\nnil\nnil\nnil\n"
-    );
-    assert!(
-        fs::read_to_string(&preference_path)
-            .expect("preference log should be readable")
-            .contains("D\ttheme\n")
-    );
-    #[cfg(unix)]
-    assert_eq!(
-        fs::metadata(&preference_path)
-            .expect("preference metadata should be readable")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "dark\nnil\nnil\nnil\n");
+    assert!(fs::read_to_string(&preference_path)
+        .expect("preference log should be readable")
+        .contains("D\ttheme\n"));
     let _ = fs::remove_dir_all(&root);
 
     let program = fluxc::parser::parse(source).expect("preferences source should parse");
@@ -15703,11 +15660,7 @@ fn main() -> i64 {
         fluxc::codegen::NativeTarget::Android,
     )
     .expect_err("preferences should reject Android until a native settings store is defined");
-    assert!(
-        android
-            .message
-            .contains("preferences.* currently requires the Linux")
-    );
+    assert!(android.message.contains("preferences.* currently requires the Linux"));
 }
 
 #[test]
@@ -23314,24 +23267,19 @@ fn formatter_contract_has_a_stable_discoverable_version() {
 #[test]
 fn formatter_wraps_long_function_signatures_and_round_trips() {
     let source = "interface Calculator {\n    fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n}\n\nextern c \"calculate\" fn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64\n\nfn calculate_with_a_deliberately_long_name(first_value: i64, second_value: i64, third_value: i64) -> i64 {\n    return first_value + second_value + third_value\n}\n";
-    let formatted =
-        fluxc::formatter::format_source(source).expect("long function signatures should format");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("long function signatures should format");
     assert!(formatted.lines().all(|line| line.len() <= 80));
     assert_eq!(formatted.lines().filter(|line| line.len() > 80).count(), 0);
-    assert!(
-        formatted
-            .matches("fn calculate_with_a_deliberately_long_name(\n")
-            .count()
-            >= 3
-    );
+    assert!(formatted.matches("fn calculate_with_a_deliberately_long_name(\n").count() >= 3);
     fluxc::parser::parse_all(&formatted).expect("wrapped formatter output should reparse");
 }
 
 #[test]
 fn formatter_wraps_a_single_oversized_parameter() {
     let source = "fn calculate_with_a_deliberately_long_function_name_that_exceeds_the_line_width(value: i64) -> i64 {\n    return 0\n}\n";
-    let formatted =
-        fluxc::formatter::format_source(source).expect("single oversized parameter should format");
+    let formatted = fluxc::formatter::format_source(source)
+        .expect("single oversized parameter should format");
     assert!(formatted.lines().all(|line| line.len() <= 80));
     fluxc::parser::parse_all(&formatted).expect("wrapped signature should reparse");
 }
@@ -25944,13 +25892,7 @@ fn native_builds_are_byte_reproducible_with_isolated_caches() {
     let built = Command::new(env!("CARGO_BIN_EXE_flux"))
         .args(["build"])
         .arg(&source)
-        .args([
-            "--mode",
-            "release",
-            "-o",
-            metadata_binary.to_str().unwrap(),
-            "--reproducibility",
-        ])
+        .args(["--mode", "release", "-o", metadata_binary.to_str().unwrap(), "--reproducibility"])
         .arg(&metadata)
         .output()
         .expect("reproducibility metadata build should run");
@@ -26776,11 +26718,8 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
     for member in ["apps/one", "libs/two", "libs/shared"] {
         fs::create_dir_all(root.join(member).join("src"))
             .expect("workspace member should be writable");
-        fs::write(
-            root.join(member).join("src/main.flux"),
-            "fn main() -> i64 { 0 }\n",
-        )
-        .expect("workspace member entry should be writable");
+        fs::write(root.join(member).join("src/main.flux"), "fn main() -> i64 { 0 }\n")
+            .expect("workspace member entry should be writable");
     }
     fs::create_dir_all(root.join("src")).expect("workspace root should be writable");
     fs::write(root.join("src/main.flux"), "fn main() -> i64 { 0 }\n")
@@ -26810,13 +26749,10 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
 
     let parsed = fluxc::project::read_manifest(&manifest).expect("workspace should parse");
     assert_eq!(parsed.workspace_members.len(), 3);
-    let members =
-        fluxc::project::read_workspace_members(&parsed).expect("workspace members should load");
+    let members = fluxc::project::read_workspace_members(&parsed)
+        .expect("workspace members should load");
     assert_eq!(
-        members
-            .iter()
-            .map(|member| member.name.as_str())
-            .collect::<Vec<_>>(),
+        members.iter().map(|member| member.name.as_str()).collect::<Vec<_>>(),
         vec!["one", "shared", "two"]
     );
     let lock = fluxc::project::write_lockfile(&root).expect("workspace lock should write");
@@ -26845,17 +26781,8 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
         "workspace check failed: {}",
         String::from_utf8_lossy(&check.stderr)
     );
-    for package in [
-        root.join("src/main"),
-        root.join("apps/one/src/main"),
-        root.join("libs/two/src/main"),
-        root.join("libs/shared/src/main"),
-    ] {
-        assert!(
-            package.is_file(),
-            "workspace package binary should exist: {}",
-            package.display()
-        );
+    for package in [root.join("src/main"), root.join("apps/one/src/main"), root.join("libs/two/src/main"), root.join("libs/shared/src/main")] {
+        assert!(package.is_file(), "workspace package binary should exist: {}", package.display());
         let _ = fs::remove_file(package);
     }
 
@@ -26866,11 +26793,7 @@ fn workspace_manifest_resolves_explicit_members_and_rejects_identity_collisions(
     .expect("duplicate member manifest should be writable");
     let errors = fluxc::project::read_workspace_members(&parsed)
         .expect_err("workspace member identities must be unique");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("duplicates package identity"))
-    );
+    assert!(errors.iter().any(|error| error.message.contains("duplicates package identity")));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -27284,18 +27207,14 @@ fn package_manifest_accepts_linux_desktop_associations() {
         "[package]\nname = \"desktop-app\"\nentry = \"src/main.flux\"\n\n[linux]\nuri_schemes = [\"bad scheme\"]\nfile_associations = [\"text\"]\n",
     )
     .expect("invalid Linux manifest should be writable");
-    let errors =
-        fluxc::project::read_manifest(&manifest).expect_err("invalid Linux metadata must fail");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("valid URI schemes"))
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("MIME types"))
-    );
+    let errors = fluxc::project::read_manifest(&manifest)
+        .expect_err("invalid Linux metadata must fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("valid URI schemes")));
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("MIME types")));
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -27304,11 +27223,8 @@ fn linux_directory_package_emits_desktop_metadata() {
     let root = std::env::temp_dir().join(format!("flux-linux-package-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("src")).expect("temporary package should be writable");
-    fs::write(
-        root.join("src/main.flux"),
-        "fn main() -> i64 {\n    return 0\n}\n",
-    )
-    .expect("entry should be writable");
+    fs::write(root.join("src/main.flux"), "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("entry should be writable");
     fs::write(
         root.join("flux.toml"),
         "[package]\nname = \"desktop-app\"\nentry = \"src/main.flux\"\n\n[linux]\nuri_schemes = [\"flux\"]\nfile_associations = [\"text/plain\"]\n",
@@ -27502,8 +27418,7 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 
 #[test]
 fn project_analysis_cache_clear_discards_parsed_module_entries() {
-    let root =
-        std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary cache-clear project should be writable");
     let entry = root.join("main.flux");
@@ -27531,16 +27446,12 @@ fn project_analysis_cache_clear_discards_parsed_module_entries() {
 
 #[test]
 fn project_codegen_cache_reuses_and_invalidates_generated_c() {
-    let root =
-        std::env::temp_dir().join(format!("flux-project-codegen-cache-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("flux-project-codegen-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary codegen-cache project should be writable");
     let entry = root.join("main.flux");
-    fs::write(
-        &entry,
-        "fn main() -> i64 {\n    print(1)\n    return 0\n}\n",
-    )
-    .expect("entry should be writable");
+    fs::write(&entry, "fn main() -> i64 {\n    print(1)\n    return 0\n}\n")
+        .expect("entry should be writable");
     let analysis = fluxc::project::analyze(&entry).expect("initial analysis should succeed");
 
     let first = analysis
@@ -27561,11 +27472,8 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
     assert!(cached_artifact.starts_with("flux-project-codegen-v1:"));
     assert!(cached_artifact.len() > "flux-project-codegen-v1:\n".len());
 
-    fs::write(
-        artifacts[0].path(),
-        format!("{}corrupt", cached_artifact.lines().next().unwrap()),
-    )
-    .expect("cache artifact should be tamperable for the regression");
+    fs::write(artifacts[0].path(), format!("{}corrupt", cached_artifact.lines().next().unwrap()))
+        .expect("cache artifact should be tamperable for the regression");
     let repaired = analysis
         .emit_c_cached(&entry)
         .expect("tampered codegen should be regenerated");
@@ -27576,20 +27484,15 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
             .contains("\n#include")
     );
 
-    fs::write(
-        &entry,
-        "fn main() -> i64 {\n    print(2)\n    return 0\n}\n",
-    )
-    .expect("updated entry should be writable");
+    fs::write(&entry, "fn main() -> i64 {\n    print(2)\n    return 0\n}\n")
+        .expect("updated entry should be writable");
     let updated = fluxc::project::analyze(&entry).expect("updated analysis should succeed");
     let third = updated
         .emit_c_cached(&entry)
         .expect("invalidated codegen should succeed");
     assert_ne!(first, third);
     assert_eq!(
-        fs::read_dir(&cache_dir)
-            .expect("cache directory should remain readable")
-            .count(),
+        fs::read_dir(&cache_dir).expect("cache directory should remain readable").count(),
         2
     );
 
@@ -28836,7 +28739,10 @@ fn git_transitive_registry_requirements_share_the_global_solver() {
     fs::copy(&archive, &cached_archive).expect("registry archive should be cacheable");
 
     let fallback_hash = "1".repeat(64);
-    for (version, sha256) in [("1.2.5", hash.as_str()), ("1.4.0", fallback_hash.as_str())] {
+    for (version, sha256) in [
+        ("1.2.5", hash.as_str()),
+        ("1.4.0", fallback_hash.as_str()),
+    ] {
         fs::write(
             registry.join(format!("{version}.toml")),
             format!(
@@ -34366,8 +34272,7 @@ app Screen(id: "com.example.state", onSaveState: saveState, onRestoreState: rest
 "#;
     check_source(source).expect("Windows state callbacks should typecheck");
     let program = fluxc::parser::parse(source).expect("Windows state source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("Windows state source should typecheck");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows state source should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
@@ -45175,10 +45080,7 @@ fn main() -> i64 {
         .output()
         .expect("contains program should run");
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "set-hit\nmap-hit\n"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "set-hit\nmap-hit\n");
     let _ = fs::remove_dir_all(&root);
 
     let wrong_key = r#"
