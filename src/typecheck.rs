@@ -6977,10 +6977,13 @@ pub fn type_of_expr(
                 return Err(diag(expr.span, "drop expects exactly one non-copy value"));
             }
             let ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-            if !matches!(ty, Type::List(_)) {
+            if !matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _)) {
                 return Err(diag(
                     args[0].span,
-                    &format!("drop expects a non-copy list value, got {}", ty.name()),
+                    &format!(
+                        "drop expects a non-copy collection value, got {}",
+                        ty.name()
+                    ),
                 ));
             }
             Ok(Type::Void)

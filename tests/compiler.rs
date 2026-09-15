@@ -14353,6 +14353,39 @@ fn main() -> i64 {
             .contains("use of moved non-copy binding 'values'")
     }));
 
+    let set_value = r#"
+fn main() -> i64 {
+    let values: set<i64> = {1, 2, 3}
+    drop(values)
+    return 0
+}
+"#;
+    check_source(set_value).expect("drop should consume a non-copy set");
+    let set_use_after_drop = r#"
+fn main() -> i64 {
+    let values: set<i64> = {1, 2, 3}
+    drop(values)
+    print(values.count)
+    return 0
+}
+"#;
+    let errors =
+        check_source_all(set_use_after_drop).expect_err("dropped sets must not be reusable");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'values'")
+    }));
+
+    let map_value = r#"
+fn main() -> i64 {
+    let values: map<i64, i64> = map{1: 2}
+    drop(values)
+    return 0
+}
+"#;
+    check_source(map_value).expect("drop should consume a non-copy map");
+
     let copy_value = r#"
 fn main() -> i64 {
     let value: i64 = 1
@@ -14361,11 +14394,11 @@ fn main() -> i64 {
 }
 "#;
     let errors = check_source_all(copy_value).expect_err("drop must reject Copy values");
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("drop expects a non-copy list value"))
-    );
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("drop expects a non-copy collection value")
+    }));
 }
 
 #[test]
