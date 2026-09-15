@@ -5628,11 +5628,15 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         if (now < 0 || now > INT64_MAX - timeout_millis) return flux__net_result(0, "failed to start send timeout");
         deadline = now + timeout_millis;
     }
+    unsigned char buffer[4096];
     while (offset < bytes.len) {
-        int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)offset * stride));
-        if (value < 0 || value > 255) return flux__net_result((int64_t)offset, "writeBytesTimeout byte values must be between 0 and 255");
-        unsigned char byte = (unsigned char)value;
-        ssize_t sent = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL);
+        size_t count = bytes.len - offset; if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) {
+            int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)(offset + index) * stride));
+            if (value < 0 || value > 255) return flux__net_result((int64_t)offset, "writeBytesTimeout byte values must be between 0 and 255");
+            buffer[index] = (unsigned char)value;
+        }
+        ssize_t sent = send((int)socket_handle, buffer, count, MSG_NOSIGNAL);
         if (sent > 0) { offset += (size_t)sent; continue; }
         if (sent == 0) return flux__net_result((int64_t)offset, "socket made no send progress");
         if (errno == EINTR) continue;
@@ -8386,10 +8390,57 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
 "#);
     }
     if runtime_usage.contains("flux__net_send_bytes(") {
-        out.push_str("static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"writeBytes requires a TCP socket\"); ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; int64_t sent = 0; for (size_t index = 0; index < bytes.len; ++index) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) return flux__net_result(sent, \"writeBytes byte values must be between 0 and 255\"); unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) return flux__net_result(sent, \"failed to write bytes\"); if (written == 0) return flux__net_result(sent, \"socket closed while writing bytes\"); sent += written; } return flux__net_result(sent, NULL); }\n");
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "writeBytes requires a TCP socket");
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    unsigned char buffer[4096]; int64_t sent = 0;
+    while ((uint64_t)sent < (uint64_t)bytes.len) {
+        size_t count = bytes.len - (size_t)sent; if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) {
+            int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)((size_t)sent + index) * stride));
+            if (value < 0 || value > 255) return flux__net_result(sent, "writeBytes byte values must be between 0 and 255");
+            buffer[index] = (unsigned char)value;
+        }
+        ssize_t written; do { written = send((int)socket_handle, buffer, count, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
+        if (written < 0) return flux__net_result(sent, "failed to write bytes");
+        if (written == 0) return flux__net_result(sent, "socket closed while writing bytes");
+        if (sent > INT64_MAX - (int64_t)written) return flux__net_result(sent, "written byte count overflow");
+        sent += (int64_t)written;
+    }
+    return flux__net_result(sent, NULL);
+}
+"#);
     }
     if runtime_usage.contains("flux__net_send_bytes_progress(") {
-        out.push_str("static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress(int64_t socket_handle, struct flux__list bytes, int64_t offset) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL }; if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = \"invalid socket handle\"; return result; } if (offset < 0) { result.v2 = \"writeBytesFrom offset must be non-negative\"; return result; } int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = \"failed to inspect socket type\"; return result; } if (socket_type != SOCK_STREAM) { result.v2 = \"writeBytesFrom requires a TCP socket\"; return result; } int flags = fcntl((int)socket_handle, F_GETFL, 0); if (flags < 0 || (flags & O_NONBLOCK) == 0) { result.v2 = \"writeBytesFrom requires a nonblocking TCP socket\"; return result; } if ((uint64_t)offset > (uint64_t)bytes.len) { result.v2 = \"writeBytesFrom offset exceeds byte length\"; return result; } ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; while ((uint64_t)result.v0 < (uint64_t)bytes.len) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)result.v0 * stride)); if (value < 0 || value > 255) { result.v2 = \"writeBytesFrom byte values must be between 0 and 255\"; return result; } unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return result; result.v2 = \"failed to write bytes\"; return result; } if (written == 0) { result.v2 = \"socket closed while writing bytes\"; return result; } result.v0 += written; } result.v1 = true; return result; }\n");
+        out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress(int64_t socket_handle, struct flux__list bytes, int64_t offset) {
+    struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL };
+    if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = "invalid socket handle"; return result; }
+    if (offset < 0) { result.v2 = "writeBytesFrom offset must be non-negative"; return result; }
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = "failed to inspect socket type"; return result; }
+    if (socket_type != SOCK_STREAM) { result.v2 = "writeBytesFrom requires a TCP socket"; return result; }
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0 || (flags & O_NONBLOCK) == 0) { result.v2 = "writeBytesFrom requires a nonblocking TCP socket"; return result; }
+    if ((uint64_t)offset > (uint64_t)bytes.len) { result.v2 = "writeBytesFrom offset exceeds byte length"; return result; }
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; unsigned char buffer[4096];
+    while ((uint64_t)result.v0 < (uint64_t)bytes.len) {
+        size_t count = bytes.len - (size_t)result.v0; if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) {
+            int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)((size_t)result.v0 + index) * stride));
+            if (value < 0 || value > 255) { result.v2 = "writeBytesFrom byte values must be between 0 and 255"; return result; }
+            buffer[index] = (unsigned char)value;
+        }
+        ssize_t written; do { written = send((int)socket_handle, buffer, count, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
+        if (written < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return result; result.v2 = "failed to write bytes"; return result; }
+        if (written == 0) { result.v2 = "socket closed while writing bytes"; return result; }
+        result.v0 += written;
+    }
+    result.v1 = true; return result;
+}
+"#);
     }
     if runtime_usage.contains("flux__net_send_bytes_progress_with_timeout(") {
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress_with_timeout(int64_t socket_handle, struct flux__list bytes, int64_t offset, int64_t timeout_millis) {
@@ -8411,10 +8462,14 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     int64_t deadline = -1;
     if (timeout_millis >= 0) { int64_t now = flux__net_monotonic_millis(); if (now < 0 || now > INT64_MAX - timeout_millis) { result.v2 = "failed to start resumable send timeout"; return result; } deadline = now + timeout_millis; }
     while ((uint64_t)result.v0 < (uint64_t)bytes.len) {
-        int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)result.v0 * stride));
-        if (value < 0 || value > 255) { result.v2 = "writeBytesFromTimeout byte values must be between 0 and 255"; return result; }
-        unsigned char byte = (unsigned char)value; ssize_t written;
-        do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
+        unsigned char buffer[4096]; size_t count = bytes.len - (size_t)result.v0; if (count > sizeof(buffer)) count = sizeof(buffer);
+        for (size_t index = 0; index < count; ++index) {
+            int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)((size_t)result.v0 + index) * stride));
+            if (value < 0 || value > 255) { result.v2 = "writeBytesFromTimeout byte values must be between 0 and 255"; return result; }
+            buffer[index] = (unsigned char)value;
+        }
+        ssize_t written;
+        do { written = send((int)socket_handle, buffer, count, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
         if (written > 0) { result.v0 += written; continue; }
         if (written == 0) { result.v2 = "socket closed while writing bytes"; return result; }
         if (errno != EAGAIN && errno != EWOULDBLOCK) { result.v2 = "failed to write bytes"; return result; }

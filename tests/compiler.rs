@@ -51434,6 +51434,7 @@ fn main() -> i64 {
     assert!(generated.contains("writeBytes byte values must be between 0 and 255"));
     assert!(generated.contains("MSG_NOSIGNAL"));
     assert!(generated.contains("bytes.stride"));
+    assert!(generated.contains("unsigned char buffer[4096]"));
     let c_path = std::env::temp_dir().join(format!("flux-send-bytes-{}.c", std::process::id()));
     fs::write(&c_path, &generated).expect("binary socket C should be writable");
     let compile = Command::new("clang")
@@ -51544,6 +51545,7 @@ fn main() -> i64 {
     assert!(generated.contains("writeBytesFrom requires a nonblocking TCP socket"));
     assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
     assert!(generated.contains(".v0 = offset"));
+    assert!(generated.contains("unsigned char buffer[4096]"));
 }
 
 #[test]
