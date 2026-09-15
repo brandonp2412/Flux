@@ -3826,6 +3826,10 @@ fn main() -> i64 {
     assert!(generated.contains("readFromTimeout cancelled by worker scope"));
     assert!(generated.contains("readManyFromTimeout cancelled by worker scope"));
     assert!(generated.contains("MSG_DONTWAIT"));
+    assert!(
+        generated.contains("recv((int)socket_handle, buffer, (size_t)max_bytes, MSG_DONTWAIT)")
+    );
+    assert!(generated.contains("MSG_TRUNC | MSG_DONTWAIT"));
 
     let root = std::env::temp_dir().join(format!("flux-net-timeout-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -7039,6 +7043,7 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__net_receive_bytes_many("));
     assert!(generated.contains("readBytesMany requires a nonblocking TCP socket"));
     assert!(generated.contains("readBytesMany cancelled by worker scope"));
+    assert!(generated.contains("recv((int)socket_handle, raw, (size_t)max_bytes, MSG_DONTWAIT)"));
 
     let timed = "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
     check_source(timed).expect("timed binary batch receive should typecheck");
@@ -7151,6 +7156,7 @@ fn main() -> i64 {{
     assert!(generated.contains("received UDP bytes exceed maxBytes"));
     assert!(generated.contains("readBytesFromMany requires a nonblocking UDP socket"));
     assert!(generated.contains("readBytesFromMany cancelled by worker scope"));
+    assert!(generated.contains("MSG_TRUNC | MSG_DONTWAIT"));
     let timed = "fn consume(_socket: i64, _bytes: i64[], _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesFromManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
     check_source(timed).expect("timed UDP binary batch receive should typecheck");
     let timed_generated = compile_to_c(timed).expect("timed UDP binary batch receive should lower");
