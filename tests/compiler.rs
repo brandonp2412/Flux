@@ -16644,6 +16644,12 @@ fn main() -> i64 {
     check_source(source).expect("scalar-payload enums should typecheck as JSON values");
     let generated = compile_to_c(source).expect("enum JSON should lower natively");
     assert!(generated.contains("flux__json_encode_enum_named_Token"));
+    assert!(generated.contains(
+        "if (output > sizeof(encoded) - 1 - 10) return \"encoded JSON enum exceeds 393216 bytes\""
+    ));
+    assert!(generated.contains(
+        "if (output >= sizeof(encoded) - 1) return \"encoded JSON enum exceeds 393216 bytes\""
+    ));
     let root = std::env::temp_dir().join(format!("flux-json-enum-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("enum JSON temp directory should be writable");

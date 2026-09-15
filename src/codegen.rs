@@ -38394,7 +38394,7 @@ fn emit_json_enum_helpers(
             continue;
         };
         let helper = json_enum_helper_name(&ty, signatures);
-        out.push_str(&format!("static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{ char encoded[393217]; size_t output = 0; switch (value.tag) {{\n", struct_c_name(&name)));
+        out.push_str(&format!("static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encode callback\"; char encoded[393217]; size_t output = 0; switch (value.tag) {{\n", struct_c_name(&name)));
         for variant in &definition.variants {
             let key = variant.name.replace('"', "\\\"");
             let prefix = if variant.payloads.len() > 1 {
@@ -38404,18 +38404,19 @@ fn emit_json_enum_helpers(
             };
             let prefix_length = key.len() + 4 + usize::from(variant.payloads.len() > 1);
             out.push_str(&format!(
-                "case {}: {{ memcpy(encoded + output, \"{}\", {}); output += {}; ",
+                "case {}: {{ if (output > sizeof(encoded) - 1 - {}) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, \"{}\", {}); output += {}; ",
                 enum_tag_value_name(&name, &variant.name),
+                prefix_length,
                 prefix,
                 prefix_length,
                 prefix_length
             ));
             if variant.payloads.is_empty() {
-                out.push_str("memcpy(encoded + output, \"null\", 4); output += 4; ");
+                out.push_str("if (output > sizeof(encoded) - 1 - 4) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, \"null\", 4); output += 4; ");
             } else {
                 for (index, payload) in variant.payloads.iter().enumerate() {
                     if index > 0 {
-                        out.push_str("encoded[output++] = ','; ");
+                        out.push_str("if (output >= sizeof(encoded) - 1) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output++] = ','; ");
                     }
                     let expr = format!(
                         "value.payload.{}.v{}",
@@ -38474,10 +38475,10 @@ fn emit_json_enum_helpers(
                     out.push_str(&format!("flux__json_capture_value = NULL; const char *payload_error_{index} = {call}; if (payload_error_{index} != NULL || flux__json_capture_value == NULL) return payload_error_{index} == NULL ? \"JSON enum payload encoding failed\" : payload_error_{index}; size_t payload_length_{index} = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - payload_length_{index}) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, payload_length_{index}); output += payload_length_{index}; "));
                 }
                 if variant.payloads.len() > 1 {
-                    out.push_str("encoded[output++] = ']'; ");
+                    out.push_str("if (output >= sizeof(encoded) - 1) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output++] = ']'; ");
                 }
             }
-            out.push_str("encoded[output++] = '}'; break; }\n");
+            out.push_str("if (output >= sizeof(encoded) - 1) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output++] = '}'; break; }\n");
         }
         out.push_str("default: return \"invalid JSON enum tag\"; } if (output >= sizeof(encoded)) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
     }
