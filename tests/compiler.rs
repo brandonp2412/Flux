@@ -17750,6 +17750,9 @@ fn main() -> i64 {
     check_source(source).expect("JSON scalar optional arrays should typecheck");
     let generated = compile_to_c(source).expect("JSON scalar optional arrays should lower");
     assert!(generated.contains("flux__json_encode_recursive_array("));
+    assert!(generated.contains(
+        "flux__json_capture_value = NULL; const char *value_error = flux__json_encode_string(text, flux__json_capture);"
+    ));
     let root =
         std::env::temp_dir().join(format!("flux-json-optional-arrays-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
