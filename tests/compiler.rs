@@ -19467,6 +19467,8 @@ fn main() -> i64 {
     assert!(generated.contains("SSL_pending(slot->session)"));
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
+    assert!(generated.contains("flux__tls_handshake"));
+    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, -1)"));
     assert!(generated.contains("TLS readTimeout cancelled by worker scope"));
     assert!(generated.contains("TLS writeTimeout cancelled by worker scope"));
     assert!(
@@ -19559,14 +19561,17 @@ fn show(value: str) -> void {{
 
 fn main() -> i64 {{
     let (socket, connect_error) = net.connect("127.0.0.1", {port})
+    let nonblocking_error: error = net.nonblocking(socket, true)
     let (session, tls_error) = tls.wrap(socket, "127.0.0.1", "{}")
     let write_error: error = tls.write(session, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-    let (received, read_error) = tls.read(session, 4096, show)
+    let (received, ready, read_error) = tls.readTimeout(session, 4096, 5000, show)
     let close_error: error = tls.close(session)
     print(connect_error)
+    print(nonblocking_error)
     print(tls_error)
     print(write_error)
     print(received)
+    print(ready)
     print(read_error)
     print(close_error)
     return 0

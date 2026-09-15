@@ -7644,6 +7644,17 @@ static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (ha
 static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1) { struct flux__tls_slot *slot = &flux__tls_slots[index]; if (!slot->used) continue; SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; } }
 static inline void flux__tls_register_cleanup(void) { if (!flux__tls_cleanup_registered) { (void)atexit(flux__tls_cleanup); flux__tls_cleanup_registered = true; } }
 static inline bool flux__tls_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
+static inline int flux__tls_handshake(SSL *session, int socket_handle, bool server) {
+    for (;;) {
+        int result = server ? SSL_accept(session) : SSL_connect(session);
+        if (result == 1) return 1;
+        int ssl_error = SSL_get_error(session, result);
+        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return 0;
+        struct pollfd descriptor = { .fd = socket_handle, .events = ssl_error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, .revents = 0 };
+        int ready = flux__net_poll_cancellable(&descriptor, 1, -1);
+        if (ready <= 0 || (descriptor.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) return 0;
+    }
+}
 static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) {
     if (socket_handle < 0 || socket_handle > INT_MAX || server_name == NULL || server_name[0] == '\0' || ca_file == NULL) return flux__tls_result(-1, "invalid TLS wrap arguments");
     size_t server_name_length = 0; size_t ca_file_length = 0;
@@ -7657,7 +7668,7 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
     SSL *session = SSL_new(context);
     if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || SSL_set_tlsext_host_name(session, server_name) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "failed to configure TLS session"); }
     X509_VERIFY_PARAM *parameters = SSL_get0_param(session);
-    if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1 || SSL_connect(session) != 1 || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS handshake or certificate verification failed"); }
+    if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1 || !flux__tls_handshake(session, (int)socket_handle, false) || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS handshake or certificate verification failed"); }
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
@@ -7670,7 +7681,7 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
     if (context == NULL) return flux__tls_result(-1, "failed to create TLS server context");
     if (SSL_CTX_use_certificate_file(context, certificate, SSL_FILETYPE_PEM) != 1 || SSL_CTX_use_PrivateKey_file(context, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load or validate TLS server certificate"); }
     SSL *session = SSL_new(context);
-    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || SSL_accept(session) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS server handshake failed"); }
+    if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || !flux__tls_handshake(session, (int)socket_handle, true)) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS server handshake failed"); }
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
