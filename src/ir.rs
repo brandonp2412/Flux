@@ -790,6 +790,14 @@ impl ControlFlowGraph {
         self.borrow_states_before.get(id.0)
     }
 
+    /// Returns the normalized immutable-borrow events attached to one CFG
+    /// evaluation node, including their exact reaching source definitions.
+    /// This node-local query keeps ownership consumers on the typed IR event
+    /// stream instead of making them scan the whole graph or re-resolve names.
+    pub fn borrows_at(&self, id: ControlFlowNodeId) -> Option<&[OwnershipBorrow]> {
+        self.node(id).map(|node| node.ownership.borrows.as_slice())
+    }
+
     pub fn borrow_starts(&self) -> &[OwnershipBorrowStart] {
         &self.borrow_starts
     }

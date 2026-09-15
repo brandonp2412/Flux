@@ -28736,6 +28736,14 @@ fn main() -> i64 {
         "normalized borrow facts must retain exact reaching source definitions"
     );
     assert_eq!(
+        ownership_graph
+            .borrows_at(source_evaluation.id)
+            .expect("source evaluation should expose node-local borrows")
+            .len(),
+        1,
+        "ownership consumers should be able to query borrows at one CFG node"
+    );
+    assert_eq!(
         source_evaluation.ownership.borrows[0].span,
         source_value.span
     );
