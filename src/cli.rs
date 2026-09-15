@@ -11288,9 +11288,19 @@ exit 2
             None,
         )
         .expect("timeline profile binary should build");
-        let status = std::process::Command::new(&binary)
-            .status()
-            .expect("timeline profile binary should run");
+        // Some overlay/filesystem combinations briefly keep a newly renamed
+        // executable busy. Retry the launch so this regression test validates
+        // the instrumentation macro rather than publication timing.
+        let status = (0..5)
+            .find_map(|_| match std::process::Command::new(&binary).status() {
+                Ok(status) => Some(status),
+                Err(error) if error.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                }
+                Err(error) => panic!("timeline profile binary should run: {error}"),
+            })
+            .expect("timeline profile binary should become runnable");
         let _ = std::fs::remove_file(&binary);
         assert!(status.success());
     }
