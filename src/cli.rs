@@ -5761,6 +5761,20 @@ fn clean_target(target: &Path) -> Result<(), CliError> {
             .map_err(|error| format!("failed to remove '{}': {error}", path.display()))?;
         removed.push(path);
     }
+    let cache_root = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    let cache = cache_root.join(".flux").join("cache");
+    if cache.is_dir() {
+        fs::remove_dir_all(&cache)
+            .map_err(|error| format!("failed to remove '{}': {error}", cache.display()))?;
+        removed.push(cache);
+    }
     if removed.is_empty() {
         println!("clean: nothing to remove for {}", target.display());
     } else {
@@ -10836,7 +10850,8 @@ mod tests {
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
         base64_encode, build_native_configured, build_native_instrumented, build_options,
         compile_web_html, debug_options, demangle_profile_symbols, display_flux_symbol,
-        emit_llvm_from_c, find_android_compile_jar, github_repository_parts, json_string,
+        clean_target, emit_llvm_from_c, find_android_compile_jar, github_repository_parts,
+        json_string,
         linux_desktop_entry, msix_block_map_xml, msix_content_types_xml, msix_manifest_xml,
         msix_version, native_build_cache_path_configured, native_cache_entry_is_valid,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
@@ -10851,6 +10866,29 @@ mod tests {
     use std::fs;
 
     static REGISTRY_PUBLISH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn clean_target_removes_project_codegen_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-clean-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".flux/cache")).expect("cache fixture should be writable");
+        fs::write(root.join(".flux/cache/codegen-dead.c"), "stale")
+            .expect("cache fixture should contain an artifact");
+        let entry = root.join("main.flux");
+        fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
+            .expect("source fixture should be writable");
+
+        clean_target(&entry).expect("clean should remove project cache");
+
+        assert!(!root.join(".flux/cache").exists());
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn llvm_emission_uses_clang_ir_backend() {
