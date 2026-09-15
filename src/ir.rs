@@ -298,6 +298,9 @@ pub struct OwnershipBorrow {
 pub struct OwnershipCall {
     pub callee: String,
     pub arguments: Vec<ControlFlowValueId>,
+    /// Source definitions reached by each argument at this call boundary.
+    /// This remains parallel to `arguments` for future consuming-call checks.
+    pub argument_definitions: Vec<Vec<ControlFlowDefinitionId>>,
     pub span: SourceSpan,
 }
 
@@ -1304,6 +1307,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrow_ends: Vec::new(),
             borrow_lifetimes: Vec::new(),
         };
+        populate_call_argument_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
@@ -2706,6 +2710,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 Some(OwnershipCall {
                     callee,
                     arguments,
+                    argument_definitions: Vec::new(),
                     span: value.span,
                 })
             })
@@ -2741,6 +2746,26 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves,
             calls: Vec::new(),
+        }
+    }
+}
+
+fn populate_call_argument_definitions(graph: &mut ControlFlowGraph) {
+    let values = graph.values.clone();
+    for node in &mut graph.nodes {
+        for call in &mut node.ownership.calls {
+            call.argument_definitions = call
+                .arguments
+                .iter()
+                .map(
+                    |argument| match values.get(argument.0).map(|value| &value.kind) {
+                        Some(ControlFlowValueKind::NameRead { definitions, .. }) => {
+                            definitions.clone()
+                        }
+                        _ => Vec::new(),
+                    },
+                )
+                .collect();
         }
     }
 }
