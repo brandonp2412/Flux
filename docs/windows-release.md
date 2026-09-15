@@ -27,6 +27,11 @@ verifies the signed result before replacing the output. Certificate provisioning
 publisher identity registration, Store listing, Store validation, and submission
 remain release-owner actions performed with Microsoft tooling and accounts.
 
+Before creating or staging the package, Flux verifies that the certificate path
+exists, is a regular non-empty file, and can be opened. It does not inspect or
+silently repair certificate identity metadata; `signtool` remains responsible
+for validating the PFX contents and signature.
+
 The `--publisher` value is checked before packaging: it must be the exact
 certificate-subject-shaped value beginning with `CN=`, without surrounding
 whitespace or control characters. Keep it identical to the subject used by the

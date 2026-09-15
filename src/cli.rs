@@ -2848,6 +2848,34 @@ fn validate_msix_publisher(value: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+fn validate_msix_certificate(path: &Path) -> Result<(), CliError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        CliError::Message(format!(
+            "MSIX signing certificate '{}' cannot be read: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::Message(format!(
+            "MSIX signing certificate '{}' must be a regular file",
+            path.display()
+        )));
+    }
+    if metadata.len() == 0 {
+        return Err(CliError::Message(format!(
+            "MSIX signing certificate '{}' must not be empty",
+            path.display()
+        )));
+    }
+    fs::File::open(path).map_err(|error| {
+        CliError::Message(format!(
+            "MSIX signing certificate '{}' cannot be opened: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(())
+}
+
 fn build_msix_bundle(
     manifest: &fluxc::project::PackageManifest,
     generated: &str,
@@ -2862,6 +2890,9 @@ fn build_msix_bundle(
             "MSIX packaging requires a Windows Clang target such as x86_64-pc-windows-gnu"
                 .to_string(),
         ));
+    }
+    if let Some(certificate) = certificate {
+        validate_msix_certificate(certificate)?;
     }
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
@@ -10644,8 +10675,9 @@ mod tests {
         publish_registry_package_command, registry_publish_options, select_android_run_target,
         split_symbols_options, stage_android_package_assets, stage_package_assets,
         symbolize_options, test_options, validate_android_publish_manifest,
-        validate_msix_publisher, waydroid_status_is_running, web_dev_options, web_dev_response,
-        web_source_stamp, windows_native_system_libraries, write_native_cache_metadata,
+        validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
+        web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
+        write_native_cache_metadata,
     };
     use std::fs;
 
@@ -11423,6 +11455,30 @@ app OverlayDemo(title: "Overlay")
             );
         }
         assert!(validate_msix_publisher("CN=Flux\nDemo").is_err());
+    }
+
+    #[test]
+    fn msix_certificate_input_must_be_non_empty_regular_file() {
+        let root =
+            std::env::temp_dir().join(format!("flux-msix-certificate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("certificate test directory should be writable");
+        let missing = root.join("missing.pfx");
+        assert!(validate_msix_certificate(&missing).is_err());
+
+        let directory = root.join("certificate-directory");
+        std::fs::create_dir(&directory).expect("certificate directory should be creatable");
+        assert!(validate_msix_certificate(&directory).is_err());
+
+        let empty = root.join("empty.pfx");
+        std::fs::write(&empty, []).expect("empty certificate should be writable");
+        assert!(validate_msix_certificate(&empty).is_err());
+
+        let certificate = root.join("publisher.pfx");
+        std::fs::write(&certificate, [0x30, 0x82, 0x01, 0x00])
+            .expect("certificate fixture should be writable");
+        assert!(validate_msix_certificate(&certificate).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
