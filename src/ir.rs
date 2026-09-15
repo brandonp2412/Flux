@@ -5629,7 +5629,14 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
 fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, OwnershipDrop)> {
     let is_non_copy_storage = |ty: &Type| {
         matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
-            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+            || matches!(
+                ty,
+                Type::Optional(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        Type::List(_) | Type::Set(_) | Type::Map(_, _)
+                    )
+            )
     };
     let mut drops = Vec::new();
 

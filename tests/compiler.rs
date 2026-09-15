@@ -14788,6 +14788,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_drops_optional_map_storage() {
+    let source = r#"
+fn main() -> i64 {
+    let optional_map: map<i64, i64>? = map{1: 2}
+    print(optional_map?.count ?? 0)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1426))
+        .expect("optional collection source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let drops = graph
+        .drops()
+        .iter()
+        .filter(|(_, drop)| drop.name == "optional_map")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        drops.len(),
+        1,
+        "optional map storage should have one normalized release"
+    );
+    let (node, drop) = drops[0];
+    assert!(
+        graph
+            .drops_at(*node)
+            .expect("release boundary should be a CFG node")
+            .contains(drop),
+        "optional map release should be attached to its boundary"
+    );
+}
+
+#[test]
 fn ownership_ir_records_typed_return_boundaries() {
     let source = r#"
 fn choose(flag: bool) -> i64 {
