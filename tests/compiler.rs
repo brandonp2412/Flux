@@ -19570,6 +19570,12 @@ fn main() -> i64 {{
     let write_error: error = tls.write(session, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
     let (received, ready, read_error) = tls.readTimeout(session, 4096, 5000, show)
     let close_error: error = tls.close(session)
+    let (socket2, connect_error2) = net.connect("127.0.0.1", {port})
+    let nonblocking_error2: error = net.nonblocking(socket2, true)
+    let (session2, tls_error2) = tls.wrap(socket2, "127.0.0.1", "{}")
+    let write_error2: error = tls.write(session2, "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+    let (received2, ready2, read_error2) = tls.readTimeout(session2, 4096, 5000, show)
+    let close_error2: error = tls.close(session2)
     print(connect_error)
     print(nonblocking_error)
     print(tls_error)
@@ -19578,9 +19584,18 @@ fn main() -> i64 {{
     print(ready)
     print(read_error)
     print(close_error)
+    print(connect_error2)
+    print(nonblocking_error2)
+    print(tls_error2)
+    print(write_error2)
+    print(received2)
+    print(ready2)
+    print(read_error2)
+    print(close_error2)
     return 0
 }}
 "#,
+        certificate.display(),
         certificate.display()
     );
     let source_path = root.join("main.flux");
@@ -19607,10 +19622,7 @@ fn main() -> i64 {{
         String::from_utf8_lossy(&run.stderr)
     );
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(
-        stdout.contains("HTTP/1.0 200"),
-        "TLS response missing: {stdout}"
-    );
+    assert!(stdout.matches("HTTP/1.0 200").count() >= 2, "TLS responses missing: {stdout}");
     assert!(
         stdout.contains("nil\n"),
         "TLS error result missing: {stdout}"
