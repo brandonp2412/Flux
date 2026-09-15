@@ -842,6 +842,15 @@ impl ControlFlowGraph {
         })
     }
 
+    /// Return the typed ownership facts attached to one normalized return
+    /// evaluation node.  Keeping the query node-local lets ownership passes
+    /// inspect a specific control-flow boundary without filtering the whole
+    /// graph or revisiting the checked AST.
+    pub fn ownership_returns_at(&self, id: ControlFlowNodeId) -> &[OwnershipReturn] {
+        self.node(id)
+            .map_or(&[], |node| node.ownership.returns.as_slice())
+    }
+
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
         self.move_state_before(id)
             .is_some_and(ControlFlowMoveState::reachable)
@@ -3047,19 +3056,13 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 .iter()
                 .map(|argument| {
                     if call.callee == "drop" {
-                        return OwnershipCallArgumentKind::Consuming;
-                    }
-                    let is_borrowed = values.get(argument.0).is_some_and(|value| match signatures
-                        .canonical_type(&value.ty)
-                    {
-                        Type::List(_) => true,
-                        Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
-                        _ => false,
-                    });
-                    if is_borrowed {
-                        OwnershipCallArgumentKind::ImmutableBorrow
+                        OwnershipCallArgumentKind::Consuming
                     } else {
-                        OwnershipCallArgumentKind::Copy
+                        values
+                            .get(argument.0)
+                            .map_or(OwnershipCallArgumentKind::Copy, |value| {
+                                ownership_kind_for_value(value, signatures)
+                            })
                     }
                 })
                 .collect();
@@ -3073,12 +3076,9 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                     let Some(value) = values.get(argument.0) else {
                         return Vec::new();
                     };
-                    let is_borrowed = match signatures.canonical_type(&value.ty) {
-                        Type::List(_) => true,
-                        Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
-                        _ => false,
-                    };
-                    if is_borrowed {
+                    if ownership_kind_for_value(value, signatures)
+                        == OwnershipCallArgumentKind::ImmutableBorrow
+                    {
                         call_argument_definitions(*argument, &values)
                     } else {
                         Vec::new()

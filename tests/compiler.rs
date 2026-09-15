@@ -14527,6 +14527,12 @@ fn main() -> i64 {
         .expect("choose should expose a CFG");
     let returns = graph.ownership_returns().collect::<Vec<_>>();
     assert_eq!(returns.len(), 2);
+    for (node, value) in &returns {
+        assert_eq!(
+            graph.ownership_returns_at(*node),
+            std::slice::from_ref(*value)
+        );
+    }
     assert!(returns.iter().all(|(_, value)| {
         value.kind == OwnershipCallArgumentKind::Copy
             && value.definitions.is_empty()
