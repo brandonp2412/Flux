@@ -1826,7 +1826,9 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
     {
-        out.push_str("#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE\n#endif\n#include <time.h>\n");
+        out.push_str(
+            "#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE\n#endif\n#include <time.h>\n",
+        );
     }
     if runtime_usage.contains("flux__locale_format_") && !uses_android {
         out.push_str("#include <locale.h>\n#include <monetary.h>\n");
