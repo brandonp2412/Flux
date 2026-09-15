@@ -10796,13 +10796,27 @@ app OverlayDemo(title: "Overlay")
             None,
         )
         .expect("AddressSanitizer profile binary should build");
-        let output = std::process::Command::new(&binary)
-            .env(
-                "ASAN_OPTIONS",
-                "detect_leaks=1:exitcode=86:symbolize=0:abort_on_error=0",
-            )
-            .output()
-            .expect("AddressSanitizer profile binary should run");
+        // Some overlay/filesystem combinations briefly keep a newly renamed
+        // executable busy. Retrying the launch makes this regression test
+        // validate ASan rather than that publication race.
+        let output = (0..5)
+            .find_map(|_| {
+                match std::process::Command::new(&binary)
+                    .env(
+                        "ASAN_OPTIONS",
+                        "detect_leaks=1:exitcode=86:symbolize=0:abort_on_error=0",
+                    )
+                    .output()
+                {
+                    Ok(output) => Some(output),
+                    Err(error) if error.raw_os_error() == Some(26) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        None
+                    }
+                    Err(error) => panic!("AddressSanitizer profile binary should run: {error}"),
+                }
+            })
+            .expect("AddressSanitizer profile binary should become runnable");
         let _ = std::fs::remove_file(&binary);
         assert_eq!(output.status.code(), Some(86));
         let stderr = String::from_utf8_lossy(&output.stderr);
