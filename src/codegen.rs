@@ -8261,7 +8261,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     uint64_t total_length = 0;
     for (size_t cursor = 0; cursor < parts.len; ++cursor) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-        size_t length = strlen(text);
+        if (text == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgress contains a null text part");
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) return flux__net_progress_result(offset, false, "sendTextPartsProgress text part exceeds 65536 bytes");
         if ((uint64_t)length > (uint64_t)INT64_MAX - total_length) return flux__net_progress_result(offset, false, "text parts are too large to send");
         total_length += (uint64_t)length;
     }
@@ -8272,7 +8275,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     size_t local_offset = 0;
     while (index < parts.len) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-        size_t length = strlen(text);
+        if (text == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgress contains a null text part");
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) return flux__net_progress_result(offset, false, "sendTextPartsProgress text part exceeds 65536 bytes");
         if ((uint64_t)offset < skipped + (uint64_t)length) {
             local_offset = (size_t)((uint64_t)offset - skipped);
             break;
@@ -8286,7 +8292,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     size_t cursor_offset = local_offset;
     while (cursor < parts.len && vector_count < 64) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-        size_t length = strlen(text);
+        if (text == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgress contains a null text part");
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) return flux__net_progress_result(offset, false, "sendTextPartsProgress text part exceeds 65536 bytes");
         if (cursor_offset < length) {
             vectors[vector_count].iov_base = (void *)(text + cursor_offset);
             vectors[vector_count].iov_len = length - cursor_offset;
@@ -8345,7 +8354,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         size_t cursor_offset = offset;
         while (cursor < parts.len && vector_count < 64) {
             const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-            size_t length = strlen(text);
+            if (text == NULL) return flux__net_result(-1, "sendTextPartsWithTimeout contains a null text part");
+            size_t length = 0;
+            while (length <= 65536 && text[length] != '\0') length += 1;
+            if (length > 65536) return flux__net_result(-1, "sendTextPartsWithTimeout text part exceeds 65536 bytes");
             if (cursor_offset < length) {
                 vectors[vector_count].iov_base = (void *)(text + cursor_offset);
                 vectors[vector_count].iov_len = length - cursor_offset;
@@ -8370,7 +8382,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
             size_t remaining = (size_t)sent;
             while (index < parts.len) {
                 const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-                size_t length = strlen(text);
+                if (text == NULL) return flux__net_result(total_sent, "sendTextPartsWithTimeout contains a null text part");
+                size_t length = 0;
+                while (length <= 65536 && text[length] != '\0') length += 1;
+                if (length > 65536) return flux__net_result(total_sent, "sendTextPartsWithTimeout text part exceeds 65536 bytes");
                 size_t available = length - offset;
                 if (remaining < available) {
                     offset += remaining;
@@ -8426,7 +8441,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     uint64_t total_length = 0;
     for (size_t cursor = 0; cursor < parts.len; ++cursor) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-        size_t length = strlen(text);
+        if (text == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout contains a null text part");
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout text part exceeds 65536 bytes");
         if ((uint64_t)length > (uint64_t)INT64_MAX - total_length) return flux__net_progress_result(offset, false, "text parts are too large to send");
         total_length += (uint64_t)length;
     }
@@ -8437,7 +8455,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     size_t local_offset = 0;
     while (index < parts.len) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-        size_t length = strlen(text);
+        if (text == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout contains a null text part");
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout text part exceeds 65536 bytes");
         if ((uint64_t)offset < skipped + (uint64_t)length) {
             local_offset = (size_t)((uint64_t)offset - skipped);
             break;
@@ -8459,7 +8480,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         size_t cursor_offset = local_offset;
         while (cursor < parts.len && vector_count < 64) {
             const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-            size_t length = strlen(text);
+            if (text == NULL) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout contains a null text part");
+            size_t length = 0;
+            while (length <= 65536 && text[length] != '\0') length += 1;
+            if (length > 65536) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout text part exceeds 65536 bytes");
             if (cursor_offset < length) {
                 vectors[vector_count].iov_base = (void *)(text + cursor_offset);
                 vectors[vector_count].iov_len = length - cursor_offset;
@@ -8483,7 +8507,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
             size_t remaining = (size_t)sent;
             while (index < parts.len) {
                 const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-                size_t length = strlen(text);
+                if (text == NULL) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout contains a null text part");
+                size_t length = 0;
+                while (length <= 65536 && text[length] != '\0') length += 1;
+                if (length > 65536) return flux__net_progress_result(current_offset, false, "sendTextPartsProgressWithTimeout text part exceeds 65536 bytes");
                 size_t available = length - local_offset;
                 if (remaining < available) {
                     local_offset += remaining;
@@ -8545,7 +8572,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     size_t total_length = 0;
     for (size_t index = 0; index < parts.len; ++index) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-        size_t length = strlen(text);
+        if (text == NULL) { freeaddrinfo(addresses); return "sendTextToParts contains a null text part"; }
+        size_t length = 0;
+        while (length <= 65536 && text[length] != '\0') length += 1;
+        if (length > 65536) { freeaddrinfo(addresses); return "sendTextToParts text part exceeds 65536 bytes"; }
         if (length == 0) continue;
         if (vector_count == 64) { freeaddrinfo(addresses); return "sendTextToParts supports at most 64 non-empty parts"; }
         if (length > (size_t)SSIZE_MAX - total_length) { freeaddrinfo(addresses); return "text parts are too large to send"; }
