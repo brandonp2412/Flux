@@ -5752,9 +5752,12 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
     match ty {
         Type::I64 | Type::Bool | Type::Str => true,
         Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
-        Type::List(inner) | Type::Set(inner) => {
-            matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
-        }
+        Type::List(inner) => match inner.as_ref() {
+            Type::I64 | Type::Bool | Type::Str => true,
+            Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+            _ => false,
+        },
+        Type::Set(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
         Type::Map(key, value) => {
             matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
         }
@@ -6055,10 +6058,15 @@ pub fn type_of_expr(
                                 ));
                             }
                         };
-                        if !matches!(*element, Type::I64 | Type::Bool | Type::Str)
-                            || values
-                                .iter()
-                                .any(|value| constant_primitive_value(value, signatures).is_none())
+                        let scalar_or_optional = matches!(
+                            *element,
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || matches!(&*element, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str));
+                        if !scalar_or_optional
+                            || values.iter().any(|value| {
+                                constant_primitive_value(value, signatures).is_none()
+                                    && !matches!(value.kind, ExprKind::None)
+                            })
                         {
                             return Err(diag(
                                 item.span,
@@ -6298,7 +6306,7 @@ pub fn type_of_expr(
                     _ => type_of_expr(item, env, signatures),
                 }
             };
-            let element_ty = item_element_type(first)?;
+            let mut element_ty = item_element_type(first)?;
             if matches!(element_ty, Type::Void | Type::Function { .. }) {
                 return Err(diag(
                     first.span,
@@ -6307,6 +6315,13 @@ pub fn type_of_expr(
             }
             for item in items.iter().skip(1) {
                 let actual = item_element_type(item)?;
+                if matches!(actual, Type::Optional(ref inner) if matches!(inner.as_ref(), Type::Void))
+                {
+                    if matches!(element_ty, Type::I64 | Type::Bool | Type::Str) {
+                        element_ty = Type::Optional(Box::new(element_ty));
+                        continue;
+                    }
+                }
                 require_type(item.span, &element_ty, &actual, "list element")?;
             }
             Ok(if is_set {

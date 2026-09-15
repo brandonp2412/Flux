@@ -1626,7 +1626,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encodeObject",
             3,
-            "fn json.encodeObject(values: map<str, i64|bool|str|i64?|bool?|str?|scalar[]|set<scalar>|map<str, scalar|scalar[]|i64?|bool?|str?>>, callback: fn(str) -> void) -> error",
+            "fn json.encodeObject(values: map<str, i64|bool|str|i64?|bool?|str?|scalar[]|scalar-optional[]|set<scalar>|map<str, scalar|scalar[]|scalar-optional[]|i64?|bool?|str?>>, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -3872,7 +3872,7 @@ fn signature_help_for_document_cached(
                 "encodeObject" => Some(signature_help_for_builtin(
                     "json.encodeObject",
                     &[
-                        "values: map<str, i64|bool|str|scalar[]|map<str, scalar>>",
+                        "values: map<str, i64|bool|str|scalar[]|scalar-optional[]|map<str, scalar>>",
                         "callback: fn(str) -> void",
                     ],
                     "error",
