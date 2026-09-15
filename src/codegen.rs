@@ -1491,7 +1491,6 @@ pub fn emit_c_for_target_with_source_metadata(
         out.push('\n');
     }
     emit_record_type_definitions(&mut out, program, signatures, &function_ir);
-    emit_json_record_helpers(&mut out, signatures, &function_ir, &runtime_usage);
     if runtime_usage.contains("flux__time_calendar(") {
         out.push_str("static inline struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64 flux__time_calendar(int64_t unix_ms) { return (struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64){ .flux__field_year = flux__time_utc_part(unix_ms, 0), .flux__field_month = flux__time_utc_part(unix_ms, 1), .flux__field_day = flux__time_utc_part(unix_ms, 2), .flux__field_hour = flux__time_utc_part(unix_ms, 3), .flux__field_minute = flux__time_utc_part(unix_ms, 4), .flux__field_second = flux__time_utc_part(unix_ms, 5), .flux__field_millis = flux__time_utc_part(unix_ms, 6), .flux__field_weekday = flux__time_utc_part(unix_ms, 7), .flux__field_dayOfYear = flux__time_utc_part(unix_ms, 8) }; }\n");
     }
@@ -1523,6 +1522,11 @@ pub fn emit_c_for_target_with_source_metadata(
     if !reachable_value_types.is_empty() {
         out.push('\n');
     }
+
+    // Named structs must be complete before by-value JSON helpers are emitted.
+    // Anonymous records were already defined above, so both aggregate forms can
+    // share the same bounded callback-scoped encoder generation here.
+    emit_json_record_helpers(&mut out, signatures, &function_ir, &runtime_usage);
 
     emit_interface_value_definitions(
         &mut out,
@@ -35701,7 +35705,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            if matches!(signatures.canonical_type(&value.ty), Type::Record(_)) {
+            if json_record_supported(&value.ty, signatures) {
                 let helper = json_record_helper_name(&value.ty, signatures);
                 return Ok((
                     format!("{helper}({}, {})", value.code, callback.code),
@@ -37883,17 +37887,45 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                     _ => false,
                 })
         }
+        Type::Named(name) => signatures.struct_type(&name).is_some_and(|structure| {
+            structure
+                .fields
+                .iter()
+                .all(|field| match signatures.canonical_type(&field.ty) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) | Type::Named(_) => {
+                        json_record_supported(&field.ty, signatures)
+                    }
+                    _ => false,
+                })
+        }),
         _ => false,
     }
 }
 
 fn collect_json_record_types(ty: &Type, signatures: &Signatures, records: &mut HashSet<Type>) {
     let ty = signatures.canonical_type(ty);
-    let Type::Record(fields) = &ty else { return };
+    let fields = match &ty {
+        Type::Record(fields) => fields.clone(),
+        Type::Named(name) => signatures
+            .struct_type(name)
+            .map(|structure| {
+                structure
+                    .fields
+                    .iter()
+                    .map(|field| crate::ast::RecordTypeField {
+                        name: Some(field.name.clone()),
+                        ty: field.ty.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        _ => return,
+    };
     if !json_record_supported(&ty, signatures) || !records.insert(ty.clone()) {
         return;
     }
-    for field in fields {
+    for field in &fields {
         collect_json_record_types(&field.ty, signatures, records);
     }
 }
@@ -37916,13 +37948,27 @@ fn emit_json_record_helpers(
     let mut records = records.into_iter().collect::<Vec<_>>();
     records.sort_by_key(|ty| (record_type_depth(ty, signatures), ty.name()));
     for ty in records {
-        let Type::Record(fields) = signatures.canonical_type(&ty) else {
-            continue;
+        let fields = match signatures.canonical_type(&ty) {
+            Type::Record(fields) => fields,
+            Type::Named(name) => signatures
+                .struct_type(&name)
+                .map(|structure| {
+                    structure
+                        .fields
+                        .iter()
+                        .map(|field| crate::ast::RecordTypeField {
+                            name: Some(field.name.clone()),
+                            ty: field.ty.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            _ => continue,
         };
         let helper = json_record_helper_name(&ty, signatures);
         out.push_str(&format!(
             "static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{\n",
-            record_c_name(&ty, signatures)
+            c_type(&ty, signatures).trim_start_matches("struct ")
         ));
         out.push_str("    char encoded[393217]; size_t output = 0; encoded[output++] = '{';\n");
         for (index, field) in fields.iter().enumerate() {
@@ -37944,7 +37990,7 @@ fn emit_json_record_helpers(
                 Type::I64 => format!("flux__json_encode_int({field_expr}, flux__json_capture)"),
                 Type::Bool => format!("flux__json_encode_bool({field_expr}, flux__json_capture)"),
                 Type::Str => format!("flux__json_encode_string({field_expr}, flux__json_capture)"),
-                Type::Record(_) => format!(
+                Type::Record(_) | Type::Named(_) => format!(
                     "{}({field_expr}, flux__json_capture)",
                     json_record_helper_name(&field.ty, signatures)
                 ),
@@ -37983,8 +38029,22 @@ fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet
 }
 
 fn record_type_depth(ty: &Type, signatures: &Signatures) -> usize {
-    let Type::Record(fields) = signatures.canonical_type(ty) else {
-        return 0;
+    let fields = match signatures.canonical_type(ty) {
+        Type::Record(fields) => fields,
+        Type::Named(name) => signatures
+            .struct_type(&name)
+            .map(|structure| {
+                structure
+                    .fields
+                    .iter()
+                    .map(|field| crate::ast::RecordTypeField {
+                        name: Some(field.name.clone()),
+                        ty: field.ty.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        _ => return 0,
     };
     1 + fields
         .iter()

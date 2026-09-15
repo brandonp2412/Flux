@@ -5778,6 +5778,18 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                     _ => false,
                 })
         }
+        Type::Named(name) => signatures.struct_type(&name).is_some_and(|structure| {
+            structure
+                .fields
+                .iter()
+                .all(|field| match signatures.canonical_type(&field.ty) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) | Type::Named(_) => {
+                        json_record_type_is_supported(&field.ty, signatures)
+                    }
+                    _ => false,
+                })
+        }),
         _ => false,
     }
 }
@@ -10793,7 +10805,9 @@ fn check_qualified_call(
                         signatures.canonical_type(key) == Type::Str
                             && json_map_value_type_is_supported(&signatures.canonical_type(element))
                     }
-                    Type::Record(_) => json_record_type_is_supported(&value, signatures),
+                    Type::Record(_) | Type::Named(_) => {
+                        json_record_type_is_supported(&value, signatures)
+                    }
                     _ => false,
                 };
                 if name == "encodeString" && value != Type::Str {

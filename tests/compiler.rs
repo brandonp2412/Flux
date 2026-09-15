@@ -17595,6 +17595,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_named_copy_structs_and_nested_structs_encode_natively() {
+    let source = r#"
+struct Address {
+    city: str
+    number: i64
+}
+struct User {
+    name: str
+    active: bool
+    address: Address
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let user: User = User { name: "Ada", active: true, address: Address { city: "London", number: 10 } }
+    let encodingError: error = json.encode(user, encoded)
+    print(encodingError)
+    return 0
+}
+"#;
+    check_source(source).expect("named Copy structs should typecheck for JSON encoding");
+    let generated = compile_to_c(source).expect("named Copy structs should lower to C");
+    assert!(generated.contains("flux__json_encode_record_named_Address("));
+    assert!(generated.contains("flux__json_encode_record_named_User("));
+    let root = std::env::temp_dir().join(format!("flux-json-struct-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON struct directory should be writable");
+    let c_path = root.join("json-struct.c");
+    let exe_path = root.join("json-struct");
+    fs::write(&c_path, generated).expect("generated JSON struct C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile named JSON struct code");
+    assert!(
+        compile.status.success(),
+        "named JSON struct C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("named JSON struct program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"name\":\"Ada\",\"active\":true,\"address\":{\"city\":\"London\",\"number\":10}}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_recursively_nested_scalar_arrays_encode_natively() {
     let source = r#"
 fn encoded(value: str) -> void {
