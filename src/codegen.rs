@@ -37965,10 +37965,13 @@ fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|payload| match signatures.canonical_type(payload) {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::Optional(inner) => {
+                        matches!(
+                            signatures.canonical_type(&inner),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || json_record_supported(&inner, signatures)
+                            || json_enum_supported(&inner, signatures)
+                    }
                     Type::Record(_) | Type::Named(_) => {
                         json_record_supported(payload, signatures)
                             || json_enum_supported(payload, signatures)
@@ -38221,6 +38224,19 @@ fn emit_json_enum_helpers(
                             Type::Str => format!(
                                 "flux__json_encode_optional_str({expr}, flux__json_capture)"
                             ),
+                            Type::Record(_) | Type::Named(_)
+                                if json_record_supported(&inner, signatures)
+                                    || json_enum_supported(&inner, signatures) =>
+                            {
+                                format!(
+                                    "({expr}.has_value ? {}({expr}.value, flux__json_capture) : flux__json_encode_null(flux__json_capture))",
+                                    if json_enum_supported(&inner, signatures) {
+                                        json_enum_helper_name(&inner, signatures)
+                                    } else {
+                                        json_record_helper_name(&inner, signatures)
+                                    }
+                                )
+                            }
                             _ => continue,
                         },
                         Type::Record(_) | Type::Named(_)
@@ -38294,7 +38310,9 @@ fn emit_json_optional_aggregate_helpers(
     function_ir: &FunctionIrCache,
     runtime_usage: &str,
 ) {
-    if !runtime_usage.contains("flux__json_encode_optional_aggregate_") {
+    if !runtime_usage.contains("flux__json_encode_optional_aggregate_")
+        && !runtime_usage.contains("flux__json_encode_enum_")
+    {
         return;
     }
     let mut optionals = HashSet::new();
@@ -38307,6 +38325,17 @@ fn emit_json_optional_aggregate_helpers(
             {
                 optionals.insert(Type::Optional(inner));
             }
+        }
+    }
+    for function in function_ir.values() {
+        for value in function.values() {
+            collect_json_optional_aggregate_types(&value.ty, signatures, &mut optionals);
+        }
+    }
+    for name in signatures.enums().keys() {
+        let enum_ty = Type::Named(name.clone());
+        if runtime_usage.contains(&json_enum_helper_name(&enum_ty, signatures)) {
+            collect_json_optional_aggregate_types(&enum_ty, signatures, &mut optionals);
         }
     }
     let mut optionals = optionals.into_iter().collect::<Vec<_>>();
@@ -38325,6 +38354,29 @@ fn emit_json_optional_aggregate_helpers(
             "static inline const char *{helper}({} value, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encode callback\"; if (!value.has_value) {{ callback(\"null\"); return NULL; }} return {inner_helper}(value.value, callback); }}\n",
             c_type(&ty, signatures)
         ));
+    }
+}
+
+fn collect_json_optional_aggregate_types(
+    ty: &Type,
+    signatures: &Signatures,
+    optionals: &mut HashSet<Type>,
+) {
+    let ty = signatures.canonical_type(ty);
+    let Type::Named(name) = ty else { return };
+    let Some(definition) = signatures.enum_type(&name) else {
+        return;
+    };
+    for variant in &definition.variants {
+        for payload in &variant.payloads {
+            let payload = signatures.canonical_type(payload);
+            if let Type::Optional(inner) = &payload
+                && (json_record_supported(inner, signatures)
+                    || json_enum_supported(inner, signatures))
+            {
+                optionals.insert(payload.clone());
+            }
+        }
     }
 }
 

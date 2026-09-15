@@ -16640,6 +16640,7 @@ enum Event {
     Created(User)
     Changed(i64, User)
     Maybe(i64?)
+    MaybeUser(User?)
     Empty
 }
 
@@ -16654,11 +16655,15 @@ fn emit(value: str) -> void {
 fn main() -> i64 {
     let present: i64? = 9
     let absent: i64? = none
+    let presentUser: User? = User { name: "Mia", age: 8 }
+    let absentUser: User? = none
     print(json.encode(Event.Created(User { name: "Ada", age: 42 }), emit))
     print(json.encode(Event.Changed(7, User { name: "Lin", age: 3 }), emit))
     print(json.encode(Event.Empty(), emit))
     print(json.encode(Event.Maybe(present), emit))
     print(json.encode(Event.Maybe(absent), emit))
+    print(json.encode(Event.MaybeUser(presentUser), emit))
+    print(json.encode(Event.MaybeUser(absentUser), emit))
     print(json.encode(Envelope.Event(Event.Created(User { name: "Jo", age: 5 })), emit))
     return 0
 }
@@ -16690,7 +16695,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "{\"Created\":{\"name\":\"Ada\",\"age\":42}}\nnil\n{\"Changed\":[7,{\"name\":\"Lin\",\"age\":3}]}\nnil\n{\"Empty\":null}\nnil\n{\"Maybe\":9}\nnil\n{\"Maybe\":null}\nnil\n{\"Event\":{\"Created\":{\"name\":\"Jo\",\"age\":5}}}\nnil\n"
+        "{\"Created\":{\"name\":\"Ada\",\"age\":42}}\nnil\n{\"Changed\":[7,{\"name\":\"Lin\",\"age\":3}]}\nnil\n{\"Empty\":null}\nnil\n{\"Maybe\":9}\nnil\n{\"Maybe\":null}\nnil\n{\"MaybeUser\":{\"name\":\"Mia\",\"age\":8}}\nnil\n{\"MaybeUser\":null}\nnil\n{\"Event\":{\"Created\":{\"name\":\"Jo\",\"age\":5}}}\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
