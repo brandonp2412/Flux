@@ -17988,8 +17988,10 @@ fn encoded(value: str) -> void {
 fn main() -> i64 {
     let numbers: map<str, i64?[]> = {"values": [1, none]}
     let words: map<str, str?[]> = {"words": ["a", none]}
+    let nested: map<str, map<str, i64?[]>> = {"outer": {"inner": [2, none]}}
     print(json.encodeObject(numbers, encoded))
     print(json.encode(words, encoded))
+    print(json.encode(nested, encoded))
     return 0
 }
 "#;
@@ -18023,7 +18025,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "{\"values\":[1,null]}\nnil\n{\"words\":[\"a\",null]}\nnil\n"
+        "{\"values\":[1,null]}\nnil\n{\"words\":[\"a\",null]}\nnil\n{\"outer\":{\"inner\":[2,null]}}\nnil\n"
     );
     let _ = fs::remove_dir_all(root);
 }
