@@ -802,8 +802,10 @@ app Screen
     )
     .expect("dynamic text alignment should lower for Windows");
     assert!(generated.contains("flux__win_set_text_alignment"));
-    assert!(generated
-        .contains("flux__win_set_text_alignment(flux__ui_title, flux__ui_state_alignment)"));
+    assert!(
+        generated
+            .contains("flux__win_set_text_alignment(flux__ui_title, flux__ui_state_alignment)")
+    );
     assert!(generated.contains("SetWindowLongPtrA(control, GWL_STYLE"));
 }
 
@@ -5610,6 +5612,66 @@ fn main() -> i64 {
         "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\ncustom+v1\nexample.test\n/a%20b\n\n\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains an invalid percent escape\nURI contains whitespace or control characters\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn general_uri_component_decoding_is_bounded_borrowed_and_tree_shaken() {
+    let source = r#"
+fn decoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(uri.decode("hello%20world%2Fok", decoded))
+    print(uri.decode("plus+stays", decoded))
+    print(uri.decode("%", decoded))
+    print(uri.decode("%GG", decoded))
+    print(uri.decode("%00", decoded))
+    return 0
+}
+"#;
+    check_source(source).expect("URI component decoding should typecheck");
+    let generated = compile_to_c(source).expect("URI component decoding should lower natively");
+    assert!(generated.contains("flux__url_decode_component("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-uri-decode-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI decode fixture should be writable");
+    let source_path = root.join("uri_decode.flux");
+    fs::write(&source_path, source).expect("URI decode source should be writable");
+    let binary = root.join("uri_decode");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI decode fixture should build");
+    assert!(
+        built.status.success(),
+        "URI decode fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI decode fixture should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "hello world/ok\nnil\nplus+stays\nnil\nURL component has incomplete percent escape\nURL component has invalid percent escape\nURL component cannot decode to NUL\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let invalid_callback = check_source(
+        "fn decoded(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.decode(\"a%20b\", decoded))\n    return 0\n}\n",
+    )
+    .expect_err("URI decode callback shape must be exact");
+    assert!(invalid_callback.message.contains("uri.decode callback"));
+
+    let unused = "fn decoded(_value: str) -> void {\n}\nfn hidden() -> void {\n    print(uri.decode(\"a%20b\", decoded))\n}\nfn main() -> i64 {\n    return 0\n}\n";
+    let unused_generated = compile_to_c(unused).expect("dead URI decode should typecheck");
+    assert!(!unused_generated.contains("flux__url_decode_component("));
 }
 
 #[test]
@@ -14571,11 +14633,14 @@ fn main() -> i64 {
 "#;
     let errors = check_source_all(live_optional_binding)
         .expect_err("an optional list pattern binding must keep its owner borrowed");
-    assert!(errors.iter().any(|error| {
-        error.message.contains(
-            "cannot move non-copy binding 'values' while borrowed view 'present' is still live",
-        )
-    }), "optional binding errors: {errors:?}");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains(
+                "cannot move non-copy binding 'values' while borrowed view 'present' is still live",
+            )
+        }),
+        "optional binding errors: {errors:?}"
+    );
 
     let moved = r#"
 fn main() -> i64 {
@@ -39138,8 +39203,8 @@ app Screen(onConfigurationChanged: configurationChanged)
 "#;
     check_source(source).expect("Windows configuration callback should typecheck");
     let program = fluxc::parser::parse(source).expect("Windows configuration source should parse");
-    let signatures = fluxc::typecheck::check(&program)
-        .expect("Windows configuration source should typecheck");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows configuration source should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,

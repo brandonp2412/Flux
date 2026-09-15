@@ -1465,9 +1465,9 @@ pub fn emit_c_for_target_with_source_metadata(
                 .iter()
                 .find(|view| view.name == application.view_name)
                 .is_some_and(|view| {
-                    view.elements
-                        .iter()
-                        .any(|element| element.kind == "Text" && view_property(element, "font_family").is_some())
+                    view.elements.iter().any(|element| {
+                        element.kind == "Text" && view_property(element, "font_family").is_some()
+                    })
                 })
         });
     emit_runtime_prelude(
@@ -36267,11 +36267,21 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "uri" {
-        if !named_args.is_empty() || name != "parse" || args.len() != 2 {
+        if !named_args.is_empty() || !matches!(name, "parse" | "decode") || args.len() != 2 {
             return Err(diag(span, "invalid URI call reached code generation"));
         }
         let value = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[1], env, signatures)?;
+        if name == "decode" {
+            return Ok((
+                format!(
+                    "flux__url_decode_component({}, {})",
+                    value.code, callback.code
+                ),
+                vec![Type::Error],
+                None,
+            ));
+        }
         return Ok((
             format!("flux__uri_parse({}, {})", value.code, callback.code),
             vec![Type::Error],

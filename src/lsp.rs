@@ -954,13 +954,7 @@ fn add_named_argument_completions(
                 binding
                     .params
                     .iter()
-                    .map(|param| {
-                        (
-                            param.name.to_string(),
-                            param.signature.to_string(),
-                            true,
-                        )
-                    })
+                    .map(|param| (param.name.to_string(), param.signature.to_string(), true))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -1680,6 +1674,13 @@ fn add_qualified_namespace_completions(
             "parse",
             3,
             "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "decode",
+            3,
+            "fn uri.decode(value: str, callback: fn(str) -> void) -> error",
         );
         return true;
     }
@@ -3945,16 +3946,25 @@ fn signature_help_for_document_cached(
                 _ => {}
             }
         }
-        if namespace == "uri" && implementation_member == "parse" {
-            return Some(signature_help_for_builtin(
-                "uri.parse",
-                &[
-                    "value: str",
-                    "callback: fn(str, str, str, str, str) -> void",
-                ],
-                "error",
-                active_parameter,
-            ));
+        if namespace == "uri" {
+            return match implementation_member {
+                "parse" => Some(signature_help_for_builtin(
+                    "uri.parse",
+                    &[
+                        "value: str",
+                        "callback: fn(str, str, str, str, str) -> void",
+                    ],
+                    "error",
+                    active_parameter,
+                )),
+                "decode" => Some(signature_help_for_builtin(
+                    "uri.decode",
+                    &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                _ => None,
+            };
         }
         if namespace == "json" {
             return match implementation_member {
@@ -5809,12 +5819,7 @@ fn inlay_hints_for_document(
 #[cfg(test)]
 fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
     let database = analyzed_document(uri, source);
-    semantic_tokens_with_database(
-        source,
-        encoding,
-        source_id_for_uri(uri),
-        database.as_ref(),
-    )
+    semantic_tokens_with_database(source, encoding, source_id_for_uri(uri), database.as_ref())
 }
 
 fn source_id_for_analyzed_source(
@@ -5822,8 +5827,7 @@ fn source_id_for_analyzed_source(
     source: &str,
     sources: &[crate::project::ProjectSource],
 ) -> SourceId {
-    let canonical_path = file_uri_path(uri)
-        .and_then(|path| std::fs::canonicalize(path).ok());
+    let canonical_path = file_uri_path(uri).and_then(|path| std::fs::canonicalize(path).ok());
     sources
         .iter()
         .find(|candidate| {
@@ -6508,12 +6512,7 @@ fn definition_for_document_cached(
         }
         let source_id = source_id_for_analyzed_source(uri, source, &sources);
         let symbol = symbol_for_position_with_source_id(
-            &database,
-            source,
-            source_id,
-            line_index,
-            character,
-            encoding,
+            &database, source, source_id, line_index, character, encoding,
         )?;
         let target = sources
             .iter()
@@ -12246,11 +12245,8 @@ mod tests {
 
     #[test]
     fn project_view_state_definition_uses_analyzed_source_identity() {
-        let root = std::env::temp_dir().join(format!(
-            "flux-lsp-view-state-{}-{}",
-            std::process::id(),
-            1
-        ));
+        let root =
+            std::env::temp_dir().join(format!("flux-lsp-view-state-{}-{}", std::process::id(), 1));
         std::fs::create_dir_all(&root).expect("temporary LSP project directory should exist");
         let path = root.join("main.flux");
         let source = "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello\"\n        visible: clicked\n}\n\napp Demo\n";
@@ -12328,7 +12324,8 @@ mod tests {
     #[test]
     fn android_call_completion_suggests_remaining_named_parameters() {
         let uri = "file:///tmp/android-remaining-named-argument.flux";
-        let source = "fn main() -> i64 {\n    android.notify(channelId: \"updates\",\n    return 0\n}\n";
+        let source =
+            "fn main() -> i64 {\n    android.notify(channelId: \"updates\",\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let line = source.lines().nth(1).unwrap();
         let items = JsonValue::Array(completion_items_at_cursor(
@@ -12374,7 +12371,10 @@ mod tests {
             .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
             .collect::<Vec<_>>();
         assert!(labels.contains(&"label: "), "completion items: {labels:?}");
-        assert!(!labels.contains(&"enabled: "), "completion items: {labels:?}");
+        assert!(
+            !labels.contains(&"enabled: "),
+            "completion items: {labels:?}"
+        );
     }
 
     #[test]

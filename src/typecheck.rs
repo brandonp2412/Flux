@@ -8159,12 +8159,7 @@ fn check_qualified_call(
                     "tls.writeTimeout session",
                 )?;
                 let value = type_of_expr(&args[1], env, signatures)?;
-                require_type(
-                    args[1].span,
-                    &Type::Str,
-                    &value,
-                    "tls.writeTimeout value",
-                )?;
+                require_type(args[1].span, &Type::Str, &value, "tls.writeTimeout value")?;
                 let timeout = type_of_expr(&args[2], env, signatures)?;
                 require_type(
                     args[2].span,
@@ -11197,20 +11192,38 @@ fn check_qualified_call(
         }
     }
     if namespace == "uri" {
-        if name != "parse" || !named_args.is_empty() || args.len() != 2 {
+        if !matches!(name.as_str(), "parse" | "decode") || !named_args.is_empty() || args.len() != 2
+        {
             return Err(diag(
                 *name_span,
                 &format!("uri module has no function '{name}' or invalid arguments"),
             ));
         }
         let value = type_of_expr(&args[0], env, signatures)?;
-        require_type(args[0].span, &Type::Str, &value, "uri.parse value")?;
+        require_type(
+            args[0].span,
+            &Type::Str,
+            &value,
+            &format!("uri.{name} value"),
+        )?;
         let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-        let expected = Type::Function {
-            params: vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
-            returns: Vec::new(),
+        let expected = if name == "parse" {
+            Type::Function {
+                params: vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
+                returns: Vec::new(),
+            }
+        } else {
+            Type::Function {
+                params: vec![Type::Str],
+                returns: Vec::new(),
+            }
         };
-        require_type(args[1].span, &expected, &callback, "uri.parse callback")?;
+        require_type(
+            args[1].span,
+            &expected,
+            &callback,
+            &format!("uri.{name} callback"),
+        )?;
         return Ok(vec![Type::Error]);
     }
     if namespace == "json" {
