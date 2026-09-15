@@ -14594,7 +14594,17 @@ fn main() -> i64 {
         call.argument_kinds,
         vec![OwnershipCallArgumentKind::Consuming]
     );
+    assert_eq!(
+        call.argument_kind(0),
+        Some(OwnershipCallArgumentKind::Consuming)
+    );
+    assert!(call.is_consuming());
+    assert_eq!(
+        call.argument_definitions_at(0),
+        call.argument_definitions[0].as_slice()
+    );
     assert!(call.borrowed_argument_definitions[0].is_empty());
+    assert!(call.borrowed_argument_definitions_at(0).is_empty());
     assert_eq!(node.ownership.moves.len(), 1);
     assert_eq!(node.ownership.moves[0].source, "values");
     assert!(node.ownership.moves[0].value.is_some());
@@ -15054,7 +15064,11 @@ fn main() -> i64 {
         .iter()
         .filter(|lifetime| lifetime.borrower == "view" && lifetime.source == "values")
         .collect::<Vec<_>>();
-    assert_eq!(lifetimes.len(), 2, "both branch-local definitions must retain lifetimes");
+    assert_eq!(
+        lifetimes.len(),
+        2,
+        "both branch-local definitions must retain lifetimes"
+    );
     assert_ne!(lifetimes[0].definition, lifetimes[1].definition);
 }
 

@@ -350,6 +350,40 @@ pub struct OwnershipCall {
     pub span: SourceSpan,
 }
 
+impl OwnershipCall {
+    /// Returns the ownership mode for one typed argument boundary.
+    ///
+    /// Keeping this lookup on the normalized call fact prevents consumers from
+    /// silently assuming that the parallel argument vectors have identical
+    /// lengths. Malformed/synthetic graphs conservatively report no mode.
+    pub fn argument_kind(&self, index: usize) -> Option<OwnershipCallArgumentKind> {
+        self.argument_kinds.get(index).copied()
+    }
+
+    /// Returns the exact reaching definitions for one argument.
+    pub fn argument_definitions_at(&self, index: usize) -> &[ControlFlowDefinitionId] {
+        self.argument_definitions
+            .get(index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Returns the definitions borrowed by one argument, if it is an
+    /// immutable non-copy boundary.
+    pub fn borrowed_argument_definitions_at(&self, index: usize) -> &[ControlFlowDefinitionId] {
+        self.borrowed_argument_definitions
+            .get(index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn is_consuming(&self) -> bool {
+        self.argument_kinds
+            .iter()
+            .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
+    }
+}
+
 /// Ownership facts for a value crossing a function return boundary.
 ///
 /// Return values are kept as typed value IDs, just like call arguments, so a
@@ -842,11 +876,7 @@ impl ControlFlowGraph {
             node.ownership
                 .calls
                 .iter()
-                .filter(|call| {
-                    call.argument_kinds
-                        .iter()
-                        .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
-                })
+                .filter(|call| call.is_consuming())
                 .map(move |call| (node.id, call))
         })
     }
@@ -859,11 +889,7 @@ impl ControlFlowGraph {
         self.node(id)
             .into_iter()
             .flat_map(|node| node.ownership.calls.iter())
-            .filter(|call| {
-                call.argument_kinds
-                    .iter()
-                    .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
-            })
+            .filter(|call| call.is_consuming())
     }
 
     /// Return normalized partial-move events in source/CFG order.
