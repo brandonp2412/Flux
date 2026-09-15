@@ -1892,6 +1892,7 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
         );
+        push_completion_item(items, seen, "format", 3, "fn time.format(unixMillis: i64, callback: fn(str) -> void) -> error");
         for member in [
             "year",
             "month",
@@ -4239,6 +4240,9 @@ fn signature_help_for_document_cached(
                         "i64",
                         active_parameter,
                     ));
+                }
+                "formatUtc" => {
+                    return Some(signature_help_for_builtin("time.formatUtc", &["unixMillis: i64", "callback: fn(str) -> void"], "error", active_parameter));
                 }
                 "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
                 | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {

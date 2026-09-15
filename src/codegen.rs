@@ -1711,6 +1711,7 @@ fn emit_runtime_prelude(
     let uses_http_request_workers = uses_http_concurrent;
     let uses_workers = runtime_usage.contains("flux__worker_")
         || runtime_usage.contains("flux__time_start_timer(")
+        || runtime_usage.contains("flux__time_format_utc(")
         || uses_http_concurrent;
     out.push_str("#ifdef FLUX_PROFILE_TIMELINE\n#ifndef _POSIX_C_SOURCE\n#define _POSIX_C_SOURCE 200809L\n#endif\n#endif\n");
     if runtime_usage.contains("flux__locale_format_") {
@@ -6451,6 +6452,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__time_utc_part(") {
         out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
+    }
+    if runtime_usage.contains("flux__time_format_utc(") {
+        out.push_str("static inline const char *flux__time_format_utc(int64_t unix_ms, void (*callback)(const char *)) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) return \"time.formatUtc timestamp exceeds platform range\"; struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) return \"time.formatUtc calendar conversion failed\"; int64_t year = (int64_t)value.tm_year + INT64_C(1900); if (year < -9999 || year > 9999) return \"time.formatUtc year does not fit ISO-8601 form\"; char buffer[32]; int written = snprintf(buffer, sizeof(buffer), \"%04lld-%02d-%02dT%02d:%02d:%02d.%03lldZ\", (long long)year, value.tm_mon + 1, value.tm_mday, value.tm_hour, value.tm_min, value.tm_sec, (long long)millis); if (written < 0 || (size_t)written >= sizeof(buffer)) return \"time.formatUtc result exceeds buffer\"; callback(buffer); return NULL; }\n");
     }
     if runtime_usage.contains("flux__time_utc_unix_millis(") {
         out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
@@ -35115,6 +35119,12 @@ fn emit_qualified_call(
                     vec![Type::I64],
                     None,
                 ));
+            }
+            "formatUtc" => {
+                if args.len() != 2 { return Err(diag(span, "invalid time call reached code generation")); }
+                let timestamp = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((format!("flux__time_format_utc({}, {})", timestamp.code, callback.code), vec![Type::Error], None));
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
             | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {

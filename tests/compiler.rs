@@ -9534,6 +9534,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn utc_time_format_is_borrowed_bounded_and_native() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let formatError: error = time.formatUtc(946782245006, emit)
+    if formatError != nil:
+        return 1
+    let negativeError: error = time.formatUtc(-1, emit)
+    if negativeError != nil:
+        return 2
+    return 0
+}
+"#;
+    check_source(source).expect("UTC formatter should typecheck");
+    let generated = compile_to_c(source).expect("UTC formatter should lower natively");
+    assert!(generated.contains("flux__time_format_utc("));
+    assert!(generated.contains("callback(buffer)"));
+    let root = std::env::temp_dir().join(format!("flux-time-format-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("time formatter fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("time formatter source should be writable");
+    let binary = root.join("time-format");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux")).arg("build").arg(&source_path).arg("-o").arg(&binary).output().expect("time formatter binary should build");
+    assert!(built.status.success(), "time formatter build failed: {}", String::from_utf8_lossy(&built.stderr));
+    let run = Command::new(&binary).output().expect("time formatter binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(), vec!["2000-01-02T03:04:05.006Z", "1969-12-31T23:59:59.999Z"]);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn structured_timers_run_repeat_cancel_and_tree_shake() {
     let source = r#"
 fn once() -> void {
