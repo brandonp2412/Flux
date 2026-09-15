@@ -2681,8 +2681,12 @@ fn build_native_target(
     let codegen_target = native_target.codegen_target();
     let generated =
         match fluxc::project::analyze_for_target(path, codegen_target).and_then(|analysis| {
+            // Keep ordinary builds on the same durable target-aware generated-C
+            // cache used by the development runner. This avoids repeating the
+            // most expensive semantic-to-native step when only the native
+            // compilation output (or a later build invocation) is needed.
             analysis
-                .emit_c_for_target(codegen_target)
+                .emit_c_cached_for_target(path, codegen_target)
                 .map_err(|error| vec![error])
         }) {
             Ok(generated) => generated,
