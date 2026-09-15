@@ -1550,7 +1550,7 @@ fn build_android_command(
         ));
     }
     let generated = analysis
-        .emit_c_for_target(fluxc::codegen::NativeTarget::Android)
+        .emit_c_cached_for_target(&manifest.path, fluxc::codegen::NativeTarget::Android)
         .map_err(|diagnostic| diagnostic.to_string())?;
     validate_android_binding_availability(&generated, manifest.android.min_sdk)?;
     let output = options.output.unwrap_or_else(|| {
@@ -2515,7 +2515,7 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
     let generated = match fluxc::project::analyze_for_target(&manifest.path, codegen_target)
         .and_then(|analysis| {
             analysis
-                .emit_c_for_target(codegen_target)
+                .emit_c_cached_for_target(&manifest.path, codegen_target)
                 .map_err(|error| vec![error])
         }) {
         Ok(generated) => generated,
