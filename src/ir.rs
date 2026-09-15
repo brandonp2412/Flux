@@ -279,6 +279,12 @@ pub enum ControlFlowNodeKind {
 pub struct OwnershipMove {
     pub source: String,
     pub destination: String,
+    /// A non-empty path records a partial move from a value projection (for
+    /// example `record.payload`).  The root `source` remains the stable name
+    /// used by reaching-definition analysis; ownership consumers must retain
+    /// the path so moving one field cannot be mistaken for moving the whole
+    /// aggregate.
+    pub projection: Vec<String>,
     /// The exact typed value consumed by this move boundary when the source
     /// is represented in the normalized value graph.  Keeping this alongside
     /// the source name and reaching definitions lets future partial-move and
@@ -2976,6 +2982,7 @@ impl<'a> ControlFlowBuilder<'a> {
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: "<drop>".to_string(),
+                projection: Vec::new(),
                 value: None,
                 source_definitions: Vec::new(),
                 span: expr.span,
@@ -2995,11 +3002,14 @@ impl<'a> ControlFlowBuilder<'a> {
 
     fn binding_move_ownership(&self, name: &str, ty: &Type, expr: &Expr) -> ControlFlowOwnership {
         let moves = if !self.signatures.is_copy_type(ty)
-            && let ExprKind::Var(source) = &expr.kind
-        {
+            && let Some((source, projection)) =
+                non_copy_projection(expr, self.signatures, |value| {
+                    self.scalar_expression_type(value)
+                }) {
             vec![OwnershipMove {
-                source: source.clone(),
+                source,
                 destination: name.to_string(),
+                projection,
                 value: None,
                 source_definitions: Vec::new(),
                 span: expr.span,
@@ -3014,6 +3024,43 @@ impl<'a> ControlFlowBuilder<'a> {
             calls: Vec::new(),
             returns: Vec::new(),
             drops: Vec::new(),
+        }
+    }
+}
+
+/// Return the root binding and field path for a non-copy projection.  Keeping
+/// this normalization in the IR builder means later partial-move checking can
+/// operate on typed value provenance instead of reparsing field expressions.
+fn non_copy_projection(
+    expr: &Expr,
+    signatures: &Signatures,
+    type_of: impl Fn(&Expr) -> Option<Type>,
+) -> Option<(String, Vec<String>)> {
+    let mut path = Vec::new();
+    let mut current = expr;
+    loop {
+        match &current.kind {
+            ExprKind::Var(name) => {
+                path.reverse();
+                return Some((name.clone(), path));
+            }
+            ExprKind::Field {
+                base,
+                name,
+                optional,
+                ..
+            } if !optional
+                && matches!(
+                    signatures.canonical_type(&type_of(base)?),
+                    Type::Named(ref aggregate)
+                        if signatures.struct_type(aggregate).is_some()
+                            || signatures.enum_type(aggregate).is_some()
+                ) =>
+            {
+                path.push(name.clone());
+                current = base;
+            }
+            _ => return None,
         }
     }
 }
