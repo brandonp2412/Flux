@@ -37458,6 +37458,8 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
     assert!(generated.contains(
         "activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state"
     ));
+    assert!(generated.contains("len > (size_t)16 * 1024 * 1024 - 1"));
+    assert!(generated.contains("saved_state_size <= (size_t)16 * 1024 * 1024 - 1"));
     assert!(generated.contains("flux__fn_saveState();"));
     assert!(generated.contains("flux__fn_restoreState(restored_state);"));
     assert!(generated.contains("Java_app_flux_runtime_FluxActivity_nativeOpenUrl"));

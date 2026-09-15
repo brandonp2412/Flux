@@ -11339,7 +11339,7 @@ fn emit_android_native_application(
     }
     if let Some(function) = application_metadata_function(application, "on_save_state") {
         out.push_str(&format!(
-            "static void *flux__android_on_save_instance_state(ANativeActivity *activity, size_t *out_size) {{\n    (void)activity;\n    if (out_size == NULL) return NULL;\n    *out_size = 0;\n    const char *state = {}();\n    if (state == NULL) return NULL;\n    size_t len = strlen(state);\n    if (len == SIZE_MAX) return NULL;\n    size_t size = len + 1;\n    char *copy = (char *)malloc(size);\n    if (copy == NULL) return NULL;\n    memcpy(copy, state, size);\n    *out_size = size;\n    return copy;\n}}\n",
+            "static void *flux__android_on_save_instance_state(ANativeActivity *activity, size_t *out_size) {{\n    (void)activity;\n    if (out_size == NULL) return NULL;\n    *out_size = 0;\n    const char *state = {}();\n    if (state == NULL) return NULL;\n    size_t len = strlen(state);\n    if (len > (size_t)16 * 1024 * 1024 - 1) return NULL;\n    size_t size = len + 1;\n    char *copy = (char *)malloc(size);\n    if (copy == NULL) return NULL;\n    memcpy(copy, state, size);\n    *out_size = size;\n    return copy;\n}}\n",
             function_c_name(function),
         ));
     }
@@ -11365,7 +11365,7 @@ fn emit_android_native_application(
     }
     if let Some(function) = application_metadata_function(application, "on_restore_state") {
         out.push_str(&format!(
-            "    if (saved_state != NULL && saved_state_size > 0 && saved_state_size < SIZE_MAX) {{\n        char *restored_state = (char *)malloc(saved_state_size + 1);\n        if (restored_state != NULL) {{\n            memcpy(restored_state, saved_state, saved_state_size);\n            restored_state[saved_state_size] = '\\0';\n            {}(restored_state);\n            free(restored_state);\n        }}\n    }}\n",
+            "    if (saved_state != NULL && saved_state_size > 0 && saved_state_size <= (size_t)16 * 1024 * 1024 - 1) {{\n        char *restored_state = (char *)malloc(saved_state_size + 1);\n        if (restored_state != NULL) {{\n            memcpy(restored_state, saved_state, saved_state_size);\n            restored_state[saved_state_size] = '\\0';\n            {}(restored_state);\n            free(restored_state);\n        }}\n    }}\n",
             function_c_name(function),
         ));
     } else {
