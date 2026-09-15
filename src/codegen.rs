@@ -5257,7 +5257,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_receive_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(")
     {
-        out.push_str("struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n");
+        out.push_str("#ifndef FLUX_NET_I64_BOOL_ERROR_DEFINED\n#define FLUX_NET_I64_BOOL_ERROR_DEFINED\nstruct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n#endif\n");
         out.push_str("static inline struct flux__net_i64_bool_error flux__net_progress_result(int64_t offset, bool complete, const char *error) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = complete, .v2 = error }; return result; }\n");
     }
     let uses_net_wait = runtime_usage.contains("flux__net_wait_readable(")
@@ -7632,6 +7632,10 @@ static const char *flux__preferences_remove(const char *key) {
     }
     if runtime_usage.contains("flux__tls_") {
         out.push_str(r#"struct flux__tls_slot { SSL_CTX *context; SSL *session; int socket; bool used; };
+#ifndef FLUX_NET_I64_BOOL_ERROR_DEFINED
+#define FLUX_NET_I64_BOOL_ERROR_DEFINED
+struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };
+#endif
 static struct flux__tls_slot flux__tls_slots[64];
 static inline struct flux__net_i64_error flux__tls_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
 static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (handle < 1 || handle > 64 || !flux__tls_slots[handle - 1].used) return NULL; return &flux__tls_slots[handle - 1]; }
@@ -7669,6 +7673,7 @@ static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle,
 static inline const char *flux__tls_close(int64_t handle) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL) return "invalid or closed TLS session"; SSL_shutdown(slot->session); SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; return NULL; }
 static inline const char *flux__tls_write(int64_t handle, const char *value) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || value == NULL) return "invalid TLS write arguments"; size_t length = 0; if (!flux__tls_bounded_length(value, 65536, &length)) return "TLS write value exceeds 65536 bytes"; size_t offset = 0; while (offset < length) { int written = SSL_write(slot->session, value + offset, (int)(length - offset > INT_MAX ? INT_MAX : length - offset)); if (written <= 0) return "TLS write failed"; offset += (size_t)written; } return NULL; }
 static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t max_bytes, void (*callback)(const char *)) { struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) return flux__tls_result(-1, "invalid TLS read arguments"); char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) return flux__tls_result(-1, "TLS read failed or reached end of stream"); for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') return flux__tls_result(-1, "TLS read contained NUL in text payload"); buffer[received] = '\0'; callback(buffer); return flux__tls_result((int64_t)received, NULL); }
+static inline struct flux__net_i64_bool_error flux__tls_read_timeout(int64_t handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(const char *)) { struct flux__net_i64_bool_error result = { .v0 = 0, .v1 = false, .v2 = NULL }; struct flux__tls_slot *slot = flux__tls_slot_for(handle); if (slot == NULL || callback == NULL || max_bytes < 1 || max_bytes > 65536) { result.v0 = -1; result.v2 = "invalid TLS readTimeout arguments"; return result; } if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v0 = -1; result.v2 = "TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; } struct pollfd descriptor = { .fd = slot->socket, .events = POLLIN, .revents = 0 }; int ready; do { ready = poll(&descriptor, 1, timeout_millis); } while (ready < 0 && errno == EINTR); if (ready == 0) return result; if (ready < 0 || (descriptor.revents & POLLNVAL) != 0 || (descriptor.revents & POLLERR) != 0) { result.v0 = -1; result.v2 = "TLS readTimeout readiness failed"; return result; } char buffer[65537]; int received = SSL_read(slot->session, buffer, (int)max_bytes); if (received <= 0) { int ssl_error = SSL_get_error(slot->session, received); if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE) return result; result.v0 = -1; result.v2 = "TLS read failed or reached end of stream"; return result; } for (int index = 0; index < received; index += 1) if (buffer[index] == '\0') { result.v0 = -1; result.v2 = "TLS read contained NUL in text payload"; return result; } buffer[received] = '\0'; callback(buffer); result.v0 = (int64_t)received; result.v1 = true; return result; }
 "#);
     }
     if runtime_usage.contains("flux__websocket_") {
@@ -34761,6 +34766,20 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "readTimeout" if args.len() == 4 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__tls_read_timeout({}, {}, {}, {})",
+                        session.code, max_bytes.code, timeout.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "write" if args.len() == 2 => {

@@ -19430,6 +19430,7 @@ fn main() -> i64 {
     let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
     let (received, read_error) = tls.read(session, 1024, show)
+    let (timed_received, timed_ready, timed_error) = tls.readTimeout(session, 1024, 0, show)
     let close_error: error = tls.close(session)
     let server_close_error: error = tls.close(server_session)
     print(connect_error)
@@ -19437,6 +19438,9 @@ fn main() -> i64 {
     print(write_error)
     print(received)
     print(read_error)
+    print(timed_received)
+    print(timed_ready)
+    print(timed_error)
     print(close_error)
     print(server_error)
     print(server_close_error)
@@ -19451,6 +19455,10 @@ fn main() -> i64 {
     assert!(generated.contains("TLS wrap string exceeds 65536 bytes"));
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
     assert!(generated.contains("flux__tls_read("));
+    assert!(generated.contains("flux__tls_read_timeout("));
+    assert!(
+        generated.contains("TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647")
+    );
     assert!(generated.contains("flux__tls_bounded_length(value, 65536"));
     assert!(generated.contains("TLS read contained NUL in text payload"));
     assert!(generated.contains("invalid or closed TLS session"));
