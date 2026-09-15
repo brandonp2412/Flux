@@ -316,8 +316,8 @@ impl ProjectAnalysisCache {
                 .then(|| changed_source_ids(&previous.analysis.sources, &report.sources))
                 .flatten()
                 .filter(|changed| {
-                    !changed.is_empty()
-                        && changed.iter().all(|source_id| {
+                    changed.is_empty()
+                        || changed.iter().all(|source_id| {
                             module_type_surface(&previous.analysis.program, *source_id)
                                 == module_type_surface(&report.program, *source_id)
                         })
@@ -327,18 +327,27 @@ impl ProjectAnalysisCache {
         let analysis = if let (Some(previous), Some(changed_sources)) =
             (previous.as_ref(), incremental_sources.as_ref())
         {
-            self.incremental_typecheck_runs += 1;
-            self.incremental_typecheck_modules += changed_sources.len();
-            typecheck::check_changed_sources_with_signatures(
-                &report.program,
-                &previous.analysis.signatures,
-                changed_sources,
-            )?;
-            ProjectAnalysis {
-                program: report.program,
-                signatures: previous.analysis.signatures.clone(),
-                sources: report.sources,
-                translations: report.translations,
+            if changed_sources.is_empty() {
+                // A watcher may invalidate a path for an editor save even when
+                // the resulting bytes are unchanged. The loader has already
+                // reparsed the graph and reported parse errors above; with an
+                // identical source set and unchanged public surfaces there is
+                // no semantic work left to repeat.
+                previous.analysis.clone()
+            } else {
+                self.incremental_typecheck_runs += 1;
+                self.incremental_typecheck_modules += changed_sources.len();
+                typecheck::check_changed_sources_with_signatures(
+                    &report.program,
+                    &previous.analysis.signatures,
+                    changed_sources,
+                )?;
+                ProjectAnalysis {
+                    program: report.program,
+                    signatures: previous.analysis.signatures.clone(),
+                    sources: report.sources,
+                    translations: report.translations,
+                }
             }
         } else {
             self.full_typecheck_runs += 1;

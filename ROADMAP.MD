@@ -694,7 +694,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [x] Watch dependency/module changes using the compiler's loaded import graph, refreshing the watch set after successful recompilation and retaining known paths across failed edits.
 - [ ] Stable development ABI/function indirection strategy.
 - [ ] Incremental compiler cache.
-  - [x] `fluxc run` owns a persistent `ProjectAnalysisCache`, avoiding the former separate check + compile analysis on successful rebuilds and reusing unchanged module ASTs across changed graphs.
+  - [x] `fluxc run` owns a persistent `ProjectAnalysisCache`, avoiding the former separate check + compile analysis on successful rebuilds and reusing unchanged module ASTs across changed graphs. Watcher invalidations whose reloaded source graph is byte-identical now reuse the prior semantic analysis without repeating whole-program type checking.
   - [ ] Incremental semantic/type/codegen reuse for changed graphs, plus durable on-disk cache artifacts where they materially improve cold-start development builds.
 - [ ] Target: save-to-visible-update latency competitive with modern React Fast Refresh for ordinary UI edits.
 

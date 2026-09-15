@@ -28746,6 +28746,15 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
         cache.module_parse_stats(),
         fluxc::project::ModuleParseCacheStats { hits: 2, misses: 2 }
     );
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 0,
+            rechecked_modules: 0,
+            full_runs: 1,
+        },
+        "invalidating an unchanged path must not repeat whole-program typechecking"
+    );
 
     let overlays = std::collections::HashMap::from([(
         dependency.clone(),
