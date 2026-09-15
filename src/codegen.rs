@@ -28266,7 +28266,7 @@ fn cfg_constant_values(
     let mut constants = HashMap::new();
     let mut ambiguous = HashSet::new();
     // Consume constants from the typed value graph, not only from name reads.
-    // A propagated integer value is safe to inline here because the IR constant
+    // A propagated scalar value is safe to inline here because the IR constant
     // pass records its complete expression under Flux's checked semantics.
     // Boolean short-circuit results remain on the AST path until value-level
     // effect regions are consumed here. Keep the span collision guard:
@@ -28276,7 +28276,7 @@ fn cfg_constant_values(
         .values()
         .iter()
         .filter(|value| cfg.is_value_reachable(value.id))
-        .filter(|value| value.ty == Type::I64)
+        .filter(|value| matches!(value.ty, Type::I64 | Type::Bool))
         // Keep boolean short-circuit lowering on its established AST path.
         .filter(|value| ir_constant_is_pure(cfg, value.id, &mut HashSet::new()))
     {
@@ -28322,8 +28322,10 @@ fn ir_constant_is_pure(
         crate::ir::ControlFlowValueKind::Unary { operand, .. } => {
             ir_constant_is_pure(cfg, *operand, visiting)
         }
-        crate::ir::ControlFlowValueKind::Binary { left, right, .. } => {
-            ir_constant_is_pure(cfg, *left, visiting) && ir_constant_is_pure(cfg, *right, visiting)
+        crate::ir::ControlFlowValueKind::Binary { op, left, right } => {
+            !matches!(op, BinOp::And | BinOp::Or)
+                && ir_constant_is_pure(cfg, *left, visiting)
+                && ir_constant_is_pure(cfg, *right, visiting)
         }
         crate::ir::ControlFlowValueKind::Conditional {
             condition,

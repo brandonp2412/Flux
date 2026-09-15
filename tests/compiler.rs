@@ -23770,7 +23770,10 @@ fn typed_ir_backend_consumes_propagated_expression_constants() {
 fn main() -> i64 {
     let input: i64 = 5
     let propagated: i64 = input + 2
+    let flag: bool = true
+    let propagatedBool: bool = flag == true
     print(propagated)
+    print(propagatedBool)
     return propagated
 }
 "#;
@@ -23779,6 +23782,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("propagated expression should compile");
     assert!(generated.contains("flux_print_i64(flux__local_propagated)"));
     assert!(generated.contains("flux__local_propagated = INT64_C(7);"));
+    assert!(generated.contains("flux__local_propagatedBool = true;"));
     assert!(
         !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
         "typed IR constant should be consumed before checked AST emission"
