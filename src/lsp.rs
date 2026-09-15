@@ -7974,6 +7974,7 @@ fn object<const N: usize>(entries: [(&str, JsonValue); N]) -> JsonValue {
 }
 
 fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<String>> {
+    const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
     let mut content_length = None;
     loop {
         let mut header = String::new();
@@ -7998,6 +7999,12 @@ fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<String>> {
             "LSP message is missing Content-Length",
         ));
     };
+    if length > MAX_LSP_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LSP message exceeds the 16 MiB limit",
+        ));
+    }
     let mut bytes = vec![0u8; length];
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes)
@@ -8329,6 +8336,14 @@ mod tests {
 
         let at_limit = format!("{}0{}", "[".repeat(128), "]".repeat(128));
         assert!(parse_json(&at_limit).is_ok());
+    }
+
+    #[test]
+    fn lsp_message_reader_rejects_oversized_content_length_before_allocation() {
+        let mut reader = io::Cursor::new(b"Content-Length: 16777217\r\n\r\n".to_vec());
+        let error = read_message(&mut reader).expect_err("oversized LSP message must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "LSP message exceeds the 16 MiB limit");
     }
 
     #[test]
