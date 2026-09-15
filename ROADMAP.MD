@@ -1282,4 +1282,4 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 - [ ] Production-quality LSP/debugger/profiler.
 - [ ] Automatic save-triggered hot reload is production-ready for development workflows.
 - [ ] Package ecosystem and platform interoperability are documented and tested.
-- [ ] Flux can build substantial real applications without resorting to an OOP architecture.
+- [x] Flux can build substantial real applications without resorting to an OOP architecture.
