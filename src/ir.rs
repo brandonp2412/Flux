@@ -324,6 +324,21 @@ pub struct OwnershipCall {
     pub span: SourceSpan,
 }
 
+/// Ownership facts for a value crossing a function return boundary.
+///
+/// Return values are kept as typed value IDs, just like call arguments, so a
+/// future owned-value ABI can validate transfers from the normalized value
+/// graph.  In particular, a borrowed list result remains distinguishable from
+/// an ordinary `Copy` result instead of requiring a second AST walk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipReturn {
+    pub value: ControlFlowValueId,
+    pub kind: OwnershipCallArgumentKind,
+    pub definitions: Vec<ControlFlowDefinitionId>,
+    pub borrowed_definitions: Vec<ControlFlowDefinitionId>,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnershipCallArgumentKind {
     Copy,
@@ -351,6 +366,8 @@ pub struct ControlFlowOwnership {
     pub borrows: Vec<OwnershipBorrow>,
     pub moves: Vec<OwnershipMove>,
     pub calls: Vec<OwnershipCall>,
+    /// Typed ownership facts for values crossing a return boundary.
+    pub returns: Vec<OwnershipReturn>,
     /// Definition-scoped releases whose boundary is this normalized node.
     ///
     /// These are populated after liveness/borrow analysis. Keeping them on
@@ -813,6 +830,16 @@ impl ControlFlowGraph {
                     .iter()
                     .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
             })
+    }
+
+    /// Return values at normalized `return` evaluation nodes in source order.
+    pub fn ownership_returns(&self) -> impl Iterator<Item = (ControlFlowNodeId, &OwnershipReturn)> {
+        self.nodes.iter().flat_map(|node| {
+            node.ownership
+                .returns
+                .iter()
+                .map(move |value| (node.id, value))
+        })
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -1405,6 +1432,7 @@ impl<'a> ControlFlowBuilder<'a> {
             drops: Vec::new(),
         };
         populate_call_argument_definitions(&mut graph, self.signatures);
+        populate_return_ownership(&mut graph, self.signatures);
         populate_move_source_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
@@ -2945,6 +2973,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves,
             calls,
+            returns: Vec::new(),
             drops: Vec::new(),
         }
     }
@@ -2967,6 +2996,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves,
             calls: Vec::new(),
+            returns: Vec::new(),
             drops: Vec::new(),
         }
     }
@@ -3056,6 +3086,52 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 })
                 .collect();
         }
+    }
+}
+
+fn ownership_kind_for_value(
+    value: &ControlFlowValue,
+    signatures: &Signatures,
+) -> OwnershipCallArgumentKind {
+    match signatures.canonical_type(&value.ty) {
+        Type::List(_) => OwnershipCallArgumentKind::ImmutableBorrow,
+        Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)) => {
+            OwnershipCallArgumentKind::ImmutableBorrow
+        }
+        _ => OwnershipCallArgumentKind::Copy,
+    }
+}
+
+fn populate_return_ownership(graph: &mut ControlFlowGraph, signatures: &Signatures) {
+    let values = graph.values.clone();
+    for node in &mut graph.nodes {
+        if !matches!(
+            node.kind,
+            ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::ReturnValue(_))
+        ) {
+            continue;
+        }
+        node.ownership.returns = node
+            .values
+            .iter()
+            .filter_map(|value_id| {
+                let value = values.get(value_id.0)?;
+                let kind = ownership_kind_for_value(value, signatures);
+                let definitions = call_argument_definitions(*value_id, &values);
+                let borrowed_definitions = if kind == OwnershipCallArgumentKind::ImmutableBorrow {
+                    definitions.clone()
+                } else {
+                    Vec::new()
+                };
+                Some(OwnershipReturn {
+                    value: *value_id,
+                    kind,
+                    definitions,
+                    borrowed_definitions,
+                    span: value.span,
+                })
+            })
+            .collect();
     }
 }
 

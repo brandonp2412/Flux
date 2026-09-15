@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use fluxc::ast::Type;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
     ControlFlowValueKind, ControlFlowValueRegionKind, ControlFlowValueUseKind,
@@ -14505,6 +14506,38 @@ fn main() -> i64 {
             .collect::<Vec<_>>(),
         vec!["drop"]
     );
+}
+
+#[test]
+fn ownership_ir_records_typed_return_boundaries() {
+    let source = r#"
+fn choose(flag: bool) -> i64 {
+    if flag:
+        return 7
+    return 9
+}
+fn main() -> i64 {
+    return choose(true)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1423))
+        .expect("return source should analyze");
+    let graph = database
+        .control_flow_graph("choose")
+        .expect("choose should expose a CFG");
+    let returns = graph.ownership_returns().collect::<Vec<_>>();
+    assert_eq!(returns.len(), 2);
+    assert!(returns.iter().all(|(_, value)| {
+        value.kind == OwnershipCallArgumentKind::Copy
+            && value.definitions.is_empty()
+            && value.borrowed_definitions.is_empty()
+    }));
+    assert!(returns.iter().all(|(_, value)| {
+        graph
+            .values()
+            .get(value.value.0)
+            .is_some_and(|ir_value| ir_value.ty == Type::I64 && ir_value.span == value.span)
+    }));
 }
 
 #[test]
