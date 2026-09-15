@@ -4803,7 +4803,9 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
-    ptrdiff_t value_stride = values.values.stride == 0 ? (ptrdiff_t)sizeof(struct flux__map) : values.values.stride;
+    ptrdiff_t value_stride = values.values.stride == 0
+        ? (ptrdiff_t)(kind >= 200000 ? sizeof(struct flux__list) : sizeof(struct flux__map))
+        : values.values.stride;
     for (size_t index = 0; index < values.keys.len; index += 1) {
         const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride));
         if (key == NULL) return "JSON object contains a null key";
@@ -4816,7 +4818,10 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         memcpy(encoded + output, flux__json_capture_value, encoded_key_length); output += encoded_key_length;
         flux__json_capture_value = NULL;
         struct flux__map child = *((struct flux__map *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
-        const char *error = kind < 3
+        struct flux__list child_array = *((struct flux__list *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
+        const char *error = kind >= 200000
+            ? flux__json_encode_recursive_array(child_array, (kind - 200000) % 1000000, (kind - 200000) / 1000000, flux__json_capture)
+            : kind < 3
             ? flux__json_encode_object(child, kind, flux__json_capture)
             : kind < 6
                 ? flux__json_encode_nested_object(child, kind - 3, flux__json_capture)
@@ -33039,6 +33044,12 @@ fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'stat
                 Type::Str => Ok(100005),
                 _ => Err("json.encodeObject requires scalar-optional list values"),
             },
+            Type::List(_) | Type::Set(_) => {
+                let (_, leaf_kind, depth) = json_array_encoding_shape(&inner, signatures).map_err(
+                    |_| "json.encodeObject requires recursively nested scalar-list values",
+                )?;
+                Ok(200000 + depth * 1000000 + leaf_kind)
+            }
             _ => Err("json.encodeObject requires scalar-list values"),
         },
         Type::Map(key, inner) => {
@@ -35952,7 +35963,9 @@ fn emit_qualified_call(
                 }
                 let kind = json_map_value_kind(&element, signatures)
                     .map_err(|message| diag(span, message))?;
-                if kind >= 100006 {
+                if kind >= 200000 {
+                    ("flux__json_encode_map_map", kind, 0)
+                } else if kind >= 100006 {
                     ("flux__json_encode_map_map", kind - 6, 0)
                 } else if kind >= 100003 && kind <= 100005 {
                     ("flux__json_encode_nested_object", kind, 0)

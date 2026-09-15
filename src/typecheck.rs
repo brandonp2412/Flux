@@ -5748,6 +5748,22 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
     }
 }
 
+fn json_map_literal_value_is_constant(value: &Expr, signatures: &Signatures) -> bool {
+    if constant_primitive_value(value, signatures).is_some() || matches!(value.kind, ExprKind::None)
+    {
+        return true;
+    }
+    match &value.kind {
+        ExprKind::List(values) | ExprKind::Set(values) | ExprKind::Map(values) => {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|item| json_map_literal_value_is_constant(item, signatures))
+        }
+        _ => false,
+    }
+}
+
 fn json_map_value_type_is_supported(ty: &Type) -> bool {
     match ty {
         Type::I64 | Type::Bool | Type::Str => true,
@@ -5755,11 +5771,14 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
         Type::List(inner) => match inner.as_ref() {
             Type::I64 | Type::Bool | Type::Str => true,
             Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+            Type::List(inner) | Type::Set(inner) => json_map_value_type_is_supported(inner),
             _ => false,
         },
         Type::Set(inner) => {
             matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
                 || matches!(inner.as_ref(), Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+                || matches!(inner.as_ref(), Type::List(_) | Type::Set(_))
+                    && json_map_value_type_is_supported(inner)
         }
         Type::Map(key, value) => {
             matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
@@ -6064,12 +6083,13 @@ pub fn type_of_expr(
                         let scalar_or_optional = matches!(
                             *element,
                             Type::I64 | Type::Bool | Type::Str
-                        ) || matches!(&*element, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str));
+                        ) || matches!(&*element, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+                            || matches!(&*element, Type::List(_) | Type::Set(_))
+                                && json_map_value_type_is_supported(&element);
                         if !scalar_or_optional
-                            || values.iter().any(|value| {
-                                constant_primitive_value(value, signatures).is_none()
-                                    && !matches!(value.kind, ExprKind::None)
-                            })
+                            || values
+                                .iter()
+                                .any(|value| !json_map_literal_value_is_constant(value, signatures))
                         {
                             return Err(diag(
                                 item.span,
