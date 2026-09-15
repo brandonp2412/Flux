@@ -1271,6 +1271,8 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified Efficient I/O safety follow-up: `net.sendText`, `net.sendTextWithTimeout`, `net.sendTextProgress`, and `net.sendTextProgressWithTimeout` now reject null or over-65536-byte borrowed payloads before socket inspection or native transmission, eliminating their prior unbounded `strlen` reads. Generated-C and native coverage pin the guards alongside the existing socket regressions; broader binary-buffer, queued-backpressure, and task-integrated event-loop work remains open.
 
+# Verified UDP batch receive bounds follow-up: native text and binary UDP batch receivers request datagram-length reporting and reject datagrams larger than the caller's `maxBytes` before inspecting or copying payload storage, preventing silent truncation and out-of-bounds binary-list materialization. Generated-C coverage pins the binary guard; owned byte buffers, queued backpressure, and task-integrated event-loop I/O remain open.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
