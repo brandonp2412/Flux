@@ -51546,6 +51546,24 @@ fn main() -> i64 {
     assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
     assert!(generated.contains(".v0 = offset"));
     assert!(generated.contains("unsigned char buffer[4096]"));
+    assert!(generated.contains("written byte offset overflow"));
+}
+
+#[test]
+fn timed_resumable_binary_socket_writes_guard_offset_overflow() {
+    let source = r#"
+fn main() -> i64 {
+    let (offset, complete, failure) = net.writeBytesFromTimeout(1, [65, 0, 255], 0, 10)
+    print(offset)
+    print(complete)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("timed resumable binary write should typecheck");
+    let generated = compile_to_c(source).expect("timed resumable binary write should lower");
+    assert!(generated.contains("flux__net_send_bytes_progress_with_timeout("));
+    assert!(generated.contains("written byte offset overflow"));
 }
 
 #[test]

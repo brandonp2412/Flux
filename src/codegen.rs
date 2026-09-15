@@ -8436,6 +8436,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         ssize_t written; do { written = send((int)socket_handle, buffer, count, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
         if (written < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return result; result.v2 = "failed to write bytes"; return result; }
         if (written == 0) { result.v2 = "socket closed while writing bytes"; return result; }
+        if (written > INT64_MAX - result.v0) { result.v2 = "written byte offset overflow"; return result; }
         result.v0 += written;
     }
     result.v1 = true; return result;
@@ -8470,7 +8471,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         }
         ssize_t written;
         do { written = send((int)socket_handle, buffer, count, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR);
-        if (written > 0) { result.v0 += written; continue; }
+        if (written > 0) {
+            if (written > INT64_MAX - result.v0) { result.v2 = "written byte offset overflow"; return result; }
+            result.v0 += written; continue;
+        }
         if (written == 0) { result.v2 = "socket closed while writing bytes"; return result; }
         if (errno != EAGAIN && errno != EWOULDBLOCK) { result.v2 = "failed to write bytes"; return result; }
         int wait_millis = -1;
