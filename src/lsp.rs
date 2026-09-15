@@ -679,7 +679,7 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
         &mut seen,
         "drop",
         3,
-        "fn drop(value: non-copy list) -> void",
+        "fn drop(value: non-copy collection) -> void",
     );
     push_completion_item(
         &mut items,
@@ -3344,7 +3344,7 @@ fn signature_help_for_document_cached(
     if call_name == "drop" {
         return Some(signature_help_for_builtin(
             "drop",
-            &["value: T[]"],
+            &["value: non-copy collection"],
             "void",
             active_parameter,
         ));
@@ -9597,7 +9597,7 @@ mod tests {
     #[test]
     fn signature_help_supports_builtins_enum_variants_and_interface_packing() {
         let uri = "file:///tmp/call-shapes.flux";
-        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nfn add(left: i64, right: i64) -> i64 { left + right }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _folded: i64 = fold(values, 0, add)\n    let _reduced: i64 = reduce(values, add)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64, str)\n}\ninterface Readable {\n    fn read() -> str\n}\nstruct Memory {\n    value: str\n}\nfn memory_read(memory: Memory) -> str { memory.value }\nfn add(left: i64, right: i64) -> i64 { left + right }\nimpl Readable for Memory {\n    read: memory_read\n}\nfn main() -> i64 {\n    let _outcome: Outcome = Outcome.Ok(42, \"Flux\")\n    let memory: Memory = Memory { value: \"x\" }\n    let _readable: Readable = Readable(memory)\n    let values: i64[] = [1, 2]\n    let _folded: i64 = fold(values, 0, add)\n    let _reduced: i64 = reduce(values, add)\n    drop(values)\n    let checks: bool[] = [true, false]\n    let _has: bool = any(checks)\n    print(error(\"boom\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let help_for = |needle: &str| {
             let line_index = source
@@ -9642,6 +9642,8 @@ mod tests {
         assert!(fold_help.contains("fn fold(list: T[], initial: A, reducer: fn(A, T) -> A) -> A"));
         let reduce_help = help_for("reduce(");
         assert!(reduce_help.contains("fn reduce(list: T[], reducer: fn(T, T) -> T) -> T"));
+        let drop_help = help_for("drop(");
+        assert!(drop_help.contains("fn drop(value: non-copy collection) -> void"));
     }
 
     #[test]
@@ -12721,7 +12723,7 @@ mod tests {
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
         assert!(json.contains("\"label\":\"drop\""));
-        assert!(json.contains("fn drop(value: non-copy list) -> void"));
+        assert!(json.contains("fn drop(value: non-copy collection) -> void"));
         assert!(json.contains("\"label\":\"take\""));
         assert!(json.contains("fn take(list: T[], count: i64) -> T[]"));
         assert!(json.contains("\"label\":\"skip\""));
