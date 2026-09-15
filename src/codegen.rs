@@ -4358,9 +4358,15 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__json_parse(")
         || runtime_usage.contains("flux__json_encode_string(")
+        || runtime_usage.contains("flux__json_encode_int(")
+        || runtime_usage.contains("flux__json_encode_bool(")
+        || runtime_usage.contains("flux__json_encode_null(")
     {
         out.push_str(r#"static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
+static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
+static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
+static inline const char *flux__json_encode_null(void (*callback)(const char *));
 static inline const char *flux__json_skip_ws(const char **cursor, const char *end) {
     while (*cursor < end && (**cursor == ' ' || **cursor == '\n' || **cursor == '\r' || **cursor == '\t')) *cursor += 1;
     return NULL;
@@ -4514,6 +4520,24 @@ static inline const char *flux__json_encode_string(const char *value, void (*cal
         if (output + 2 >= sizeof(encoded)) return "encoded JSON string exceeds 262144 bytes";
     }
     encoded[output++] = '"'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeInt callback";
+    char encoded[32];
+    int written = snprintf(encoded, sizeof(encoded), "%lld", (long long)value);
+    if (written < 0 || (size_t)written >= sizeof(encoded)) return "JSON integer encoding failed";
+    callback(encoded);
+    return NULL;
+}
+static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeBool callback";
+    callback(value ? "true" : "false");
+    return NULL;
+}
+static inline const char *flux__json_encode_null(void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeNull callback";
+    callback("null");
+    return NULL;
 }
 "#);
     }
@@ -35356,21 +35380,36 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "json" {
-        if !named_args.is_empty() || args.len() != 2 {
+        let expected_args = if name == "encodeNull" { 1 } else { 2 };
+        if !named_args.is_empty() || args.len() != expected_args {
             return Err(diag(span, "invalid JSON call reached code generation"));
         }
-        let value = emit_expr(&args[0], env, signatures)?;
-        let callback = emit_expr(&args[1], env, signatures)?;
+        let callback_index = if name == "encodeNull" { 0 } else { 1 };
+        let value = if name == "encodeNull" {
+            None
+        } else {
+            Some(emit_expr(&args[0], env, signatures)?)
+        };
+        let callback = emit_expr(&args[callback_index], env, signatures)?;
         let helper = match name {
             "parse" => "flux__json_parse",
             "encodeString" => "flux__json_encode_string",
+            "encodeInt" => "flux__json_encode_int",
+            "encodeBool" => "flux__json_encode_bool",
+            "encodeNull" => "flux__json_encode_null",
             _ => return Err(diag(span, "unknown JSON call reached code generation")),
         };
-        return Ok((
-            format!("{}({}, {})", helper, value.code, callback.code),
-            vec![Type::Error],
-            None,
-        ));
+        let call = if name == "encodeNull" {
+            format!("{}({})", helper, callback.code)
+        } else {
+            format!(
+                "{}({}, {})",
+                helper,
+                value.expect("JSON value").code,
+                callback.code
+            )
+        };
+        return Ok((call, vec![Type::Error], None));
     }
     if namespace == "windows" {
         if !named_args.is_empty() {

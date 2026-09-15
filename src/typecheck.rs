@@ -10722,6 +10722,47 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
+            "encodeInt" | "encodeBool" | "encodeNull" => {
+                let expected_value = match name.as_str() {
+                    "encodeInt" => Type::I64,
+                    "encodeBool" => Type::Bool,
+                    _ => Type::Void,
+                };
+                let expected_args = if name == "encodeNull" { 1 } else { 2 };
+                if args.len() != expected_args {
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "json.{name} expects {expected_args} argument{}, got {}",
+                            if expected_args == 1 { "" } else { "s" },
+                            args.len()
+                        ),
+                    ));
+                }
+                if expected_value != Type::Void {
+                    let value = type_of_expr(&args[0], env, signatures)?;
+                    require_type(
+                        args[0].span,
+                        &expected_value,
+                        &value,
+                        &format!("json.{name} value"),
+                    )?;
+                }
+                let callback_index = if name == "encodeNull" { 0 } else { 1 };
+                let callback =
+                    signatures.canonical_type(&type_of_expr(&args[callback_index], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[callback_index].span,
+                    &expected,
+                    &callback,
+                    &format!("json.{name} callback"),
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             _ => {
                 return Err(diag(
                     *name_span,

@@ -1614,6 +1614,27 @@ fn add_qualified_namespace_completions(
             3,
             "fn json.encodeString(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "encodeInt",
+            3,
+            "fn json.encodeInt(value: i64, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encodeBool",
+            3,
+            "fn json.encodeBool(value: bool, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encodeNull",
+            3,
+            "fn json.encodeNull(callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "http" {
@@ -3803,6 +3824,24 @@ fn signature_help_for_document_cached(
                 "encodeString" => Some(signature_help_for_builtin(
                     "json.encodeString",
                     &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encodeInt" => Some(signature_help_for_builtin(
+                    "json.encodeInt",
+                    &["value: i64", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encodeBool" => Some(signature_help_for_builtin(
+                    "json.encodeBool",
+                    &["value: bool", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encodeNull" => Some(signature_help_for_builtin(
+                    "json.encodeNull",
+                    &["callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),

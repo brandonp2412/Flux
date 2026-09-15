@@ -17152,6 +17152,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_scalar_encoding_is_typed_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let intError: error = json.encodeInt(-9223372036854775807, encoded)
+    let boolError: error = json.encodeBool(true, encoded)
+    let nullError: error = json.encodeNull(encoded)
+    print(intError)
+    print(boolError)
+    print(nullError)
+    return 0
+}
+"#;
+    check_source(source).expect("JSON scalar encoders should typecheck");
+    let generated = compile_to_c(source).expect("JSON scalar encoders should lower");
+    assert!(generated.contains("flux__json_encode_int("));
+    assert!(generated.contains("flux__json_encode_bool("));
+    assert!(generated.contains("flux__json_encode_null("));
+    let root = std::env::temp_dir().join(format!("flux-json-scalars-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON scalar directory should be writable");
+    let c_path = root.join("json-scalars.c");
+    let exe_path = root.join("json-scalars");
+    fs::write(&c_path, generated).expect("generated JSON scalar C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON scalar native code");
+    assert!(
+        compile.status.success(),
+        "JSON scalar C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON scalar program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "-9223372036854775807\ntrue\nnull\nnil\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_streaming_parser_preserves_valid_raw_utf8_scalars() {
     let source = r#"
 fn token(kind: str, value: str) -> void {
