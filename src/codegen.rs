@@ -1368,11 +1368,12 @@ pub fn emit_c_for_target_with_source_metadata(
     }
     if target != NativeTarget::Linux
         && target != NativeTarget::Android
+        && target != NativeTarget::Windows
         && runtime_usage.contains("flux__preferences_")
     {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "preferences.* requires the Linux desktop/server or Android application target",
+            "preferences.* requires the Linux, Windows, or Android application target",
         ));
     }
     if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
@@ -1747,7 +1748,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_list_directory(")
         || runtime_usage.contains("flux__net_")
-        || runtime_usage.contains("flux__preferences_")
+        || (runtime_usage.contains("flux__preferences_") && !uses_windows)
         || runtime_usage.contains("flux__tls_")
         || runtime_usage.contains("flux__websocket_")
     {
@@ -1809,7 +1810,7 @@ fn emit_runtime_prelude(
     }
     if uses_background
         || runtime_usage.contains("flux__fs_")
-        || runtime_usage.contains("flux__preferences_")
+        || (runtime_usage.contains("flux__preferences_") && !uses_windows)
     {
         out.push_str("#include <sys/types.h>\n");
     }
@@ -1857,7 +1858,9 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <unistd.h>\n");
     }
-    if runtime_usage.contains("flux__fs_") || runtime_usage.contains("flux__preferences_") {
+    if runtime_usage.contains("flux__fs_")
+        || (runtime_usage.contains("flux__preferences_") && !uses_windows)
+    {
         out.push_str("#include <sys/stat.h>\n");
     }
     if runtime_usage.contains("flux__fs_remove_directories(")
@@ -1872,7 +1875,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_file_set_accessed_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
-        || runtime_usage.contains("flux__preferences_")
+        || (runtime_usage.contains("flux__preferences_") && !uses_windows)
     {
         out.push_str("#include <fcntl.h>\n");
     }
@@ -6804,7 +6807,102 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
         out.push_str("static inline int64_t flux__time_local_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid local calendar component\\n\", stderr); abort(); } bool leap = year % INT64_C(4) == 0 && (year % INT64_C(100) != 0 || year % INT64_C(400) == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid local calendar day\\n\", stderr); abort(); } int64_t tm_year; if (__builtin_sub_overflow(year, INT64_C(1900), &tm_year) || (int64_t)(int)tm_year != tm_year) { fputs(\"Flux runtime error: local calendar year exceeds platform range\\n\", stderr); abort(); } struct tm value = { .tm_year = (int)tm_year, .tm_mon = (int)month - 1, .tm_mday = (int)day, .tm_hour = (int)hour, .tm_min = (int)minute, .tm_sec = (int)second, .tm_isdst = -1 }; time_t native_seconds = mktime(&value); if (native_seconds == (time_t)-1 || (int64_t)native_seconds != (int64_t)(time_t)native_seconds) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } int64_t result; if (__builtin_mul_overflow((int64_t)native_seconds, INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: local calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
 
-    if runtime_usage.contains("flux__preferences_") && !uses_android {
+    if runtime_usage.contains("flux__preferences_") && uses_windows {
+        out.push_str(
+            r#"static const char *flux__preferences_path(void) {
+    static char path[4096];
+    static char directory[4096];
+    const char *override = getenv("FLUX_PREFERENCES_PATH");
+    if (override != NULL && override[0] != '\0') {
+        if (strlen(override) >= sizeof(path)) return NULL;
+        memcpy(path, override, strlen(override) + 1);
+        return path;
+    }
+    const char *base = getenv("LOCALAPPDATA");
+    if (base == NULL || base[0] == '\0') base = getenv("APPDATA");
+    if (base == NULL || base[0] == '\0') return NULL;
+    if (snprintf(directory, sizeof(directory), "%s\\Flux", base) < 0 || strlen(directory) >= sizeof(directory)) return NULL;
+    (void)CreateDirectoryA(directory, NULL);
+    if (snprintf(path, sizeof(path), "%s\\preferences.log", directory) < 0 || strlen(path) >= sizeof(path)) return NULL;
+    return path;
+}
+static const char *flux__preferences_validate_key(const char *key) {
+    if (key == NULL || key[0] == '\0' || strlen(key) > 1024) return "preference key is empty or too long";
+    for (const unsigned char *cursor = (const unsigned char *)key; *cursor != 0; ++cursor)
+        if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference key contains a forbidden control character";
+    return NULL;
+}
+static const char *flux__preferences_get(const char *key, const char *fallback, void (*callback)(const char *)) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL || fallback == NULL || callback == NULL) return invalid == NULL ? "invalid preference read arguments" : invalid;
+    const char *path = flux__preferences_path();
+    if (path == NULL) return "preference path is unavailable";
+    FILE *file = fopen(path, "r");
+    if (file == NULL && errno != ENOENT) return "failed to open preferences";
+    char line[65538]; char value[65537]; bool found = false;
+    if (file != NULL) {
+        while (fgets(line, sizeof(line), file) != NULL) {
+            size_t length = strlen(line);
+            if (length == 0 || line[length - 1] != '\n') { fclose(file); return "preference record is too long or malformed"; }
+            line[--length] = '\0';
+            if (length < 3 || line[1] != '\t') continue;
+            char *separator = strchr(line + 2, '\t');
+            if (separator == NULL) continue;
+            *separator = '\0';
+            if (strcmp(line + 2, key) != 0) continue;
+            if (line[0] == 'D') { found = false; continue; }
+            if (line[0] != 'S') continue;
+            const char *stored = separator + 1;
+            if (strlen(stored) >= sizeof(value)) { fclose(file); return "preference value is too long"; }
+            memcpy(value, stored, strlen(stored) + 1); found = true;
+        }
+        if (ferror(file) || fclose(file) != 0) return "failed to read preferences";
+    }
+    callback(found ? value : fallback); return NULL;
+}
+static const char *flux__preferences_append(const char *record, size_t length) {
+    if (record == NULL || length > 1048576u) return "preference record exceeds storage limit";
+    const char *path = flux__preferences_path();
+    if (path == NULL) return "preference path is unavailable";
+    FILE *file = fopen(path, "ab+");
+    if (file == NULL) return "failed to open preferences for writing";
+    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return "failed to seek preferences"; }
+    long current = ftell(file);
+    if (current < 0 || (uint64_t)current > UINT64_C(1048576) || length > UINT64_C(1048576) - (uint64_t)current) { fclose(file); return "preferences file exceeds 1 MiB storage limit"; }
+    bool ok = fwrite(record, 1, length, file) == length && fflush(file) == 0 && fclose(file) == 0;
+    return ok ? NULL : "failed to write preferences";
+}
+static const char *flux__preferences_set(const char *key, const char *value) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL) return invalid;
+    if (value == NULL || strlen(value) > 65535) return "preference value is empty or too long";
+    for (const unsigned char *cursor = (const unsigned char *)value; *cursor != 0; ++cursor)
+        if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference value contains a forbidden control character";
+    size_t key_length = strlen(key), value_length = strlen(value);
+    if (key_length > SIZE_MAX - value_length - 5) return "preference record is too long";
+    size_t record_length = key_length + value_length + 5;
+    char *record = malloc(record_length);
+    if (record == NULL) return "failed to allocate preference record";
+    int written = snprintf(record, record_length, "S\t%s\t%s\n", key, value);
+    const char *result = written < 0 || (size_t)written != record_length - 1 ? "failed to format preference record" : flux__preferences_append(record, record_length - 1);
+    free(record); return result;
+}
+static const char *flux__preferences_remove(const char *key) {
+    const char *invalid = flux__preferences_validate_key(key);
+    if (invalid != NULL) return invalid;
+    size_t key_length = strlen(key);
+    if (key_length > SIZE_MAX - 4) return "preference record is too long";
+    size_t record_length = key_length + 4;
+    char *record = malloc(record_length);
+    if (record == NULL) return "failed to allocate preference record";
+    int written = snprintf(record, record_length, "D\t%s\n", key);
+    const char *result = written < 0 || (size_t)written != record_length - 1 ? "failed to format preference record" : flux__preferences_append(record, record_length - 1);
+    free(record); return result;
+}
+"#,
+        );
+    }
+    if runtime_usage.contains("flux__preferences_") && !uses_android && !uses_windows {
         out.push_str(
             r#"static const char *flux__preferences_path(void) {
     static char path[4096];

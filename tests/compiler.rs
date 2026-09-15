@@ -17447,6 +17447,44 @@ app Root(onStart: start)
 }
 
 #[test]
+fn windows_preferences_use_compiler_owned_appdata_storage() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn start() -> void {
+    let _write_error: error = preferences.set("theme", "dark")
+    let _read_error: error = preferences.get("theme", "light", show)
+    let _remove_error: error = preferences.remove("theme")
+}
+
+view Root {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Preferences"
+}
+
+app Root(onStart: start)
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows preferences source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("Windows preferences should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows preferences should lower through the native settings store");
+    assert!(generated.contains("LOCALAPPDATA"));
+    assert!(generated.contains("CreateDirectoryA"));
+    assert!(generated.contains("preferences.log"));
+    assert!(generated.contains("fopen(path, \"ab+\")"));
+    assert!(!generated.contains("#include <sys/stat.h>"));
+}
+
+#[test]
 fn crypto_sha256_uses_a_bounded_audited_native_digest() {
     let source = r#"
 fn show(value: str) -> void {
