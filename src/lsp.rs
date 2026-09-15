@@ -1469,6 +1469,10 @@ fn add_qualified_namespace_completions(
                 "fn net.readBytesMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, i64[]) -> void) -> (i64, error)",
             ),
             (
+                "readBytesManyTimeout",
+                "fn net.readBytesManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readBytesTimeout",
                 "fn net.readBytesTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
             ),
@@ -3585,6 +3589,20 @@ fn signature_help_for_document_cached(
                             "callback: fn(i64, i64[]) -> void",
                         ],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "readBytesManyTimeout" | "receiveBytesManyWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readBytesManyTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, i64[]) -> void",
+                        ],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }
@@ -9940,6 +9958,29 @@ mod tests {
         .to_json();
         assert!(help.contains(
             "fn net.readBytesMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, i64[]) -> void) -> (i64, error)"
+        ));
+
+        let timeout_source = "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_bytes, _ready, _failure) = net.readBytesManyTimeout(1, 4096, 8, 1000, consume)\n    return 0\n}\n";
+        let timeout_documents = HashMap::from([(uri.to_string(), timeout_source.to_string())]);
+        let timeout_line_index = timeout_source
+            .lines()
+            .position(|line| line.contains("net.readBytesManyTimeout("))
+            .expect("timed binary batch call line should exist");
+        let timeout_line = timeout_source.lines().nth(timeout_line_index).unwrap();
+        let timeout_cursor = timeout_line.find("net.readBytesManyTimeout(").unwrap()
+            + "net.readBytesManyTimeout(".len();
+        let timeout_help = signature_help_for_document(
+            uri,
+            timeout_source,
+            &timeout_documents,
+            timeout_line_index,
+            timeout_cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("timed binary batch call should have signature help")
+        .to_json();
+        assert!(timeout_help.contains(
+            "fn net.readBytesManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)"
         ));
     }
 

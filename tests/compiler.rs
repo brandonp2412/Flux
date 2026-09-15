@@ -6369,6 +6369,12 @@ fn main() -> i64 {{
     assert!(generated.contains("readBytesMany requires a nonblocking TCP socket"));
     assert!(generated.contains("readBytesMany cancelled by worker scope"));
 
+    let timed = "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
+    check_source(timed).expect("timed binary batch receive should typecheck");
+    let timed_generated = compile_to_c(timed).expect("timed binary batch receive should lower");
+    assert!(timed_generated.contains("flux__net_receive_bytes_many_with_timeout("));
+    assert!(timed_generated.contains("readBytesManyTimeout cancelled by worker scope"));
+
     let root =
         std::env::temp_dir().join(format!("flux-net-read-bytes-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
