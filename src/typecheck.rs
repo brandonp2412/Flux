@@ -5947,6 +5947,21 @@ pub fn type_of_expr(
                         }
                         return Ok(Type::List(element));
                     }
+                    if matches!(&item.kind, ExprKind::Map(_)) {
+                        let map_ty = type_of_expr(item, env, signatures)?;
+                        let Type::Map(key, value) = map_ty else {
+                            unreachable!("nested map literal must have map type");
+                        };
+                        if *key != Type::Str
+                            || !matches!(*value, Type::I64 | Type::Bool | Type::Str)
+                        {
+                            return Err(diag(
+                                item.span,
+                                "nested map literal values must be string-keyed scalar maps",
+                            ));
+                        }
+                        return Ok(Type::Map(key, value));
+                    }
                     return Err(diag(
                         item.span,
                         "map literals currently accept only scalar expressions or scalar lists",
@@ -10754,6 +10769,13 @@ fn check_qualified_call(
                                     signatures.canonical_type(&inner),
                                     Type::I64 | Type::Bool | Type::Str
                                 ),
+                                Type::Map(inner_key, inner_value) => {
+                                    signatures.canonical_type(&inner_key) == Type::Str
+                                        && matches!(
+                                            signatures.canonical_type(&inner_value),
+                                            Type::I64 | Type::Bool | Type::Str
+                                        )
+                                }
                                 _ => false,
                             }
                     }
@@ -10843,6 +10865,13 @@ fn check_qualified_call(
                         signatures.canonical_type(&inner),
                         Type::I64 | Type::Bool | Type::Str
                     ),
+                    Type::Map(inner_key, inner_value) => {
+                        signatures.canonical_type(&inner_key) == Type::Str
+                            && matches!(
+                                signatures.canonical_type(&inner_value),
+                                Type::I64 | Type::Bool | Type::Str
+                            )
+                    }
                     _ => false,
                 };
                 if signatures.canonical_type(&key) != Type::Str || !valid_value {

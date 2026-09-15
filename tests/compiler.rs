@@ -17321,6 +17321,7 @@ fn json_nested_scalar_object_encoding_is_typed_bounded_and_native() {
 fn encoded(value: str) -> void {
     print(value)
 }
+
 fn main() -> i64 {
     let numbers: map<str, i64[]> = {"first": [1, -2]}
     let flags: map<str, bool[]> = {"flags": [true, false]}
@@ -17333,6 +17334,7 @@ fn main() -> i64 {
     print(wordError)
     return 0
 }
+
 "#;
     check_source(source).expect("nested JSON scalar objects should typecheck");
     let generated = compile_to_c(source).expect("nested JSON scalar objects should lower");
@@ -17368,6 +17370,54 @@ nil
 nil
 nil
 "
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_nested_map_encoding_is_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let numbers: map<str, map<str, i64>> = {"first\"key": {"one": 1, "two": 2}}
+    let words: map<str, map<str, str>> = {"words": {"a": "x", "b": "y\"z"}}
+    let numberError: error = json.encodeObject(numbers, encoded)
+    let wordError: error = json.encode(words, encoded)
+    print(numberError)
+    print(wordError)
+    return 0
+}
+"#;
+    check_source(source).expect("nested JSON maps should typecheck");
+    let generated = compile_to_c(source).expect("nested JSON maps should lower");
+    assert!(generated.contains("flux__json_encode_map_map("));
+    let root = std::env::temp_dir().join(format!("flux-json-map-map-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested map directory should be writable");
+    let c_path = root.join("json-map-map.c");
+    let exe_path = root.join("json-map-map");
+    fs::write(&c_path, generated).expect("generated nested map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested map native code");
+    assert!(
+        compile.status.success(),
+        "nested map C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested map program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"first\\\"key\":{\"one\":1,\"two\":2}}\n{\"words\":{\"a\":\"x\",\"b\":\"y\\\"z\"}}\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

@@ -4362,6 +4362,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_nested_array(")
         || runtime_usage.contains("flux__json_encode_object(")
         || runtime_usage.contains("flux__json_encode_nested_object(")
+        || runtime_usage.contains("flux__json_encode_map_map(")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -4380,6 +4381,7 @@ static inline const char *flux__json_encode_array(struct flux__list values, int 
 static inline const char *flux__json_encode_nested_array(struct flux__list values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
 static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_null(void (*callback)(const char *));
@@ -4666,6 +4668,43 @@ static inline const char *flux__json_encode_nested_object(struct flux__map value
             }
         }
         if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = ']';
+    }
+    if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+static _Thread_local char flux__json_capture_buffer[393217];
+static _Thread_local const char *flux__json_capture_value;
+static inline void flux__json_capture(const char *value) {
+    size_t length = value == NULL ? 0 : strlen(value);
+    if (length >= sizeof(flux__json_capture_buffer)) { flux__json_capture_value = NULL; return; }
+    memcpy(flux__json_capture_buffer, value, length + 1);
+    flux__json_capture_value = flux__json_capture_buffer;
+}
+static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeObject callback";
+    if (kind < 0 || kind > 2) return "invalid nested JSON object value kind";
+    if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    char encoded[393217]; size_t output = 0; encoded[output++] = '{';
+    ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
+    ptrdiff_t value_stride = values.values.stride == 0 ? (ptrdiff_t)sizeof(struct flux__map) : values.values.stride;
+    for (size_t index = 0; index < values.keys.len; index += 1) {
+        const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride));
+        if (key == NULL) return "JSON object contains a null key";
+        if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = ','; }
+        flux__json_capture_value = NULL;
+        const char *key_error = flux__json_encode_string(key, flux__json_capture);
+        if (key_error != NULL || flux__json_capture_value == NULL) return key_error == NULL ? "JSON object encoding failed" : key_error;
+        size_t encoded_key_length = strlen(flux__json_capture_value);
+        if (output > sizeof(encoded) - 1 - encoded_key_length - 1) return "encoded JSON object exceeds 393216 bytes";
+        memcpy(encoded + output, flux__json_capture_value, encoded_key_length); output += encoded_key_length;
+        flux__json_capture_value = NULL;
+        struct flux__map child = *((struct flux__map *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
+        const char *error = flux__json_encode_object(child, kind, flux__json_capture);
+        if (error != NULL) return error;
+        if (flux__json_capture_value == NULL) return "JSON object encoding failed";
+        size_t child_length = strlen(flux__json_capture_value);
+        if (output > sizeof(encoded) - 1 - child_length - 1) return "encoded JSON object exceeds 393216 bytes";
+        encoded[output++] = ':';
+        memcpy(encoded + output, flux__json_capture_value, child_length); output += child_length;
     }
     if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
@@ -35617,9 +35656,30 @@ fn emit_qualified_call(
                             ));
                         }
                     },
+                    Type::Map(inner_key, inner_value) => {
+                        if signatures.canonical_type(&inner_key) != Type::Str {
+                            return Err(diag(
+                                span,
+                                "json.encodeObject requires string-keyed map values",
+                            ));
+                        }
+                        match signatures.canonical_type(&inner_value) {
+                            Type::I64 => 6,
+                            Type::Bool => 7,
+                            Type::Str => 8,
+                            _ => {
+                                return Err(diag(
+                                    span,
+                                    "json.encodeObject requires scalar-map values",
+                                ));
+                            }
+                        }
+                    }
                     _ => return Err(diag(span, "json.encodeObject requires a scalar map")),
                 };
-                if kind >= 3 {
+                if kind >= 6 {
+                    ("flux__json_encode_map_map", kind - 6)
+                } else if kind >= 3 {
                     ("flux__json_encode_nested_object", kind - 3)
                 } else {
                     ("flux__json_encode_object", kind)
