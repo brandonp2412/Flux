@@ -36267,16 +36267,21 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "uri" {
-        if !named_args.is_empty() || !matches!(name, "parse" | "decode") || args.len() != 2 {
+        if !named_args.is_empty()
+            || !matches!(name, "parse" | "decode" | "encode")
+            || args.len() != 2
+        {
             return Err(diag(span, "invalid URI call reached code generation"));
         }
         let value = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[1], env, signatures)?;
-        if name == "decode" {
+        if matches!(name, "decode" | "encode") {
             return Ok((
                 format!(
-                    "flux__url_decode_component({}, {})",
-                    value.code, callback.code
+                    "flux__url_{}_component({}, {})",
+                    if name == "decode" { "decode" } else { "encode" },
+                    value.code,
+                    callback.code,
                 ),
                 vec![Type::Error],
                 None,

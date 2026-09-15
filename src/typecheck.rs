@@ -11192,7 +11192,9 @@ fn check_qualified_call(
         }
     }
     if namespace == "uri" {
-        if !matches!(name.as_str(), "parse" | "decode") || !named_args.is_empty() || args.len() != 2
+        if !matches!(name.as_str(), "parse" | "decode" | "encode")
+            || !named_args.is_empty()
+            || args.len() != 2
         {
             return Err(diag(
                 *name_span,

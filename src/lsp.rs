@@ -1682,6 +1682,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn uri.decode(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "encode",
+            3,
+            "fn uri.encode(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "json" {
@@ -3957,8 +3964,8 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "decode" => Some(signature_help_for_builtin(
-                    "uri.decode",
+                "decode" | "encode" => Some(signature_help_for_builtin(
+                    &format!("uri.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
@@ -10545,7 +10552,7 @@ mod tests {
     #[test]
     fn signature_help_supports_url_component_coding() {
         let uri = "file:///tmp/url-component-signature.flux";
-        let source = "fn converted(_value: str) -> void {\n}\nfn field(_name: str, _value: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", converted))\n    print(url.encodeComponent(\"a b\", converted))\n    print(url.decodeFormComponent(\"a+b\", converted))\n    print(url.encodeFormComponent(\"a b\", converted))\n    print(url.parseFormQuery(\"a=1\", field))\n    return 0\n}\n";
+        let source = "fn converted(_value: str) -> void {\n}\nfn field(_name: str, _value: str) -> void {\n}\nfn main() -> i64 {\n    print(url.decodeComponent(\"a%20b\", converted))\n    print(url.encodeComponent(\"a b\", converted))\n    print(uri.decode(\"a%20b\", converted))\n    print(uri.encode(\"a b\", converted))\n    print(url.decodeFormComponent(\"a+b\", converted))\n    print(url.encodeFormComponent(\"a b\", converted))\n    print(url.parseFormQuery(\"a=1\", field))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             (
@@ -10555,6 +10562,10 @@ mod tests {
             (
                 "url.encodeComponent(",
                 "fn url.encode(value: str, callback: fn(str) -> void) -> error",
+            ),
+            (
+                "uri.encode(",
+                "fn uri.encode(value: str, callback: fn(str) -> void) -> error",
             ),
             (
                 "url.decodeFormComponent(",

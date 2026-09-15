@@ -5675,6 +5675,64 @@ fn main() -> i64 {
 }
 
 #[test]
+fn general_uri_component_encoding_is_bounded_borrowed_and_tree_shaken() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(uri.encode("hello world/ok", encoded))
+    print(uri.encode("AZaz09-._~", encoded))
+    print(uri.encode("café", encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("URI component encoding should typecheck");
+    let generated = compile_to_c(source).expect("URI component encoding should lower natively");
+    assert!(generated.contains("flux__url_encode_component("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-uri-encode-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI encode fixture should be writable");
+    let source_path = root.join("uri_encode.flux");
+    fs::write(&source_path, source).expect("URI encode source should be writable");
+    let binary = root.join("uri_encode");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI encode fixture should build");
+    assert!(
+        built.status.success(),
+        "URI encode fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI encode fixture should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "hello%20world%2Fok\nnil\nAZaz09-._~\nnil\ncaf%C3%A9\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let invalid_callback = check_source(
+        "fn encoded(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.encode(\"a b\", encoded))\n    return 0\n}\n",
+    )
+    .expect_err("URI encode callback shape must be exact");
+    assert!(invalid_callback.message.contains("uri.encode callback"));
+
+    let unused = "fn encoded(_value: str) -> void {\n}\nfn hidden() -> void {\n    print(uri.encode(\"a b\", encoded))\n}\nfn main() -> i64 {\n    return 0\n}\n";
+    let unused_generated = compile_to_c(unused).expect("dead URI encode should typecheck");
+    assert!(!unused_generated.contains("flux__url_encode_component("));
+}
+
+#[test]
 fn url_component_percent_decoding_is_bounded_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn decoded(value: str) -> void {
