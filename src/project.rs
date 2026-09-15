@@ -351,8 +351,15 @@ impl ProjectAnalysisCache {
                 .filter(|changed| {
                     changed.is_empty()
                         || changed.iter().all(|source_id| {
-                            module_type_surface(&previous.analysis.program, *source_id)
-                                == module_type_surface(&report.program, *source_id)
+                            module_type_surface(
+                                &previous.analysis.program,
+                                &previous.analysis.signatures,
+                                *source_id,
+                            ) == module_type_surface(
+                                &report.program,
+                                &previous.analysis.signatures,
+                                *source_id,
+                            )
                         })
                 })
         });
@@ -618,49 +625,142 @@ fn source_semantically_changed(previous: &str, current: &str) -> bool {
     }
 }
 
-fn module_type_surface(program: &Program, source_id: SourceId) -> String {
+fn module_type_surface(
+    program: &Program,
+    signatures: &typecheck::Signatures,
+    source_id: SourceId,
+) -> String {
     use std::fmt::Write as _;
+
+    fn param_surface(param: &crate::ast::Param, signatures: &typecheck::Signatures) -> String {
+        format!(
+            "{}:{:?}:{}:{:?}",
+            param.name,
+            param.ty,
+            param.named_only,
+            param
+                .default
+                .as_ref()
+                .and_then(|default| typecheck::constant_primitive_value(default, signatures))
+        )
+    }
+
+    fn params_surface(params: &[crate::ast::Param], signatures: &typecheck::Signatures) -> String {
+        params
+            .iter()
+            .map(|param| param_surface(param, signatures))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 
     let mut surface = String::new();
     let imports = program
         .imports
         .iter()
         .filter(|definition| definition.path_span.source_id == source_id)
+        .map(|definition| (&definition.path, definition.resolved_source_id))
         .collect::<Vec<_>>();
     let aliases = program
         .aliases
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| (definition.public, &definition.name, &definition.target))
         .collect::<Vec<_>>();
     let interfaces = program
         .interfaces
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| {
+            (
+                definition.public,
+                &definition.name,
+                definition
+                    .parents
+                    .iter()
+                    .map(|parent| parent.name.as_str())
+                    .collect::<Vec<_>>(),
+                definition
+                    .functions
+                    .iter()
+                    .map(|function| {
+                        (
+                            &function.name,
+                            params_surface(&function.params, signatures),
+                            &function.returns,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     let implementations = program
         .implementations
         .iter()
         .filter(|definition| definition.interface_span.source_id == source_id)
+        .map(|definition| {
+            (
+                &definition.interface_name,
+                &definition.target_name,
+                definition
+                    .mappings
+                    .iter()
+                    .map(|mapping| (&mapping.member, &mapping.function))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     let structs = program
         .structs
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| {
+            (
+                definition.public,
+                &definition.name,
+                definition
+                    .fields
+                    .iter()
+                    .map(|field| (&field.name, &field.ty))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     let enums = program
         .enums
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| {
+            (
+                definition.public,
+                &definition.name,
+                definition
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        (
+                            &variant.name,
+                            variant
+                                .payloads
+                                .iter()
+                                .map(|payload| &payload.ty)
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     let constants = program
         .constants
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| (definition.public, &definition.name, &definition.ty))
         .collect::<Vec<_>>();
     let routes = program
         .routes
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
+        .map(|definition| (&definition.name, &definition.view_name))
         .collect::<Vec<_>>();
 
     write!(
@@ -685,7 +785,18 @@ fn module_type_surface(program: &Program, source_id: SourceId) -> String {
         write!(
             surface,
             "view=({:?},{:?},{:?},{:?},{:?},{:?});",
-            view.public, view.name, view.name_span, view.keyword_span, view.params, view.line
+            view.public,
+            view.name,
+            params_surface(&view.params, signatures),
+            view.states
+                .iter()
+                .map(|state| (&state.name, &state.ty))
+                .collect::<Vec<_>>(),
+            view.derived
+                .iter()
+                .map(|derived| (&derived.name, &derived.ty))
+                .collect::<Vec<_>>(),
+            view.grid
         )
         .expect("writing a String cannot fail");
     }
@@ -697,19 +808,15 @@ fn module_type_surface(program: &Program, source_id: SourceId) -> String {
     {
         write!(
             surface,
-            "function=({:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?});",
+            "function=({:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?});",
             function.public,
             function.foreign_symbol,
             function.unsafe_foreign,
             function.asynchronous,
             function.name,
-            function.name_span,
-            function.keyword_span,
-            function.params,
+            params_surface(&function.params, signatures),
             function.returns,
-            function.return_span,
-            function.return_type_spans,
-            function.line
+            function.expression_body
         )
         .expect("writing a String cannot fail");
     }

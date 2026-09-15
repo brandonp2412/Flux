@@ -33036,6 +33036,47 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
 }
 
 #[test]
+fn project_analysis_cache_ignores_source_positions_in_module_surfaces() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-incremental-positions-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary incremental project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial analysis should succeed");
+
+    let dependency = fs::canonicalize(dependency).expect("dependency should canonicalize");
+    fs::write(&dependency, "\n\n\npub fn value() -> i64 { 2 }\n")
+        .expect("line-shifted dependency should be writable");
+    cache.invalidate_path(&dependency);
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("line-only declaration shifts should keep the public surface stable");
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 1,
+            rechecked_modules: 1,
+            full_runs: 1,
+        }
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",
