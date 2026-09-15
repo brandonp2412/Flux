@@ -6738,6 +6738,8 @@ static inline const char *flux__websocket_write_control(int64_t session, unsigne
     else if (!flux__websocket_write_all((int)session, payload, length)) return "failed to send WebSocket control payload";
     return NULL;
 }
+static inline const char *flux__websocket_write_ping(int64_t session, const char *value) { if (value == NULL) return "invalid WebSocket ping payload"; size_t length = strlen(value); if (length > 125) return "WebSocket ping payload exceeds 125 bytes"; return flux__websocket_write_control(session, 9, (const unsigned char *)value, length); }
+static inline const char *flux__websocket_write_pong(int64_t session, const char *value) { if (value == NULL) return "invalid WebSocket pong payload"; size_t length = strlen(value); if (length > 125) return "WebSocket pong payload exceeds 125 bytes"; return flux__websocket_write_control(session, 10, (const unsigned char *)value, length); }
 static inline struct flux__net_i64_error flux__websocket_accept(int64_t socket_handle) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__websocket_result(-1, "invalid WebSocket socket");
     char request[65537]; size_t length = 0;
@@ -33594,6 +33596,12 @@ fn emit_qualified_call(
                 let session = emit_expr(&args[0], env, signatures)?;
                 let bytes = emit_expr(&args[1], env, signatures)?;
                 return Ok((format!("flux__websocket_write_bytes({}, {})", session.code, bytes.code), vec![Type::Error], None));
+            }
+            "ping" | "pong" if args.len() == 2 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let value = emit_expr(&args[1], env, signatures)?;
+                let helper = if name == "ping" { "flux__websocket_write_ping" } else { "flux__websocket_write_pong" };
+                return Ok((format!("{}({}, {})", helper, session.code, value.code), vec![Type::Error], None));
             }
             "close" if args.len() == 1 => {
                 let session = emit_expr(&args[0], env, signatures)?;

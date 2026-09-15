@@ -46399,9 +46399,15 @@ fn main() -> i64 {
     let writeError: error = websocket.writeText(session, "hello")
     if writeError != nil:
         return 3
+    let pingError: error = websocket.ping(session, "probe")
+    if pingError != nil:
+        return 4
+    let pongError: error = websocket.pong(session, "probe")
+    if pongError != nil:
+        return 5
     let closeError: error = websocket.close(session)
     if closeError != nil:
-        return 4
+        return 6
     return 0
 }
 "#;
@@ -46412,7 +46418,21 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_write_control"));
+    assert!(generated.contains("flux__websocket_write_ping("));
+    assert!(generated.contains("flux__websocket_write_pong("));
     assert!(generated.contains("failed to create WebSocket control mask"));
+}
+
+#[test]
+fn websocket_control_payloads_are_bounded() {
+    let source = r#"
+fn main() -> i64 {
+    let pingError: error = websocket.ping(3, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err("oversized WebSocket control payload should fail");
+    assert!(error.message.contains("websocket.ping payload must be at most 125 bytes"));
 }
 
 #[test]

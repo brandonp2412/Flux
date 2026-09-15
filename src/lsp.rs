@@ -1300,6 +1300,8 @@ fn add_qualified_namespace_completions(
                 "writeBytes",
                 "fn websocket.writeBytes(session: i64, bytes: i64[]) -> error",
             ),
+            ("ping", "fn websocket.ping(session: i64, payload: str) -> error"),
+            ("pong", "fn websocket.pong(session: i64, payload: str) -> error"),
             ("close", "fn websocket.close(session: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -3954,6 +3956,8 @@ fn signature_help_for_document_cached(
                     vec!["session: i64", "value: str"],
                     "error",
                 ),
+                "ping" => ("websocket.ping", vec!["session: i64", "payload: str"], "error"),
+                "pong" => ("websocket.pong", vec!["session: i64", "payload: str"], "error"),
                 "close" => ("websocket.close", vec!["session: i64"], "error"),
                 _ => return None,
             };

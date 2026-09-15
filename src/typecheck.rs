@@ -7870,6 +7870,19 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "websocket.writeBytes bytes")?;
                 return Ok(vec![Type::Error]);
             }
+            "ping" | "pong" => {
+                if args.len() != 2 {
+                    return Err(diag(span, &format!("websocket.{name} expects 2 arguments, got {}", args.len())));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, &format!("websocket.{name} session"))?;
+                let payload = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &payload, &format!("websocket.{name} payload"))?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::Str(value)) if value.len() > 125) {
+                    return Err(diag(args[1].span, &format!("websocket.{name} payload must be at most 125 bytes")));
+                }
+                return Ok(vec![Type::Error]);
+            }
             "close" => {
                 if args.len() != 1 {
                     return Err(diag(
