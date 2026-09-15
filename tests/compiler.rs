@@ -14429,6 +14429,34 @@ fn main() -> i64 {
             .contains("use of moved non-copy binding 'values'")
     }));
 
+    let optional_list = r#"
+fn main() -> i64 {
+    let values: i64[]? = [1, 2, 3]
+    drop(values)
+    return 0
+}
+"#;
+    check_source(optional_list).expect("drop should consume an ownership-tracked optional list");
+    compile_to_c(optional_list).expect("an optional-list drop should lower natively");
+
+    let optional_list_use_after_drop = r#"
+fn main() -> i64 {
+    let values: i64[]? = [1, 2, 3]
+    drop(values)
+    let destination: i64[]? = values
+    if let value = borrow destination:
+        print(value[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(optional_list_use_after_drop)
+        .expect_err("an optional list must not be reusable after drop");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'values'")
+    }));
+
     let map_value = r#"
 fn main() -> i64 {
     let values: map<i64, i64> = map{1: 2}

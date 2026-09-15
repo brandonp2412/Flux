@@ -6977,7 +6977,9 @@ pub fn type_of_expr(
                 return Err(diag(expr.span, "drop expects exactly one non-copy value"));
             }
             let ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-            if !matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _)) {
+            let is_non_copy = matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+                || matches!(ty, Type::Optional(ref inner) if matches!(inner.as_ref(), Type::List(_)));
+            if !is_non_copy {
                 return Err(diag(
                     args[0].span,
                     &format!(
