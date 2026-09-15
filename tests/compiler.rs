@@ -5563,6 +5563,9 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("general URI parsing should lower natively");
     assert!(generated.contains("flux__uri_parse("));
     assert!(generated.contains("flux__bounded_url_length("));
+    assert!(generated.contains(
+        "if (!flux__bounded_url_length(path, &path_length)) return \"URI path exceeds 65536 bytes\";"
+    ));
     assert!(!generated.contains(
         "flux__uri_parse(const char *value, void (*callback)(const char *, const char *, const char *, const char *, const char *)) {\n    size_t length = strlen(value);"
     ));

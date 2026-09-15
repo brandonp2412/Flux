@@ -4402,7 +4402,9 @@ fn emit_runtime_prelude(
         if (path == NULL) {
             path = "";
         } else {
-            memcpy(path_copy, path, strlen(path) + 1);
+            size_t path_length = 0;
+            if (!flux__bounded_url_length(path, &path_length)) return "URI path exceeds 65536 bytes";
+            memcpy(path_copy, path, path_length + 1);
             *path = '\0';
             path = path_copy;
         }
