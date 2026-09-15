@@ -6436,12 +6436,13 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         ssize_t received;
         do {
             peer_length = sizeof(peer);
-            received = recvfrom((int)socket_handle, buffer, (size_t)max_bytes, 0, (struct sockaddr *)&peer, &peer_length);
+            received = recvfrom((int)socket_handle, buffer, (size_t)max_bytes, MSG_TRUNC, (struct sockaddr *)&peer, &peer_length);
         } while (received < 0 && errno == EINTR);
         if (received < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(total, NULL);
             return flux__net_result(total, "failed to receive UDP text");
         }
+        if (received > max_bytes) return flux__net_result(total, "received UDP text exceeds maxBytes");
         if (memchr(buffer, '\0', (size_t)received) != NULL) return flux__net_result(total, "received text contains a NUL byte");
         if (received > 0 && total > INT64_MAX - (int64_t)received) return flux__net_result(total, "received byte count overflow");
         buffer[received] = '\0';
@@ -6508,8 +6509,9 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     for (int64_t count = 0; count < max_count; ++count) {
         if (flux__worker_cancelled()) return flux__net_result(total, "readBytesFromMany cancelled by worker scope");
         struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer); ssize_t received;
-        do { peer_length = sizeof(peer); received = recvfrom((int)socket_handle, raw, (size_t)max_bytes, 0, (struct sockaddr *)&peer, &peer_length); } while (received < 0 && errno == EINTR);
+        do { peer_length = sizeof(peer); received = recvfrom((int)socket_handle, raw, (size_t)max_bytes, MSG_TRUNC, (struct sockaddr *)&peer, &peer_length); } while (received < 0 && errno == EINTR);
         if (received < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(total, NULL); return flux__net_result(total, "failed to receive bytes"); }
+        if (received > max_bytes) return flux__net_result(total, "received UDP bytes exceed maxBytes");
         for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index];
         char host[INET6_ADDRSTRLEN]; const void *address = NULL; int64_t port = -1;
         if (peer.ss_family == AF_INET) { struct sockaddr_in *ipv4 = (struct sockaddr_in *)&peer; address = &ipv4->sin_addr; port = (int64_t)ntohs(ipv4->sin_port); }

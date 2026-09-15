@@ -6636,6 +6636,8 @@ fn main() -> i64 {{
     check_source(&source).expect("UDP binary batch receive should typecheck");
     let generated = compile_to_c(&source).expect("UDP binary batch receive should lower");
     assert!(generated.contains("flux__net_receive_bytes_from_many("));
+    assert!(generated.contains("recvfrom((int)socket_handle, raw, (size_t)max_bytes, MSG_TRUNC"));
+    assert!(generated.contains("received UDP bytes exceed maxBytes"));
     assert!(generated.contains("readBytesFromMany requires a nonblocking UDP socket"));
     assert!(generated.contains("readBytesFromMany cancelled by worker scope"));
     let timed = "fn consume(_socket: i64, _bytes: i64[], _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesFromManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
