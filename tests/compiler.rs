@@ -14603,6 +14603,10 @@ fn main() -> i64 {
         call.argument_definitions_at(0),
         call.argument_definitions[0].as_slice()
     );
+    assert_eq!(
+        call.consuming_argument_definitions_at(0),
+        call.argument_definitions[0].as_slice()
+    );
     assert!(call.borrowed_argument_definitions[0].is_empty());
     assert!(call.borrowed_argument_definitions_at(0).is_empty());
     assert_eq!(node.ownership.moves.len(), 1);

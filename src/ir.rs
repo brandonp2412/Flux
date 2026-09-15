@@ -377,6 +377,18 @@ impl OwnershipCall {
             .unwrap_or_default()
     }
 
+    /// Returns the exact reaching definitions consumed by one argument, if
+    /// this call boundary transfers ownership for that argument.
+    ///
+    /// Keeping the mode check next to the parallel ownership vectors prevents
+    /// future consumers from accidentally treating an immutable borrow as a
+    /// move merely because it has source-definition provenance.
+    pub fn consuming_argument_definitions_at(&self, index: usize) -> &[ControlFlowDefinitionId] {
+        (self.argument_kind(index) == Some(OwnershipCallArgumentKind::Consuming))
+            .then(|| self.argument_definitions_at(index))
+            .unwrap_or_default()
+    }
+
     pub fn is_consuming(&self) -> bool {
         self.argument_kinds
             .iter()
