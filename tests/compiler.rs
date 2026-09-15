@@ -19473,6 +19473,8 @@ fn main() -> i64 {
     assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
     assert!(generated.contains("flux__tls_handshake"));
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, -1)"));
+    assert!(generated.contains("TLS requires a TCP stream socket"));
+    assert!(generated.contains("TLS requires a connected TCP socket"));
     assert!(generated.contains("TLS readTimeout cancelled by worker scope"));
     assert!(generated.contains("TLS writeTimeout cancelled by worker scope"));
     assert!(
@@ -19500,6 +19502,50 @@ fn main() -> i64 {
         built.status.success(),
         "TLS native link failed: {}",
         String::from_utf8_lossy(&built.stderr)
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tls_rejects_non_tcp_socket_before_handshake() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, bind_error) = net.udpBind("127.0.0.1", 0)
+    print(bind_error)
+    let (session, tls_error) = tls.wrap(socket, "example.com", "")
+    print(session)
+    print(tls_error)
+    print(net.close(socket))
+    return 0
+}
+"#;
+    check_source(source).expect("TLS socket validation source should typecheck");
+    let root = std::env::temp_dir().join(format!(
+        "flux-tls-socket-validation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("TLS socket validation fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("TLS socket validation source should be writable");
+    let binary = root.join("tls-socket-validation");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("TLS socket validation binary should build");
+    assert!(
+        built.status.success(),
+        "TLS socket validation build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("TLS socket validation binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil\n-1\nTLS requires a TCP stream socket\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

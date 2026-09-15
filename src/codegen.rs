@@ -7648,6 +7648,7 @@ static inline void flux__tls_remember_resumption(const char *server_name, size_t
 static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1) { struct flux__tls_slot *slot = &flux__tls_slots[index]; if (slot->used) { SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; } struct flux__tls_resumption_slot *resumption = &flux__tls_resumption_slots[index]; if (resumption->used) { SSL_SESSION_free(resumption->session); free(resumption->server_name); free(resumption->ca_file); resumption->used = false; } } }
 static inline void flux__tls_register_cleanup(void) { if (!flux__tls_cleanup_registered) { (void)atexit(flux__tls_cleanup); flux__tls_cleanup_registered = true; } }
 static inline bool flux__tls_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
+static inline const char *flux__tls_validate_socket(int socket_handle) { int socket_type = 0; socklen_t socket_type_length = sizeof(socket_type); if (getsockopt(socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &socket_type_length) != 0) return "failed to inspect TLS socket"; if (socket_type != SOCK_STREAM) return "TLS requires a TCP stream socket"; struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer); if (getpeername(socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) return "TLS requires a connected TCP socket"; return NULL; }
 static inline int flux__tls_handshake(SSL *session, int socket_handle, bool server) {
     for (;;) {
         int result = server ? SSL_accept(session) : SSL_connect(session);
@@ -7661,6 +7662,7 @@ static inline int flux__tls_handshake(SSL *session, int socket_handle, bool serv
 }
 static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) {
     if (socket_handle < 0 || socket_handle > INT_MAX || server_name == NULL || server_name[0] == '\0' || ca_file == NULL) return flux__tls_result(-1, "invalid TLS wrap arguments");
+    const char *socket_error = flux__tls_validate_socket((int)socket_handle); if (socket_error != NULL) return flux__tls_result(-1, socket_error);
     size_t server_name_length = 0; size_t ca_file_length = 0;
     if (!flux__tls_bounded_length(server_name, 65536, &server_name_length) || !flux__tls_bounded_length(ca_file, 65536, &ca_file_length)) return flux__tls_result(-1, "TLS wrap string exceeds 65536 bytes");
     (void)server_name_length; (void)ca_file_length;
@@ -7683,6 +7685,7 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
 }
 static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle, const char *certificate, const char *key) {
     if (socket_handle < 0 || socket_handle > INT_MAX || certificate == NULL || certificate[0] == '\0' || key == NULL || key[0] == '\0') return flux__tls_result(-1, "invalid TLS server arguments");
+    const char *socket_error = flux__tls_validate_socket((int)socket_handle); if (socket_error != NULL) return flux__tls_result(-1, socket_error);
     size_t certificate_length = 0; size_t key_length = 0;
     if (!flux__tls_bounded_length(certificate, 65536, &certificate_length) || !flux__tls_bounded_length(key, 65536, &key_length)) return flux__tls_result(-1, "TLS server path exceeds 65536 bytes");
     (void)certificate_length; (void)key_length;
