@@ -4208,6 +4208,16 @@ fn emit_runtime_prelude(
     if (length > 65536) return "URL exceeds 65536 bytes";
     char buffer[65537];
     memcpy(buffer, value, length + 1);
+    for (size_t index = 0; index < length; index += 1) {
+        if ((unsigned char)buffer[index] != '%') continue;
+        if (index + 2 >= length) return "URL contains an incomplete percent escape";
+        unsigned char high = (unsigned char)buffer[index + 1];
+        unsigned char low = (unsigned char)buffer[index + 2];
+        bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+        bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+        if (!high_hex || !low_hex) return "URL contains an invalid percent escape";
+        index += 2;
+    }
     char *scheme_end = strstr(buffer, "://");
     if (scheme_end == NULL || scheme_end == buffer) return "URL must include http:// or https://";
     size_t scheme_length = (size_t)(scheme_end - buffer);

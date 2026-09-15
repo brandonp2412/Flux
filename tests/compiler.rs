@@ -5131,6 +5131,7 @@ fn parsed(scheme: str, host: str, port: i64, target: str) -> void {
 fn main() -> i64 {
     print(url.parseHttp("https://example.test:8443/a?b=1#ignored", parsed))
     print(url.parseHttp("http://[::1]?x=1", parsed))
+    print(url.parseHttp("http://example.test/a%ZZ", parsed))
     print(url.parseHttp("ftp://example.test/file", parsed))
     return 0
 }
@@ -5185,7 +5186,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "https\nexample.test\n8443\n/a?b=1\nnil\nhttp\n::1\n80\n/?x=1\nnil\nURL scheme must be http or https\n"
+        "https\nexample.test\n8443\n/a?b=1\nnil\nhttp\n::1\n80\n/?x=1\nnil\nURL contains an invalid percent escape\nURL scheme must be http or https\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
