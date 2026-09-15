@@ -12492,7 +12492,7 @@ fn emit_android_native_application(
     }
     if let Some(function) = application_metadata_function(application, "on_save_state") {
         out.push_str(&format!(
-            "static void *flux__android_on_save_instance_state(ANativeActivity *activity, size_t *out_size) {{\n    (void)activity;\n    if (out_size == NULL) return NULL;\n    *out_size = 0;\n    const char *state = {}();\n    if (state == NULL) return NULL;\n    size_t len = strlen(state);\n    if (len > (size_t)16 * 1024 * 1024 - 1) return NULL;\n    size_t size = len + 1;\n    char *copy = (char *)malloc(size);\n    if (copy == NULL) return NULL;\n    memcpy(copy, state, size);\n    *out_size = size;\n    return copy;\n}}\n",
+            "static void *flux__android_on_save_instance_state(ANativeActivity *activity, size_t *out_size) {{\n    (void)activity;\n    if (out_size == NULL) return NULL;\n    *out_size = 0;\n    const char *state = {}();\n    if (state == NULL) return NULL;\n    size_t len = 0;\n    while (len <= (size_t)16 * 1024 * 1024 - 1 && state[len] != '\\0') len += 1;\n    if (len > (size_t)16 * 1024 * 1024 - 1) return NULL;\n    size_t size = len + 1;\n    char *copy = (char *)malloc(size);\n    if (copy == NULL) return NULL;\n    memcpy(copy, state, size);\n    *out_size = size;\n    return copy;\n}}\n",
             function_c_name(function),
         ));
     }
@@ -13846,7 +13846,7 @@ fn emit_linux_gtk_application(
         ));
         if let Some(function) = on_save_state {
             out.push_str(&format!(
-                "static void flux__ui_save_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; const char *state = {}(); if (state == NULL) return; size_t length = strlen(state); if (length > (size_t)16 * 1024 * 1024) return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {{'F','L','X','A'}}; uint64_t size = (uint64_t)length; if (fwrite(magic, sizeof(magic), 1, file) != 1 || fwrite(&size, sizeof(size), 1, file) != 1 || (length != 0 && fwrite(state, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} if (fclose(file) != 0) {{ remove(temporary); return; }} if (rename(temporary, path) != 0) remove(temporary); }}\n",
+                "static void flux__ui_save_app_state(void) {{ const char *path = flux__ui_app_state_path(); if (path == NULL) return; const char *state = {}(); if (state == NULL) return; size_t length = 0; if (!flux__ui_bounded_length(state, (size_t)16 * 1024 * 1024, &length)) return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {{'F','L','X','A'}}; uint64_t size = (uint64_t)length; if (fwrite(magic, sizeof(magic), 1, file) != 1 || fwrite(&size, sizeof(size), 1, file) != 1 || (length != 0 && fwrite(state, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} if (fclose(file) != 0) {{ remove(temporary); return; }} if (rename(temporary, path) != 0) remove(temporary); }}\n",
                 function_c_name(function)
             ));
         }

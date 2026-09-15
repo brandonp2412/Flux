@@ -40484,6 +40484,10 @@ app Screen(onSaveState: saveState, onRestoreState: restoreState)
     assert!(generated.contains("flux__fn_restoreState(state)"));
     assert!(generated.contains("rename(temporary, path)"));
     assert!(generated.contains("size > (uint64_t)16 * 1024 * 1024"));
+    assert!(
+        generated.contains("flux__ui_bounded_length(state, (size_t)16 * 1024 * 1024, &length)")
+    );
+    assert!(!generated.contains("size_t length = strlen(state)"));
 
     let root = std::env::temp_dir().join(format!(
         "flux-linux-state-{}-{}",
@@ -41686,6 +41690,12 @@ app Screen(onStart: started, onResume: resumed, onPause: paused, onStop: stopped
         "activity->callbacks->onSaveInstanceState = flux__android_on_save_instance_state"
     ));
     assert!(generated.contains("len > (size_t)16 * 1024 * 1024 - 1"));
+    assert!(
+        generated.contains(
+            "while (len <= (size_t)16 * 1024 * 1024 - 1 && state[len] != '\\0') len += 1;"
+        )
+    );
+    assert!(!generated.contains("size_t len = strlen(state)"));
     assert!(generated.contains("saved_state_size <= (size_t)16 * 1024 * 1024 - 1"));
     assert!(generated.contains("flux__fn_saveState();"));
     assert!(generated.contains("flux__fn_restoreState(restored_state);"));
