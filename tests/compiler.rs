@@ -18314,6 +18314,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_object_aggregate_values_encode_natively() {
+    let source = r#"
+struct Address {
+    city: str
+    number: i64
+}
+enum Status {
+    Active
+    Named(str)
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let addresses: map<str, Address> = {"home": Address { city: "Auckland", number: 7 }}
+    let statuses: map<str, Status> = {"first": Status.Active(), "second": Status.Named("ready")}
+    print(json.encodeObject(addresses, encoded))
+    print(json.encode(statuses, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("aggregate JSON object values should typecheck");
+    let generated = compile_to_c(source).expect("aggregate JSON object values should lower");
+    assert!(generated.contains("flux__json_encode_map_aggregate_map_str_named_Address"));
+    assert!(generated.contains("flux__json_encode_map_aggregate_map_str_named_Status"));
+    let root = std::env::temp_dir().join(format!("flux-json-map-aggregate-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON map directory should be writable");
+    let c_path = root.join("json-map.c");
+    let exe_path = root.join("json-map");
+    fs::write(&c_path, generated).expect("generated JSON map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile aggregate JSON map code");
+    assert!(
+        compile.status.success(),
+        "aggregate JSON map C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("aggregate JSON map program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"home\":{\"city\":\"Auckland\",\"number\":7}}\nnil\n{\"first\":{\"Active\":null},\"second\":{\"Named\":\"ready\"}}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_recursively_nested_scalar_arrays_encode_natively() {
     let source = r#"
 fn encoded(value: str) -> void {

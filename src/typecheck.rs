@@ -5764,24 +5764,40 @@ fn json_map_literal_value_is_constant(value: &Expr, signatures: &Signatures) -> 
     }
 }
 
-fn json_map_value_type_is_supported(ty: &Type) -> bool {
-    match ty {
+fn json_map_value_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str => true,
-        Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+        Type::Optional(inner) => {
+            matches!(
+                signatures.canonical_type(&inner),
+                Type::I64 | Type::Bool | Type::Str
+            ) || json_record_type_is_supported(&inner, signatures)
+                || json_enum_type_is_supported(&inner, signatures)
+        }
         Type::List(inner) => match inner.as_ref() {
             Type::I64 | Type::Bool | Type::Str => true,
-            Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
-            Type::List(inner) | Type::Set(inner) => json_map_value_type_is_supported(inner),
+            Type::Optional(inner) => matches!(
+                signatures.canonical_type(&inner),
+                Type::I64 | Type::Bool | Type::Str
+            ),
+            Type::List(inner) | Type::Set(inner) => {
+                json_map_value_type_is_supported(inner, signatures)
+            }
             _ => false,
         },
         Type::Set(inner) => {
             matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
-                || matches!(inner.as_ref(), Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+                || matches!(signatures.canonical_type(&inner), Type::Optional(inner) if matches!(signatures.canonical_type(&inner), Type::I64 | Type::Bool | Type::Str))
                 || matches!(inner.as_ref(), Type::List(_) | Type::Set(_))
-                    && json_map_value_type_is_supported(inner)
+                    && json_map_value_type_is_supported(&inner, signatures)
         }
         Type::Map(key, value) => {
-            matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
+            signatures.canonical_type(&key) == Type::Str
+                && json_map_value_type_is_supported(&value, signatures)
+        }
+        Type::Record(_) | Type::Named(_) => {
+            json_record_type_is_supported(ty, signatures)
+                || json_enum_type_is_supported(ty, signatures)
         }
         _ => false,
     }
@@ -6062,6 +6078,14 @@ pub fn type_of_expr(
                     item.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
                 ) {
+                    let item_ty = type_of_expr(item, env, signatures)?;
+                    if matches!(
+                        signatures.canonical_type(&item_ty),
+                        Type::Record(_) | Type::Named(_)
+                    ) && json_map_value_type_is_supported(&item_ty, signatures)
+                    {
+                        return Ok(item_ty);
+                    }
                     if let ExprKind::List(values) | ExprKind::Set(values) = &item.kind {
                         if values.is_empty() {
                             return Err(diag(
@@ -6085,7 +6109,7 @@ pub fn type_of_expr(
                             Type::I64 | Type::Bool | Type::Str
                         ) || matches!(&*element, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
                             || matches!(&*element, Type::List(_) | Type::Set(_))
-                                && json_map_value_type_is_supported(&element);
+                                && json_map_value_type_is_supported(&element, signatures);
                         if !scalar_or_optional
                             || values
                                 .iter()
@@ -6111,7 +6135,7 @@ pub fn type_of_expr(
                         let Type::Map(key, value) = map_ty else {
                             unreachable!("nested map literal must have map type");
                         };
-                        let scalar_map_value = json_map_value_type_is_supported(&value);
+                        let scalar_map_value = json_map_value_type_is_supported(&value, signatures);
                         if *key != Type::Str || !scalar_map_value {
                             return Err(diag(
                                 item.span,
@@ -6122,7 +6146,7 @@ pub fn type_of_expr(
                     }
                     return Err(diag(
                         item.span,
-                        "map literals currently accept only scalar expressions or scalar lists",
+                        "map literals currently accept only scalar expressions, supported Copy aggregates, or scalar lists",
                     ));
                 }
                 if constant_primitive_value(item, signatures).is_none() {
@@ -10946,7 +10970,10 @@ fn check_qualified_call(
                     ),
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
-                            && json_map_value_type_is_supported(&signatures.canonical_type(element))
+                            && json_map_value_type_is_supported(
+                                &signatures.canonical_type(element),
+                                signatures,
+                            )
                     }
                     Type::Record(_) => json_record_type_is_supported(&value, signatures),
                     Type::Named(_) => {
@@ -11026,7 +11053,7 @@ fn check_qualified_call(
                         "json.encodeObject values must be map<str, i64|bool|str>",
                     ));
                 };
-                let valid_value = json_map_value_type_is_supported(&value);
+                let valid_value = json_map_value_type_is_supported(&value, signatures);
                 if signatures.canonical_type(&key) != Type::Str || !valid_value {
                     return Err(diag(
                         args[0].span,

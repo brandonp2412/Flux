@@ -4383,6 +4383,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_record_")
         || runtime_usage.contains("flux__json_encode_enum_")
         || runtime_usage.contains("flux__json_encode_optional_aggregate_")
+        || runtime_usage.contains("flux__json_encode_map_aggregate_")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -35975,6 +35976,22 @@ fn emit_qualified_call(
                         "json.encodeObject requires a string-keyed scalar map",
                     ));
                 }
+                let element = signatures.canonical_type(&element);
+                if matches!(
+                    element,
+                    Type::Record(_) | Type::Named(_) | Type::Optional(_)
+                ) && (json_record_supported(&element, signatures)
+                    || json_enum_supported(&element, signatures)
+                    || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures)))
+                {
+                    let map_ty = Type::Map(Box::new(Type::Str), Box::new(element));
+                    let helper = json_map_aggregate_helper_name(&map_ty, signatures);
+                    return Ok((
+                        format!("{helper}({}, {})", value.code, callback.code),
+                        vec![Type::Error],
+                        None,
+                    ));
+                }
                 let kind = json_map_value_kind(&element, signatures)
                     .map_err(|message| diag(span, message))?;
                 if kind >= 200000 {
@@ -38137,6 +38154,13 @@ fn json_optional_aggregate_helper_name(ty: &Type, signatures: &Signatures) -> St
     )
 }
 
+fn json_map_aggregate_helper_name(ty: &Type, signatures: &Signatures) -> String {
+    format!(
+        "flux__json_encode_map_aggregate_{}",
+        type_mangle(ty, signatures)
+    )
+}
+
 fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
     let Type::Named(name) = signatures.canonical_type(ty) else {
         return false;
@@ -38257,6 +38281,7 @@ fn emit_json_record_helpers(
     if !runtime_usage.contains("flux__json_encode_record_")
         && !runtime_usage.contains("flux__json_encode_enum_")
         && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
+        && !runtime_usage.contains("flux__json_encode_map_aggregate_")
     {
         return;
     }
@@ -38267,11 +38292,13 @@ fn emit_json_record_helpers(
     let mut declared_records = HashSet::new();
     let mut declared_enums = HashSet::new();
     let mut declared_optionals = HashSet::new();
+    let mut declared_maps = HashSet::new();
     for function in function_ir.values() {
         for value in function.values() {
             collect_json_record_types(&value.ty, signatures, &mut declared_records);
             collect_json_enum_types(&value.ty, signatures, &mut declared_enums);
             collect_json_optional_aggregate_types(&value.ty, signatures, &mut declared_optionals);
+            collect_json_map_aggregate_types(&value.ty, signatures, &mut declared_maps);
         }
     }
     for ty in &declared_records {
@@ -38299,6 +38326,12 @@ fn emit_json_record_helpers(
                 c_type(ty, signatures)
             ));
         }
+    }
+    for ty in &declared_maps {
+        out.push_str(&format!(
+            "static inline const char *{}(struct flux__map values, void (*callback)(const char *));\n",
+            json_map_aggregate_helper_name(ty, signatures)
+        ));
     }
     if !declared_records.is_empty() || !declared_enums.is_empty() || !declared_optionals.is_empty()
     {
@@ -38396,6 +38429,77 @@ fn emit_json_record_helpers(
         }
         out.push_str("    if (output >= sizeof(encoded) - 1) return \"encoded JSON record exceeds 393216 bytes\"; encoded[output++] = '}'; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
     }
+
+    // A map whose values are already supported Copy aggregates can be encoded
+    // without introducing a dynamic JSON value or an ownership escape. Each
+    // concrete map shape gets its own helper so the aggregate representation
+    // and encoder are selected statically.
+    let mut maps = declared_maps.into_iter().collect::<Vec<_>>();
+    maps.sort_by_key(|ty| ty.name());
+    for map_ty in maps {
+        let Type::Map(key_ty, value_ty) = signatures.canonical_type(&map_ty) else {
+            continue;
+        };
+        if signatures.canonical_type(&key_ty) != Type::Str {
+            continue;
+        }
+        let value_ty = signatures.canonical_type(&value_ty);
+        let value_helper = if let Type::Optional(_inner) = &value_ty {
+            json_optional_aggregate_helper_name(&value_ty, signatures)
+        } else if json_enum_supported(&value_ty, signatures) {
+            json_enum_helper_name(&value_ty, signatures)
+        } else {
+            json_record_helper_name(&value_ty, signatures)
+        };
+        let helper = json_map_aggregate_helper_name(&map_ty, signatures);
+        let value_c = c_type(&value_ty, signatures);
+        let call = if matches!(value_ty, Type::Optional(_)) {
+            format!("{value_helper}(value, flux__json_capture)")
+        } else {
+            format!("{value_helper}(value, flux__json_capture)")
+        };
+        out.push_str(&format!(
+            "static inline const char *{helper}(struct flux__map values, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encodeObject callback\"; if (values.keys.len != values.values.len || values.keys.len > 65536) return \"JSON object is invalid or too large\"; char encoded[393217]; size_t output = 0; encoded[output++] = '{{'; ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride; ptrdiff_t value_stride = values.values.stride == 0 ? (ptrdiff_t)sizeof({value_c}) : values.values.stride; for (size_t index = 0; index < values.keys.len; ++index) {{ const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride)); if (key == NULL) return \"JSON object contains a null key\"; if (index != 0) {{ if (output >= sizeof(encoded) - 1) return \"encoded JSON object exceeds 393216 bytes\"; encoded[output++] = ','; }} flux__json_capture_value = NULL; const char *key_error = flux__json_encode_string(key, flux__json_capture); if (key_error != NULL || flux__json_capture_value == NULL) return key_error == NULL ? \"JSON object encoding failed\" : key_error; size_t key_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - key_length - 1) return \"encoded JSON object exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, key_length); output += key_length; encoded[output++] = ':'; {value_c} value = *(({value_c} *)((char *)values.values.data + (ptrdiff_t)index * value_stride)); flux__json_capture_value = NULL; const char *value_error = {call}; if (value_error != NULL || flux__json_capture_value == NULL) return value_error == NULL ? \"JSON object encoding failed\" : value_error; size_t value_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - value_length) return \"encoded JSON object exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, value_length); output += value_length; }} if (output >= sizeof(encoded) - 1) return \"encoded JSON object exceeds 393216 bytes\"; encoded[output++] = '}}'; encoded[output] = '\\0'; callback(encoded); return NULL; }}\n"
+        ));
+    }
+}
+
+fn collect_json_map_aggregate_types(ty: &Type, signatures: &Signatures, maps: &mut HashSet<Type>) {
+    let ty = signatures.canonical_type(ty);
+    match &ty {
+        Type::Map(key, value)
+            if signatures.canonical_type(key) == Type::Str
+                && (matches!(
+                    signatures.canonical_type(value),
+                    Type::Record(_) | Type::Named(_)
+                ) && (json_record_supported(value, signatures)
+                    || json_enum_supported(value, signatures))
+                    || matches!(signatures.canonical_type(value), Type::Optional(inner)
+                        if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures))) =>
+        {
+            maps.insert(ty.clone());
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => {
+            collect_json_map_aggregate_types(inner, signatures, maps);
+        }
+        Type::Map(key, value) => {
+            collect_json_map_aggregate_types(key, signatures, maps);
+            collect_json_map_aggregate_types(value, signatures, maps);
+        }
+        Type::Record(fields) => {
+            for field in fields {
+                collect_json_map_aggregate_types(&field.ty, signatures, maps);
+            }
+        }
+        Type::Named(name) => {
+            if let Some(definition) = signatures.struct_type(name) {
+                for field in &definition.fields {
+                    collect_json_map_aggregate_types(&field.ty, signatures, maps);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn emit_json_enum_helpers(
@@ -38407,6 +38511,7 @@ fn emit_json_enum_helpers(
     if !runtime_usage.contains("flux__json_encode_enum_")
         && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
         && !runtime_usage.contains("flux__json_encode_record_")
+        && !runtime_usage.contains("flux__json_encode_map_aggregate_")
     {
         return;
     }
@@ -38525,6 +38630,10 @@ fn collect_json_enum_types(ty: &Type, signatures: &Signatures, enums: &mut HashS
                 collect_json_enum_types(&field.ty, signatures, enums);
             }
         }
+        Type::Map(key, value) => {
+            collect_json_enum_types(key, signatures, enums);
+            collect_json_enum_types(value, signatures, enums);
+        }
         Type::Named(name) => {
             if signatures.enum_type(name).is_none()
                 || !json_enum_supported(&ty, signatures)
@@ -38570,6 +38679,7 @@ fn emit_json_optional_aggregate_helpers(
     if !runtime_usage.contains("flux__json_encode_optional_aggregate_")
         && !runtime_usage.contains("flux__json_encode_enum_")
         && !runtime_usage.contains("flux__json_encode_record_")
+        && !runtime_usage.contains("flux__json_encode_map_aggregate_")
     {
         return;
     }
