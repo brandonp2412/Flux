@@ -16577,6 +16577,43 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_encodes_copy_enums_with_scalar_payloads() {
+    let source = r#"
+enum Token {
+    Number(i64)
+    Word(str)
+    End
+}
+
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    print(json.encode(Token.Number(7), emit))
+    print(json.encode(Token.Word("ok"), emit))
+    print(json.encode(Token.End(), emit))
+    return 0
+}
+"#;
+    check_source(source).expect("scalar-payload enums should typecheck as JSON values");
+    let generated = compile_to_c(source).expect("enum JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_enum_named_Token"));
+    let root = std::env::temp_dir().join(format!("flux-json-enum-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("enum JSON temp directory should be writable");
+    let c_path = root.join("enum-json.c");
+    let exe_path = root.join("enum-json");
+    fs::write(&c_path, generated).expect("enum JSON C should be writable");
+    let compile = Command::new("clang").args(["-std=c11", "-O2"]).arg(&c_path).arg("-o").arg(&exe_path).output().expect("clang should compile enum JSON");
+    assert!(compile.status.success(), "enum JSON C should compile: {}", String::from_utf8_lossy(&compile.stderr));
+    let output = Command::new(&exe_path).output().expect("enum JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "{\"Number\":7}\nnil\n{\"Word\":\"ok\"}\nnil\n{\"End\":null}\nnil\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_encodes_copy_records_with_scalar_optional_fields() {
     let source = r#"
 fn emit(value: str) -> void {

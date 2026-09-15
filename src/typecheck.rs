@@ -5781,7 +5781,9 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                         signatures.canonical_type(&inner),
                         Type::I64 | Type::Bool | Type::Str
                     ),
-                    Type::Record(_) => json_record_type_is_supported(&field.ty, signatures),
+                    Type::Record(_) => {
+                        json_record_type_is_supported(&field.ty, signatures)
+                    }
                     _ => false,
                 })
         }
@@ -5813,6 +5815,22 @@ fn json_scalar_optional_type_is_supported(ty: &Type, signatures: &Signatures) ->
         ),
         _ => false,
     }
+}
+
+fn json_enum_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    let Type::Named(name) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    signatures.enum_type(&name).is_some_and(|definition| {
+        definition.variants.iter().all(|variant| {
+            variant.payloads.iter().all(|payload| {
+                matches!(
+                    signatures.canonical_type(payload),
+                    Type::I64 | Type::Bool | Type::Str
+                )
+            })
+        })
+    })
 }
 
 pub fn type_of_expr(
@@ -10827,8 +10845,10 @@ fn check_qualified_call(
                         signatures.canonical_type(key) == Type::Str
                             && json_map_value_type_is_supported(&signatures.canonical_type(element))
                     }
-                    Type::Record(_) | Type::Named(_) => {
+                    Type::Record(_) => json_record_type_is_supported(&value, signatures),
+                    Type::Named(_) => {
                         json_record_type_is_supported(&value, signatures)
+                            || json_enum_type_is_supported(&value, signatures)
                     }
                     _ => false,
                 };

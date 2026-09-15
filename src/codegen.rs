@@ -1527,6 +1527,7 @@ pub fn emit_c_for_target_with_source_metadata(
     // Anonymous records were already defined above, so both aggregate forms can
     // share the same bounded callback-scoped encoder generation here.
     emit_json_record_helpers(&mut out, signatures, &function_ir, &runtime_usage);
+    emit_json_enum_helpers(&mut out, signatures, &function_ir);
 
     emit_interface_value_definitions(
         &mut out,
@@ -4376,6 +4377,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_nested_object(")
         || runtime_usage.contains("flux__json_encode_map_map(")
         || runtime_usage.contains("flux__json_encode_record_")
+        || runtime_usage.contains("flux__json_encode_enum_")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -35749,8 +35751,12 @@ fn emit_qualified_call(
                     ));
                 }
             }
-            if json_record_supported(&value.ty, signatures) {
-                let helper = json_record_helper_name(&value.ty, signatures);
+            if json_record_supported(&value.ty, signatures) || json_enum_supported(&value.ty, signatures) {
+                let helper = if matches!(signatures.canonical_type(&value.ty), Type::Named(ref name) if signatures.enum_type(name).is_some()) {
+                    json_enum_helper_name(&value.ty, signatures)
+                } else {
+                    json_record_helper_name(&value.ty, signatures)
+                };
                 return Ok((
                     format!("{helper}({}, {})", value.code, callback.code),
                     vec![Type::Error],
@@ -37920,6 +37926,17 @@ fn json_record_helper_name(ty: &Type, signatures: &Signatures) -> String {
     format!("flux__json_encode_record_{}", type_mangle(ty, signatures))
 }
 
+fn json_enum_helper_name(ty: &Type, signatures: &Signatures) -> String {
+    format!("flux__json_encode_enum_{}", type_mangle(ty, signatures))
+}
+
+fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
+    let Type::Named(name) = signatures.canonical_type(ty) else { return false };
+    signatures.enum_type(&name).is_some_and(|definition| definition.variants.iter().all(|variant| {
+        variant.payloads.iter().all(|payload| matches!(signatures.canonical_type(payload), Type::I64 | Type::Bool | Type::Str))
+    }))
+}
+
 fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::Record(fields) => {
@@ -37988,7 +38005,7 @@ fn emit_json_record_helpers(
     function_ir: &FunctionIrCache,
     runtime_usage: &str,
 ) {
-    if !runtime_usage.contains("flux__json_encode_record_") {
+    if !runtime_usage.contains("flux__json_encode_record_") && !runtime_usage.contains("flux__json_encode_enum_") {
         return;
     }
     let mut records = HashSet::new();
@@ -38065,6 +38082,52 @@ fn emit_json_record_helpers(
             ));
         }
         out.push_str("    if (output >= sizeof(encoded) - 1) return \"encoded JSON record exceeds 393216 bytes\"; encoded[output++] = '}'; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
+    }
+}
+
+fn emit_json_enum_helpers(
+    out: &mut String,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+) {
+    let mut enums = HashSet::new();
+    for function in function_ir.values() {
+        for value in function.values() {
+            let ty = signatures.canonical_type(&value.ty);
+            if json_enum_supported(&ty, signatures) { enums.insert(ty); }
+        }
+    }
+    let mut enums = enums.into_iter().collect::<Vec<_>>();
+    enums.sort_by_key(|ty| ty.name());
+    for ty in enums {
+        let Type::Named(name) = signatures.canonical_type(&ty) else { continue };
+        let Some(definition) = signatures.enum_type(&name) else { continue };
+        let helper = json_enum_helper_name(&ty, signatures);
+        out.push_str(&format!("static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{ char encoded[393217]; size_t output = 0; switch (value.tag) {{\n", struct_c_name(&name)));
+        for variant in &definition.variants {
+            let key = variant.name.replace('"', "\\\"");
+            let prefix = if variant.payloads.len() > 1 { format!("{{\\\"{}\\\":[", key) } else { format!("{{\\\"{}\\\":", key) };
+            let prefix_length = key.len() + 4 + usize::from(variant.payloads.len() > 1);
+            out.push_str(&format!("case {}: {{ memcpy(encoded + output, \"{}\", {}); output += {}; ", enum_tag_value_name(&name, &variant.name), prefix, prefix_length, prefix_length));
+            if variant.payloads.is_empty() {
+                out.push_str("memcpy(encoded + output, \"null\", 4); output += 4; ");
+            } else {
+                for (index, payload) in variant.payloads.iter().enumerate() {
+                    if index > 0 { out.push_str("encoded[output++] = ','; "); }
+                    let expr = format!("value.payload.{}.v{}", enum_payload_member_name(&variant.name), index);
+                    let call = match signatures.canonical_type(payload) {
+                        Type::I64 => format!("flux__json_encode_int({expr}, flux__json_capture)"),
+                        Type::Bool => format!("flux__json_encode_bool({expr}, flux__json_capture)"),
+                        Type::Str => format!("flux__json_encode_string({expr}, flux__json_capture)"),
+                        _ => continue,
+                    };
+                    out.push_str(&format!("flux__json_capture_value = NULL; const char *payload_error = {call}; if (payload_error != NULL || flux__json_capture_value == NULL) return payload_error == NULL ? \"JSON enum payload encoding failed\" : payload_error; size_t payload_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - payload_length) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, payload_length); output += payload_length; "));
+                }
+                if variant.payloads.len() > 1 { out.push_str("encoded[output++] = ']'; "); }
+            }
+            out.push_str("encoded[output++] = '}'; break; }\n");
+        }
+        out.push_str("default: return \"invalid JSON enum tag\"; } if (output >= sizeof(encoded)) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
     }
 }
 
