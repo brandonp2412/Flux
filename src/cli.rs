@@ -11271,8 +11271,14 @@ exit 2
     #[cfg(target_os = "linux")]
     #[test]
     fn timeline_instrumentation_defines_native_trace_macro() {
-        let binary =
-            std::env::temp_dir().join(format!("flux-timeline-test-{}", std::process::id()));
+        let binary = std::env::temp_dir().join(format!(
+            "flux-timeline-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos()
+        ));
         let source = "#ifndef FLUX_PROFILE_TIMELINE\n#error timeline instrumentation macro missing\n#endif\nint main(void) { return 0; }\n";
         build_native_instrumented(
             source,
