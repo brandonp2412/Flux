@@ -874,15 +874,21 @@ fn completion_items_at_cursor_cached(
     let (Some(line_index), Some(character)) = (line_index, character) else {
         return items;
     };
+    let program = completion_contract_program_cached(uri, source, documents, line_index, cache);
     add_named_argument_completions(
-        &mut items, &mut seen, source, line_index, character, encoding,
+        &mut items,
+        &mut seen,
+        uri,
+        source,
+        line_index,
+        character,
+        encoding,
+        program.as_ref(),
     );
     let Some(receiver) = member_receiver_at_cursor(source, line_index, character, encoding) else {
         return items;
     };
-    if let Some(program) =
-        completion_contract_program_cached(uri, source, documents, line_index, cache)
-    {
+    if let Some(program) = program {
         let namespace = is_valid_identifier(&receiver).then_some(receiver.as_str());
         let namespace_matched = namespace.is_some_and(|namespace| {
             add_qualified_namespace_completions(&mut items, &mut seen, namespace, &program)
@@ -911,10 +917,12 @@ fn completion_items_at_cursor_cached(
 fn add_named_argument_completions(
     items: &mut Vec<JsonValue>,
     seen: &mut HashSet<String>,
+    uri: &str,
     source: &str,
     line_index: usize,
     character: usize,
     encoding: PositionEncoding,
+    program: Option<&crate::ast::Program>,
 ) {
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte_in_line = byte_offset_for_encoded_column(line, character, encoding);
@@ -930,23 +938,78 @@ fn add_named_argument_completions(
     let Some((call_name, active_parameter)) = active_call(prefix) else {
         return;
     };
-    let Some((namespace, member)) = call_name.rsplit_once('.') else {
-        return;
-    };
-    let params = if namespace == "android" {
+    let params = if let Some((namespace, member)) = call_name.rsplit_once('.') {
+        if namespace != "android" {
+            return;
+        }
         crate::android_bindings::binding_named(member)
-            .map(|binding| binding.params)
+            .map(|binding| {
+                binding
+                    .params
+                    .iter()
+                    .map(|param| {
+                        (
+                            param.name.to_string(),
+                            param.signature.to_string(),
+                            true,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
     } else {
-        return;
+        // Keep completion useful when semantic analysis is unavailable: a
+        // recoverable program or complete source still provides local
+        // function headers for named-only parameters.
+        let function = program.and_then(|program| {
+            program.functions.iter().find(|function| {
+                function.name == call_name
+                    && (function.name_span.source_id == source_id_for_uri(uri) || function.public)
+            })
+        });
+        if let Some(function) = function {
+            function
+                .params
+                .iter()
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        format!("{}: {}", param.name, param.ty.name()),
+                        param.named_only,
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let Ok(local_program) = crate::parser::parse(source) else {
+                return;
+            };
+            let Some(function) = local_program
+                .functions
+                .iter()
+                .find(|function| function.name == call_name)
+            else {
+                return;
+            };
+            function
+                .params
+                .iter()
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        format!("{}: {}", param.name, param.ty.name()),
+                        param.named_only,
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
     };
-    if let Some(param) = params.get(active_parameter) {
+    if let Some(param) = params.get(active_parameter).filter(|param| param.2) {
         let already_typed = prefix
             .rsplit_once('(')
             .map(|(_, args)| {
                 args.split(',').any(|arg| {
                     arg.trim_start()
-                        .strip_prefix(&format!("{}:", param.name))
+                        .strip_prefix(&format!("{}:", param.0))
                         .is_some()
                 })
             })
@@ -957,9 +1020,9 @@ fn add_named_argument_completions(
         push_completion_item(
             items,
             seen,
-            &format!("{}: ", param.name),
+            &format!("{}: ", param.0),
             10,
-            &format!("named argument {}", param.signature),
+            &format!("named argument {}", param.1),
         );
     }
 }
@@ -12156,6 +12219,33 @@ mod tests {
             !items.contains("channelId: "),
             "already supplied parameter should not be suggested: {items}"
         );
+    }
+
+    #[test]
+    fn local_function_completion_suggests_named_only_parameters() {
+        let uri = "file:///tmp/local-named-argument.flux";
+        let source = "fn configure(value: i64, *, enabled: bool, label: str) -> void {\n    return\n}\nfn main() -> i64 {\n    configure(1, enabled: true, label: \"ready\")\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("configure(1"))
+            .expect("local function call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("label:").expect("named argument should exist");
+        let items = completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(line_index),
+            Some(cursor),
+            PositionEncoding::Utf8,
+        );
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"label: "), "completion items: {labels:?}");
+        assert!(!labels.contains(&"enabled: "), "completion items: {labels:?}");
     }
 
     #[test]
