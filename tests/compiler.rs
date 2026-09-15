@@ -17010,6 +17010,9 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("JSON streaming APIs should lower");
     assert!(generated.contains("flux__json_parse("));
     assert!(generated.contains("flux__json_encode_string("));
+    assert!(generated.contains("flux__json_utf8_width"));
+    assert!(generated.contains("JSON string contains invalid UTF-8"));
+    assert!(generated.contains("JSON object key contains invalid UTF-8"));
     assert!(generated.contains("JSON container expects ',' or its closing delimiter"));
     assert!(generated.contains("JSON string has an invalid escape"));
     let root = std::env::temp_dir().join(format!("flux-json-{}", std::process::id()));
@@ -17035,6 +17038,54 @@ fn main() -> i64 {
         .expect("JSON program should run");
     assert!(output.status.success(), "JSON program should exit cleanly");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "nil\nnil\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_streaming_parser_preserves_valid_raw_utf8_scalars() {
+    let source = r#"
+fn token(kind: str, value: str) -> void {
+    if kind == "string":
+        print(value)
+}
+fn encoded(_value: str) -> void {
+}
+fn main() -> i64 {
+    let parsed: error = json.parse("{\"key\":\"café 🚀\"}", token)
+    let encodedError: error = json.encodeString("café 🚀", encoded)
+    print(parsed)
+    print(encodedError)
+    return 0
+}
+"#;
+    check_source(source).expect("raw UTF-8 JSON source should typecheck");
+    let generated = compile_to_c(source).expect("raw UTF-8 JSON source should lower");
+    let root = std::env::temp_dir().join(format!("flux-json-utf8-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON UTF-8 directory should be writable");
+    let c_path = root.join("json-utf8.c");
+    let exe_path = root.join("json-utf8");
+    fs::write(&c_path, generated).expect("generated UTF-8 JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile raw UTF-8 JSON code");
+    assert!(
+        compile.status.success(),
+        "raw UTF-8 JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("raw UTF-8 JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "café 🚀\nnil\nnil\n"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

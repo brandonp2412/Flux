@@ -4349,6 +4349,32 @@ static inline int flux__json_hex_digit(unsigned char value) {
     if (value >= 'A' && value <= 'F') return (int)(value - 'A') + 10;
     return -1;
 }
+static inline size_t flux__json_utf8_width(const unsigned char *cursor, const unsigned char *end) {
+    if (cursor >= end) return 0;
+    if (*cursor < 0x80u) return 1;
+    if (*cursor >= 0xC2u && *cursor <= 0xDFu) {
+        return cursor + 1 < end && (cursor[1] & 0xC0u) == 0x80u ? 2 : 0;
+    }
+    if (*cursor == 0xE0u) {
+        return cursor + 2 < end && cursor[1] >= 0xA0u && cursor[1] <= 0xBFu && (cursor[2] & 0xC0u) == 0x80u ? 3 : 0;
+    }
+    if ((*cursor >= 0xE1u && *cursor <= 0xECu) || (*cursor >= 0xEEu && *cursor <= 0xEFu)) {
+        return cursor + 2 < end && (cursor[1] & 0xC0u) == 0x80u && (cursor[2] & 0xC0u) == 0x80u ? 3 : 0;
+    }
+    if (*cursor == 0xEDu) {
+        return cursor + 2 < end && cursor[1] >= 0x80u && cursor[1] <= 0x9Fu && (cursor[2] & 0xC0u) == 0x80u ? 3 : 0;
+    }
+    if (*cursor == 0xF0u) {
+        return cursor + 3 < end && cursor[1] >= 0x90u && cursor[1] <= 0xBFu && (cursor[2] & 0xC0u) == 0x80u && (cursor[3] & 0xC0u) == 0x80u ? 4 : 0;
+    }
+    if (*cursor >= 0xF1u && *cursor <= 0xF3u) {
+        return cursor + 3 < end && (cursor[1] & 0xC0u) == 0x80u && (cursor[2] & 0xC0u) == 0x80u && (cursor[3] & 0xC0u) == 0x80u ? 4 : 0;
+    }
+    if (*cursor == 0xF4u) {
+        return cursor + 3 < end && cursor[1] >= 0x80u && cursor[1] <= 0x8Fu && (cursor[2] & 0xC0u) == 0x80u && (cursor[3] & 0xC0u) == 0x80u ? 4 : 0;
+    }
+    return 0;
+}
 static inline const char *flux__json_append_codepoint(char *target, size_t *length, uint32_t codepoint) {
     if (codepoint == 0) return "JSON unicode escape decodes to a NUL byte";
     size_t width = codepoint <= 0x7Fu ? 1 : codepoint <= 0x7FFu ? 2 : codepoint <= 0xFFFFu ? 3 : 4;
@@ -4397,7 +4423,10 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
                     unsigned char byte = (unsigned char)**cursor;
                     if (byte < 0x20) return "JSON object key contains a control character";
                     if (byte == '\\') { *cursor += 1; if (*cursor >= end) return "JSON object key has an incomplete escape"; char escaped = **cursor; if (escaped == 'u') { *cursor += 1; const char *error = flux__json_decode_unicode(cursor, end, key, &key_len); if (error != NULL) return error; continue; } if (!(escaped == '"' || escaped == '\\' || escaped == '/' || escaped == 'b' || escaped == 'f' || escaped == 'n' || escaped == 'r' || escaped == 't')) return "JSON object key has an invalid escape"; if (key_len >= 65536) return "JSON string exceeds 65536 bytes"; key[key_len++] = escaped == 'b' ? '\b' : escaped == 'f' ? '\f' : escaped == 'n' ? '\n' : escaped == 'r' ? '\r' : escaped == 't' ? '\t' : escaped; *cursor += 1; continue; }
-                    if (key_len >= 65536) return "JSON string exceeds 65536 bytes"; key[key_len++] = (char)byte; *cursor += 1;
+                    size_t width = flux__json_utf8_width((const unsigned char *)*cursor, (const unsigned char *)end);
+                    if (width == 0) return "JSON object key contains invalid UTF-8";
+                    if (key_len > 65536 - width) return "JSON string exceeds 65536 bytes";
+                    memcpy(key + key_len, *cursor, width); key_len += width; *cursor += width;
                 }
                 if (*cursor >= end) return "JSON string is incomplete"; key[key_len] = '\0'; *cursor += 1; callback("key", key); flux__json_skip_ws(cursor, end);
                 if (*cursor >= end || **cursor != ':') return "JSON object key must be followed by ':'"; *cursor += 1;
@@ -4422,7 +4451,10 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
                 if (!(escaped == '"' || escaped == '\\' || escaped == '/' || escaped == 'b' || escaped == 'f' || escaped == 'n' || escaped == 'r' || escaped == 't')) return "JSON string has an invalid escape";
                 if (length >= 65536) return "JSON string exceeds 65536 bytes"; text[length++] = escaped == 'b' ? '\b' : escaped == 'f' ? '\f' : escaped == 'n' ? '\n' : escaped == 'r' ? '\r' : escaped == 't' ? '\t' : escaped; *cursor += 1; continue;
             }
-            if (length >= 65536) return "JSON string exceeds 65536 bytes"; text[length++] = (char)byte; *cursor += 1;
+            size_t width = flux__json_utf8_width((const unsigned char *)*cursor, (const unsigned char *)end);
+            if (width == 0) return "JSON string contains invalid UTF-8";
+            if (length > 65536 - width) return "JSON string exceeds 65536 bytes";
+            memcpy(text + length, *cursor, width); length += width; *cursor += width;
         }
         if (*cursor >= end) return "JSON string is incomplete"; text[length] = '\0'; *cursor += 1; callback("string", text); return NULL;
     }
@@ -4451,7 +4483,12 @@ static inline const char *flux__json_encode_string(const char *value, void (*cal
         if (byte == '"') escape = "\\\""; else if (byte == '\\') escape = "\\\\"; else if (byte == '\b') escape = "\\b"; else if (byte == '\f') escape = "\\f"; else if (byte == '\n') escape = "\\n"; else if (byte == '\r') escape = "\\r"; else if (byte == '\t') escape = "\\t";
         if (escape != NULL) { size_t count = strlen(escape); memcpy(encoded + output, escape, count); output += count; }
         else if (byte < 0x20) { int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; }
-        else encoded[output++] = (char)byte;
+        else {
+            size_t width = flux__json_utf8_width((const unsigned char *)value + index, (const unsigned char *)value + length);
+            if (width == 0) return "JSON string contains invalid UTF-8";
+            if (output > sizeof(encoded) - 1 - width) return "encoded JSON string exceeds 262144 bytes";
+            memcpy(encoded + output, value + index, width); output += width; index += width - 1;
+        }
         if (output + 2 >= sizeof(encoded)) return "encoded JSON string exceeds 262144 bytes";
     }
     encoded[output++] = '"'; encoded[output] = '\0'; callback(encoded); return NULL;
