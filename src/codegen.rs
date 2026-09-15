@@ -37927,6 +37927,10 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Optional(inner) => matches!(
+                        signatures.canonical_type(&inner),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
                     Type::Record(_) => json_record_supported(&field.ty, signatures),
                     _ => false,
                 })
@@ -37937,6 +37941,10 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Optional(inner) => matches!(
+                        signatures.canonical_type(&inner),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
                     Type::Record(_) | Type::Named(_) => {
                         json_record_supported(&field.ty, signatures)
                     }
@@ -38034,6 +38042,18 @@ fn emit_json_record_helpers(
                 Type::I64 => format!("flux__json_encode_int({field_expr}, flux__json_capture)"),
                 Type::Bool => format!("flux__json_encode_bool({field_expr}, flux__json_capture)"),
                 Type::Str => format!("flux__json_encode_string({field_expr}, flux__json_capture)"),
+                Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                    Type::I64 => format!(
+                        "flux__json_encode_optional_i64({field_expr}, flux__json_capture)"
+                    ),
+                    Type::Bool => format!(
+                        "flux__json_encode_optional_bool({field_expr}, flux__json_capture)"
+                    ),
+                    Type::Str => format!(
+                        "flux__json_encode_optional_str({field_expr}, flux__json_capture)"
+                    ),
+                    _ => continue,
+                },
                 Type::Record(_) | Type::Named(_) => format!(
                     "{}({field_expr}, flux__json_capture)",
                     json_record_helper_name(&field.ty, signatures)
