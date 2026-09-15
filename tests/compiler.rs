@@ -19984,6 +19984,22 @@ fn main() -> i64 {
 }
 
 #[test]
+fn rejects_nested_set_values_before_json_encoding() {
+    let source = r#"
+fn main() -> i64 {
+    let values: map<str, set<set<i64>>> = {"groups": {{1, 2}, {3, 4}}}
+    return values.count
+}
+"#;
+    let error = check_source(source).expect_err("nested set values must remain ownership-gated");
+    assert!(
+        error
+            .message
+            .contains("set literals currently accept only scalar")
+    );
+}
+
+#[test]
 fn ordered_sets_accept_unit_enum_values_for_json_arrays() {
     let source = r#"
 enum Status {
