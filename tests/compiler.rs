@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
     ControlFlowValueKind, ControlFlowValueRegionKind, ControlFlowValueUseKind,
+    OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -15008,6 +15009,10 @@ fn main() -> i64 {
         .find(|(_, call)| call.callee == "consume")
         .expect("typed call boundary should be attached to the evaluation node");
     assert_eq!(call.1.arguments.len(), 1);
+    assert_eq!(
+        call.1.argument_kinds,
+        vec![OwnershipCallArgumentKind::ImmutableBorrow]
+    );
     let argument = graph
         .value(call.1.arguments[0])
         .expect("call ownership fact should retain its typed argument value");
@@ -15781,6 +15786,13 @@ fn main() -> i64 {
         .find(|call| call.callee == "contains")
         .expect("contains call should be recorded");
     assert_eq!(call.argument_definitions.len(), 2);
+    assert_eq!(
+        call.argument_kinds,
+        vec![
+            OwnershipCallArgumentKind::ImmutableBorrow,
+            OwnershipCallArgumentKind::Copy
+        ]
+    );
     assert_eq!(call.argument_definitions[0].len(), 1);
     assert_eq!(call.borrowed_argument_definitions.len(), 2);
     assert_eq!(call.borrowed_argument_definitions[0].len(), 1);

@@ -298,6 +298,10 @@ pub struct OwnershipBorrow {
 pub struct OwnershipCall {
     pub callee: String,
     pub arguments: Vec<ControlFlowValueId>,
+    /// Ownership mode for each argument at this call boundary. `Consuming`
+    /// is reserved for a future owned-value ABI; bootstrap calls are either
+    /// ordinary `Copy` values or immutable list/view borrows.
+    pub argument_kinds: Vec<OwnershipCallArgumentKind>,
     /// Source definitions reached by each argument at this call boundary.
     /// This remains parallel to `arguments` for future consuming-call checks.
     pub argument_definitions: Vec<Vec<ControlFlowDefinitionId>>,
@@ -308,6 +312,13 @@ pub struct OwnershipCall {
     /// re-walking the typed AST.
     pub borrowed_argument_definitions: Vec<Vec<ControlFlowDefinitionId>>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnershipCallArgumentKind {
+    Copy,
+    ImmutableBorrow,
+    Consuming,
 }
 
 /// A normalized point at which a non-copy definition's storage is no longer
@@ -2767,6 +2778,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 Some(OwnershipCall {
                     callee,
                     arguments,
+                    argument_kinds: Vec::new(),
                     argument_definitions: Vec::new(),
                     borrowed_argument_definitions: Vec::new(),
                     span: value.span,
@@ -2818,6 +2830,24 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 .arguments
                 .iter()
                 .map(|argument| call_argument_definitions(*argument, &values))
+                .collect();
+            call.argument_kinds = call
+                .arguments
+                .iter()
+                .map(|argument| {
+                    let is_borrowed = values
+                        .get(argument.0)
+                        .is_some_and(|value| match signatures.canonical_type(&value.ty) {
+                            Type::List(_) => true,
+                            Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
+                            _ => false,
+                        });
+                    if is_borrowed {
+                        OwnershipCallArgumentKind::ImmutableBorrow
+                    } else {
+                        OwnershipCallArgumentKind::Copy
+                    }
+                })
                 .collect();
             call.borrowed_argument_definitions = call
                 .arguments
