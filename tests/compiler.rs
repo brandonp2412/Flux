@@ -18436,6 +18436,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_maps_encode_optional_nested_maps_as_null_or_value() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: map<str, map<str, i64>?> = {"present": {"answer": 42}, "absent": none}
+    let result: error = json.encodeObject(values, encoded)
+    print(result)
+    return 0
+}
+"#;
+    check_source(source).expect("optional nested JSON maps should typecheck");
+    let generated = compile_to_c(source).expect("optional nested JSON maps should lower");
+    assert!(generated.contains("flux__json_encode_optional_map("));
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-map-optional-nested-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary optional nested JSON map directory should be writable");
+    let c_path = root.join("json-map-optional-nested.c");
+    let exe_path = root.join("json-map-optional-nested");
+    fs::write(&c_path, generated).expect("generated optional nested JSON map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional nested JSON map code");
+    assert!(
+        compile.status.success(),
+        "optional nested JSON map C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional nested JSON map program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"present\":{\"answer\":42},\"absent\":null}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_maps_encode_optional_scalar_sets_as_null_or_value() {
     let source = r#"
 fn encoded(value: str) -> void {

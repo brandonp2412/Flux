@@ -5800,6 +5800,9 @@ fn json_map_value_type_is_supported(ty: &Type, signatures: &Signatures) -> bool 
                 Type::I64 | Type::Bool | Type::Str
             ) || json_record_type_is_supported(&inner, signatures)
                 || json_enum_type_is_supported(&inner, signatures)
+                || matches!(signatures.canonical_type(&inner), Type::Map(key, value)
+                    if signatures.canonical_type(&key) == Type::Str
+                        && json_map_value_type_is_supported(&value, signatures))
         }
         Type::List(inner) => json_array_type_is_supported(&inner, signatures),
         Type::Set(inner) => {
@@ -5829,6 +5832,9 @@ fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                 Type::I64 | Type::Bool | Type::Str
             ) || json_record_type_is_supported(&inner, signatures)
                 || json_enum_type_is_supported(&inner, signatures)
+                || matches!(signatures.canonical_type(&inner), Type::Map(key, value)
+                    if signatures.canonical_type(&key) == Type::Str
+                        && json_map_value_type_is_supported(&value, signatures))
         }
         Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
         Type::Map(key, value) => {
@@ -6193,7 +6199,7 @@ pub fn type_of_expr(
                 return Err(diag(items[0].span, "map keys must be i64, bool, or str"));
             }
             let mut value_ty = primitive(&items[1])?;
-            if matches!(value_ty, Type::I64 | Type::Bool | Type::Str)
+            if !matches!(value_ty, Type::Optional(_))
                 && items
                     .iter()
                     .skip(3)

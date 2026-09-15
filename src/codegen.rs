@@ -4402,6 +4402,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_nested_object(")
         || runtime_usage.contains("flux__json_encode_map_map(")
         || runtime_usage.contains("flux__json_encode_optional_object(")
+        || runtime_usage.contains("flux__json_encode_optional_map(")
         || runtime_usage.contains("flux__json_encode_record_")
         || runtime_usage.contains("flux__json_encode_enum_")
         || runtime_usage.contains("flux__json_encode_optional_aggregate_")
@@ -4422,6 +4423,10 @@ struct flux__list { void *data; size_t len; ptrdiff_t stride; };
 #define FLUX_MAP_DEFINED
 struct flux__map { struct flux__list keys; struct flux__list values; };
 #endif
+#ifndef FLUX_OPTIONAL_MAP_DEFINED
+#define FLUX_OPTIONAL_MAP_DEFINED
+struct flux__optional_map { bool has_value; struct flux__map value; };
+#endif
 static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
 static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *));
@@ -4431,6 +4436,7 @@ static inline const char *flux__json_encode_object(struct flux__map values, int 
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_optional_object(struct flux__map values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_optional_map(struct flux__optional_map value, int kind, void (*callback)(const char *));
 static _Thread_local const char *flux__json_capture_value;
 static inline int flux__json_capture_length(const char *value, size_t *length);
 static inline void flux__json_capture(const char *value);
@@ -4837,7 +4843,7 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
     ptrdiff_t value_stride = values.values.stride == 0
-        ? (ptrdiff_t)(kind >= 200000 ? sizeof(struct flux__list) : sizeof(struct flux__map))
+        ? (ptrdiff_t)(kind >= 1000000000 ? sizeof(struct flux__optional_map) : kind >= 200000 ? sizeof(struct flux__list) : sizeof(struct flux__map))
         : values.values.stride;
     for (size_t index = 0; index < values.keys.len; index += 1) {
         const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride));
@@ -4852,7 +4858,10 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         flux__json_capture_value = NULL;
         const char *error;
         char *value_address = (char *)values.values.data + (ptrdiff_t)index * value_stride;
-        if (kind >= 200000) {
+        if (kind >= 1000000000) {
+            struct flux__optional_map child = *((struct flux__optional_map *)value_address);
+            error = flux__json_encode_optional_map(child, kind - 1000000000, flux__json_capture);
+        } else if (kind >= 200000) {
             /* Recursive arrays occupy a list slot. Do not read it through the
                map type first: that violates C's effective-type rules and can
                miscompile under strict-aliasing optimizations. */
@@ -4885,6 +4894,17 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         memcpy(encoded + output, flux__json_capture_value, child_length); output += child_length;
     }
     if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+static inline const char *flux__json_encode_optional_map(struct flux__optional_map value, int kind, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeObject callback";
+    if (kind < 0) return "invalid optional JSON object value kind";
+    if (!value.has_value) { callback("null"); return NULL; }
+    if (kind >= 200000) return flux__json_encode_map_map(value.value, kind, callback);
+    if (kind < 3) return flux__json_encode_object(value.value, kind, callback);
+    if (kind < 6) return flux__json_encode_nested_object(value.value, kind - 3, callback);
+    if (kind >= 100000 && kind < 100003) return flux__json_encode_optional_object(value.value, kind, callback);
+    if (kind >= 100003 && kind < 100006) return flux__json_encode_nested_object(value.value, kind, callback);
+    return flux__json_encode_map_map(value.value, kind - 6, callback);
 }
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeInt callback";
@@ -8148,7 +8168,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str("struct flux__optional_list { bool has_value; struct flux__list value; };\n");
     }
     if runtime_usage.contains("struct flux__optional_map") {
-        out.push_str("struct flux__optional_map { bool has_value; struct flux__map value; };\n");
+        out.push_str("#ifndef FLUX_OPTIONAL_MAP_DEFINED\n#define FLUX_OPTIONAL_MAP_DEFINED\nstruct flux__optional_map { bool has_value; struct flux__map value; };\n#endif\n");
     }
     if runtime_usage.contains("flux__net_send_text_parts(") {
         out.push_str(r#"static inline const char *flux__net_send_text_parts(int64_t socket_handle, struct flux__list parts) {
@@ -33084,6 +33104,9 @@ fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'stat
             Type::I64 => Ok(100000),
             Type::Bool => Ok(100001),
             Type::Str => Ok(100002),
+            Type::Map(key, value) if signatures.canonical_type(&key) == Type::Str => {
+                Ok(1000000000 + json_map_value_kind(&value, signatures)?)
+            }
             _ => Err("json.encodeObject requires scalar optional values"),
         },
         Type::List(inner) | Type::Set(inner) => match signatures.canonical_type(&inner) {
