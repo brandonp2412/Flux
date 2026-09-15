@@ -5765,6 +5765,10 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
 fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str => true,
+        Type::Optional(inner) => matches!(
+            signatures.canonical_type(&inner),
+            Type::I64 | Type::Bool | Type::Str
+        ),
         Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
         _ => false,
     }
@@ -10948,7 +10952,7 @@ fn check_qualified_call(
                 if !valid_element {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeArray values must be a list of scalar values or recursively nested scalar lists",
+                        "json.encodeArray values must be a list of scalar or scalar-optional values or recursively nested arrays",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);

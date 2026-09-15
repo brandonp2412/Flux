@@ -17714,6 +17714,67 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_scalar_optional_array_encoding_is_typed_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let one: i64? = 1
+    let absentNumber: i64? = none
+    let three: i64? = 3
+    let yes: bool? = true
+    let absentFlag: bool? = none
+    let no: bool? = false
+    let first: str? = "a"
+    let absentWord: str? = none
+    let second: str? = "b"
+    let two: i64? = 2
+    let numbers: i64?[] = [one, absentNumber, three]
+    let flags: bool?[] = [yes, absentFlag, no]
+    let words: str?[] = [first, absentWord, second]
+    let nested: i64?[][] = [[one, absentNumber], [two]]
+    print(json.encodeArray(numbers, encoded))
+    print(json.encode(flags, encoded))
+    print(json.encode(words, encoded))
+    print(json.encode(nested, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("JSON scalar optional arrays should typecheck");
+    let generated = compile_to_c(source).expect("JSON scalar optional arrays should lower");
+    assert!(generated.contains("flux__json_encode_recursive_array("));
+    let root =
+        std::env::temp_dir().join(format!("flux-json-optional-arrays-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON optional array directory should be writable");
+    let c_path = root.join("json-optional-arrays.c");
+    let exe_path = root.join("json-optional-arrays");
+    fs::write(&c_path, generated).expect("generated JSON optional array C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON optional array native code");
+    assert!(
+        compile.status.success(),
+        "JSON optional array C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON optional array program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[1,null,3]\nnil\n[true,null,false]\nnil\n[\"a\",null,\"b\"]\nnil\n[[1,null],[2]]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_nested_scalar_array_encoding_is_typed_bounded_and_native() {
     let source = r#"
 fn encoded(value: str) -> void {

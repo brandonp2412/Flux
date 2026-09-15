@@ -4576,7 +4576,7 @@ static inline const char *flux__json_encode_string(const char *value, void (*cal
 }
 static inline const char *flux__json_encode_nested_array(struct flux__list values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeArray callback";
-    if (kind < 0 || kind > 2) return "invalid nested JSON array element kind";
+    if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002))) return "invalid nested JSON array element kind";
     if (values.len > 65536) return "JSON array exceeds 65536 elements";
     char encoded[393217]; size_t output = 0; encoded[output++] = '[';
     ptrdiff_t stride = values.stride == 0 ? (ptrdiff_t)sizeof(struct flux__list) : values.stride;
@@ -4584,11 +4584,21 @@ static inline const char *flux__json_encode_nested_array(struct flux__list value
         if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ','; }
         struct flux__list child = *((struct flux__list *)((char *)values.data + (ptrdiff_t)index * stride));
         if (child.len > 65536) return "JSON nested array exceeds 65536 elements";
-        ptrdiff_t child_stride = child.stride == 0 ? (kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : (ptrdiff_t)sizeof(const char *)) : child.stride;
+        ptrdiff_t child_stride = child.stride == 0 ? (kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : kind == 2 ? (ptrdiff_t)sizeof(const char *) : kind == 100000 ? (ptrdiff_t)sizeof(struct flux__optional_i64) : kind == 100001 ? (ptrdiff_t)sizeof(struct flux__optional_bool) : (ptrdiff_t)sizeof(struct flux__optional_str)) : child.stride;
         if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = '[';
         for (size_t child_index = 0; child_index < child.len; child_index += 1) {
             if (child_index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ','; }
-            if (kind == 0) {
+            if (kind == 100000) {
+                struct flux__optional_i64 value = *((struct flux__optional_i64 *)((char *)child.data + (ptrdiff_t)child_index * child_stride));
+                if (value.has_value) { int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)value.value); if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON array exceeds 393216 bytes"; output += (size_t)written; } else { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; }
+            } else if (kind == 100001) {
+                struct flux__optional_bool value = *((struct flux__optional_bool *)((char *)child.data + (ptrdiff_t)child_index * child_stride));
+                const char *literal = !value.has_value ? "null" : value.value ? "true" : "false"; size_t length = strlen(literal); if (output > sizeof(encoded) - 1 - length) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, literal, length); output += length;
+            } else if (kind == 100002) {
+                struct flux__optional_str value = *((struct flux__optional_str *)((char *)child.data + (ptrdiff_t)child_index * child_stride));
+                if (!value.has_value) { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; }
+                else { const char *text = value.value; if (text == NULL) return "JSON array contains a null string"; size_t length = 0; while (length <= 65536 && text[length] != '\0') length += 1; if (length > 65536) return "JSON string exceeds 65536 bytes"; if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = '"'; for (size_t position = 0; position < length; position += 1) { unsigned char byte = (unsigned char)text[position]; const char *escape = byte == '"' ? "\\\"" : byte == '\\' ? "\\\\" : byte == '\b' ? "\\b" : byte == '\f' ? "\\f" : byte == '\n' ? "\\n" : byte == '\r' ? "\\r" : byte == '\t' ? "\\t" : NULL; if (escape != NULL) { size_t count = strlen(escape); if (output > sizeof(encoded) - 1 - count) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, escape, count); output += count; } else if (byte < 0x20) { if (output > sizeof(encoded) - 1 - 6) return "encoded JSON array exceeds 393216 bytes"; int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; } else { size_t width = flux__json_utf8_width((const unsigned char *)text + position, (const unsigned char *)text + length); if (width == 0) return "JSON string contains invalid UTF-8"; if (output > sizeof(encoded) - 1 - width) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, text + position, width); output += width; position += width - 1; } } if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = '"'; }
+            } else if (kind == 0) {
                 int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)*((int64_t *)((char *)child.data + (ptrdiff_t)child_index * child_stride)));
                 if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON array exceeds 393216 bytes"; output += (size_t)written;
             } else if (kind == 1) {
@@ -4608,14 +4618,21 @@ static inline const char *flux__json_encode_nested_array(struct flux__list value
 }
 static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeArray callback";
-    if (kind < 0 || kind > 2) return "invalid json.encodeArray element kind";
+    if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002))) return "invalid json.encodeArray element kind";
     if (values.len > 65536) return "JSON array exceeds 65536 elements";
     char encoded[393217]; size_t output = 0; encoded[output++] = '[';
     ptrdiff_t stride = values.stride;
-    if (stride == 0) stride = kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : (ptrdiff_t)sizeof(const char *);
+    if (stride == 0) stride = kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : kind == 2 ? (ptrdiff_t)sizeof(const char *) : kind == 100000 ? (ptrdiff_t)sizeof(struct flux__optional_i64) : kind == 100001 ? (ptrdiff_t)sizeof(struct flux__optional_bool) : (ptrdiff_t)sizeof(struct flux__optional_str);
     for (size_t index = 0; index < values.len; index += 1) {
         if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ','; }
-        if (kind == 0) {
+        if (kind == 100000) {
+            struct flux__optional_i64 value = *((struct flux__optional_i64 *)((char *)values.data + (ptrdiff_t)index * stride));
+            if (value.has_value) { int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)value.value); if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON array exceeds 393216 bytes"; output += (size_t)written; } else { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; }
+        } else if (kind == 100001) {
+            struct flux__optional_bool value = *((struct flux__optional_bool *)((char *)values.data + (ptrdiff_t)index * stride)); const char *literal = !value.has_value ? "null" : value.value ? "true" : "false"; size_t length = strlen(literal); if (output > sizeof(encoded) - 1 - length) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, literal, length); output += length;
+        } else if (kind == 100002) {
+            struct flux__optional_str value = *((struct flux__optional_str *)((char *)values.data + (ptrdiff_t)index * stride)); if (!value.has_value) { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; } else { const char *text = value.value; if (text == NULL) return "JSON array contains a null string"; flux__json_encode_string(text, flux__json_capture); if (flux__json_capture_value == NULL) return "JSON array encoding failed"; size_t length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - length) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, flux__json_capture_value, length); output += length; }
+        } else if (kind == 0) {
             int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)*((int64_t *)((char *)values.data + (ptrdiff_t)index * stride)));
             if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON array exceeds 393216 bytes";
             output += (size_t)written;
@@ -4746,7 +4763,7 @@ static inline void flux__json_capture(const char *value) {
 }
 static inline const char *flux__json_encode_recursive_array(struct flux__list values, int kind, int depth, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeArray callback";
-    if (kind < 0 || kind > 2 || depth < 0 || depth > 128) return "invalid nested JSON array shape";
+    if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002)) || depth < 0 || depth > 128) return "invalid nested JSON array shape";
     if (depth == 0) return flux__json_encode_array(values, kind, callback);
     if (values.len > 65536) return "JSON array exceeds 65536 elements";
     char encoded[393217]; size_t output = 0; encoded[output++] = '[';
@@ -33052,6 +33069,42 @@ fn json_array_encoding_shape(
                     depth,
                 ));
             }
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::I64 => {
+                    return Ok((
+                        if depth == 0 {
+                            "flux__json_encode_array"
+                        } else {
+                            "flux__json_encode_recursive_array"
+                        },
+                        100000,
+                        depth,
+                    ));
+                }
+                Type::Bool => {
+                    return Ok((
+                        if depth == 0 {
+                            "flux__json_encode_array"
+                        } else {
+                            "flux__json_encode_recursive_array"
+                        },
+                        100001,
+                        depth,
+                    ));
+                }
+                Type::Str => {
+                    return Ok((
+                        if depth == 0 {
+                            "flux__json_encode_array"
+                        } else {
+                            "flux__json_encode_recursive_array"
+                        },
+                        100002,
+                        depth,
+                    ));
+                }
+                _ => return Err("json.encodeArray requires scalar or scalar-optional values"),
+            },
             Type::List(inner) | Type::Set(inner) => {
                 depth += 1;
                 if depth > 128 {
