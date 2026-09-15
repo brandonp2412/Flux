@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::ast::Program;
@@ -70,7 +71,19 @@ impl ProjectAnalysis {
             let _ = fs::create_dir_all(parent);
         }
         let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-        if fs::write(&temporary, format!("{header}{generated}")).is_ok() {
+        // Persist the complete artifact before publishing its name. A rename
+        // alone prevents readers from observing a partial file, but without a
+        // synced temporary file a power loss could still leave the published
+        // cache entry pointing at incomplete bytes. Cache misses are safe, so
+        // failure to persist remains non-fatal to the build.
+        let persisted = File::create(&temporary)
+            .and_then(|mut file| {
+                file.write_all(header.as_bytes())?;
+                file.write_all(generated.as_bytes())?;
+                file.sync_all()
+            })
+            .is_ok();
+        if persisted {
             if fs::rename(&temporary, &path).is_err() {
                 let _ = fs::remove_file(&temporary);
             }
