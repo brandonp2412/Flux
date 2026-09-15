@@ -11244,7 +11244,7 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
-            "formatUtc" => {
+            "formatUtc" | "formatLocal" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,

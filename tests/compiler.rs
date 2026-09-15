@@ -9657,6 +9657,46 @@ fn main() -> i64 {
             .collect::<Vec<_>>(),
         vec!["2000-01-02T03:04:05.006Z", "1969-12-31T23:59:59.999Z"]
     );
+
+    let local_source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let formatError: error = time.formatLocal(946782245006, emit)
+    if formatError != nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(local_source).expect("local formatter should typecheck");
+    let local_generated = compile_to_c(local_source).expect("local formatter should lower");
+    assert!(local_generated.contains("flux__time_format_local("));
+    let local_root =
+        std::env::temp_dir().join(format!("flux-local-time-format-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&local_root);
+    fs::create_dir_all(&local_root).expect("local formatter fixture should be writable");
+    let local_path = local_root.join("main.flux");
+    fs::write(&local_path, local_source).expect("local formatter source should be writable");
+    let local_binary = local_root.join("local-time-format");
+    let local_build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&local_path)
+        .arg("-o")
+        .arg(&local_binary)
+        .output()
+        .expect("local formatter binary should build");
+    assert!(local_build.status.success());
+    let local_run = Command::new(&local_binary)
+        .env("TZ", "UTC")
+        .output()
+        .expect("local formatter binary should run");
+    assert!(local_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&local_run.stdout).trim(),
+        "2000-01-02T03:04:05.006"
+    );
+    let _ = fs::remove_dir_all(&local_root);
     let _ = fs::remove_dir_all(&root);
 }
 

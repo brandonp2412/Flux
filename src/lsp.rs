@@ -1931,6 +1931,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.format(unixMillis: i64, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "formatLocal",
+            3,
+            "fn time.formatLocal(unixMillis: i64, callback: fn(str) -> void) -> error",
+        );
         for member in [
             "year",
             "month",
@@ -4323,7 +4330,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "formatUtc" => {
+                "formatUtc" | "formatLocal" => {
                     return Some(signature_help_for_builtin(
                         "time.formatUtc",
                         &["unixMillis: i64", "callback: fn(str) -> void"],
