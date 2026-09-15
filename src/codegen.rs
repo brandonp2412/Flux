@@ -38303,7 +38303,7 @@ fn emit_json_record_helpers(
         };
         let helper = json_record_helper_name(&ty, signatures);
         out.push_str(&format!(
-            "static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{\n",
+            "static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encode callback\";\n",
             c_type(&ty, signatures).trim_start_matches("struct ")
         ));
         out.push_str("    char encoded[393217]; size_t output = 0; encoded[output++] = '{';\n");

@@ -16592,6 +16592,7 @@ fn main() -> i64 {
     check_source(source).expect("Copy records should be valid JSON values");
     let generated = compile_to_c(source).expect("record JSON should lower natively");
     assert!(generated.contains("flux__json_encode_record_"));
+    assert!(generated.contains("if (callback == NULL) return \"invalid json.encode callback\";"));
     let root = std::env::temp_dir().join(format!("flux-json-record-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("record JSON temp directory should be writable");
