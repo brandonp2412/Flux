@@ -283,6 +283,16 @@ struct AndroidPublishOptions {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+struct WindowsPublishOptions {
+    target: PathBuf,
+    output: Option<PathBuf>,
+    native_target: String,
+    certificate: PathBuf,
+    publisher: String,
+    json: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct RegistryPublishOptions {
     target: PathBuf,
     repository: Option<String>,
@@ -921,11 +931,14 @@ fn run() -> Result<(), CliError> {
             if args.get(1).is_some_and(|value| value == "android") {
                 return publish_android_command(&args[2..]);
             }
+            if args.get(1).is_some_and(|value| value == "windows") {
+                return publish_windows_command(&args[2..]);
+            }
             if args.get(1).is_some_and(|value| value == "package") {
                 return publish_registry_package_command(&args[2..]);
             }
             Err(CliError::Message(
-                "publish syntax is 'publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name]' or 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]'"
+                "publish syntax is 'publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name]', 'publish android <package-dir|flux.toml> [-o artifact.aab] [--json]', or 'publish windows <package-dir|flux.toml> --certificate <publisher.pfx> --publisher <identity> [-o artifact.msix] [--target <triple>] [--json]'"
                     .to_string(),
             ))
         }
@@ -2203,6 +2216,73 @@ fn verify_android_publish_aab(output: &Path) -> Result<(), CliError> {
         Command::new("jarsigner").arg("-verify").arg(output),
         "jarsigner verify",
     )?;
+    Ok(())
+}
+
+fn publish_windows_command(args: &[String]) -> Result<(), CliError> {
+    let options = windows_publish_options(args)?;
+    validate_msix_certificate(&options.certificate)?;
+    validate_msix_publisher(&options.publisher)?;
+    let manifest_path = if options.target.is_dir() {
+        options.target.join("flux.toml")
+    } else {
+        options.target.clone()
+    };
+    let manifest = fluxc::project::read_manifest(&manifest_path).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let default_artifact = manifest
+        .path
+        .parent()
+        .expect("canonical manifest has a parent")
+        .join("dist")
+        .join(format!(
+            "{}.msix",
+            package_artifact_name(
+                &manifest.name,
+                manifest.version.as_deref(),
+                Some(&options.native_target),
+            )?
+        ));
+
+    let mut package_args = vec![
+        options.target.to_string_lossy().into_owned(),
+        "--format".to_string(),
+        "msix".to_string(),
+        "--target".to_string(),
+        options.native_target.clone(),
+        "--certificate".to_string(),
+        options.certificate.to_string_lossy().into_owned(),
+        "--publisher".to_string(),
+        options.publisher.clone(),
+    ];
+    if let Some(output) = options.output.as_ref() {
+        package_args.extend(["-o".to_string(), output.to_string_lossy().into_owned()]);
+    }
+    package_target(&options.target, package_options(&package_args)?)?;
+    let artifact = options.output.unwrap_or(default_artifact);
+    if options.json {
+        println!(
+            "{{\"ok\":true,\"artifact\":{},\"target\":{},\"publisher\":{},\"format\":\"msix\",\"mode\":\"release\",\"signed\":true,\"verified\":true}}",
+            json_string(&artifact.to_string_lossy()),
+            json_string(&options.native_target),
+            json_string(&options.publisher),
+        );
+    } else {
+        println!(
+            "prepared Microsoft Store MSIX package: {}",
+            artifact.display()
+        );
+        println!("  target: {}", options.native_target);
+        println!("  publisher: {}", options.publisher);
+        println!("  signing: SHA-256 certificate signature");
+        println!("  verification: signtool verify");
+        println!("  next step: upload the verified artifact through Partner Center");
+    }
     Ok(())
 }
 
@@ -6077,6 +6157,92 @@ fn android_publish_options(args: &[String]) -> Result<AndroidPublishOptions, Str
     Ok(AndroidPublishOptions {
         target: PathBuf::from(target),
         output,
+        json,
+    })
+}
+
+fn windows_publish_options(args: &[String]) -> Result<WindowsPublishOptions, String> {
+    let Some(target) = args.first() else {
+        return Err(
+            "Windows publish syntax is 'publish windows <package-dir|flux.toml> --certificate <publisher.pfx> --publisher <identity> [-o artifact.msix] [--target <triple>] [--json]'"
+                .to_string(),
+        );
+    };
+    let mut output = None;
+    let mut native_target = "x86_64-pc-windows-gnu".to_string();
+    let mut certificate = None;
+    let mut publisher = None;
+    let mut json = false;
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                if output.is_some() {
+                    return Err("output path may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'-o' requires an output path".to_string());
+                };
+                if Path::new(path).extension().and_then(|value| value.to_str()) != Some("msix") {
+                    return Err("Windows publishing output must end in '.msix'".to_string());
+                }
+                output = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--target" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--target' requires a Windows Clang target triple".to_string());
+                };
+                native_target = parse_native_target_triple(value)?;
+                if !native_target.contains("windows") {
+                    return Err("Windows publishing requires a Windows target triple".to_string());
+                }
+                index += 2;
+            }
+            "--certificate" => {
+                if certificate.is_some() {
+                    return Err("Windows certificate may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'--certificate' requires a certificate path".to_string());
+                };
+                certificate = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--publisher" => {
+                if publisher.is_some() {
+                    return Err("Windows publisher may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--publisher' requires an Appx publisher identity".to_string());
+                };
+                publisher = Some(value.clone());
+                index += 2;
+            }
+            "--json" => {
+                if json {
+                    return Err("'--json' may only be specified once".to_string());
+                }
+                json = true;
+                index += 1;
+            }
+            flag => {
+                return Err(format!(
+                    "unknown Windows publish option '{flag}'; expected '-o <artifact.msix>', '--target <triple>', '--certificate <publisher.pfx>', '--publisher <identity>', or '--json'"
+                ));
+            }
+        }
+    }
+    let certificate = certificate
+        .ok_or_else(|| "Windows publishing requires '--certificate <publisher.pfx>'".to_string())?;
+    let publisher = publisher
+        .ok_or_else(|| "Windows publishing requires '--publisher <identity>'".to_string())?;
+    Ok(WindowsPublishOptions {
+        target: PathBuf::from(target),
+        output,
+        native_target,
+        certificate,
+        publisher,
         json,
     })
 }
@@ -10611,7 +10777,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd|static|msix] [--target <clang-triple>] [--sysroot <directory>] [--certificate <publisher.pfx>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd|static|msix] [--target <clang-triple>] [--sysroot <directory>] [--certificate <publisher.pfx>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} publish windows <package-dir|flux.toml> --certificate <publisher.pfx> --publisher <identity> [-o artifact.msix] [--target <triple>] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -10644,7 +10810,7 @@ fn usage() -> String {
     .replace(
         &format!(" | {command} publish android <package-dir|flux.toml>"),
         &format!(
-            " | {command} package web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always] | {command} publish android <package-dir|flux.toml>"
+            " | {command} package web <file.flux|package-dir|flux.toml> [-o directory] [--wasm never|auto|always] | {command} publish android <package-dir|flux.toml> | {command} publish windows <package-dir|flux.toml> --certificate <publisher.pfx> --publisher <identity> [-o artifact.msix] [--target <triple>] [--json]"
         ),
     )
     .replace(
@@ -10660,8 +10826,8 @@ mod tests {
     use super::{
         AdbDevice, AnalysisOptions, AndroidAbi, AndroidArtifactKind, AndroidRunTarget, BuildMode,
         CliError, NativeInstrumentation, NativeTargetOptions, PackageFormat, ProfileKind,
-        WebDevState, analysis_options, android_abi_from_runtime, android_activity_java_source,
-        android_background_runner_java_source, android_build_options,
+        WebDevState, WindowsPublishOptions, analysis_options, android_abi_from_runtime,
+        android_activity_java_source, android_background_runner_java_source, android_build_options,
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
@@ -10677,7 +10843,7 @@ mod tests {
         symbolize_options, test_options, validate_android_publish_manifest,
         validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
         web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
-        write_native_cache_metadata,
+        windows_publish_options, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -12106,6 +12272,69 @@ app OverlayDemo(title: "Overlay")
             .expect("complete publishing metadata should pass static policy checks");
 
         assert_eq!(json_string("a\\b\"c\n"), "\"a\\\\b\\\"c\\n\"");
+    }
+
+    #[test]
+    fn windows_publish_options_require_signed_release_identity() {
+        let options = windows_publish_options(&[
+            "package".to_string(),
+            "--certificate".to_string(),
+            "publisher.pfx".to_string(),
+            "--publisher".to_string(),
+            "CN=Flux Publisher".to_string(),
+            "-o".to_string(),
+            "release.msix".to_string(),
+            "--target".to_string(),
+            "x86_64-pc-windows-gnu".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("Windows publish options should parse");
+        assert_eq!(
+            options,
+            WindowsPublishOptions {
+                target: std::path::PathBuf::from("package"),
+                output: Some(std::path::PathBuf::from("release.msix")),
+                native_target: "x86_64-pc-windows-gnu".to_string(),
+                certificate: std::path::PathBuf::from("publisher.pfx"),
+                publisher: "CN=Flux Publisher".to_string(),
+                json: true,
+            }
+        );
+        assert!(
+            windows_publish_options(&[
+                "package".to_string(),
+                "--publisher".to_string(),
+                "CN=X".to_string()
+            ])
+            .expect_err("certificate is required")
+            .contains("--certificate")
+        );
+        assert!(
+            windows_publish_options(&[
+                "package".to_string(),
+                "--certificate".to_string(),
+                "publisher.pfx".to_string(),
+                "--publisher".to_string(),
+                "CN=X".to_string(),
+                "--target".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+            ])
+            .expect_err("non-Windows target is invalid")
+            .contains("Windows target")
+        );
+        assert!(
+            windows_publish_options(&[
+                "package".to_string(),
+                "--certificate".to_string(),
+                "publisher.pfx".to_string(),
+                "--publisher".to_string(),
+                "CN=X".to_string(),
+                "-o".to_string(),
+                "release.zip".to_string(),
+            ])
+            .expect_err("Windows artifacts must be MSIX")
+            .contains(".msix")
+        );
     }
 
     #[test]
