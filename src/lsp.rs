@@ -1612,7 +1612,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encode",
             3,
-            "fn json.encode(value: i64 | bool | str | i64? | bool? | str? | scalar[] | recursively nested scalar[] | scalar map | Copy record, struct, or supported enum, callback: fn(str) -> void) -> error",
+            "fn json.encode(value: i64 | bool | str | i64? | bool? | str[] | set<scalar> | recursively nested scalar[] | scalar map | Copy record, struct, or supported enum, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -1633,7 +1633,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encodeArray",
             3,
-            "fn json.encodeArray(values: recursively nested scalar[], callback: fn(str) -> void) -> error",
+            "fn json.encodeArray(values: recursively nested scalar[] or set<scalar>, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -3848,7 +3848,7 @@ fn signature_help_for_document_cached(
                 "encode" => Some(signature_help_for_builtin(
                     "json.encode",
                     &[
-                        "value: i64 | bool | str | scalar[] | scalar[][] | map<str, i64|bool|str|scalar[]|map<str, scalar>>",
+                        "value: i64 | bool | str | scalar[] | set<scalar> | scalar[][] | map<str, i64|bool|str|scalar[]|map<str, scalar>>",
                         "callback: fn(str) -> void",
                     ],
                     "error",
@@ -3862,7 +3862,10 @@ fn signature_help_for_document_cached(
                 )),
                 "encodeArray" => Some(signature_help_for_builtin(
                     "json.encodeArray",
-                    &["values: scalar[] | scalar[][]", "callback: fn(str) -> void"],
+                    &[
+                        "values: scalar[] | scalar[][] | set<scalar>",
+                        "callback: fn(str) -> void",
+                    ],
                     "error",
                     active_parameter,
                 )),
