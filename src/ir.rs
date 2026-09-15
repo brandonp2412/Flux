@@ -5837,11 +5837,20 @@ fn compute_move_states(
                     continue;
                 }
                 for definition in call.argument_definitions_at(index) {
-                    outgoing_state.entry(*definition).or_insert((
-                        call.callee.clone(),
-                        vec![Vec::new()],
-                        call.span,
-                    ));
+                    outgoing_state
+                        .entry(*definition)
+                        .and_modify(|(_, projections, origin)| {
+                            // A consuming boundary consumes the complete
+                            // argument.  It must therefore subsume any
+                            // projected move already recorded for this
+                            // definition on the same CFG path, rather than
+                            // being ignored by `or_insert`.
+                            insert_move_projection(projections, &[]);
+                            if span_key(call.span) < span_key(*origin) {
+                                *origin = call.span;
+                            }
+                        })
+                        .or_insert((call.callee.clone(), vec![Vec::new()], call.span));
                 }
             }
         }
@@ -5980,6 +5989,26 @@ mod tests {
         assert!(insert_move_projection(&mut projections, &[]));
         assert_eq!(projections, vec![Vec::<String>::new()]);
         assert!(!insert_move_projection(&mut projections, &path(&["right"])));
+    }
+
+    #[test]
+    fn whole_consuming_projection_subsumes_prior_partial_projection() {
+        let definition = ControlFlowDefinitionId::Parameter(0);
+        let mut state = std::collections::BTreeMap::new();
+        state.insert(
+            definition,
+            (
+                "value".to_string(),
+                vec![path(&["left"])],
+                SourceSpan::new(1, 10, 1),
+            ),
+        );
+
+        assert!(insert_move_projection(
+            &mut state.get_mut(&definition).unwrap().1,
+            &[]
+        ));
+        assert_eq!(state[&definition].1, vec![Vec::<String>::new()]);
     }
 
     #[test]
