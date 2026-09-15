@@ -51543,6 +51543,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("resumable binary write should lower");
     assert!(generated.contains("flux__net_send_bytes_progress("));
     assert!(generated.contains("writeBytesFrom requires a nonblocking TCP socket"));
+    assert!(generated.contains("writeBytesFrom requires a connected TCP socket"));
     assert!(generated.contains("errno == EAGAIN || errno == EWOULDBLOCK"));
     assert!(generated.contains(".v0 = offset"));
     assert!(generated.contains("unsigned char buffer[4096]"));
@@ -51563,6 +51564,7 @@ fn main() -> i64 {
     check_source(source).expect("timed resumable binary write should typecheck");
     let generated = compile_to_c(source).expect("timed resumable binary write should lower");
     assert!(generated.contains("flux__net_send_bytes_progress_with_timeout("));
+    assert!(generated.contains("writeBytesFromTimeout requires a connected TCP socket"));
     assert!(generated.contains("written byte offset overflow"));
 }
 

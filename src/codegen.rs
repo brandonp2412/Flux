@@ -8422,6 +8422,8 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = "failed to inspect socket type"; return result; }
     if (socket_type != SOCK_STREAM) { result.v2 = "writeBytesFrom requires a TCP socket"; return result; }
+    struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer);
+    if (getpeername((int)socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) { result.v2 = "writeBytesFrom requires a connected TCP socket"; return result; }
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0 || (flags & O_NONBLOCK) == 0) { result.v2 = "writeBytesFrom requires a nonblocking TCP socket"; return result; }
     if ((uint64_t)offset > (uint64_t)bytes.len) { result.v2 = "writeBytesFrom offset exceeds byte length"; return result; }
@@ -8452,6 +8454,8 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = "failed to inspect socket type"; return result; }
     if (socket_type != SOCK_STREAM) { result.v2 = "writeBytesFromTimeout requires a TCP socket"; return result; }
+    struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer);
+    if (getpeername((int)socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) { result.v2 = "writeBytesFromTimeout requires a connected TCP socket"; return result; }
     int accepting = 0; socklen_t accepting_length = sizeof(accepting);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) { result.v2 = "failed to inspect TCP socket state"; return result; }
     if (accepting != 0) { result.v2 = "writeBytesFromTimeout requires a connected TCP socket"; return result; }
