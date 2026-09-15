@@ -28260,6 +28260,34 @@ fn cfg_checked_i64_proofs(
         .collect()
 }
 
+fn cfg_constant_name_reads(
+    cfg: &crate::ir::ControlFlowGraph,
+) -> HashMap<(u32, usize, usize, usize), ConstantValue> {
+    let mut constants = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for value in cfg.values().iter().filter(|value| {
+        cfg.is_value_reachable(value.id)
+            && matches!(value.kind, crate::ir::ControlFlowValueKind::NameRead { .. })
+    }) {
+        let Some(constant) = value.constant.clone() else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = constants.get(&span) {
+            if existing != &constant {
+                constants.remove(&span);
+                ambiguous.insert(span);
+            }
+        } else {
+            constants.insert(span, constant);
+        }
+    }
+    constants
+}
+
 fn emit_function(
     out: &mut String,
     function: &Function,
@@ -28392,6 +28420,7 @@ fn emit_function(
         })
         .collect::<HashMap<_, _>>();
     let checked_i64_cfg_proofs = cfg_checked_i64_proofs(cfg);
+    let cfg_constant_name_reads = cfg_constant_name_reads(cfg);
     let block_context = BlockEmitContext {
         current_function: function,
         source_paths,
@@ -28403,6 +28432,7 @@ fn emit_function(
         dead_non_escaping_let_binding_spans: &dead_non_escaping_let_binding_spans,
         dead_definition_names: &dead_definition_names,
         checked_i64_cfg_proofs: &checked_i64_cfg_proofs,
+        cfg_constant_name_reads: &cfg_constant_name_reads,
         async_state_machine: false,
         async_loop_control: None,
     };
@@ -28472,6 +28502,7 @@ struct BlockEmitContext<'a> {
     dead_non_escaping_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
     checked_i64_cfg_proofs: &'a HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    cfg_constant_name_reads: &'a HashMap<(u32, usize, usize, usize), ConstantValue>,
     async_state_machine: bool,
     async_loop_control: Option<AsyncLoopControlContext<'a>>,
 }
@@ -29889,6 +29920,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
+                    context.cfg_constant_name_reads,
                 )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
@@ -29920,6 +29952,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
+                    context.cfg_constant_name_reads,
                 )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
@@ -30073,6 +30106,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
+                    context.cfg_constant_name_reads,
                 )?;
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
@@ -30095,6 +30129,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
+                    context.cfg_constant_name_reads,
                 )?;
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
@@ -30576,6 +30611,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
+                    context.cfg_constant_name_reads,
                 )?;
                 if context.async_state_machine {
                     out.push_str(&format!(
@@ -30601,6 +30637,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
+                        context.cfg_constant_name_reads,
                     )?;
                     out.push_str(&format!("{pad}{temp}.v{index} = {value};\n"));
                 }
@@ -38094,7 +38131,14 @@ fn emit_expr_for_expected_with_cfg_proofs(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    constant_name_reads: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Result<String, Diagnostic> {
+    if let ExprKind::Var(_) = expr.kind
+        && let Some(constant) = constant_name_reads.get(&source_span_key(expr.span))
+        && constant.ty() == signatures.canonical_type(expected)
+    {
+        return Ok(constant_c_value(constant));
+    }
     if signatures.canonical_type(expected) == Type::I64
         && let Some(proof) = proofs.get(&source_span_key(expr.span))
         && let ExprKind::Binary { left, op, right } = &expr.kind

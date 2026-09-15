@@ -23728,11 +23728,13 @@ fn main() -> i64 {
     let same: bool = "Flux" == "Flux"
     let shortCircuit: bool = false && (1 / 0 == 0)
     let input: i64 = 5
+    let propagated: i64 = input
     let dynamic: i64 = input + 2
     print(answer)
     print(enabled)
     print(same)
     print(shortCircuit)
+    print(propagated)
     print(dynamic)
     return 0
 }
@@ -23744,6 +23746,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_enabled = true;"));
     assert!(generated.contains("flux__local_same = true;"));
     assert!(generated.contains("flux__local_shortCircuit = false;"));
+    assert!(generated.contains("flux__local_propagated = INT64_C(5);"));
     assert!(
         generated.contains("flux__local_dynamic = flux_add_i64(flux__local_input, INT64_C(2));")
     );
