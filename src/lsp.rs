@@ -8011,11 +8011,12 @@ fn write_message<W: Write>(writer: &mut W, payload: &str) -> io::Result<()> {
 }
 
 fn parse_json(input: &str) -> Result<JsonValue, String> {
+    const MAX_JSON_DEPTH: usize = 128;
     let mut parser = JsonParser {
         bytes: input.as_bytes(),
         index: 0,
     };
-    let value = parser.parse_value()?;
+    let value = parser.parse_value(0, MAX_JSON_DEPTH)?;
     parser.skip_whitespace();
     if parser.index != parser.bytes.len() {
         return Err("unexpected trailing JSON content".to_string());
@@ -8029,7 +8030,7 @@ struct JsonParser<'a> {
 }
 
 impl JsonParser<'_> {
-    fn parse_value(&mut self) -> Result<JsonValue, String> {
+    fn parse_value(&mut self, depth: usize, max_depth: usize) -> Result<JsonValue, String> {
         self.skip_whitespace();
         match self.bytes.get(self.index).copied() {
             Some(b'n') => {
@@ -8045,14 +8046,17 @@ impl JsonParser<'_> {
                 Ok(JsonValue::Bool(false))
             }
             Some(b'"') => self.parse_string().map(JsonValue::String),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(depth, max_depth),
+            Some(b'{') => self.parse_object(depth, max_depth),
             Some(b'-' | b'0'..=b'9') => self.parse_number(),
             _ => Err("expected JSON value".to_string()),
         }
     }
 
-    fn parse_array(&mut self) -> Result<JsonValue, String> {
+    fn parse_array(&mut self, depth: usize, max_depth: usize) -> Result<JsonValue, String> {
+        if depth >= max_depth {
+            return Err("JSON nesting exceeds maximum depth".to_string());
+        }
         self.index += 1;
         let mut values = Vec::new();
         self.skip_whitespace();
@@ -8060,7 +8064,7 @@ impl JsonParser<'_> {
             return Ok(JsonValue::Array(values));
         }
         loop {
-            values.push(self.parse_value()?);
+            values.push(self.parse_value(depth + 1, max_depth)?);
             self.skip_whitespace();
             if self.consume(b']') {
                 break;
@@ -8070,7 +8074,10 @@ impl JsonParser<'_> {
         Ok(JsonValue::Array(values))
     }
 
-    fn parse_object(&mut self) -> Result<JsonValue, String> {
+    fn parse_object(&mut self, depth: usize, max_depth: usize) -> Result<JsonValue, String> {
+        if depth >= max_depth {
+            return Err("JSON nesting exceeds maximum depth".to_string());
+        }
         self.index += 1;
         let mut values = BTreeMap::new();
         self.skip_whitespace();
@@ -8082,7 +8089,7 @@ impl JsonParser<'_> {
             let key = self.parse_string()?;
             self.skip_whitespace();
             self.expect(b':')?;
-            let value = self.parse_value()?;
+            let value = self.parse_value(depth + 1, max_depth)?;
             values.insert(key, value);
             self.skip_whitespace();
             if self.consume(b'}') {
@@ -8310,6 +8317,18 @@ mod tests {
         let parsed = parse_json(input).expect("JSON should parse");
         let reparsed = parse_json(&parsed.to_json()).expect("serialized JSON should parse");
         assert_eq!(parsed, reparsed);
+    }
+
+    #[test]
+    fn json_parser_rejects_excessive_nesting_before_stack_growth() {
+        let deeply_nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+        assert_eq!(
+            parse_json(&deeply_nested),
+            Err("JSON nesting exceeds maximum depth".to_string())
+        );
+
+        let at_limit = format!("{}0{}", "[".repeat(128), "]".repeat(128));
+        assert!(parse_json(&at_limit).is_ok());
     }
 
     #[test]
