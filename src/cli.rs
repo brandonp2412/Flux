@@ -2813,11 +2813,39 @@ fn msix_manifest_xml(
 ) -> Result<String, CliError> {
     let version = msix_version(manifest)?;
     let name = xml_escape(&manifest.name);
-    let publisher = xml_escape(publisher_identity.unwrap_or("CN=Flux Development"));
+    let publisher_identity = publisher_identity.unwrap_or("CN=Flux Development");
+    validate_msix_publisher(publisher_identity)?;
+    let publisher = xml_escape(publisher_identity);
     let executable = xml_escape(executable);
     Ok(format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
     ))
+}
+
+fn validate_msix_publisher(value: &str) -> Result<(), CliError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::Message(
+            "MSIX publisher identity must not be empty".to_string(),
+        ));
+    }
+    if trimmed != value {
+        return Err(CliError::Message(
+            "MSIX publisher identity must not have leading or trailing whitespace".to_string(),
+        ));
+    }
+    if !value.starts_with("CN=") || value[3..].trim().is_empty() {
+        return Err(CliError::Message(
+            "MSIX publisher identity must use a non-empty certificate subject such as 'CN=Example Publisher'"
+                .to_string(),
+        ));
+    }
+    if value.chars().any(|character| character.is_control()) {
+        return Err(CliError::Message(
+            "MSIX publisher identity must not contain control characters".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn build_msix_bundle(
@@ -10560,8 +10588,8 @@ mod tests {
         publish_registry_package_command, registry_publish_options, select_android_run_target,
         split_symbols_options, stage_android_package_assets, stage_package_assets,
         symbolize_options, test_options, validate_android_publish_manifest,
-        waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
-        windows_native_system_libraries, write_native_cache_metadata,
+        validate_msix_publisher, waydroid_status_is_running, web_dev_options, web_dev_response,
+        web_source_stamp, windows_native_system_libraries, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -11327,6 +11355,18 @@ app OverlayDemo(title: "Overlay")
         assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
         assert!(xml.contains("runFullTrust"));
         assert!(msix_version(&manifest).is_ok());
+    }
+
+    #[test]
+    fn msix_publisher_identity_is_certificate_subject_shaped_and_safe() {
+        assert!(validate_msix_publisher("CN=Flux Demo").is_ok());
+        for invalid in ["", "Flux Demo", "CN=", " CN=Flux Demo", "CN=Flux Demo "] {
+            assert!(
+                validate_msix_publisher(invalid).is_err(),
+                "publisher identity should be rejected: {invalid:?}"
+            );
+        }
+        assert!(validate_msix_publisher("CN=Flux\nDemo").is_err());
     }
 
     #[test]

@@ -27,3 +27,7 @@ verifies the signed result before replacing the output. Certificate provisioning
 publisher identity registration, Store listing, Store validation, and submission
 remain release-owner actions performed with Microsoft tooling and accounts.
 
+The `--publisher` value is checked before packaging: it must be the exact
+certificate-subject-shaped value beginning with `CN=`, without surrounding
+whitespace or control characters. Keep it identical to the subject used by the
+PFX certificate; Flux does not silently rewrite certificate identity metadata.
