@@ -3949,7 +3949,25 @@ fn check_block_all(
                         &format!("'{name}' is already defined in this scope"),
                     ));
                 }
-                match type_of_expr(expr, env, signatures) {
+                let contextual_empty_collection = if matches!(
+                    &expr.kind,
+                    ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items)
+                    if items.is_empty()
+                ) {
+                    let declared = signatures.canonical_type(ty);
+                    match (&expr.kind, &declared) {
+                        (ExprKind::List(_), Type::List(_))
+                        | (ExprKind::Set(_), Type::Set(_))
+                        | (ExprKind::Map(_), Type::Map(_, _)) => Some(declared),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                match contextual_empty_collection
+                    .map(Ok)
+                    .unwrap_or_else(|| type_of_expr(expr, env, signatures))
+                {
                     Ok(actual) => {
                         let declared = signatures.canonical_type(ty);
                         if let Err(diagnostic) =

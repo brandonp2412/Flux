@@ -37577,8 +37577,28 @@ fn emit_expr_for_expected(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
-    let emitted = emit_expr(expr, env, signatures)?;
     let expected = signatures.canonical_type(expected);
+    if let ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) = &expr.kind
+        && items.is_empty()
+    {
+        return match &expected {
+            Type::List(element) | Type::Set(element) => {
+                let element_c = c_type(element, signatures);
+                Ok(format!(
+                    "((struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({element_c}) }})"
+                ))
+            }
+            Type::Map(key, value) => {
+                let key_c = c_type(key, signatures);
+                let value_c = c_type(value, signatures);
+                Ok(format!(
+                    "((struct flux__map){{ .keys = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({value_c}) }} }})"
+                ))
+            }
+            _ => emit_expr(expr, env, signatures).map(|emitted| emitted.code),
+        };
+    }
+    let emitted = emit_expr(expr, env, signatures)?;
     let actual = signatures.canonical_type(&emitted.ty);
     let Type::Optional(inner) = &expected else {
         return Ok(emitted.code);

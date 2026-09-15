@@ -94,6 +94,27 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicitly_typed_empty_collections_lower_and_encode_as_empty_json() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let values: i64[] = []
+    let unique: set<i64> = {}
+    json.encode(values, emit)
+    json.encode(unique, emit)
+    return 0
+}
+"#;
+    check_source(source).expect("explicitly typed empty collections should typecheck");
+    let generated = compile_to_c(source).expect("empty collections should lower");
+    assert!(generated.contains(".len = 0"));
+    assert!(generated.contains("flux__json_encode_array"));
+}
+
+#[test]
 fn calendar_value_is_typed_native_and_field_addressable() {
     let source = r#"
 fn main() -> i64 {
