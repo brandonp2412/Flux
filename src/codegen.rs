@@ -1490,7 +1490,7 @@ pub fn emit_c_for_target_with_source_metadata(
     if !reachable_value_types.is_empty() || !reachable_interfaces.is_empty() {
         out.push('\n');
     }
-    emit_record_type_definitions(&mut out, program, signatures, &function_ir);
+    emit_record_type_definitions(&mut out, program, signatures, &function_ir, false);
     if runtime_usage.contains("flux__time_calendar(") {
         out.push_str("static inline struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64 flux__time_calendar(int64_t unix_ms) { return (struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64){ .flux__field_year = flux__time_utc_part(unix_ms, 0), .flux__field_month = flux__time_utc_part(unix_ms, 1), .flux__field_day = flux__time_utc_part(unix_ms, 2), .flux__field_hour = flux__time_utc_part(unix_ms, 3), .flux__field_minute = flux__time_utc_part(unix_ms, 4), .flux__field_second = flux__time_utc_part(unix_ms, 5), .flux__field_millis = flux__time_utc_part(unix_ms, 6), .flux__field_weekday = flux__time_utc_part(unix_ms, 7), .flux__field_dayOfYear = flux__time_utc_part(unix_ms, 8) }; }\n");
     }
@@ -1522,6 +1522,11 @@ pub fn emit_c_for_target_with_source_metadata(
     if !reachable_value_types.is_empty() {
         out.push('\n');
     }
+
+    // Records containing optional named aggregates must follow the complete
+    // enum/struct definitions (and their optional wrappers), since C embeds
+    // those values by value rather than through pointers.
+    emit_record_type_definitions(&mut out, program, signatures, &function_ir, true);
 
     // Named structs must be complete before by-value JSON helpers are emitted.
     // Anonymous records were already defined above, so both aggregate forms can
@@ -37997,6 +38002,10 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                             || json_enum_supported(&inner, signatures)
                     }
                     Type::Record(_) => json_record_supported(&field.ty, signatures),
+                    Type::Named(_) => {
+                        json_record_supported(&field.ty, signatures)
+                            || json_enum_supported(&field.ty, signatures)
+                    }
                     _ => false,
                 })
         }
@@ -38015,6 +38024,7 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                     }
                     Type::Record(_) | Type::Named(_) => {
                         json_record_supported(&field.ty, signatures)
+                            || json_enum_supported(&field.ty, signatures)
                     }
                     _ => false,
                 })
@@ -38192,6 +38202,10 @@ fn emit_json_record_helpers(
                     }
                     _ => continue,
                 },
+                Type::Named(_) if json_enum_supported(&field.ty, signatures) => format!(
+                    "{}({field_expr}, flux__json_capture)",
+                    json_enum_helper_name(&field.ty, signatures)
+                ),
                 Type::Record(_) | Type::Named(_) => format!(
                     "{}({field_expr}, flux__json_capture)",
                     json_record_helper_name(&field.ty, signatures)
@@ -38214,20 +38228,14 @@ fn emit_json_enum_helpers(
 ) {
     if !runtime_usage.contains("flux__json_encode_enum_")
         && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
+        && !runtime_usage.contains("flux__json_encode_record_")
     {
         return;
     }
     let mut enums = HashSet::new();
     for function in function_ir.values() {
         for value in function.values() {
-            let ty = signatures.canonical_type(&value.ty);
-            if json_enum_supported(&ty, signatures) {
-                collect_json_enum_types(&ty, signatures, &mut enums);
-            } else if let Type::Optional(inner) = ty {
-                if json_enum_supported(&inner, signatures) {
-                    collect_json_enum_types(&inner, signatures, &mut enums);
-                }
-            }
+            collect_json_enum_types(&value.ty, signatures, &mut enums);
         }
     }
     let mut enums = enums.into_iter().collect::<Vec<_>>();
@@ -38331,20 +38339,30 @@ fn emit_json_enum_helpers(
 
 fn collect_json_enum_types(ty: &Type, signatures: &Signatures, enums: &mut HashSet<Type>) {
     let ty = signatures.canonical_type(ty);
-    let Type::Named(name) = &ty else { return };
-    if signatures.enum_type(name).is_none()
-        || !json_enum_supported(&ty, signatures)
-        || !enums.insert(ty.clone())
-    {
-        return;
-    }
-    let Some(definition) = signatures.enum_type(name) else {
-        return;
-    };
-    for variant in &definition.variants {
-        for payload in &variant.payloads {
-            collect_json_enum_types(payload, signatures, enums);
+    match &ty {
+        Type::Optional(inner) => collect_json_enum_types(inner, signatures, enums),
+        Type::Record(fields) => {
+            for field in fields {
+                collect_json_enum_types(&field.ty, signatures, enums);
+            }
         }
+        Type::Named(name) => {
+            if signatures.enum_type(name).is_none()
+                || !json_enum_supported(&ty, signatures)
+                || !enums.insert(ty.clone())
+            {
+                return;
+            }
+            let Some(definition) = signatures.enum_type(name) else {
+                return;
+            };
+            for variant in &definition.variants {
+                for payload in &variant.payloads {
+                    collect_json_enum_types(payload, signatures, enums);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -38512,6 +38530,7 @@ fn emit_record_type_definitions(
     program: &Program,
     signatures: &Signatures,
     function_ir: &FunctionIrCache,
+    late_only: bool,
 ) {
     let mut records = HashSet::new();
     for alias in &program.aliases {
@@ -38567,6 +38586,9 @@ fn emit_record_type_definitions(
     let mut records = records.into_iter().collect::<Vec<_>>();
     records.sort_by_key(|ty| (record_type_depth(ty, signatures), ty.name()));
     for record in &records {
+        if record_requires_late_definition(record, signatures) != late_only {
+            continue;
+        }
         let Type::Record(fields) = record else {
             unreachable!();
         };
@@ -38587,6 +38609,25 @@ fn emit_record_type_definitions(
     if !records.is_empty() {
         out.push('\n');
     }
+}
+
+fn record_requires_late_definition(ty: &Type, signatures: &Signatures) -> bool {
+    let Type::Record(fields) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    fields
+        .iter()
+        .any(|field| match signatures.canonical_type(&field.ty) {
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::Named(name) => {
+                    signatures.struct_type(&name).is_some() || signatures.enum_type(&name).is_some()
+                }
+                Type::Record(_) => record_requires_late_definition(&inner, signatures),
+                _ => false,
+            },
+            Type::Record(_) => record_requires_late_definition(&field.ty, signatures),
+            _ => false,
+        })
 }
 
 fn c_type(ty: &Type, signatures: &Signatures) -> String {

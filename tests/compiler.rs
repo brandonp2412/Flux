@@ -16873,6 +16873,64 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_encodes_copy_records_with_optional_enum_fields() {
+    let source = r#"
+enum Status {
+    Ready
+    Failed(i64)
+}
+
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let ready: Status? = Status.Ready()
+    let failed: Status? = Status.Failed(7)
+    let absent: Status? = none
+    let present: (status: Status?, fallback: Status?) = (status: ready, fallback: failed)
+    let missing: (status: Status?, fallback: Status?) = (status: absent, fallback: absent)
+    print(json.encode(present, emit))
+    print(json.encode(missing, emit))
+    return 0
+}
+"#;
+    check_source(source).expect("records with optional enum fields should typecheck");
+    let generated = compile_to_c(source).expect("optional enum record JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_optional_aggregate_optional_named_Status"));
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-record-optional-enum-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("optional enum JSON directory should be writable");
+    let c_path = root.join("record-optional-enum-json.c");
+    let exe_path = root.join("record-optional-enum-json");
+    fs::write(&c_path, generated).expect("optional enum record JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional enum record JSON");
+    assert!(
+        compile.status.success(),
+        "optional enum record JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional enum record JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"status\":{\"Ready\":null},\"fallback\":{\"Failed\":7}}\nnil\n{\"status\":null,\"fallback\":null}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn anonymous_records_support_positional_destructuring_for_let_var_and_assignment() {
     let source = r#"
 type PersonRecord = (name: str, age: i64)

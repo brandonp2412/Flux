@@ -255,12 +255,12 @@ impl Signatures {
                 .iter()
                 .all(|field| self.is_bootstrap_record_field_type(&field.ty)),
             Type::Optional(inner) => self.is_bootstrap_record_field_type(&inner),
-            Type::Void
-            | Type::Named(_)
-            | Type::List(_)
-            | Type::Set(_)
-            | Type::Map(_, _)
-            | Type::Function { .. } => false,
+            Type::Named(name) => {
+                self.struct_type(&name).is_some() || self.enum_type(&name).is_some()
+            }
+            Type::Void | Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Function { .. } => {
+                false
+            }
         }
     }
 
