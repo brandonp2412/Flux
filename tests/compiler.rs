@@ -23790,6 +23790,32 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_propagated_boolean_conditions() {
+    let source = r#"
+fn main() -> i64 {
+    let input: i64 = 5
+    var enabled: bool = input == 5
+    var keepGoing: bool = input > 4
+    while keepGoing:
+        break
+    if enabled:
+        return 7
+    return 9
+}
+"#;
+
+    check_source(source).expect("propagated condition should typecheck");
+    let generated = compile_to_c(source).expect("propagated condition should compile");
+    assert!(generated.contains("return flux__finish_main(INT64_C(7));"));
+    assert!(!generated.contains("if (flux__local_enabled)"));
+    assert!(!generated.contains("while (flux__local_keepGoing)"));
+    assert!(
+        generated.contains("if (true)") && generated.contains("while (true)"),
+        "the normalized typed-IR boolean constant should feed native condition emission"
+    );
+}
+
+#[test]
 fn eliminates_cfg_unreachable_statements_before_native_codegen() {
     let source = r#"
 fn main() -> i64 {

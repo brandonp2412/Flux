@@ -30946,8 +30946,15 @@ fn emit_block(
                         context,
                     )?;
                 } else {
-                    let cond = emit_expr(cond, env, signatures)?;
-                    out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond.code)));
+                    let cond = emit_expr_for_expected_with_cfg_proofs(
+                        cond,
+                        &Type::Bool,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?;
+                    out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond)));
                     let mut then_env = env.clone();
                     let mut then_mutable = mutable.clone();
                     emit_block(
@@ -30987,8 +30994,15 @@ fn emit_block(
                 ) {
                     continue;
                 }
-                let cond = emit_expr(cond, env, signatures)?;
-                out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond.code)));
+                let cond = emit_expr_for_expected_with_cfg_proofs(
+                    cond,
+                    &Type::Bool,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond)));
                 let mut nested = env.clone();
                 let mut nested_mutable = mutable.clone();
                 emit_block(
