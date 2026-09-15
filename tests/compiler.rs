@@ -51494,6 +51494,38 @@ app Screen
 }
 
 #[test]
+fn native_socket_resources_register_for_process_exit_cleanup() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, failure) = net.connect("127.0.0.1", 1)
+    if failure != nil:
+        return 1
+    print(net.close(socket))
+    return 0
+}
+"#;
+    check_source(source).expect("socket cleanup fixture should typecheck");
+    let generated = compile_to_c(source).expect("socket cleanup fixture should lower");
+    assert!(generated.contains("flux__net_cleanup_sockets"));
+    assert!(generated.contains("atexit(flux__net_cleanup_sockets)"));
+    assert!(generated.contains("flux__net_register_socket(fd)"));
+    assert!(generated.contains("flux__net_unregister_socket((int)socket_handle)"));
+    let c_path = std::env::temp_dir().join(format!("flux-socket-cleanup-{}.c", std::process::id()));
+    fs::write(&c_path, &generated).expect("socket cleanup C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate socket cleanup C");
+    assert!(
+        compile.status.success(),
+        "socket cleanup C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}
+
+#[test]
 fn binary_socket_reads_preserve_nul_bytes_in_borrowed_byte_views() {
     let source = r#"
 fn consume(_socket: i64, bytes: i64[]) -> void {
