@@ -32,6 +32,7 @@ pub fn qualified<'a>(namespace: &str, name: &'a str) -> &'a str {
         ("net", "sendTextToParts") => "writePartsTo",
         ("net", "receiveText") => "read",
         ("net", "receiveBytes") => "readBytes",
+        ("net", "receiveBytesWithTimeout") => "readBytesTimeout",
         ("net", "receiveTextWithTimeout") => "readTimeout",
         ("net", "receiveTextMany") => "readMany",
         ("net", "receiveTextManyWithTimeout") => "readManyTimeout",

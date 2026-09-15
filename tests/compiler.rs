@@ -47281,6 +47281,7 @@ fn main() -> i64 {
     print(failure)
     return 0
 }
+
 "#;
     check_source(source).expect("binary socket read callback should typecheck");
     let generated = compile_to_c(source).expect("binary socket read should lower");
@@ -47300,6 +47301,44 @@ fn main() -> i64 {
     assert!(
         compile.status.success(),
         "binary socket C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}
+
+#[test]
+fn binary_socket_timeout_reads_use_cancellable_readiness_and_borrowed_views() {
+    let source = r#"
+fn consume(_socket: i64, bytes: i64[]) -> void {
+    print(bytes.count)
+}
+
+fn main() -> i64 {
+    let (received, ready, failure) = net.readBytesTimeout(1, 64, 0, consume)
+    print(received)
+    print(ready)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("timed binary socket read should typecheck");
+    let generated = compile_to_c(source).expect("timed binary socket read should lower");
+    assert!(generated.contains("flux__net_receive_bytes_with_timeout("));
+    assert!(generated.contains("flux__net_poll_cancellable"));
+    assert!(generated.contains("readBytesTimeout requires a connected TCP socket"));
+    let c_path = std::env::temp_dir().join(format!(
+        "flux-receive-bytes-timeout-{}.c",
+        std::process::id()
+    ));
+    fs::write(&c_path, &generated).expect("timed binary socket C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate timed binary socket C");
+    assert!(
+        compile.status.success(),
+        "timed binary socket C should compile: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
     let _ = fs::remove_file(c_path);
