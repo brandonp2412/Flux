@@ -774,6 +774,41 @@ impl ControlFlowGraph {
         self.node(id).map(|node| node.ownership.drops.as_slice())
     }
 
+    /// Return consuming call boundaries in normalized source order.
+    ///
+    /// Ownership consumers can use this typed query instead of reconstructing
+    /// consuming calls from the checked AST. Bootstrap currently has only
+    /// `drop` as a consuming call, but the argument mode keeps this boundary
+    /// extensible for future owned values and resources.
+    pub fn consuming_calls(&self) -> impl Iterator<Item = (ControlFlowNodeId, &OwnershipCall)> {
+        self.nodes.iter().flat_map(|node| {
+            node.ownership
+                .calls
+                .iter()
+                .filter(|call| {
+                    call.argument_kinds
+                        .iter()
+                        .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
+                })
+                .map(move |call| (node.id, call))
+        })
+    }
+
+    /// Return consuming calls attached to one normalized evaluation node.
+    pub fn consuming_calls_at(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> impl Iterator<Item = &OwnershipCall> {
+        self.node(id)
+            .into_iter()
+            .flat_map(|node| node.ownership.calls.iter())
+            .filter(|call| {
+                call.argument_kinds
+                    .iter()
+                    .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
+            })
+    }
+
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
         self.move_state_before(id)
             .is_some_and(ControlFlowMoveState::reachable)

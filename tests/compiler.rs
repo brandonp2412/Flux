@@ -14494,6 +14494,17 @@ fn main() -> i64 {
         graph.definition_name(node.ownership.moves[0].source_definitions[0]),
         Some("values")
     );
+    let consuming = graph.consuming_calls().collect::<Vec<_>>();
+    assert_eq!(consuming.len(), 1);
+    assert_eq!(consuming[0].0, node.id);
+    assert_eq!(consuming[0].1.callee, "drop");
+    assert_eq!(
+        graph
+            .consuming_calls_at(node.id)
+            .map(|call| call.callee.as_str())
+            .collect::<Vec<_>>(),
+        vec!["drop"]
+    );
 }
 
 #[test]
