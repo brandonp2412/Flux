@@ -5053,21 +5053,44 @@ fn check_cfg_moved_reads(
                 })
             })
             .collect::<Vec<_>>();
-        moved_reads.sort_by(|left, right| left.0.cmp(&right.0));
-        moved_reads.dedup_by(|left, right| left.0 == right.0);
+        moved_reads.sort_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| {
+                (
+                    left.1.source_id.value(),
+                    left.1.line,
+                    left.1.column,
+                    left.1.length,
+                )
+                    .cmp(&(
+                        right.1.source_id.value(),
+                        right.1.line,
+                        right.1.column,
+                        right.1.length,
+                    ))
+            })
+        });
         if moved_reads.is_empty() {
             continue;
         }
+        let mut moved_names = Vec::new();
+        for (name, _) in &moved_reads {
+            if moved_names
+                .last()
+                .is_none_or(|previous: &String| previous != name)
+            {
+                moved_names.push(name.clone());
+            }
+        }
+        let moved_names = moved_names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>();
         let mut diagnostic = diag(
             node.span,
             &format!(
                 "use of moved non-copy binding{} {}",
-                if moved_reads.len() == 1 { "" } else { "s" },
-                moved_reads
-                    .iter()
-                    .map(|(name, _)| format!("'{name}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                if moved_names.len() == 1 { "" } else { "s" },
+                moved_names.join(", ")
             ),
         );
         for (name, move_span) in moved_reads {
