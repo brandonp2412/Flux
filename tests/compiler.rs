@@ -5110,6 +5110,8 @@ fn main() -> i64 {
     check_source(source).expect("HTTP text request should typecheck");
     let generated = compile_to_c(source).expect("HTTP text request should lower on Linux");
     assert!(generated.contains("flux__net_http_send_text_request_v2("));
+    assert!(generated.contains("flux__net_http_bounded_length(const char *value"));
+    assert!(generated.contains("HTTP request body exceeds 65536 bytes"));
     assert!(generated.contains("Host: %s"));
     assert!(generated.contains("Content-Length: %zu"));
     assert!(generated.contains("Connection: %s"));
