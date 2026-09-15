@@ -5809,7 +5809,31 @@ fn inlay_hints_for_document(
 #[cfg(test)]
 fn semantic_tokens(uri: &str, source: &str, encoding: PositionEncoding) -> Vec<JsonValue> {
     let database = analyzed_document(uri, source);
-    semantic_tokens_with_database(uri, source, encoding, database.as_ref())
+    semantic_tokens_with_database(
+        source,
+        encoding,
+        source_id_for_uri(uri),
+        database.as_ref(),
+    )
+}
+
+fn source_id_for_analyzed_source(
+    uri: &str,
+    source: &str,
+    sources: &[crate::project::ProjectSource],
+) -> SourceId {
+    let canonical_path = file_uri_path(uri)
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    sources
+        .iter()
+        .find(|candidate| {
+            canonical_path
+                .as_deref()
+                .is_some_and(|path| candidate.path == path)
+        })
+        .or_else(|| sources.iter().find(|candidate| candidate.text == source))
+        .map(|candidate| candidate.source_id)
+        .unwrap_or_else(|| source_id_for_uri(uri))
 }
 
 fn semantic_tokens_for_document_cached(
@@ -5819,25 +5843,26 @@ fn semantic_tokens_for_document_cached(
     encoding: PositionEncoding,
     cache: Option<&mut crate::project::ProjectAnalysisCache>,
 ) -> Vec<JsonValue> {
-    let project_database =
-        analyzed_project_document_cached(uri, documents, cache).map(|(database, _)| database);
+    let project_analysis = analyzed_project_document_cached(uri, documents, cache);
     let standalone_database;
-    let database = if let Some(database) = project_database.as_ref() {
-        Some(database)
+    let (database, source_id) = if let Some((database, sources)) = project_analysis.as_ref() {
+        (
+            Some(database),
+            source_id_for_analyzed_source(uri, source, sources),
+        )
     } else {
         standalone_database = analyzed_document(uri, source);
-        standalone_database.as_ref()
+        (standalone_database.as_ref(), source_id_for_uri(uri))
     };
-    semantic_tokens_with_database(uri, source, encoding, database)
+    semantic_tokens_with_database(source, encoding, source_id, database)
 }
 
 fn semantic_tokens_with_database(
-    uri: &str,
     source: &str,
     encoding: PositionEncoding,
+    source_id: SourceId,
     database: Option<&crate::semantic::SemanticDatabase>,
 ) -> Vec<JsonValue> {
-    let source_id = source_id_for_uri(uri);
     let mut tokens = Vec::new();
     let mut in_multiline_string = false;
     for (line_index, line) in source.lines().enumerate() {
@@ -6481,11 +6506,7 @@ fn definition_for_document_cached(
                 ("range", lsp_range(field.name_span, &target.text, encoding)),
             ]));
         }
-        let source_id = sources
-            .iter()
-            .find(|candidate| candidate.text == source)
-            .map(|candidate| candidate.source_id)
-            .unwrap_or_else(|| source_id_for_uri(uri));
+        let source_id = source_id_for_analyzed_source(uri, source, &sources);
         let symbol = symbol_for_position_with_source_id(
             &database,
             source,
@@ -6798,9 +6819,11 @@ fn references_for_document_cached(
 ) -> Vec<JsonValue> {
     let analyses = workspace_project_analyses_cached(uri, documents, cache, true);
     if let Some((database, sources)) = analyses.first() {
-        let Some(symbol) =
-            symbol_for_position(database, uri, source, line_index, character, encoding).cloned()
-        else {
+        let source_id = source_id_for_analyzed_source(uri, source, sources);
+        let Some(symbol) = symbol_for_position_with_source_id(
+            database, source, source_id, line_index, character, encoding,
+        )
+        .cloned() else {
             return Vec::new();
         };
         if is_local_symbol_kind(symbol.kind) {
@@ -6937,8 +6960,11 @@ fn rename_for_document_cached(
     }
     let analyses = workspace_project_analyses_cached(uri, documents, cache, true);
     if let Some((database, sources)) = analyses.first() {
-        let symbol =
-            symbol_for_position(database, uri, source, line_index, character, encoding)?.clone();
+        let source_id = source_id_for_analyzed_source(uri, source, sources);
+        let symbol = symbol_for_position_with_source_id(
+            database, source, source_id, line_index, character, encoding,
+        )?
+        .clone();
         if is_local_symbol_kind(symbol.kind) {
             let project_source = sources
                 .iter()
