@@ -1302,6 +1302,8 @@ app Screen(title: "Windows input")
     assert!(generated.contains("static const char *flux__ui_state_query = \"seed\""));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(generated.contains("flux__win_bounded_length(value, 65536"));
+    assert!(generated.contains("TextInput state exceeds 65536 bytes"));
     assert!(generated.contains("flux__ui_set_state_query(text);"));
     assert!(
         generated.contains("flux__win_set_text_if_changed(flux__ui_input, flux__ui_state_query)")
@@ -38827,8 +38829,12 @@ app Screen(title: "Flux App", width: WINDOW_WIDTH, height: 120 * 2)
 
     let wrong_title = r#"
 view Screen {
+    state query: str = "initial"
     grid columns: 1fr
     grid rows: auto
+    TextInput input at 1,1
+        text: query
+        onChange: query, value => value
 }
 app Screen(title: 42)
 "#;
@@ -39248,6 +39254,8 @@ app Screen(id: "com.example.state", onSaveState: saveState, onRestoreState: rest
     assert!(generated.contains("flux__fn_saveState()"));
     assert!(generated.contains("%s\\\\%s.state"));
     assert!(generated.contains("com.example.state"));
+    assert!(generated.contains("flux__win_bounded_length"));
+    assert!(generated.contains("flux__win_bounded_length(state, (size_t)16 * 1024 * 1024"));
 }
 
 #[test]
