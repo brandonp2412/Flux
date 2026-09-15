@@ -14732,6 +14732,19 @@ fn main() -> i64 {
         fluxc::ir::ControlFlowValueKind::NameRead { ref name, .. } if name == "source"
     ));
     assert!(!movement.is_partial());
+    assert!(movement.projection.is_empty());
+    let source_definition = movement.source_definitions[0];
+    let after_transfer = graph
+        .nodes()
+        .iter()
+        .filter_map(|candidate| graph.move_state_before(candidate.id))
+        .find(|state| state.is_definition_moved(source_definition))
+        .expect("a post-transfer CFG state should be available");
+    assert!(after_transfer.is_definition_projection_moved(source_definition, &[]));
+    assert!(after_transfer.is_definition_projection_moved(
+        source_definition,
+        &["nested".to_string(), "field".to_string()]
+    ));
     assert!(graph.partial_moves().next().is_none());
     assert!(graph.partial_moves_at(node.id).next().is_none());
 }

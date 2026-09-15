@@ -469,6 +469,10 @@ pub struct ControlFlowOwnership {
 pub struct OwnershipMovedBinding {
     pub definition: ControlFlowDefinitionId,
     pub name: String,
+    /// The named aggregate projection consumed by this move. An empty path
+    /// means the complete value was consumed; a non-empty path means only
+    /// that field projection was consumed.
+    pub projection: Vec<String>,
     pub origin: SourceSpan,
 }
 
@@ -501,6 +505,25 @@ impl ControlFlowMoveState {
 
     pub fn is_definition_moved(&self, definition: ControlFlowDefinitionId) -> bool {
         self.origin_for_definition(definition).is_some()
+    }
+
+    /// Returns whether a whole value or an overlapping projection of the
+    /// definition has been consumed. A whole-value move overlaps every
+    /// projection; two partial moves overlap when one path is a prefix of
+    /// the other. This keeps future partial-move checking on the normalized
+    /// state rather than forcing it to reconstruct field paths from syntax.
+    pub fn is_definition_projection_moved(
+        &self,
+        definition: ControlFlowDefinitionId,
+        projection: &[String],
+    ) -> bool {
+        self.moved.iter().any(|binding| {
+            binding.definition == definition
+                && (binding.projection.is_empty()
+                    || projection.is_empty()
+                    || binding.projection.starts_with(projection)
+                    || projection.starts_with(&binding.projection))
+        })
     }
 
     pub fn origin_for_definition(&self, definition: ControlFlowDefinitionId) -> Option<SourceSpan> {
@@ -5731,8 +5754,10 @@ fn compute_move_states(
     edges: &[ControlFlowEdge],
     entry: ControlFlowNodeId,
 ) -> Vec<ControlFlowMoveState> {
-    let mut states =
-        vec![None::<BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>>; nodes.len()];
+    let mut states = vec![
+        None::<BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>>;
+        nodes.len()
+    ];
     states[entry.0] = Some(BTreeMap::new());
     let mut queue = VecDeque::from([entry]);
 
@@ -5753,12 +5778,36 @@ fn compute_move_states(
             for definition in &movement.source_definitions {
                 outgoing_state
                     .entry(*definition)
-                    .and_modify(|(_, origin)| {
+                    .and_modify(|(_, existing_projection, origin)| {
+                        // A whole-value move subsumes any prior projection.
+                        // The compact per-definition state below keeps a
+                        // single path, so disjoint projections conservatively
+                        // collapse to a whole-value fact.
+                        if movement.projection.is_empty() {
+                            existing_projection.clear();
+                        } else if !existing_projection.is_empty()
+                            && (existing_projection.starts_with(&movement.projection)
+                                || movement.projection.starts_with(existing_projection))
+                        {
+                            if movement.projection.len() < existing_projection.len() {
+                                *existing_projection = movement.projection.clone();
+                            }
+                        } else if !existing_projection.is_empty() {
+                            // This compact state represents one definition;
+                            // disjoint path facts are conservatively joined
+                            // as a whole-value move until the full set of
+                            // partial paths is needed by owned aggregates.
+                            existing_projection.clear();
+                        }
                         if span_key(movement.span) < span_key(*origin) {
                             *origin = movement.span;
                         }
                     })
-                    .or_insert((movement.source.clone(), movement.span));
+                    .or_insert((
+                        movement.source.clone(),
+                        movement.projection.clone(),
+                        movement.span,
+                    ));
             }
         }
         // Consuming calls are ownership boundaries in their own right.  The
@@ -5776,9 +5825,11 @@ fn compute_move_states(
                     continue;
                 }
                 for definition in call.argument_definitions_at(index) {
-                    outgoing_state
-                        .entry(*definition)
-                        .or_insert((call.callee.clone(), call.span));
+                    outgoing_state.entry(*definition).or_insert((
+                        call.callee.clone(),
+                        Vec::new(),
+                        call.span,
+                    ));
                 }
             }
         }
@@ -5805,11 +5856,14 @@ fn compute_move_states(
                 reachable: true,
                 moved: moved
                     .into_iter()
-                    .map(|(definition, (name, origin))| OwnershipMovedBinding {
-                        definition,
-                        name,
-                        origin,
-                    })
+                    .map(
+                        |(definition, (name, projection, origin))| OwnershipMovedBinding {
+                            definition,
+                            name,
+                            projection,
+                            origin,
+                        },
+                    )
                     .collect(),
             },
             None => ControlFlowMoveState::default(),
@@ -5818,19 +5872,41 @@ fn compute_move_states(
 }
 
 fn merge_move_state(
-    target: &mut BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>,
-    incoming: &BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>,
+    target: &mut BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>,
+    incoming: &BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>,
 ) -> bool {
     let mut changed = false;
-    for (definition, (name, origin)) in incoming {
+    for (definition, (name, projection, origin)) in incoming {
         match target.get_mut(definition) {
-            Some((_, existing)) if span_key(*origin) < span_key(*existing) => {
-                *existing = *origin;
-                changed = true;
+            Some((_, existing_projection, existing)) => {
+                let mut projection_changed = false;
+                if existing_projection.is_empty() {
+                    // Existing whole-value consumption already subsumes the
+                    // incoming projection.
+                } else if projection.is_empty() {
+                    existing_projection.clear();
+                    projection_changed = true;
+                } else if existing_projection.starts_with(projection)
+                    || projection.starts_with(existing_projection)
+                {
+                    if projection.len() < existing_projection.len() {
+                        *existing_projection = projection.clone();
+                        projection_changed = true;
+                    }
+                } else {
+                    // Keep the conservative whole-value marker for joins
+                    // where distinct partial moves occur on different paths.
+                    existing_projection.clear();
+                    projection_changed = true;
+                }
+                if span_key(*origin) < span_key(*existing) {
+                    *existing = *origin;
+                    changed = true;
+                }
+                changed |= projection_changed;
             }
-            Some(_) => {}
             None => {
-                target.insert(*definition, (name.clone(), *origin));
+                target.insert(*definition, (name.clone(), projection.clone(), *origin));
                 changed = true;
             }
         }
