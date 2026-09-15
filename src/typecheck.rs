@@ -5767,6 +5767,21 @@ fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     }
 }
 
+fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::Record(fields) => {
+            fields
+                .iter()
+                .all(|field| match signatures.canonical_type(&field.ty) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) => json_record_type_is_supported(&field.ty, signatures),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -10778,6 +10793,7 @@ fn check_qualified_call(
                         signatures.canonical_type(key) == Type::Str
                             && json_map_value_type_is_supported(&signatures.canonical_type(element))
                     }
+                    Type::Record(_) => json_record_type_is_supported(&value, signatures),
                     _ => false,
                 };
                 if name == "encodeString" && value != Type::Str {
@@ -10786,7 +10802,7 @@ fn check_qualified_call(
                 if !valid {
                     return Err(diag(
                         args[0].span,
-                        "json.encode value must be an i64, bool, str, scalar/nested list, or scalar map",
+                        "json.encode value must be an i64, bool, str, scalar/nested list, scalar map, or Copy record",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);

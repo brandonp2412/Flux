@@ -16484,6 +16484,7 @@ fn main() -> i64 {
     print(nested.1.1)
     return 0
 }
+
 "#;
 
     check_source(source).expect("primitive and nested records should typecheck");
@@ -16525,6 +16526,52 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "Ada\n42\n7\ntrue\n9\nok\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_encodes_copy_records_with_nested_fields() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let value: (name: str, active: bool, count: i64, child: (id: i64)) = (name: "Flux", active: true, count: 3, child: (id: 8))
+    let result: error = json.encode(value, emit)
+    print(result)
+    return 0
+}
+"#;
+    check_source(source).expect("Copy records should be valid JSON values");
+    let generated = compile_to_c(source).expect("record JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_record_"));
+    let root = std::env::temp_dir().join(format!("flux-json-record-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("record JSON temp directory should be writable");
+    let c_path = root.join("record-json.c");
+    let exe_path = root.join("record-json");
+    fs::write(&c_path, generated).expect("record JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile record JSON");
+    assert!(
+        compile.status.success(),
+        "record JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("record JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"name\":\"Flux\",\"active\":true,\"count\":3,\"child\":{\"id\":8}}\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

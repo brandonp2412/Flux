@@ -1491,6 +1491,7 @@ pub fn emit_c_for_target_with_source_metadata(
         out.push('\n');
     }
     emit_record_type_definitions(&mut out, program, signatures, &function_ir);
+    emit_json_record_helpers(&mut out, signatures, &function_ir, &runtime_usage);
     if runtime_usage.contains("flux__time_calendar(") {
         out.push_str("static inline struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64 flux__time_calendar(int64_t unix_ms) { return (struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64){ .flux__field_year = flux__time_utc_part(unix_ms, 0), .flux__field_month = flux__time_utc_part(unix_ms, 1), .flux__field_day = flux__time_utc_part(unix_ms, 2), .flux__field_hour = flux__time_utc_part(unix_ms, 3), .flux__field_minute = flux__time_utc_part(unix_ms, 4), .flux__field_second = flux__time_utc_part(unix_ms, 5), .flux__field_millis = flux__time_utc_part(unix_ms, 6), .flux__field_weekday = flux__time_utc_part(unix_ms, 7), .flux__field_dayOfYear = flux__time_utc_part(unix_ms, 8) }; }\n");
     }
@@ -4364,6 +4365,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_object(")
         || runtime_usage.contains("flux__json_encode_nested_object(")
         || runtime_usage.contains("flux__json_encode_map_map(")
+        || runtime_usage.contains("flux__json_encode_record_")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -35699,6 +35701,14 @@ fn emit_qualified_call(
                     None,
                 ));
             }
+            if matches!(signatures.canonical_type(&value.ty), Type::Record(_)) {
+                let helper = json_record_helper_name(&value.ty, signatures);
+                return Ok((
+                    format!("{helper}({}, {})", value.code, callback.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             let (helper, kind, depth) = if name == "encodeArray"
                 || (name == "encode"
                     && matches!(signatures.canonical_type(&value.ty), Type::List(_)))
@@ -37856,6 +37866,96 @@ fn is_duration_type(ty: &Type, signatures: &Signatures) -> bool {
 fn record_field_c_name(name: Option<&str>, index: usize) -> String {
     name.map(field_c_name)
         .unwrap_or_else(|| format!("v{index}"))
+}
+
+fn json_record_helper_name(ty: &Type, signatures: &Signatures) -> String {
+    format!("flux__json_encode_record_{}", type_mangle(ty, signatures))
+}
+
+fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::Record(fields) => {
+            fields
+                .iter()
+                .all(|field| match signatures.canonical_type(&field.ty) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) => json_record_supported(&field.ty, signatures),
+                    _ => false,
+                })
+        }
+        _ => false,
+    }
+}
+
+fn collect_json_record_types(ty: &Type, signatures: &Signatures, records: &mut HashSet<Type>) {
+    let ty = signatures.canonical_type(ty);
+    let Type::Record(fields) = &ty else { return };
+    if !json_record_supported(&ty, signatures) || !records.insert(ty.clone()) {
+        return;
+    }
+    for field in fields {
+        collect_json_record_types(&field.ty, signatures, records);
+    }
+}
+
+fn emit_json_record_helpers(
+    out: &mut String,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+    runtime_usage: &str,
+) {
+    if !runtime_usage.contains("flux__json_encode_record_") {
+        return;
+    }
+    let mut records = HashSet::new();
+    for function in function_ir.values() {
+        for value in function.values() {
+            collect_json_record_types(&value.ty, signatures, &mut records);
+        }
+    }
+    let mut records = records.into_iter().collect::<Vec<_>>();
+    records.sort_by_key(|ty| (record_type_depth(ty, signatures), ty.name()));
+    for ty in records {
+        let Type::Record(fields) = signatures.canonical_type(&ty) else {
+            continue;
+        };
+        let helper = json_record_helper_name(&ty, signatures);
+        out.push_str(&format!(
+            "static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{\n",
+            record_c_name(&ty, signatures)
+        ));
+        out.push_str("    char encoded[393217]; size_t output = 0; encoded[output++] = '{';\n");
+        for (index, field) in fields.iter().enumerate() {
+            let field_name = field.name.as_deref().unwrap_or_else(|| "value");
+            let field_json = field_name.replace('"', "\\\"");
+            if index > 0 {
+                out.push_str("    if (output >= sizeof(encoded) - 1) return \"encoded JSON record exceeds 393216 bytes\"; encoded[output++] = ',';\n");
+            }
+            out.push_str(&format!(
+                "    if (output > sizeof(encoded) - 1 - {}) return \"encoded JSON record exceeds 393216 bytes\"; memcpy(encoded + output, \"\\\"{}\\\":\", {}); output += {};\n",
+                field_json.len() + 3, field_json, field_json.len() + 3, field_json.len() + 3
+            ));
+            let field_expr = format!(
+                "value.{}",
+                record_field_c_name(field.name.as_deref(), index)
+            );
+            let field_ty = signatures.canonical_type(&field.ty);
+            let helper_call = match field_ty {
+                Type::I64 => format!("flux__json_encode_int({field_expr}, flux__json_capture)"),
+                Type::Bool => format!("flux__json_encode_bool({field_expr}, flux__json_capture)"),
+                Type::Str => format!("flux__json_encode_string({field_expr}, flux__json_capture)"),
+                Type::Record(_) => format!(
+                    "{}({field_expr}, flux__json_capture)",
+                    json_record_helper_name(&field.ty, signatures)
+                ),
+                _ => continue,
+            };
+            out.push_str(&format!(
+                "    flux__json_capture_value = NULL; const char *field_error_{index} = {helper_call}; if (field_error_{index} != NULL || flux__json_capture_value == NULL) return field_error_{index} == NULL ? \"JSON record field encoding failed\" : field_error_{index}; size_t field_length_{index} = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - field_length_{index}) return \"encoded JSON record exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, field_length_{index}); output += field_length_{index};\n"
+            ));
+        }
+        out.push_str("    if (output >= sizeof(encoded) - 1) return \"encoded JSON record exceeds 393216 bytes\"; encoded[output++] = '}'; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
+    }
 }
 
 fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet<Type>) {
