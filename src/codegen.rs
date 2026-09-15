@@ -8963,6 +8963,7 @@ fn emit_android_native_application(
     program: &Program,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
+    out.push_str("static inline bool flux__ui_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
     let application = program
         .application
         .as_ref()
@@ -9080,7 +9081,7 @@ fn emit_android_native_application(
         let owned_name = ui_owned_state_c_name(&state.name);
         let setter_name = ui_set_state_c_name(&state.name);
         out.push_str(&format!(
-            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
+            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = 0; if (!flux__ui_bounded_length(value, 65536, &length)) {{ fputs(\"Flux runtime error: TextInput state exceeds 65536 bytes\\n\", stderr); abort(); }} char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
         ));
     }
     for derived in &view.derived {
@@ -13546,6 +13547,7 @@ fn emit_linux_gtk_application(
     program: &Program,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
+    out.push_str("static inline bool flux__ui_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
     let application = program
         .application
         .as_ref()
@@ -13685,7 +13687,7 @@ fn emit_linux_gtk_application(
         let owned_name = ui_owned_state_c_name(&state.name);
         let setter_name = ui_set_state_c_name(&state.name);
         out.push_str(&format!(
-            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = strlen(value); char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
+            "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = 0; if (!flux__ui_bounded_length(value, 65536, &length)) {{ fputs(\"Flux runtime error: TextInput state exceeds 65536 bytes\\n\", stderr); abort(); }} char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
         ));
     }
     out.push_str("static void flux__ui_save_reload_state(void) { const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {'F','L','X','S'}; uint32_t count = ");

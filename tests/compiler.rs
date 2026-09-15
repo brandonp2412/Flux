@@ -36998,6 +36998,8 @@ app Form
     let linux = compile_to_c(source).expect("editable TextInput state should lower on Linux");
     assert!(linux.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(linux.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(linux.contains("flux__ui_bounded_length(value, 65536"));
+    assert!(linux.contains("TextInput state exceeds 65536 bytes"));
     assert!(linux.contains(
         "flux__ui_set_state_query(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed(0);"
     ));
@@ -37014,6 +37016,7 @@ app Form
     .expect("editable TextInput state should lower on Android");
     assert!(android.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(android.contains("static void flux__ui_set_state_query(const char *value)"));
+    assert!(android.contains("flux__ui_bounded_length(value, 65536"));
     assert!(android.contains("flux__ui_set_state_query(value); if (flux__android_activity != NULL) flux__android_ui_refresh"));
 
     let missing_value = source.replace(
