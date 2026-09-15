@@ -7186,10 +7186,12 @@ pub fn type_of_expr(
                             "bind the owner first, then borrow that binding or one of its zero-copy indexing/slicing/property views so the inferred lifetime has stable storage",
                         ));
                     }
-                    if !matches!(signatures.canonical_type(&ty), Type::List(_)) {
+                    if !matches!(signatures.canonical_type(&ty), Type::List(_))
+                        && !matches!(signatures.canonical_type(&ty), Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+                    {
                         return Err(diag(
                             expr.span,
-                            "borrow currently supports concrete list bindings",
+                            "borrow currently supports concrete list bindings and optional list views",
                         ));
                     }
                     Ok(ty)

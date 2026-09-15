@@ -760,7 +760,10 @@ impl ControlFlowGraph {
                 .iter()
                 .enumerate()
                 .find_map(|(index, definition)| {
-                    if definition.name != name || !matches!(definition.ty, Type::List(_)) {
+                    if definition.name != name
+                        || (!matches!(definition.ty, Type::List(_))
+                            && !matches!(&definition.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_))))
+                    {
                         return None;
                     }
                     let id = ControlFlowDefinitionId::Node {
@@ -1108,7 +1111,9 @@ fn definition_borrow_source_value_from_parts(
         return None;
     };
     let definition = nodes.get(node.0)?.definitions.get(index)?;
-    if !matches!(definition.ty, Type::List(_)) {
+    if !matches!(definition.ty, Type::List(_))
+        && !matches!(&definition.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    {
         return None;
     }
     let source_node = match nodes.get(node.0)?.kind {
@@ -3631,16 +3636,20 @@ fn reclassify_borrowed_list_reborrows(
     parameters: &[ControlFlowParameter],
     signatures: &Signatures,
 ) {
+    let is_list_owner = |ty: &Type| {
+        matches!(ty, Type::List(_))
+            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    };
     let mut borrowed_definitions = parameters
         .iter()
         .enumerate()
-        .filter(|(_, parameter)| matches!(signatures.canonical_type(&parameter.ty), Type::List(_)))
+        .filter(|(_, parameter)| is_list_owner(&signatures.canonical_type(&parameter.ty)))
         .map(|(index, _)| ControlFlowDefinitionId::Parameter(index))
         .collect::<BTreeSet<_>>();
     borrowed_definitions.extend(scoped_borrow_sources.keys().copied());
     for node in nodes.iter() {
         for (index, definition) in node.definitions.iter().enumerate() {
-            if !matches!(signatures.canonical_type(&definition.ty), Type::List(_)) {
+            if !is_list_owner(&signatures.canonical_type(&definition.ty)) {
                 continue;
             }
             let id = ControlFlowDefinitionId::Node {
@@ -3659,7 +3668,7 @@ fn reclassify_borrowed_list_reborrows(
         let mut changed = false;
         for node in nodes.iter() {
             for (index, definition) in node.definitions.iter().enumerate() {
-                if !matches!(signatures.canonical_type(&definition.ty), Type::List(_)) {
+                if !is_list_owner(&signatures.canonical_type(&definition.ty)) {
                     continue;
                 }
                 let id = ControlFlowDefinitionId::Node {
@@ -4537,7 +4546,7 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
         BTreeMap::<ControlFlowDefinitionId, Vec<(ControlFlowDefinitionId, String)>>::new();
     for node in &graph.nodes {
         for (index, definition) in node.definitions.iter().enumerate() {
-            if !matches!(definition.ty, Type::List(_)) {
+            if !is_list_owner(&definition.ty) {
                 continue;
             }
             let id = ControlFlowDefinitionId::Node {

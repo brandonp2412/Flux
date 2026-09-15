@@ -13223,7 +13223,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("borrow currently supports concrete list bindings")
+            .contains("borrow currently supports concrete list bindings and optional list views")
     );
 
     let optional = r#"
@@ -13241,7 +13241,7 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("borrow currently supports concrete list bindings")
+            .contains("optional binding patterns currently require a Copy payload")
     );
 
     let moved = r#"
@@ -16370,6 +16370,40 @@ fn main() -> i64 {
             .message
             .contains("runtime string interpolation requires owned-string lifetime semantics")
     );
+}
+
+#[test]
+fn explicit_borrow_preserves_optional_list_provenance() {
+    let live = r#"
+fn main() -> i64 {
+    let values: i64[]? = [10, 20]
+    let view: i64[]? = borrow values
+    let destination: i64[]? = values
+    print(view?[0] ?? -1)
+    return 0
+}
+"#;
+    let errors = check_source_all(live)
+        .expect_err("an optional list reborrow must keep its owner live until its last use");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot move non-copy binding 'values' while borrowed view 'view' is still live")
+    }));
+
+    let after_last_use = r#"
+fn main() -> i64 {
+    let values: i64[]? = [10, 20]
+    let view: i64[]? = borrow values
+    print(view?[0] ?? -1)
+    let destination: i64[]? = values
+    print(destination?[1] ?? -1)
+    return 0
+}
+"#;
+    check_source(after_last_use)
+        .expect("an optional list owner may move after the explicit reborrow's last use");
+    compile_to_c(after_last_use).expect("optional list reborrow lowering should remain native");
 }
 
 #[test]
