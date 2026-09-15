@@ -115,6 +115,42 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_attaches_each_drop_to_its_normalized_boundary_node() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    let first: i64 = values[0]
+    print(first)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("node-local drop fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let indexed = graph
+        .drops()
+        .iter()
+        .filter(|(_, drop)| drop.name == "values")
+        .collect::<Vec<_>>();
+    assert_eq!(indexed.len(), 1);
+    let (node, indexed_drop) = indexed[0];
+    let attached = graph
+        .drops_at(*node)
+        .expect("drop node should exist")
+        .iter()
+        .find(|drop| drop.name == "values")
+        .expect("drop must be attached to its boundary node");
+    assert_eq!(attached, indexed_drop);
+    assert!(graph
+        .nodes()
+        .iter()
+        .filter(|candidate| candidate.id != *node)
+        .all(|candidate| candidate.ownership.drops.iter().all(|drop| drop.name != "values")));
+}
+
+#[test]
 fn json_encodes_copy_aggregate_arrays_natively() {
     let source = r#"
 struct User {

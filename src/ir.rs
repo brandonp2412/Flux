@@ -330,6 +330,13 @@ pub struct ControlFlowOwnership {
     pub borrows: Vec<OwnershipBorrow>,
     pub moves: Vec<OwnershipMove>,
     pub calls: Vec<OwnershipCall>,
+    /// Definition-scoped releases whose boundary is this normalized node.
+    ///
+    /// These are populated after liveness/borrow analysis. Keeping them on
+    /// the node makes ownership lowering consume the same normalized event
+    /// stream as reads, moves, borrows, and calls instead of maintaining a
+    /// second graph walk over the checked AST.
+    pub drops: Vec<OwnershipDrop>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -745,6 +752,12 @@ impl ControlFlowGraph {
     /// consumers.
     pub fn drops(&self) -> &[(ControlFlowNodeId, OwnershipDrop)] {
         &self.drops
+    }
+
+    /// Returns the normalized releases at one CFG node.
+    pub fn drops_at(&self, id: ControlFlowNodeId) -> Option<&[OwnershipDrop]> {
+        self.node(id)
+            .map(|node| node.ownership.drops.as_slice())
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -1342,6 +1355,20 @@ impl<'a> ControlFlowBuilder<'a> {
         graph.borrow_ends = compute_borrow_ends(&graph);
         graph.borrow_lifetimes = compute_borrow_lifetimes(&graph);
         graph.drops = compute_drop_facts(&graph);
+        for (node, drop) in &graph.drops {
+            if let Some(control_flow_node) = graph.nodes.get_mut(node.0) {
+                control_flow_node.ownership.drops.push(drop.clone());
+            }
+        }
+        for node in &mut graph.nodes {
+            node.ownership.drops.sort_by(|left, right| {
+                left.definition
+                    .cmp(&right.definition)
+                    .then_with(|| left.name.cmp(&right.name))
+                    .then_with(|| span_key(left.span).cmp(&span_key(right.span)))
+            });
+            node.ownership.drops.dedup();
+        }
         graph
     }
 
@@ -2757,6 +2784,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves: Vec::new(),
             calls,
+            drops: Vec::new(),
         }
     }
 
@@ -2777,6 +2805,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrows: Vec::new(),
             moves,
             calls: Vec::new(),
+            drops: Vec::new(),
         }
     }
 }
