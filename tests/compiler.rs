@@ -18145,10 +18145,13 @@ fn encoded(value: str) -> void {
 fn main() -> i64 {
     let values: map<str, i64>[] = [{"first": 1}, {"second": 2, "third": 3}]
     let nested: map<str, i64[]>[] = [{"numbers": [1, 2]}, {"more": [3]}]
+    let deeplyNested: map<str, i64>[][] = [[{"outer": 1}], [{"inner": 2}]]
     let first: error = json.encodeArray(values, encoded)
     let second: error = json.encodeArray(nested, encoded)
+    let third: error = json.encodeArray(deeplyNested, encoded)
     print(first)
     print(second)
+    print(third)
     return 0
 }
 "#;
@@ -18180,7 +18183,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "[{\"first\":1},{\"second\":2,\"third\":3}]\n[{\"numbers\":[1,2]},{\"more\":[3]}]\nnil\nnil\n"
+        "[{\"first\":1},{\"second\":2,\"third\":3}]\n[{\"numbers\":[1,2]},{\"more\":[3]}]\n[[{\"outer\":1}],[{\"inner\":2}]]\nnil\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

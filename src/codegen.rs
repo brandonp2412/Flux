@@ -38624,7 +38624,7 @@ fn json_array_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
         Type::List(inner) | Type::Set(inner) => json_array_contains_aggregate(&inner, signatures),
         Type::Map(key, value) => {
             signatures.canonical_type(&key) == Type::Str
-                && json_map_contains_aggregate(&value, signatures)
+                && json_map_array_type_is_supported(&Type::Map(key, value), signatures)
         }
         _ => false,
     }
