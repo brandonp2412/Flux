@@ -14500,8 +14500,38 @@ fn main() -> i64 {
     assert!(errors.iter().any(|error| {
         error
             .message
-            .contains("cannot consume borrowed list parameter 'alias'")
+            .contains("cannot consume borrowed collection parameter 'alias'")
     }));
+}
+
+#[test]
+fn explicit_drop_cannot_consume_borrowed_set_or_map_parameters() {
+    let source = r#"
+fn discardSet(values: set<i64>) -> void {
+    let alias: set<i64> = values
+    drop(alias)
+}
+
+fn discardMap(values: map<i64, i64>) -> void {
+    let alias: map<i64, i64> = values
+    drop(alias)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let errors = check_source_all(source)
+        .expect_err("borrowed set/map parameters must not be consumed by drop");
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| error
+                .message
+                .contains("cannot consume borrowed collection parameter 'alias'"))
+            .count(),
+        2
+    );
 }
 
 #[test]
