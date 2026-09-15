@@ -38314,7 +38314,57 @@ fn emit_expr_for_expected_with_cfg_proofs(
             }
         });
     }
-    emit_expr_for_expected(expr, expected, env, signatures)
+    let rewritten = substitute_direct_ir_constant_arguments(expr, constant_values);
+    emit_expr_for_expected(&rewritten, expected, env, signatures)
+}
+
+fn substitute_direct_ir_constant_arguments(
+    expr: &Expr,
+    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+) -> Expr {
+    let literal = |argument: &Expr| {
+        let Some(constant) = constant_values.get(&source_span_key(argument.span)) else {
+            return argument.clone();
+        };
+        Expr {
+            line: argument.line,
+            span: argument.span,
+            kind: match constant {
+                ConstantValue::I64(value) => ExprKind::Int(*value),
+                ConstantValue::Bool(value) => ExprKind::Bool(*value),
+                ConstantValue::Str(value) => ExprKind::Str(value.clone()),
+            },
+        }
+    };
+    let mut rewritten = expr.clone();
+    match &mut rewritten.kind {
+        ExprKind::Call {
+            args, named_args, ..
+        }
+        | ExprKind::QualifiedCall {
+            args, named_args, ..
+        } => {
+            for argument in args {
+                *argument = literal(argument);
+            }
+            for argument in named_args {
+                argument.value = literal(&argument.value);
+            }
+        }
+        ExprKind::ShellCall { args, .. } => {
+            for argument in args {
+                *argument = literal(argument);
+            }
+        }
+        ExprKind::Pipe { input, args, .. } => {
+            **input = literal(input);
+            for argument in args {
+                *argument = literal(argument);
+            }
+        }
+        _ => {}
+    }
+    rewritten
 }
 
 fn emit_expr_for_expected(

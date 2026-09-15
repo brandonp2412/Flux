@@ -23843,10 +23843,16 @@ fn main() -> i64 {
 #[test]
 fn typed_ir_backend_consumes_propagated_string_values() {
     let source = r#"
+fn echo(value: str) -> str {
+    return value
+}
+
 fn main() -> i64 {
     let original: str = "typed-ir"
     let propagated: str = original
+    let copied: str = echo(propagated)
     print(propagated)
+    print(copied)
     return 0
 }
 "#;
@@ -23854,6 +23860,7 @@ fn main() -> i64 {
     check_source(source).expect("propagated string should typecheck");
     let generated = compile_to_c(source).expect("propagated string should compile");
     assert!(generated.contains("flux__local_propagated = \"typed-ir\";"));
+    assert!(generated.contains("flux__local_copied = flux__fn_echo(\"typed-ir\");"));
     assert!(
         !generated.contains("flux__local_propagated = flux__local_original;"),
         "static string values should be consumed from typed IR"
