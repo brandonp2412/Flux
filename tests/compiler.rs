@@ -23868,6 +23868,26 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_in_nested_call_arguments() {
+    let source = r#"
+fn echo(value: i64) -> i64 {
+    return value
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    print(echo(input + 2))
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested propagated expression should typecheck");
+    let generated = compile_to_c(source).expect("nested propagated expression should compile");
+    assert!(generated.contains("flux__fn_echo(INT64_C(7))"));
+    assert!(!generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"));
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {

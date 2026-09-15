@@ -28322,8 +28322,7 @@ fn ir_constant_is_pure(
             ir_constant_is_pure(cfg, *operand, visiting)
         }
         crate::ir::ControlFlowValueKind::Binary { left, right, .. } => {
-            ir_constant_is_pure(cfg, *left, visiting)
-                && ir_constant_is_pure(cfg, *right, visiting)
+            ir_constant_is_pure(cfg, *left, visiting) && ir_constant_is_pure(cfg, *right, visiting)
         }
         crate::ir::ControlFlowValueKind::Conditional {
             condition,
@@ -30772,7 +30771,9 @@ fn emit_block(
                 }
             }
             StmtKind::Expr(expr) => {
-                let value = emit_expr(expr, env, signatures)?;
+                let rewritten =
+                    substitute_nested_ir_constant_arguments(expr, context.cfg_constant_values);
+                let value = emit_expr(&rewritten, env, signatures)?;
                 out.push_str(&format!("{pad}{};\n", value.code));
             }
             StmtKind::Shell {
@@ -38322,9 +38323,12 @@ fn substitute_direct_ir_constant_arguments(
     expr: &Expr,
     constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Expr {
-    let literal = |argument: &Expr| {
+    fn rewrite(
+        argument: &Expr,
+        constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    ) -> Expr {
         let Some(constant) = constant_values.get(&source_span_key(argument.span)) else {
-            return argument.clone();
+            return rewrite_children(argument, constant_values);
         };
         Expr {
             line: argument.line,
@@ -38335,8 +38339,159 @@ fn substitute_direct_ir_constant_arguments(
                 ConstantValue::Str(value) => ExprKind::Str(value.clone()),
             },
         }
-    };
+    }
+
+    fn rewrite_children(
+        expr: &Expr,
+        constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    ) -> Expr {
+        let mut rewritten = expr.clone();
+        let child = |value: &Expr| rewrite(value, constant_values);
+        match &mut rewritten.kind {
+            ExprKind::Await(value)
+            | ExprKind::ListSpread { value, .. }
+            | ExprKind::ListOptional { value, .. }
+            | ExprKind::Unary { expr: value, .. } => {
+                **value = child(value);
+            }
+            ExprKind::AnonymousFunction { body, .. } => {
+                **body = child(body);
+            }
+            ExprKind::Call {
+                args, named_args, ..
+            }
+            | ExprKind::QualifiedCall {
+                args, named_args, ..
+            } => {
+                for value in args {
+                    *value = child(value);
+                }
+                for argument in named_args {
+                    argument.value = child(&argument.value);
+                }
+            }
+            ExprKind::ShellCall { args, .. } => {
+                for value in args {
+                    *value = child(value);
+                }
+            }
+            ExprKind::Pipe { input, args, .. } => {
+                **input = child(input);
+                for value in args {
+                    *value = child(value);
+                }
+            }
+            ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) => {
+                for value in items {
+                    *value = child(value);
+                }
+            }
+            ExprKind::ListIf {
+                condition,
+                value,
+                else_value,
+                ..
+            } => {
+                **condition = child(condition);
+                **value = child(value);
+                if let Some(value) = else_value {
+                    **value = child(value);
+                }
+            }
+            ExprKind::Index { base, index, .. } => {
+                **base = child(base);
+                **index = child(index);
+            }
+            ExprKind::Slice {
+                base,
+                start,
+                end,
+                step,
+            } => {
+                **base = child(base);
+                for value in [start, end, step].into_iter().flatten() {
+                    **value = child(value);
+                }
+            }
+            ExprKind::ListComprehension {
+                value,
+                iterable,
+                condition,
+                ..
+            } => {
+                **value = child(value);
+                **iterable = child(iterable);
+                if let Some(condition) = condition {
+                    **condition = child(condition);
+                }
+            }
+            ExprKind::RecordLiteral { fields } => {
+                for field in fields {
+                    field.value = child(&field.value);
+                }
+            }
+            ExprKind::StructLiteral { base, fields, .. } => {
+                if let Some(base) = base {
+                    **base = child(base);
+                }
+                for field in fields {
+                    field.value = child(&field.value);
+                }
+            }
+            ExprKind::Field { base, .. } => {
+                **base = child(base);
+            }
+            ExprKind::Match { value, arms } => {
+                **value = child(value);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        *guard = child(guard);
+                    }
+                    arm.value = child(&arm.value);
+                }
+            }
+            ExprKind::ListMatch { value, arms } => {
+                **value = child(value);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        *guard = child(guard);
+                    }
+                    arm.value = child(&arm.value);
+                }
+            }
+            ExprKind::Conditional {
+                then_expr,
+                cond,
+                else_expr,
+            } => {
+                **then_expr = child(then_expr);
+                **cond = child(cond);
+                **else_expr = child(else_expr);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                **left = child(left);
+                **right = child(right);
+            }
+            ExprKind::Int(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::InterpolatedString(_)
+            | ExprKind::Nil
+            | ExprKind::None
+            | ExprKind::Var(_) => {}
+        }
+        rewritten
+    }
+
+    rewrite_children(expr, constant_values)
+}
+
+fn substitute_nested_ir_constant_arguments(
+    expr: &Expr,
+    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+) -> Expr {
     let mut rewritten = expr.clone();
+    let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, constant_values);
     match &mut rewritten.kind {
         ExprKind::Call {
             args, named_args, ..
@@ -38344,22 +38499,52 @@ fn substitute_direct_ir_constant_arguments(
         | ExprKind::QualifiedCall {
             args, named_args, ..
         } => {
-            for argument in args {
-                *argument = literal(argument);
+            for value in args {
+                if matches!(
+                    value.kind,
+                    ExprKind::Call { .. }
+                        | ExprKind::QualifiedCall { .. }
+                        | ExprKind::Pipe { .. }
+                        | ExprKind::Conditional { .. }
+                        | ExprKind::Binary { .. }
+                        | ExprKind::Unary { .. }
+                ) {
+                    *value = rewrite(value);
+                }
             }
             for argument in named_args {
-                argument.value = literal(&argument.value);
+                if matches!(
+                    argument.value.kind,
+                    ExprKind::Call { .. }
+                        | ExprKind::QualifiedCall { .. }
+                        | ExprKind::Pipe { .. }
+                        | ExprKind::Conditional { .. }
+                        | ExprKind::Binary { .. }
+                        | ExprKind::Unary { .. }
+                ) {
+                    argument.value = rewrite(&argument.value);
+                }
             }
         }
         ExprKind::ShellCall { args, .. } => {
-            for argument in args {
-                *argument = literal(argument);
+            for value in args {
+                if matches!(
+                    value.kind,
+                    ExprKind::Call { .. }
+                        | ExprKind::QualifiedCall { .. }
+                        | ExprKind::Pipe { .. }
+                        | ExprKind::Conditional { .. }
+                        | ExprKind::Binary { .. }
+                        | ExprKind::Unary { .. }
+                ) {
+                    *value = rewrite(value);
+                }
             }
         }
         ExprKind::Pipe { input, args, .. } => {
-            **input = literal(input);
-            for argument in args {
-                *argument = literal(argument);
+            **input = rewrite(input);
+            for value in args {
+                *value = rewrite(value);
             }
         }
         _ => {}
