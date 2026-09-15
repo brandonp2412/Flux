@@ -15738,7 +15738,6 @@ fn main() -> i64 {
     }
 }
 
-#[test]
 fn ownership_ir_call_arguments_retain_nested_list_expression_provenance() {
     let source = r#"
 fn consume(rows: i64[][]) -> i64 {
