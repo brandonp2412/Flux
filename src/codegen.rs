@@ -4373,6 +4373,9 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
+        || runtime_usage.contains("flux__json_encode_optional_i64(")
+        || runtime_usage.contains("flux__json_encode_optional_bool(")
+        || runtime_usage.contains("flux__json_encode_optional_str(")
     {
         out.push_str(r#"#ifndef FLUX_LIST_DEFINED
 #define FLUX_LIST_DEFINED
@@ -4393,6 +4396,9 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
 static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_null(void (*callback)(const char *));
+static inline const char *flux__json_encode_optional_i64(struct flux__optional_i64 value, void (*callback)(const char *));
+static inline const char *flux__json_encode_optional_bool(struct flux__optional_bool value, void (*callback)(const char *));
+static inline const char *flux__json_encode_optional_str(struct flux__optional_str value, void (*callback)(const char *));
 static inline const char *flux__json_skip_ws(const char **cursor, const char *end) {
     while (*cursor < end && (**cursor == ' ' || **cursor == '\n' || **cursor == '\r' || **cursor == '\t')) *cursor += 1;
     return NULL;
@@ -4758,6 +4764,18 @@ static inline const char *flux__json_encode_null(void (*callback)(const char *))
     if (callback == NULL) return "invalid json.encodeNull callback";
     callback("null");
     return NULL;
+}
+static inline const char *flux__json_encode_optional_i64(struct flux__optional_i64 value, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encode callback";
+    return value.has_value ? flux__json_encode_int(value.value, callback) : flux__json_encode_null(callback);
+}
+static inline const char *flux__json_encode_optional_bool(struct flux__optional_bool value, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encode callback";
+    return value.has_value ? flux__json_encode_bool(value.value, callback) : flux__json_encode_null(callback);
+}
+static inline const char *flux__json_encode_optional_str(struct flux__optional_str value, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encode callback";
+    return value.has_value ? flux__json_encode_string(value.value, callback) : flux__json_encode_null(callback);
 }
 "#);
     }
@@ -35704,6 +35722,26 @@ fn emit_qualified_call(
                     vec![Type::Error],
                     None,
                 ));
+            }
+            if name == "encode" {
+                if let Type::Optional(inner) = signatures.canonical_type(&value.ty) {
+                    let helper = match signatures.canonical_type(&inner) {
+                        Type::I64 => "flux__json_encode_optional_i64",
+                        Type::Bool => "flux__json_encode_optional_bool",
+                        Type::Str => "flux__json_encode_optional_str",
+                        _ => {
+                            return Err(diag(
+                                span,
+                                "json.encode does not support this optional value",
+                            ));
+                        }
+                    };
+                    return Ok((
+                        format!("{}({}, {})", helper, value.code, callback.code),
+                        vec![Type::Error],
+                        None,
+                    ));
+                }
             }
             if json_record_supported(&value.ty, signatures) {
                 let helper = json_record_helper_name(&value.ty, signatures);

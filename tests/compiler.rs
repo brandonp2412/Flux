@@ -48860,3 +48860,55 @@ fn main() -> i64 {
     assert_eq!(values, vec![-300, -240, -300]);
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn json_encodes_copy_scalar_optionals_as_null_or_value() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let present: i64? = 42
+    let absent: bool? = none
+    let text: str? = "Flux"
+    let noText: str? = none
+    print(json.encode(present, encoded))
+    print(json.encode(absent, encoded))
+    print(json.encode(text, encoded))
+    print(json.encode(noText, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("scalar optional JSON values should typecheck");
+    let generated = compile_to_c(source).expect("scalar optional JSON values should lower");
+    assert!(generated.contains("flux__json_encode_optional_i64"));
+    assert!(generated.contains("flux__json_encode_optional_bool"));
+    assert!(generated.contains("flux__json_encode_optional_str"));
+    let root = std::env::temp_dir().join(format!("flux-json-optional-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON optional directory should be writable");
+    let c_path = root.join("json-optional.c");
+    let exe_path = root.join("json-optional");
+    fs::write(&c_path, generated).expect("generated JSON optional C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON optional code");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON optional program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "42\nnil\nnull\nnil\n\"Flux\"\nnil\nnull\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}

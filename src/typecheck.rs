@@ -5794,6 +5794,16 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     }
 }
 
+fn json_scalar_optional_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::Optional(inner) => matches!(
+            signatures.canonical_type(&inner),
+            Type::I64 | Type::Bool | Type::Str
+        ),
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -10797,6 +10807,7 @@ fn check_qualified_call(
                 let value = signatures.canonical_type(&value);
                 let valid = match &value {
                     Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Optional(_) => json_scalar_optional_type_is_supported(&value, signatures),
                     Type::List(element) => json_array_type_is_supported(
                         &signatures.canonical_type(element),
                         signatures,

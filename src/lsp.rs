@@ -1612,7 +1612,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encode",
             3,
-            "fn json.encode(value: i64 | bool | str | scalar[] | recursively nested scalar[] | scalar map | Copy record or struct, callback: fn(str) -> void) -> error",
+            "fn json.encode(value: i64 | bool | str | i64? | bool? | str? | scalar[] | recursively nested scalar[] | scalar map | Copy record or struct, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
