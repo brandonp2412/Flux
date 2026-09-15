@@ -4596,7 +4596,11 @@ fn check_block_all(
                             let cond_type = signatures.canonical_type(&cond_type);
                             match cond_type {
                                 Type::Optional(inner) if *inner != Type::Void => {
-                                    if !signatures.is_copy_type(&inner) {
+                                    if !signatures.is_copy_type(&inner)
+                                        && !matches!(
+                                            signatures.canonical_type(&inner),
+                                            Type::List(_)
+                                        ) {
                                         diagnostics.push(diag(
                                             cond.span,
                                             "optional binding patterns currently require a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",

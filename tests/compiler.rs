@@ -14395,14 +14395,27 @@ fn main() -> i64 {
     return 0
 }
 "#;
-    let error = check_source(optional).expect_err(
-        "optional list descriptors need their own explicit borrow provenance before borrowing",
-    );
-    assert!(
-        error
-            .message
-            .contains("optional binding patterns currently require a Copy payload")
-    );
+    check_source(optional).expect("borrowed optional list bindings should typecheck");
+    compile_to_c(optional).expect("borrowed optional list bindings should lower natively");
+
+    let live_optional_binding = r#"
+fn main() -> i64 {
+    let values: i64[] = [10, 20]
+    let optional: i64[]? = borrow values
+    if let present = optional:
+        print(present[0])
+        let destination: i64[] = values
+        print(destination[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(live_optional_binding)
+        .expect_err("an optional list pattern binding must keep its owner borrowed");
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "cannot move non-copy binding 'values' while borrowed view 'present' is still live",
+        )
+    }));
 
     let moved = r#"
 fn main() -> i64 {
