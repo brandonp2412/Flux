@@ -35966,6 +35966,7 @@ fn emit_qualified_call(
                 };
                 if json_record_supported(&element, signatures)
                     || json_enum_supported(&element, signatures)
+                    || matches!(&*element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures))
                     || json_array_contains_aggregate(&element, signatures)
                 {
                     let array_ty = Type::List(element.clone());
@@ -38497,7 +38498,9 @@ fn emit_json_record_helpers(
             continue;
         };
         let element_ty = signatures.canonical_type(&element_ty);
-        let value_helper = if matches!(&element_ty, Type::List(_) | Type::Set(_)) {
+        let value_helper = if let Type::Optional(_inner) = &element_ty {
+            json_optional_aggregate_helper_name(&element_ty, signatures)
+        } else if matches!(&element_ty, Type::List(_) | Type::Set(_)) {
             json_array_aggregate_helper_name(&element_ty, signatures)
         } else if json_enum_supported(&element_ty, signatures) {
             json_enum_helper_name(&element_ty, signatures)
@@ -38523,6 +38526,7 @@ fn collect_json_array_aggregate_types(
             let element = signatures.canonical_type(&element);
             if json_record_supported(&element, signatures)
                 || json_enum_supported(&element, signatures)
+                || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures))
                 || (matches!(&element, Type::List(_) | Type::Set(_))
                     && json_array_contains_aggregate(&element, signatures))
             {

@@ -5806,10 +5806,13 @@ fn json_map_value_type_is_supported(ty: &Type, signatures: &Signatures) -> bool 
 fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str => true,
-        Type::Optional(inner) => matches!(
-            signatures.canonical_type(&inner),
-            Type::I64 | Type::Bool | Type::Str
-        ),
+        Type::Optional(inner) => {
+            matches!(
+                signatures.canonical_type(&inner),
+                Type::I64 | Type::Bool | Type::Str
+            ) || json_record_type_is_supported(&inner, signatures)
+                || json_enum_type_is_supported(&inner, signatures)
+        }
         Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
         Type::Record(_) | Type::Named(_) => {
             json_record_type_is_supported(ty, signatures)

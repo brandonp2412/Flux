@@ -49,9 +49,14 @@ fn encoded(value: str) -> void {
 }
 fn main() -> i64 {
     let users: User[] = [User { name: "Ada", age: 37 }, User { name: "Lin", age: 3 }]
+    let first: User = User { name: "Mia", age: 8 }
+    let presentUser: User? = first
+    let absentUser: User? = none
+    let optionalUsers: User?[] = [presentUser, absentUser]
     let nested: User[][] = [[User { name: "Jo", age: 5 }], [User { name: "Kay", age: 6 }]]
     let states: State[] = [State.Ready(), State.Named("ok")]
     print(json.encodeArray(users, encoded))
+    print(json.encodeArray(optionalUsers, encoded))
     print(json.encode(nested, encoded))
     print(json.encode(states, encoded))
     return 0
@@ -83,7 +88,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "[{\"name\":\"Ada\",\"age\":37},{\"name\":\"Lin\",\"age\":3}]\nnil\n[[{\"name\":\"Jo\",\"age\":5}],[{\"name\":\"Kay\",\"age\":6}]]\nnil\n[{\"Ready\":null},{\"Named\":\"ok\"}]\nnil\n"
+        "[{\"name\":\"Ada\",\"age\":37},{\"name\":\"Lin\",\"age\":3}]\nnil\n[{\"name\":\"Mia\",\"age\":8},null]\nnil\n[[{\"name\":\"Jo\",\"age\":5}],[{\"name\":\"Kay\",\"age\":6}]]\nnil\n[{\"Ready\":null},{\"Named\":\"ok\"}]\nnil\n"
     );
     let _ = fs::remove_dir_all(root);
 }
