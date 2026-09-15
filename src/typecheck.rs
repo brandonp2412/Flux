@@ -5811,6 +5811,10 @@ fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
             Type::I64 | Type::Bool | Type::Str
         ),
         Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
+        Type::Record(_) | Type::Named(_) => {
+            json_record_type_is_supported(ty, signatures)
+                || json_enum_type_is_supported(ty, signatures)
+        }
         _ => false,
     }
 }

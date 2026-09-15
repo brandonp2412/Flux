@@ -34,6 +34,61 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn json_encodes_copy_aggregate_arrays_natively() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+enum State {
+    Ready
+    Named(str)
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let users: User[] = [User { name: "Ada", age: 37 }, User { name: "Lin", age: 3 }]
+    let nested: User[][] = [[User { name: "Jo", age: 5 }], [User { name: "Kay", age: 6 }]]
+    let states: State[] = [State.Ready(), State.Named("ok")]
+    print(json.encodeArray(users, encoded))
+    print(json.encode(nested, encoded))
+    print(json.encode(states, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("aggregate arrays should typecheck for JSON encoding");
+    let generated = compile_to_c(source).expect("aggregate arrays should lower to C");
+    assert!(generated.contains("flux__json_encode_array_aggregate_"));
+    let root =
+        std::env::temp_dir().join(format!("flux-json-aggregate-array-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON aggregate array directory should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("JSON aggregate array source should be writable");
+    let binary = root.join("json-aggregate-array");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("JSON aggregate array binary should build");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("JSON aggregate array program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[{\"name\":\"Ada\",\"age\":37},{\"name\":\"Lin\",\"age\":3}]\nnil\n[[{\"name\":\"Jo\",\"age\":5}],[{\"name\":\"Kay\",\"age\":6}]]\nnil\n[{\"Ready\":null},{\"Named\":\"ok\"}]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn calendar_value_is_typed_native_and_field_addressable() {
     let source = r#"
 fn main() -> i64 {
