@@ -130,6 +130,20 @@ fn main() -> i64 {
         event,
         ControlFlowOwnershipEvent::Move(movement) if movement.source == "values"
     )));
+    let movement = node
+        .ownership
+        .moves
+        .iter()
+        .find(|movement| movement.source == "values")
+        .expect("drop move fact should be present");
+    let value = movement
+        .value
+        .and_then(|value| graph.value(value))
+        .expect("drop move should retain its typed source value");
+    assert!(matches!(
+        value.kind,
+        ControlFlowValueKind::NameRead { ref name, .. } if name == "values"
+    ));
 }
 
 #[test]

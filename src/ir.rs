@@ -3238,11 +3238,19 @@ impl<'a> ControlFlowBuilder<'a> {
                 ..
             }) = args.first()
         {
+            let value = self.values.iter().rev().find_map(|candidate| {
+                (candidate.producer == node
+                    && matches!(
+                        &candidate.kind,
+                        ControlFlowValueKind::NameRead { name, .. } if name == source
+                    ))
+                .then_some(candidate.id)
+            });
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: "<drop>".to_string(),
                 projection: Vec::new(),
-                value: None,
+                value,
                 source_definitions: Vec::new(),
                 span: expr.span,
             }]
