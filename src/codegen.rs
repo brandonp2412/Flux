@@ -12736,6 +12736,13 @@ fn emit_windows_native_application(
     if view.elements.iter().any(|element| element.kind == "Image") {
         out.push_str("static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; if (strncmp(source, \"asset://\", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\\0' || *relative == '/' || strstr(relative, \"..\") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\\\'); if (separator == NULL) return NULL; *separator = '\\0'; size_t size = strlen(module) + strlen(\"\\\\assets\\\\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, \"%s\\\\assets\\\\%s\", module, relative); return path; }\nstatic void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source) { if (control == NULL || current == NULL) return; char *path = flux__win_image_source_path(source); if (path == NULL || path[0] == '\\0') { free(path); if (*current != NULL) { SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, 0); DeleteObject(*current); *current = NULL; } return; } HBITMAP next = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); free(path); if (next == NULL) return; HBITMAP previous = (HBITMAP)SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)next); if (previous != NULL && previous != next) DeleteObject(previous); *current = next; }\n");
     }
+    if view.elements.iter().any(|element| {
+        element.kind == "Text"
+            && view_property(element, "text_align")
+                .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
+    }) {
+        out.push_str("static void flux__win_set_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrA(control, GWL_STYLE); style &= ~((LONG_PTR)SS_TYPEMASK); if (strcmp(value, \"center\") == 0) style |= SS_CENTER; else if (strcmp(value, \"right\") == 0) style |= SS_RIGHT; else if (strcmp(value, \"left\") == 0) style |= SS_LEFT; else if (strcmp(value, \"fill\") == 0) style |= SS_LEFT | SS_NOPREFIX; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrA(control, GWL_STYLE, style); InvalidateRect(control, NULL, TRUE); }\n");
+    }
     let uses_key_events = view
         .elements
         .iter()
@@ -12942,6 +12949,15 @@ fn emit_windows_native_application(
     }
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);
+        if element.kind == "Text"
+            && let Some(property) = view_property(element, "text_align")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_text_alignment({variable}, {value});\n"
+            ));
+        }
         if let Some(property) = view_property(element, "background_color")
             && static_expr_str(&property.value, signatures).is_none()
         {
@@ -13244,6 +13260,29 @@ fn emit_windows_native_application(
                         "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON",
                     )
                 }
+            }
+            "Text" => {
+                let alignment = match view_property(element, "text_align") {
+                    Some(property) => static_expr_str(&property.value, signatures)
+                        .unwrap_or_else(|| "left".to_string()),
+                    None => "left".to_string(),
+                };
+                let style = match alignment.as_str() {
+                    "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
+                    "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
+                    "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                    "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
+                    _ => {
+                        return Err(diag(
+                            view_property(element, "text_align")
+                                .expect("text_align exists for invalid value")
+                                .value
+                                .span,
+                            "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
+                        ));
+                    }
+                };
+                ("STATIC", style)
             }
             _ if view_property(element, "on_tap").is_some() => {
                 ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY")

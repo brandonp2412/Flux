@@ -697,6 +697,7 @@ view Screen {
     grid rows: auto auto auto auto auto
     Text title at 1,1
         text: query
+        textAlign: "center"
         color: "#1f2328"
         fontFamily: "Aptos"
         backgroundColor: "surfaceRaised"
@@ -732,6 +733,7 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("#include <windows.h>"));
     assert!(generated.contains("WNDCLASSA"));
     assert!(generated.contains("CreateWindowExA(0, \"STATIC\""));
+    assert!(generated.contains("WS_CHILD | WS_VISIBLE | SS_CENTER"));
     assert!(generated.contains("CreateWindowExA(0, \"EDIT\""));
     assert!(generated.contains("CreateWindowExA(0, \"BUTTON\""));
     assert!(generated.contains("BS_AUTOCHECKBOX"));
@@ -774,6 +776,35 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("CreateSolidBrush(flux__win_color_title_background_color)"));
     assert!(!generated.contains("#include <gtk/gtk.h>"));
     assert!(!generated.contains("android/native_activity.h"));
+}
+
+#[test]
+fn windows_backend_refreshes_dynamic_text_alignment_in_place() {
+    let source = r#"
+view Screen {
+    state alignment: str = "right"
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Aligned"
+        textAlign: alignment
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("dynamic text alignment should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dynamic text alignment should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic text alignment should lower for Windows");
+    assert!(generated.contains("flux__win_set_text_alignment"));
+    assert!(generated
+        .contains("flux__win_set_text_alignment(flux__ui_title, flux__ui_state_alignment)"));
+    assert!(generated.contains("SetWindowLongPtrA(control, GWL_STYLE"));
 }
 
 #[test]
