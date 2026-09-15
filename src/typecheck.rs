@@ -11091,6 +11091,42 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
+            "isLeapYear" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("time.isLeapYear expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &actual, "time.isLeapYear year")?;
+                return Ok(vec![Type::Bool]);
+            }
+            "daysInMonth" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("time.daysInMonth expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                for (arg, label) in args.iter().zip(["year", "month"]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &Type::I64,
+                        &actual,
+                        &format!("time.daysInMonth {label}"),
+                    )?;
+                }
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=12).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "time.daysInMonth month must be between 1 and 12",
+                    ));
+                }
+                return Ok(vec![Type::I64]);
+            }
             "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(

@@ -9610,6 +9610,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn calendar_helpers_are_checked_native_and_available_to_lsp() {
+    let source = r#"
+fn main() -> i64 {
+    print(time.isLeapYear(2000))
+    print(time.isLeapYear(1900))
+    print(time.daysInMonth(2024, 2))
+    print(time.daysInMonth(2023, 2))
+    print(time.daysInMonth(2023, 11))
+    return 0
+}
+"#;
+    check_source(source).expect("calendar helpers should typecheck");
+    let generated = compile_to_c(source).expect("calendar helpers should lower natively");
+    assert!(generated.contains("static inline bool flux__time_is_leap_year"));
+    assert!(generated.contains("static inline int64_t flux__time_days_in_month"));
+
+    let root = std::env::temp_dir().join(format!("flux-calendar-helpers-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("calendar helper fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("calendar helper source should be writable");
+    let binary = root.join("calendar-helpers");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("calendar helper binary should build");
+    assert!(
+        build.status.success(),
+        "calendar helper build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("calendar helper binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "true\nfalse\n29\n28\n30\n"
+    );
+    let invalid = "fn main() -> i64 {\n    return time.daysInMonth(2023, 13)\n}\n";
+    let error = check_source(invalid).expect_err("constant invalid month should fail");
+    assert!(
+        error
+            .message
+            .contains("time.daysInMonth month must be between 1 and 12")
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn utc_time_format_is_borrowed_bounded_and_native() {
     let source = r#"
 fn emit(value: str) -> void {

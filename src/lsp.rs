@@ -1884,6 +1884,11 @@ fn add_qualified_namespace_completions(
             ("hours", "fn time.hours(value: i64) -> i64"),
             ("days", "fn time.days(value: i64) -> i64"),
             ("weeks", "fn time.weeks(value: i64) -> i64"),
+            ("isLeapYear", "fn time.isLeapYear(year: i64) -> bool"),
+            (
+                "daysInMonth",
+                "fn time.daysInMonth(year: i64, month: i64) -> i64",
+            ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
@@ -4300,6 +4305,22 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
                         &["value: i64"],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "isLeapYear" => {
+                    return Some(signature_help_for_builtin(
+                        "time.isLeapYear",
+                        &["year: i64"],
+                        "bool",
+                        active_parameter,
+                    ));
+                }
+                "daysInMonth" => {
+                    return Some(signature_help_for_builtin(
+                        "time.daysInMonth",
+                        &["year: i64", "month: i64"],
                         "i64",
                         active_parameter,
                     ));
