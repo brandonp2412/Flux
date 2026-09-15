@@ -273,6 +273,10 @@ pub enum ControlFlowNodeKind {
 pub struct OwnershipMove {
     pub source: String,
     pub destination: String,
+    /// Exact source definitions reaching this move boundary.  The source
+    /// name is retained for diagnostics, but ownership consumers must use
+    /// these identities so shadowed/re-executed bindings cannot be conflated.
+    pub source_definitions: Vec<ControlFlowDefinitionId>,
     pub span: SourceSpan,
 }
 
@@ -1360,6 +1364,7 @@ impl<'a> ControlFlowBuilder<'a> {
             drops: Vec::new(),
         };
         populate_call_argument_definitions(&mut graph, self.signatures);
+        populate_move_source_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
@@ -2854,6 +2859,7 @@ impl<'a> ControlFlowBuilder<'a> {
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: "<drop>".to_string(),
+                source_definitions: Vec::new(),
                 span: expr.span,
             }]
         } else {
@@ -2875,6 +2881,7 @@ impl<'a> ControlFlowBuilder<'a> {
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: name.to_string(),
+                source_definitions: Vec::new(),
                 span: expr.span,
             }]
         } else {
@@ -2899,6 +2906,26 @@ fn expr_is_consuming_drop(expr: &Expr) -> bool {
             named_args,
         } if name == "drop" && args.len() == 1 && named_args.is_empty()
     )
+}
+
+/// Attach reaching-definition identity to move events after the CFG has been
+/// normalized.  Keeping this as a post-pass means move construction can stay
+/// local to expression lowering while all ownership consumers observe the
+/// same definition map used by use-after-move analysis.
+fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
+    let reaching_definitions_before = graph.reaching_definitions_before.clone();
+    for node in &mut graph.nodes {
+        let mut moves = std::mem::take(&mut node.ownership.moves);
+        for movement in &mut moves {
+            movement.source_definitions = reaching_definitions_before
+                .get(node.id.0)
+                .and_then(Option::as_ref)
+                .and_then(|reaching| reaching.get(&movement.source))
+                .map(|definitions| definitions.iter().copied().collect())
+                .unwrap_or_default();
+        }
+        node.ownership.moves = moves;
+    }
 }
 
 fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: &Signatures) {

@@ -14231,6 +14231,54 @@ fn main() -> i64 {
     assert!(call.borrowed_argument_definitions[0].is_empty());
     assert_eq!(node.ownership.moves.len(), 1);
     assert_eq!(node.ownership.moves[0].source, "values");
+    assert_eq!(node.ownership.moves[0].source_definitions.len(), 1);
+    assert_eq!(
+        graph.definition_name(node.ownership.moves[0].source_definitions[0]),
+        Some("values")
+    );
+}
+
+#[test]
+fn ownership_ir_move_events_retain_exact_reaching_source_definitions() {
+    let source = r#"
+fn choose(flag: bool) -> i64 {
+    if flag:
+        let values: i64[] = [1]
+        let moved: i64[] = values
+        print(moved.count)
+    else:
+        let values: i64[] = [2]
+        let moved: i64[] = values
+        print(moved.count)
+    return 0
+}
+fn main() -> i64 {
+    return choose(true)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1422))
+        .expect("shadowed move source should analyze");
+    let graph = database
+        .control_flow_graph("choose")
+        .expect("choose should expose a CFG");
+    let moves = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.moves.iter())
+        .filter(|movement| movement.destination == "moved")
+        .collect::<Vec<_>>();
+    assert_eq!(moves.len(), 2);
+    assert!(
+        moves.iter().all(|movement| {
+            movement.source_definitions.len() == 1
+                && graph.definition_name(movement.source_definitions[0]) == Some("values")
+        }),
+        "unexpected move provenance: {moves:?}"
+    );
+    assert_ne!(
+        moves[0].source_definitions[0], moves[1].source_definitions[0],
+        "shadowed move events must retain distinct source definitions"
+    );
 }
 
 #[test]
