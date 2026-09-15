@@ -317,6 +317,10 @@ pub enum OwnershipBorrowKind {
 pub struct OwnershipBorrow {
     pub source: String,
     pub kind: OwnershipBorrowKind,
+    /// Exact source definitions reaching this borrow.  The source name is
+    /// retained for diagnostics, but ownership consumers must use these
+    /// identities so shadowed and re-executed bindings cannot be conflated.
+    pub source_definitions: Vec<ControlFlowDefinitionId>,
     pub span: SourceSpan,
 }
 
@@ -1489,6 +1493,7 @@ impl<'a> ControlFlowBuilder<'a> {
         populate_call_argument_definitions(&mut graph, self.signatures);
         populate_return_ownership(&mut graph, self.signatures);
         populate_move_source_definitions(&mut graph);
+        populate_borrow_source_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
@@ -4495,6 +4500,7 @@ fn populate_immutable_borrows(
         node.ownership.borrows.push(OwnershipBorrow {
             source: name.clone(),
             kind: OwnershipBorrowKind::Immutable,
+            source_definitions: Vec::new(),
             span: value.span,
         });
     }
@@ -4502,6 +4508,34 @@ fn populate_immutable_borrows(
         node.ownership.borrows.sort_by(|left, right| {
             left.source
                 .cmp(&right.source)
+                .then_with(|| span_key(left.span).cmp(&span_key(right.span)))
+        });
+    }
+}
+
+/// Attach reaching-definition identity to normalized borrow events after the
+/// CFG data-flow pass has converged.  Borrow events are initially discovered
+/// from typed value reads because that is the only point where reachability is
+/// known; resolving them here keeps the event itself useful to later ownership
+/// consumers without making them repeat a name-based lookup.
+fn populate_borrow_source_definitions(graph: &mut ControlFlowGraph) {
+    for node in &mut graph.nodes {
+        let reaching = graph
+            .reaching_definitions_before
+            .get(node.id.0)
+            .and_then(Option::as_ref)
+            .cloned();
+        for borrow in &mut node.ownership.borrows {
+            borrow.source_definitions = reaching
+                .as_ref()
+                .and_then(|reaching| reaching.get(&borrow.source))
+                .map(|definitions| definitions.iter().copied().collect())
+                .unwrap_or_default();
+        }
+        node.ownership.borrows.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then_with(|| left.source_definitions.cmp(&right.source_definitions))
                 .then_with(|| span_key(left.span).cmp(&span_key(right.span)))
         });
     }

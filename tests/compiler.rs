@@ -28726,6 +28726,16 @@ fn main() -> i64 {
     assert_eq!(source_evaluation.ownership.borrows.len(), 1);
     assert_eq!(source_evaluation.ownership.borrows[0].source, "source");
     assert_eq!(
+        source_evaluation.ownership.borrows[0].source_definitions,
+        ownership_graph
+            .definitions_reaching_before(source_evaluation.id, "source")
+            .expect("borrow source should have a reaching definition")
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        "normalized borrow facts must retain exact reaching source definitions"
+    );
+    assert_eq!(
         source_evaluation.ownership.borrows[0].span,
         source_value.span
     );
