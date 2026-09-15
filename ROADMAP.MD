@@ -1269,6 +1269,8 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified WebSocket server follow-up: the native reader accepts RFC 6455 fragmented text messages, validates continuation sequencing and reserved bits, handles masked ping/pong control frames while a message is in flight, preserves one bounded callback-scoped aggregate, and rejects message-size overflow without introducing escaping storage. Binary frame I/O, client handshake/frame support, and close/ping/pong controls are covered separately; task-integrated event-loop scheduling remains pending under Efficient I/O.
 
+# Verified Efficient I/O safety follow-up: `net.sendText` now rejects null or over-65536-byte borrowed payloads before socket inspection or native transmission, eliminating its prior unbounded `strlen` read. Generated-C coverage pins the guard alongside the existing native socket regression; broader binary-buffer, queued-backpressure, and task-integrated event-loop work remains open.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

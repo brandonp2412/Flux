@@ -6179,6 +6179,8 @@ fn main() -> i64 {{
     assert!(generated.contains("O_NONBLOCK"));
     assert!(generated.contains("poll(descriptors, count"));
     assert!(generated.contains("MSG_NOSIGNAL"));
+    assert!(generated.contains("while (length <= 65536 && text[length] != '\\0')"));
+    assert!(generated.contains("text exceeds 65536 bytes"));
 
     let root = std::env::temp_dir().join(format!("flux-net-text-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
