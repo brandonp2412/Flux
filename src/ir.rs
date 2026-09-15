@@ -1033,6 +1033,19 @@ impl ControlFlowGraph {
         Some(visit(self, id, &mut BTreeSet::new()))
     }
 
+    /// Classify the deferred body of an anonymous function value.
+    ///
+    /// Creating a function value is pure even when invoking it may have
+    /// observable effects.  This query lets effect-aware consumers inspect
+    /// that deferred work without incorrectly treating closure construction
+    /// itself as effectful or re-walking the checked AST.
+    pub fn deferred_body_effect(&self, id: ControlFlowValueId) -> Option<ControlFlowValueEffect> {
+        let ControlFlowValueKind::AnonymousFunction { body } = self.value(id)?.kind else {
+            return None;
+        };
+        self.value_effect(body)
+    }
+
     /// Return the constant proven safe for direct native emission, if any.
     ///
     /// Keeping reachability, scalar-shape, purity, and constant propagation

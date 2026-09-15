@@ -118,6 +118,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_effects_follow_anonymous_function_bodies() {
+    let source = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn main() -> i64 {
+    let pure: fn(i64) -> i64 = fn(_value: i64) -> i64 { 1 }
+    let effectful: fn(i64) -> i64 = fn(_value: i64) -> i64 { observe(1) }
+    print(pure(4))
+    print(effectful(5))
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("anonymous effect fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let anonymous = graph
+        .values()
+        .iter()
+        .filter_map(|value| match value.kind {
+            ControlFlowValueKind::AnonymousFunction { body } => Some((value.id, body)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(anonymous.len(), 2);
+    let effects = anonymous
+        .iter()
+        .map(|(id, _)| graph.deferred_body_effect(*id))
+        .collect::<Vec<_>>();
+    assert!(
+        anonymous
+            .iter()
+            .all(|(id, _)| graph.value_effect(*id) == Some(ControlFlowValueEffect::Pure))
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| **effect == Some(ControlFlowValueEffect::Pure))
+            .count(),
+        1
+    );
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| **effect == Some(ControlFlowValueEffect::MayEffect))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn ownership_ir_does_not_drop_moved_definitions() {
     let source = r#"
 fn main() -> i64 {
