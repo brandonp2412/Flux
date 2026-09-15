@@ -10637,6 +10637,46 @@ fn main() -> i64 {{
     assert!(run.status.success());
     assert_eq!(String::from_utf8_lossy(&run.stdout), "hello\nnil\n");
 
+    let invalid_content = root.join("invalid-utf8.bin");
+    fs::write(&invalid_content, [0xf0, 0x80, 0x80, 0x80])
+        .expect("invalid UTF-8 fixture should be writable");
+    let invalid_path = invalid_content
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let invalid_source = format!(
+        r#"
+fn show(_text: str) -> void {{
+}}
+fn main() -> i64 {{
+    let readError: error = file.read("{}", 32, show)
+    print(readError)
+    return 0
+}}
+"#,
+        invalid_path
+    );
+    let invalid_source_path = root.join("invalid-utf8.flux");
+    fs::write(&invalid_source_path, &invalid_source)
+        .expect("invalid UTF-8 source should be writable");
+    let invalid_binary = root.join("invalid-utf8");
+    let invalid_built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&invalid_source_path)
+        .arg("-o")
+        .arg(&invalid_binary)
+        .output()
+        .expect("invalid UTF-8 file-read binary should build");
+    assert!(invalid_built.status.success());
+    let invalid_run = Command::new(&invalid_binary)
+        .output()
+        .expect("invalid UTF-8 file-read binary should run");
+    assert!(invalid_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&invalid_run.stdout),
+        "file contains invalid UTF-8\n"
+    );
+
     let invalid = r#"
 fn show(_text: str) -> void {
 }
