@@ -7815,6 +7815,25 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
+            "readBytes" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("websocket.readBytes expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "websocket.readBytes session")?;
+                let max_bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &max_bytes, "websocket.readBytes maxBytes")?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)) {
+                    return Err(diag(args[1].span, "websocket.readBytes maxBytes must be between 1 and 65536"));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function { params: vec![Type::List(Box::new(Type::I64))], returns: Vec::new() };
+                require_type(args[2].span, &expected, &callback, "websocket.readBytes callback")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "writeText" => {
                 if args.len() != 2 {
                     return Err(diag(
@@ -7839,6 +7858,16 @@ fn check_qualified_call(
                     &value,
                     "websocket.writeText value",
                 )?;
+                return Ok(vec![Type::Error]);
+            }
+            "writeBytes" => {
+                if args.len() != 2 {
+                    return Err(diag(span, &format!("websocket.writeBytes expects 2 arguments, got {}", args.len())));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "websocket.writeBytes session")?;
+                let bytes = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "websocket.writeBytes bytes")?;
                 return Ok(vec![Type::Error]);
             }
             "close" => {

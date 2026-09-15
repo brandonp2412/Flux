@@ -1289,8 +1289,16 @@ fn add_qualified_namespace_completions(
                 "fn websocket.readText(session: i64, maxBytes: i64, callback: fn(str) -> void) -> (i64, error)",
             ),
             (
+                "readBytes",
+                "fn websocket.readBytes(session: i64, maxBytes: i64, callback: fn(i64[]) -> void) -> (i64, error)",
+            ),
+            (
                 "writeText",
                 "fn websocket.writeText(session: i64, value: str) -> error",
+            ),
+            (
+                "writeBytes",
+                "fn websocket.writeBytes(session: i64, bytes: i64[]) -> error",
             ),
             ("close", "fn websocket.close(session: i64) -> error"),
         ] {

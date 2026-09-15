@@ -6574,7 +6574,11 @@ static inline struct flux__net_i64_error flux__tls_read(int64_t handle, int64_t 
 "#);
     }
     if runtime_usage.contains("flux__websocket_") {
-        out.push_str(r#"static inline struct flux__net_i64_error flux__websocket_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
+        out.push_str(r#"#ifndef FLUX_LIST_DEFINED
+#define FLUX_LIST_DEFINED
+struct flux__list { void *data; size_t len; ptrdiff_t stride; };
+#endif
+static inline struct flux__net_i64_error flux__websocket_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
 static bool flux__websocket_client_sessions[1024];
 static inline bool flux__websocket_is_client(int64_t session) { return session >= 0 && session < 1024 && flux__websocket_client_sessions[session]; }
 static inline int flux__websocket_read_all(int socket_handle, void *target, size_t length) { size_t offset = 0; while (offset < length) { ssize_t received; do { received = recv(socket_handle, (unsigned char *)target + offset, length - offset, 0); } while (received < 0 && errno == EINTR); if (received <= 0) return 0; offset += (size_t)received; } return 1; }
@@ -6646,9 +6650,29 @@ static inline struct flux__net_i64_error flux__websocket_read_text(int64_t sessi
         memcpy(payload + total, frame_payload, (size_t)frame.length); total += (size_t)frame.length;
         if (frame.final) break;
     }
-    payload[total] = '\0'; if (memchr(payload, '\0', total) != NULL) return flux__websocket_result(-1, "WebSocket text message contains a NUL byte"); if (!flux__websocket_valid_utf8(payload, total)) return flux__websocket_result(-1, "WebSocket text message contains invalid UTF-8"); callback(payload); return flux__websocket_result((int64_t)total, NULL);
+    payload[total] = '\0'; if (memchr(payload, '\0', total) != NULL) return flux__websocket_result(-1, "WebSocket text message contains a NUL byte"); if (!flux__websocket_valid_utf8((const unsigned char *)payload, total)) return flux__websocket_result(-1, "WebSocket text message contains invalid UTF-8"); callback(payload); return flux__websocket_result((int64_t)total, NULL);
+}
+static inline struct flux__net_i64_error flux__websocket_read_bytes(int64_t session, int64_t max_bytes, void (*callback)(struct flux__list)) {
+    if (session < 0 || session > INT_MAX || max_bytes < 1 || max_bytes > 65536 || callback == NULL) return flux__websocket_result(-1, "invalid WebSocket binary read arguments");
+    unsigned char frame_payload[65536]; int64_t payload[65536]; size_t total = 0; bool started = false;
+    for (;;) {
+        struct flux__websocket_frame frame; struct flux__net_i64_error result = flux__websocket_read_frame((int)session, &frame, frame_payload, sizeof(frame_payload), !flux__websocket_is_client(session)); if (result.v1 != NULL) return result;
+        if (frame.opcode == 8 || frame.opcode == 9 || frame.opcode == 10) {
+            if (!frame.final || frame.length > 125) return flux__websocket_result(-1, "invalid WebSocket control frame");
+            if (frame.opcode == 8) { if (frame.length == 1 || (frame.length >= 2 && !flux__websocket_valid_utf8(frame_payload + 2, (size_t)frame.length - 2))) return flux__websocket_result(-1, "invalid WebSocket close payload"); const char *close_error = flux__websocket_write_control(session, 8, frame_payload, (size_t)frame.length); if (close_error != NULL) return flux__websocket_result(-1, "failed to acknowledge WebSocket close"); return flux__websocket_result(0, "WebSocket peer closed"); }
+            if (frame.opcode == 9) { const char *pong_error = flux__websocket_write_control(session, 10, frame_payload, (size_t)frame.length); if (pong_error != NULL) return flux__websocket_result(-1, "failed to send WebSocket pong"); }
+            continue;
+        }
+        if (!started) { if (frame.opcode != 2) return flux__websocket_result(-1, "WebSocket binary message must start with a binary frame"); started = true; }
+        else if (frame.opcode != 0) return flux__websocket_result(-1, "WebSocket binary continuation frame expected");
+        if (frame.length > (uint64_t)max_bytes - total) return flux__websocket_result(-1, "WebSocket binary message exceeds maxBytes");
+        for (size_t index = 0; index < (size_t)frame.length; index += 1) payload[total + index] = (int64_t)frame_payload[index]; total += (size_t)frame.length;
+        if (frame.final) break;
+    }
+    callback((struct flux__list){ .data = payload, .len = total, .stride = sizeof(int64_t) }); return flux__websocket_result((int64_t)total, NULL);
 }
 static inline const char *flux__websocket_write_text(int64_t session, const char *value) { if (session < 0 || session > INT_MAX || value == NULL) return "invalid WebSocket write arguments"; size_t length = strlen(value); if (length > 65536) return "WebSocket text frame exceeds 65536 bytes"; unsigned char header[10]; size_t header_length = 0; header[header_length++] = 0x81; bool client = flux__websocket_is_client(session); unsigned char mask[4] = {0}; unsigned char masked[65536]; if (client) { FILE *random_source = fopen("/dev/urandom", "rb"); if (random_source == NULL || fread(mask, 1, sizeof(mask), random_source) != sizeof(mask)) { if (random_source != NULL) fclose(random_source); return "failed to create WebSocket frame mask"; } fclose(random_source); } if (length < 126) header[header_length++] = (unsigned char)(length | (client ? 128 : 0)); else { header[header_length++] = (unsigned char)(126 | (client ? 128 : 0)); header[header_length++] = (unsigned char)(length >> 8); header[header_length++] = (unsigned char)length; } if (!flux__websocket_write_all((int)session, header, header_length)) return "failed to send WebSocket text frame"; if (client && (!flux__websocket_write_all((int)session, mask, sizeof(mask)))) return "failed to send WebSocket frame mask"; if (client) { for (size_t index = 0; index < length; index += 1) masked[index] = ((const unsigned char *)value)[index] ^ mask[index % 4]; if (!flux__websocket_write_all((int)session, masked, length)) return "failed to send WebSocket text frame"; } else if (!flux__websocket_write_all((int)session, value, length)) return "failed to send WebSocket text frame"; return NULL; }
+static inline const char *flux__websocket_write_bytes(int64_t session, struct flux__list bytes) { if (session < 0 || session > INT_MAX) return "invalid WebSocket binary write arguments"; if (bytes.len > 65536) return "WebSocket binary frame exceeds 65536 bytes"; ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; unsigned char payload[65536]; for (size_t index = 0; index < bytes.len; index += 1) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) return "WebSocket binary byte values must be between 0 and 255"; payload[index] = (unsigned char)value; } bool client = flux__websocket_is_client(session); unsigned char header[4]; size_t header_length = 0; header[header_length++] = 0x82; unsigned char mask[4] = {0}; if (bytes.len < 126) header[header_length++] = (unsigned char)(bytes.len | (client ? 128 : 0)); else { header[header_length++] = (unsigned char)(126 | (client ? 128 : 0)); header[header_length++] = (unsigned char)(bytes.len >> 8); header[header_length++] = (unsigned char)bytes.len; } if (!flux__websocket_write_all((int)session, header, header_length)) return "failed to send WebSocket binary frame"; if (client) { FILE *random_source = fopen("/dev/urandom", "rb"); if (random_source == NULL || fread(mask, 1, sizeof(mask), random_source) != sizeof(mask)) { if (random_source != NULL) fclose(random_source); return "failed to create WebSocket binary frame mask"; } fclose(random_source); if (!flux__websocket_write_all((int)session, mask, sizeof(mask))) return "failed to send WebSocket binary frame mask"; for (size_t index = 0; index < bytes.len; index += 1) payload[index] ^= mask[index % 4]; } return flux__websocket_write_all((int)session, payload, bytes.len) ? NULL : "failed to send WebSocket binary frame"; }
 static inline const char *flux__websocket_close(int64_t session) { if (session < 0 || session > INT_MAX) return "invalid WebSocket session"; const unsigned char empty[1] = {0}; const char *error = flux__websocket_write_control(session, 8, empty, 0); if (error != NULL) return "failed to send WebSocket close frame"; if (flux__websocket_is_client(session)) flux__websocket_client_sessions[session] = false; return close((int)session) == 0 ? NULL : "failed to close WebSocket session"; }
 "#);
     }
@@ -33377,6 +33401,12 @@ fn emit_qualified_call(
                     Some("flux__net_i64_error".to_string()),
                 ));
             }
+            "readBytes" if args.len() == 3 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((format!("flux__websocket_read_bytes({}, {}, {})", session.code, max_bytes.code, callback.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+            }
             "writeText" if args.len() == 2 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let value = emit_expr(&args[1], env, signatures)?;
@@ -33388,6 +33418,11 @@ fn emit_qualified_call(
                     vec![Type::Error],
                     None,
                 ));
+            }
+            "writeBytes" if args.len() == 2 => {
+                let session = emit_expr(&args[0], env, signatures)?;
+                let bytes = emit_expr(&args[1], env, signatures)?;
+                return Ok((format!("flux__websocket_write_bytes({}, {})", session.code, bytes.code), vec![Type::Error], None));
             }
             "close" if args.len() == 1 => {
                 let session = emit_expr(&args[0], env, signatures)?;

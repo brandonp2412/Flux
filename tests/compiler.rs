@@ -46254,6 +46254,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_binary_surface_is_bounded_and_native() {
+    let source = r#"
+fn consume(value: i64[]) -> void {
+    print(value.count)
+}
+
+fn main() -> i64 {
+    let (session, connectError) = websocket.connect(3, "localhost")
+    if connectError != nil:
+        return 1
+    let (received, readError) = websocket.readBytes(session, 1024, consume)
+    if readError != nil:
+        return received
+    let writeError: error = websocket.writeBytes(session, [0, 1, 255])
+    if writeError != nil:
+        return 2
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket binary surface should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket binary surface should lower");
+    assert!(generated.contains("flux__websocket_read_bytes("));
+    assert!(generated.contains("WebSocket binary message exceeds maxBytes"));
+    assert!(generated.contains("flux__websocket_write_bytes("));
+    assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
+}
+
+#[test]
 fn websocket_server_reads_fragmented_text_and_answers_ping() {
     let probe = TcpListener::bind("127.0.0.1:0").expect("WebSocket probe should bind");
     let port = probe.local_addr().unwrap().port();
