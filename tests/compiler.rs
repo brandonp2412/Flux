@@ -32,6 +32,45 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn ui_targets_integrate_callbacks_with_native_event_loops() {
+    let source = r#"
+view Screen {
+    state clicked: bool = false
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Press"
+        onPress: clicked => !clicked
+}
+app Screen(title: "Flux", width: 320, height: 200)
+"#;
+    let program = fluxc::parser::parse(source).expect("UI source should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("UI source should typecheck");
+    let paths = std::collections::HashMap::new();
+    let linux = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &paths,
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("Linux UI should lower");
+    assert!(linux.contains("g_signal_connect(application, \"activate\","));
+    assert!(linux.contains("g_application_run(G_APPLICATION(application), argc, argv)"));
+    assert!(linux.contains("G_CALLBACK(flux__ui_click_action)"));
+
+    let android = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &paths,
+        fluxc::codegen::NativeTarget::Android,
+    )
+    .expect("Android UI should lower");
+    assert!(android.contains("ANativeActivity_onCreate"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnClick"));
+    assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeBuildUi"));
+}
+
+#[test]
 fn extern_c_imports_lower_to_exact_native_symbols_with_safe_boundaries() {
     let source = r#"
 extern c "flux_test_double" fn nativeDouble(value: i64) -> i64
