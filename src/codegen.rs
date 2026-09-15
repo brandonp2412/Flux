@@ -39300,75 +39300,77 @@ fn json_array_aggregate_helper_name(ty: &Type, signatures: &Signatures) -> Strin
 }
 
 fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
+    json_enum_supported_inner(ty, signatures, &mut HashSet::new())
+}
+
+fn json_enum_supported_inner(
+    ty: &Type,
+    signatures: &Signatures,
+    visiting: &mut HashSet<String>,
+) -> bool {
     let Type::Named(name) = signatures.canonical_type(ty) else {
         return false;
     };
-    signatures.enum_type(&name).is_some_and(|definition| {
-        definition.variants.iter().all(|variant| {
-            variant
-                .payloads
-                .iter()
-                .all(|payload| match signatures.canonical_type(payload) {
-                    Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => {
-                        matches!(
-                            signatures.canonical_type(&inner),
-                            Type::I64 | Type::Bool | Type::Str
-                        ) || json_record_supported(&inner, signatures)
-                            || json_enum_supported(&inner, signatures)
-                    }
-                    Type::Record(_) | Type::Named(_) => {
-                        json_record_supported(payload, signatures)
-                            || json_enum_supported(payload, signatures)
-                    }
-                    _ => false,
-                })
-        })
-    })
+    let Some(definition) = signatures.enum_type(&name) else {
+        return false;
+    };
+    if !visiting.insert(name.clone()) {
+        return false;
+    }
+    let supported = definition.variants.iter().all(|variant| {
+        variant
+            .payloads
+            .iter()
+            .all(|payload| json_aggregate_value_supported(payload, signatures, visiting))
+    });
+    visiting.remove(&name);
+    supported
 }
 
 fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
+    json_record_supported_inner(ty, signatures, &mut HashSet::new())
+}
+
+fn json_record_supported_inner(
+    ty: &Type,
+    signatures: &Signatures,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match signatures.canonical_type(ty) {
-        Type::Record(fields) => {
-            fields
-                .iter()
-                .all(|field| match signatures.canonical_type(&field.ty) {
-                    Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => {
-                        matches!(
-                            signatures.canonical_type(&inner),
-                            Type::I64 | Type::Bool | Type::Str
-                        ) || json_record_supported(&inner, signatures)
-                            || json_enum_supported(&inner, signatures)
-                    }
-                    Type::Record(_) => json_record_supported(&field.ty, signatures),
-                    Type::Named(_) => {
-                        json_record_supported(&field.ty, signatures)
-                            || json_enum_supported(&field.ty, signatures)
-                    }
-                    _ => false,
-                })
-        }
-        Type::Named(name) => signatures.struct_type(&name).is_some_and(|structure| {
-            structure
+        Type::Record(fields) => fields
+            .iter()
+            .all(|field| json_aggregate_value_supported(&field.ty, signatures, visiting)),
+        Type::Named(name) => {
+            let Some(structure) = signatures.struct_type(&name) else {
+                return false;
+            };
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let supported = structure
                 .fields
                 .iter()
-                .all(|field| match signatures.canonical_type(&field.ty) {
-                    Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => {
-                        matches!(
-                            signatures.canonical_type(&inner),
-                            Type::I64 | Type::Bool | Type::Str
-                        ) || json_record_supported(&inner, signatures)
-                            || json_enum_supported(&inner, signatures)
-                    }
-                    Type::Record(_) | Type::Named(_) => {
-                        json_record_supported(&field.ty, signatures)
-                            || json_enum_supported(&field.ty, signatures)
-                    }
-                    _ => false,
-                })
-        }),
+                .all(|field| json_aggregate_value_supported(&field.ty, signatures, visiting));
+            visiting.remove(&name);
+            supported
+        }
+        _ => false,
+    }
+}
+
+fn json_aggregate_value_supported(
+    ty: &Type,
+    signatures: &Signatures,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::I64 | Type::Bool | Type::Str => true,
+        Type::Optional(inner) => json_aggregate_value_supported(&inner, signatures, visiting),
+        Type::Record(_) => json_record_supported_inner(ty, signatures, visiting),
+        Type::Named(_) => {
+            json_record_supported_inner(ty, signatures, visiting)
+                || json_enum_supported_inner(ty, signatures, visiting)
+        }
         _ => false,
     }
 }
