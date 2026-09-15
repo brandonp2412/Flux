@@ -865,6 +865,46 @@ impl ControlFlowGraph {
         self.node(id).map(|node| node.ownership.drops.as_slice())
     }
 
+    /// Return every typed ownership call boundary in normalized source order.
+    /// Consumers that need both immutable borrows and consuming calls should
+    /// use this complete event stream rather than filtering to transfers.
+    pub fn ownership_calls(&self) -> impl Iterator<Item = (ControlFlowNodeId, &OwnershipCall)> {
+        self.nodes
+            .iter()
+            .flat_map(|node| node.ownership.calls.iter().map(move |call| (node.id, call)))
+    }
+
+    /// Return every typed ownership call attached to one normalized node.
+    pub fn ownership_calls_at(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> impl Iterator<Item = &OwnershipCall> {
+        self.node(id)
+            .into_iter()
+            .flat_map(|node| node.ownership.calls.iter())
+    }
+
+    /// Return normalized whole-value and projected move events in source/CFG
+    /// order.
+    pub fn ownership_moves(&self) -> impl Iterator<Item = (ControlFlowNodeId, &OwnershipMove)> {
+        self.nodes.iter().flat_map(|node| {
+            node.ownership
+                .moves
+                .iter()
+                .map(move |movement| (node.id, movement))
+        })
+    }
+
+    /// Return all move events attached to one normalized CFG node.
+    pub fn ownership_moves_at(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> impl Iterator<Item = &OwnershipMove> {
+        self.node(id)
+            .into_iter()
+            .flat_map(|node| node.ownership.moves.iter())
+    }
+
     /// Return consuming call boundaries in normalized source order.
     ///
     /// Ownership consumers can use this typed query instead of reconstructing

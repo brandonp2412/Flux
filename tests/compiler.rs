@@ -14624,6 +14624,14 @@ fn main() -> i64 {
             .collect::<Vec<_>>(),
         vec!["drop"]
     );
+    let calls = graph.ownership_calls().collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, node.id);
+    assert_eq!(graph.ownership_calls_at(node.id).count(), 1);
+    let moves = graph.ownership_moves().collect::<Vec<_>>();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].0, node.id);
+    assert_eq!(graph.ownership_moves_at(node.id).count(), 1);
     assert!(
         graph
             .drops_at(node.id)
