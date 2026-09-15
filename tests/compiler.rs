@@ -92,7 +92,15 @@ fn main() -> i64 {
         value.constant == Some(fluxc::typecheck::ConstantValue::I64(7))
             && matches!(value.kind, ControlFlowValueKind::Binary { .. })
     });
-    assert!(pure_result.is_some_and(|value| graph.is_pure_scalar_value(value.id)));
+    assert!(
+        pure_result
+            .as_ref()
+            .is_some_and(|value| graph.is_pure_scalar_value(value.id))
+    );
+    assert_eq!(
+        pure_result.and_then(|value| graph.proven_scalar_constant(value.id)),
+        Some(&fluxc::typecheck::ConstantValue::I64(7))
+    );
     let call = graph
         .values()
         .iter()

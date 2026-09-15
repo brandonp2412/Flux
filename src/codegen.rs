@@ -28272,27 +28272,21 @@ fn cfg_constant_values(
     // effect regions are consumed here. Keep the span collision guard:
     // a source span can occur in more than one CFG path, and differing values
     // must continue through the ordinary AST emitter.
-    for value in cfg
-        .values()
-        .iter()
-        .filter(|value| cfg.is_value_reachable(value.id))
-        .filter(|value| matches!(value.ty, Type::I64 | Type::Bool | Type::Str))
-        .filter(|value| cfg.is_pure_scalar_value(value.id))
-    {
-        let Some(constant) = value.constant.clone() else {
-            continue;
-        };
+    for value in cfg.values().iter().filter_map(|value| {
+        cfg.proven_scalar_constant(value.id)
+            .map(|constant| (value, constant))
+    }) {
         let span = source_span_key(value.span);
         if ambiguous.contains(&span) {
             continue;
         }
         if let Some(existing) = constants.get(&span) {
-            if existing != &constant {
+            if existing != constant {
                 constants.remove(&span);
                 ambiguous.insert(span);
             }
         } else {
-            constants.insert(span, constant);
+            constants.insert(span, constant.clone());
         }
     }
     constants

@@ -824,6 +824,20 @@ impl ControlFlowGraph {
         visit(self, id, &mut BTreeSet::new())
     }
 
+    /// Return the constant proven safe for direct native emission, if any.
+    ///
+    /// Keeping reachability, scalar-shape, purity, and constant propagation
+    /// in this query prevents a backend from accidentally inlining a value
+    /// merely because its source expression happens to look constant.
+    pub fn proven_scalar_constant(&self, id: ControlFlowValueId) -> Option<&ConstantValue> {
+        let value = self.value(id)?;
+        if !matches!(value.ty, Type::I64 | Type::Bool | Type::Str) || !self.is_pure_scalar_value(id)
+        {
+            return None;
+        }
+        value.constant.as_ref()
+    }
+
     pub fn value_uses(&self) -> &[ControlFlowValueUse] {
         &self.value_uses
     }
