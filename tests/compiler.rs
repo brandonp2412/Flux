@@ -18145,6 +18145,58 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_maps_encode_aggregate_array_values_natively() {
+    let source = r#"
+struct Item {
+    value: i64
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: map<str, Item[]> = {"items": [Item { value: 1 }, Item { value: 2 }]}
+    let result: error = json.encodeObject(values, encoded)
+    print(result)
+    return 0
+}
+"#;
+    check_source(source).expect("maps of JSON aggregate arrays should typecheck");
+    let generated = compile_to_c(source).expect("maps of JSON aggregate arrays should lower");
+    assert!(generated.contains("flux__json_encode_map_aggregate"));
+    assert!(generated.contains("flux__json_encode_array_aggregate"));
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-map-aggregate-array-value-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON aggregate-map directory should be writable");
+    let c_path = root.join("json-map-aggregate-array-value.c");
+    let exe_path = root.join("json-map-aggregate-array-value");
+    fs::write(&c_path, generated).expect("generated JSON aggregate-map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON aggregate-map code");
+    assert!(
+        compile.status.success(),
+        "JSON aggregate-map C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON aggregate-map program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"items\":[{\"value\":1},{\"value\":2}]}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_arrays_encode_scalar_map_values_natively() {
     let source = r#"
 fn encoded(value: str) -> void {
