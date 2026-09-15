@@ -17202,6 +17202,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
+    let escaped_controls = "\\n".repeat(65536);
+    let source = format!(
+        "fn encoded(_value: str) -> void {{\n}}\nfn main() -> i64 {{\n    let encodingError: error = json.encodeString(\"{}\", encoded)\n    print(encodingError)\n    return 0\n}}\n",
+        escaped_controls
+    );
+    check_source(&source).expect("maximum JSON string should typecheck");
+    let generated = compile_to_c(&source).expect("maximum JSON string should lower");
+    assert!(generated.contains("char encoded[393219]"));
+    let root = std::env::temp_dir().join(format!("flux-json-max-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON maximum directory should be writable");
+    let c_path = root.join("json-max.c");
+    let exe_path = root.join("json-max");
+    fs::write(&c_path, generated).expect("maximum JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile maximum JSON code");
+    assert!(
+        compile.status.success(),
+        "maximum JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("maximum JSON program should run");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "nil\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_streaming_parser_preserves_valid_raw_utf8_scalars() {
     let source = r#"
 fn token(kind: str, value: str) -> void {

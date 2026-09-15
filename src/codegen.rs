@@ -4505,19 +4505,19 @@ static inline const char *flux__json_parse(const char *value, void (*callback)(c
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid json.encodeString arguments";
     size_t length = strlen(value); if (length > 65536) return "JSON string exceeds 65536 bytes";
-    char encoded[262149]; size_t output = 0; encoded[output++] = '"';
+    /* Every input byte can expand to six bytes (for example, \u0001). */
+    char encoded[393219]; size_t output = 0; encoded[output++] = '"';
     for (size_t index = 0; index < length; index += 1) {
         unsigned char byte = (unsigned char)value[index]; const char *escape = NULL;
         if (byte == '"') escape = "\\\""; else if (byte == '\\') escape = "\\\\"; else if (byte == '\b') escape = "\\b"; else if (byte == '\f') escape = "\\f"; else if (byte == '\n') escape = "\\n"; else if (byte == '\r') escape = "\\r"; else if (byte == '\t') escape = "\\t";
-        if (escape != NULL) { size_t count = strlen(escape); memcpy(encoded + output, escape, count); output += count; }
-        else if (byte < 0x20) { int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; }
+        if (escape != NULL) { size_t count = strlen(escape); if (output > sizeof(encoded) - 1 - count) return "encoded JSON string exceeds 393216 bytes"; memcpy(encoded + output, escape, count); output += count; }
+        else if (byte < 0x20) { if (output > sizeof(encoded) - 1 - 6) return "encoded JSON string exceeds 393216 bytes"; int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; }
         else {
             size_t width = flux__json_utf8_width((const unsigned char *)value + index, (const unsigned char *)value + length);
             if (width == 0) return "JSON string contains invalid UTF-8";
-            if (output > sizeof(encoded) - 1 - width) return "encoded JSON string exceeds 262144 bytes";
+            if (output > sizeof(encoded) - 1 - width) return "encoded JSON string exceeds 393216 bytes";
             memcpy(encoded + output, value + index, width); output += width; index += width - 1;
         }
-        if (output + 2 >= sizeof(encoded)) return "encoded JSON string exceeds 262144 bytes";
     }
     encoded[output++] = '"'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
