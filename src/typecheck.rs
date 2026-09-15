@@ -11272,7 +11272,9 @@ fn check_qualified_call(
                 return Ok(vec![Type::Error]);
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
-            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
+            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
+            | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
+            | "localWeekday" | "localDayOfYear" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

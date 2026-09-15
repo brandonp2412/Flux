@@ -1950,6 +1950,25 @@ fn add_qualified_namespace_completions(
                 &format!("fn time.{member}(unixMillis: i64) -> i64"),
             );
         }
+        for member in [
+            "localYear",
+            "localMonth",
+            "localDay",
+            "localHour",
+            "localMinute",
+            "localSecond",
+            "localMillisecond",
+            "localWeekday",
+            "localDayOfYear",
+        ] {
+            push_completion_item(
+                items,
+                seen,
+                member,
+                3,
+                &format!("fn time.{member}(unixMillis: i64) -> i64"),
+            );
+        }
         return true;
     }
     if namespace == "file" {
@@ -4314,6 +4333,15 @@ fn signature_help_for_document_cached(
                 }
                 "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
                 | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("time.{member}"),
+                        &["unixMillis: i64"],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "localYear" | "localMonth" | "localDay" | "localHour" | "localMinute"
+                | "localSecond" | "localMillisecond" | "localWeekday" | "localDayOfYear" => {
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
                         &["unixMillis: i64"],
@@ -8187,6 +8215,8 @@ mod tests {
         assert!(time_items.contains("fn time.millis(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.weekday(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.localYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.localDayOfYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.seconds(value: i64) -> i64"));
         assert!(time_items.contains("fn time.minutes(value: i64) -> i64"));
 

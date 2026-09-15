@@ -6455,6 +6455,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__time_utc_part(") {
         out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
     }
+    if runtime_usage.contains("flux__time_local_part(") {
+        out.push_str("static inline int64_t flux__time_local_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: local timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (localtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid local calendar part\\n\", stderr); abort(); } }\n");
+    }
     if runtime_usage.contains("flux__time_format_utc(") {
         out.push_str(r#"static inline const char *flux__time_format_utc(int64_t unix_ms, void (*callback)(const char *)) {
     int64_t seconds = unix_ms / INT64_C(1000);
@@ -35245,25 +35248,36 @@ fn emit_qualified_call(
                 ));
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
-            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
+            | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
+            | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
+            | "localWeekday" | "localDayOfYear" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
                 let unix_millis = emit_expr(&args[0], env, signatures)?;
-                let part = match name {
-                    "utcYear" => 0,
-                    "utcMonth" => 1,
-                    "utcDay" => 2,
-                    "utcHour" => 3,
-                    "utcMinute" => 4,
-                    "utcSecond" => 5,
-                    "utcMillisecond" => 6,
-                    "utcWeekday" => 7,
-                    "utcDayOfYear" => 8,
+                let (helper, part) = match name {
+                    "utcYear" => ("utc", 0),
+                    "utcMonth" => ("utc", 1),
+                    "utcDay" => ("utc", 2),
+                    "utcHour" => ("utc", 3),
+                    "utcMinute" => ("utc", 4),
+                    "utcSecond" => ("utc", 5),
+                    "utcMillisecond" => ("utc", 6),
+                    "utcWeekday" => ("utc", 7),
+                    "utcDayOfYear" => ("utc", 8),
+                    "localYear" => ("local", 0),
+                    "localMonth" => ("local", 1),
+                    "localDay" => ("local", 2),
+                    "localHour" => ("local", 3),
+                    "localMinute" => ("local", 4),
+                    "localSecond" => ("local", 5),
+                    "localMillisecond" => ("local", 6),
+                    "localWeekday" => ("local", 7),
+                    "localDayOfYear" => ("local", 8),
                     _ => unreachable!(),
                 };
                 return Ok((
-                    format!("flux__time_utc_part({}, {part})", unix_millis.code),
+                    format!("flux__time_{}_part({}, {part})", helper, unix_millis.code),
                     vec![Type::I64],
                     None,
                 ));

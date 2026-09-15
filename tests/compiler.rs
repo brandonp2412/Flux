@@ -9404,6 +9404,58 @@ fn main() -> i64 {
     );
     assert!(generated.contains("gmtime_r(&native_seconds, &value)"));
 
+    let local_source = r#"
+fn main() -> i64 {
+    print(time.localYear(946782245006))
+    print(time.localMonth(946782245006))
+    print(time.localDay(946782245006))
+    print(time.localHour(946782245006))
+    print(time.localMinute(946782245006))
+    print(time.localSecond(946782245006))
+    print(time.localMillisecond(946782245006))
+    print(time.localWeekday(946782245006))
+    print(time.localDayOfYear(946782245006))
+    return 0
+}
+"#;
+    check_source(local_source).expect("local time capabilities should typecheck");
+    let local_generated = compile_to_c(local_source).expect("local time should lower natively");
+    assert!(local_generated.contains("flux__time_local_part(int64_t unix_ms, int part)"));
+    assert!(local_generated.contains("localtime_r(&native_seconds, &value)"));
+    let local_root =
+        std::env::temp_dir().join(format!("flux-local-time-api-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&local_root);
+    fs::create_dir_all(&local_root).expect("local time fixture should be writable");
+    let local_path = local_root.join("main.flux");
+    fs::write(&local_path, local_source).expect("local time source should be writable");
+    let local_binary = local_root.join("local-time-api");
+    let local_build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&local_path)
+        .arg("-o")
+        .arg(&local_binary)
+        .output()
+        .expect("local time binary should build");
+    assert!(
+        local_build.status.success(),
+        "local time build failed: {}",
+        String::from_utf8_lossy(&local_build.stderr)
+    );
+    let local_run = Command::new(&local_binary)
+        .env("TZ", "UTC")
+        .output()
+        .expect("local time binary should run");
+    assert!(local_run.status.success());
+    let local_values = String::from_utf8_lossy(&local_run.stdout)
+        .lines()
+        .map(|line| {
+            line.parse::<i64>()
+                .expect("local time output should be i64")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(local_values, vec![2000, 1, 2, 3, 4, 5, 6, 7, 2]);
+    let _ = fs::remove_dir_all(&local_root);
+
     let root = std::env::temp_dir().join(format!("flux-time-api-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("time API fixture should be writable");
