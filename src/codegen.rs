@@ -4358,12 +4358,18 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__json_parse(")
         || runtime_usage.contains("flux__json_encode_string(")
+        || runtime_usage.contains("flux__json_encode_array(")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
     {
-        out.push_str(r#"static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
+        out.push_str(r#"#ifndef FLUX_LIST_DEFINED
+#define FLUX_LIST_DEFINED
+struct flux__list { void *data; size_t len; ptrdiff_t stride; };
+#endif
+static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
+static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
 static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_null(void (*callback)(const char *));
@@ -4525,6 +4531,37 @@ static inline const char *flux__json_encode_string(const char *value, void (*cal
         }
     }
     encoded[output++] = '"'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeArray callback";
+    if (kind < 0 || kind > 2) return "invalid json.encodeArray element kind";
+    if (values.len > 65536) return "JSON array exceeds 65536 elements";
+    char encoded[393217]; size_t output = 0; encoded[output++] = '[';
+    ptrdiff_t stride = values.stride;
+    if (stride == 0) stride = kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : (ptrdiff_t)sizeof(const char *);
+    for (size_t index = 0; index < values.len; index += 1) {
+        if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ','; }
+        if (kind == 0) {
+            int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)*((int64_t *)((char *)values.data + (ptrdiff_t)index * stride)));
+            if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON array exceeds 393216 bytes";
+            output += (size_t)written;
+        } else if (kind == 1) {
+            const char *literal = *((bool *)((char *)values.data + (ptrdiff_t)index * stride)) ? "true" : "false"; size_t length = strlen(literal);
+            if (output > sizeof(encoded) - 1 - length) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, literal, length); output += length;
+        } else {
+            const char *value = *((const char **)((char *)values.data + (ptrdiff_t)index * stride)); if (value == NULL) return "JSON array contains a null string";
+            size_t length = 0; while (length <= 65536 && value[length] != '\0') length += 1; if (length > 65536) return "JSON string exceeds 65536 bytes";
+            if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = '"';
+            for (size_t position = 0; position < length; position += 1) {
+                unsigned char byte = (unsigned char)value[position]; const char *escape = byte == '"' ? "\\\"" : byte == '\\' ? "\\\\" : byte == '\b' ? "\\b" : byte == '\f' ? "\\f" : byte == '\n' ? "\\n" : byte == '\r' ? "\\r" : byte == '\t' ? "\\t" : NULL;
+                if (escape != NULL) { size_t count = strlen(escape); if (output > sizeof(encoded) - 1 - count) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, escape, count); output += count; }
+                else if (byte < 0x20) { if (output > sizeof(encoded) - 1 - 6) return "encoded JSON array exceeds 393216 bytes"; int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; }
+                else { size_t width = flux__json_utf8_width((const unsigned char *)value + position, (const unsigned char *)value + length); if (width == 0) return "JSON string contains invalid UTF-8"; if (output > sizeof(encoded) - 1 - width) return "encoded JSON array exceeds 393216 bytes"; memcpy(encoded + output, value + position, width); output += width; position += width - 1; }
+            }
+            if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = '"';
+        }
+    }
+    if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ']'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeInt callback";
@@ -35396,6 +35433,26 @@ fn emit_qualified_call(
             Some(emit_expr(&args[0], env, signatures)?)
         };
         let callback = emit_expr(&args[callback_index], env, signatures)?;
+        if name == "encodeArray" {
+            let value = value.expect("JSON array value");
+            let Type::List(element) = signatures.canonical_type(&value.ty) else {
+                return Err(diag(span, "json.encodeArray requires a scalar list"));
+            };
+            let kind = match signatures.canonical_type(&element) {
+                Type::I64 => 0,
+                Type::Bool => 1,
+                Type::Str => 2,
+                _ => return Err(diag(span, "json.encodeArray requires a scalar list")),
+            };
+            return Ok((
+                format!(
+                    "flux__json_encode_array({}, {}, {})",
+                    value.code, kind, callback.code
+                ),
+                vec![Type::Error],
+                None,
+            ));
+        }
         let helper = match name {
             "parse" => "flux__json_parse",
             "encodeString" => "flux__json_encode_string",
@@ -35736,7 +35793,10 @@ fn emit_qualified_call(
         match name {
             "duration" => {
                 if args.len() != 1 {
-                    return Err(diag(span, "invalid time.duration call reached code generation"));
+                    return Err(diag(
+                        span,
+                        "invalid time.duration call reached code generation",
+                    ));
                 }
                 let value = emit_expr(&args[0], env, signatures)?;
                 return Ok((

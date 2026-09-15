@@ -1617,6 +1617,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "encodeArray",
+            3,
+            "fn json.encodeArray(values: i64[] | bool[] | str[], callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "encodeInt",
             3,
             "fn json.encodeInt(value: i64, callback: fn(str) -> void) -> error",
@@ -1911,7 +1918,10 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "time" {
         for (label, detail) in [
-            ("duration", "fn time.duration(milliseconds: i64) -> (milliseconds: i64)"),
+            (
+                "duration",
+                "fn time.duration(milliseconds: i64) -> (milliseconds: i64)",
+            ),
             (
                 "calendar",
                 "fn time.calendar(unixMillis: i64) -> (year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64)",
@@ -3824,6 +3834,15 @@ fn signature_help_for_document_cached(
                 "encodeString" => Some(signature_help_for_builtin(
                     "json.encodeString",
                     &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encodeArray" => Some(signature_help_for_builtin(
+                    "json.encodeArray",
+                    &[
+                        "values: i64[] | bool[] | str[]",
+                        "callback: fn(str) -> void",
+                    ],
                     "error",
                     active_parameter,
                 )),

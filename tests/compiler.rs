@@ -110,7 +110,9 @@ fn main() -> i64 {
         "duration build failed: {}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let run = Command::new(&binary).output().expect("duration binary should run");
+    let run = Command::new(&binary)
+        .output()
+        .expect("duration binary should run");
     assert!(run.status.success());
     assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n");
     let _ = fs::remove_dir_all(root);
@@ -135,8 +137,7 @@ fn duration_value_rejects_constant_invalid_timer_values() {
         let source = format!(
             "fn callback() -> void {{\n}}\nfn main() -> i64 {{\n    {call}\n    return 0\n}}\n"
         );
-        let diagnostics =
-            check_source(&source).expect_err("invalid constant duration should fail");
+        let diagnostics = check_source(&source).expect_err("invalid constant duration should fail");
         assert!(
             diagnostics.message.contains(expected),
             "missing `{expected}` in {diagnostics:?}"
@@ -17157,6 +17158,7 @@ fn json_scalar_encoding_is_typed_bounded_and_native() {
 fn encoded(value: str) -> void {
     print(value)
 }
+
 fn main() -> i64 {
     let intError: error = json.encodeInt(-9223372036854775807, encoded)
     let boolError: error = json.encodeBool(true, encoded)
@@ -17197,6 +17199,57 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "-9223372036854775807\ntrue\nnull\nnil\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_scalar_array_encoding_is_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let ints: i64[] = [1, -2, 3]
+    let flags: bool[] = [true, false]
+    let words: str[] = ["a\n", "b\"c"]
+    let intError: error = json.encodeArray(ints, encoded)
+    let flagError: error = json.encodeArray(flags, encoded)
+    let wordError: error = json.encodeArray(words, encoded)
+    print(intError)
+    print(flagError)
+    print(wordError)
+    return 0
+}
+"#;
+    check_source(source).expect("JSON scalar arrays should typecheck");
+    let generated = compile_to_c(source).expect("JSON scalar arrays should lower");
+    assert!(generated.contains("flux__json_encode_array("));
+    let root = std::env::temp_dir().join(format!("flux-json-arrays-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON array directory should be writable");
+    let c_path = root.join("json-arrays.c");
+    let exe_path = root.join("json-arrays");
+    fs::write(&c_path, generated).expect("generated JSON array C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON array native code");
+    assert!(
+        compile.status.success(),
+        "JSON array C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON array program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[1,-2,3]\n[true,false]\n[\"a\\n\",\"b\\\"c\"]\nnil\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
@@ -17593,7 +17646,8 @@ view Root {
 app Root(onStart: start)
 "#;
     let program = fluxc::parser::parse(source).expect("Windows preferences source should parse");
-    let signatures = fluxc::typecheck::check(&program).expect("Windows preferences should typecheck");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows preferences should typecheck");
     let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
