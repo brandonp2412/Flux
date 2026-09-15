@@ -14603,6 +14603,9 @@ fn main() -> i64 {
         ir_value.kind,
         fluxc::ir::ControlFlowValueKind::NameRead { ref name, .. } if name == "source"
     ));
+    assert!(!movement.is_partial());
+    assert!(graph.partial_moves().next().is_none());
+    assert!(graph.partial_moves_at(node.id).next().is_none());
 }
 
 #[test]

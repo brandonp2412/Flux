@@ -297,6 +297,17 @@ pub struct OwnershipMove {
     pub span: SourceSpan,
 }
 
+impl OwnershipMove {
+    /// Whether this event transfers only a named projection of its source.
+    ///
+    /// Keeping this predicate on the normalized fact avoids making ownership
+    /// consumers interpret an empty/non-empty path themselves, and gives
+    /// future aggregate move checking one stable boundary to query.
+    pub fn is_partial(&self) -> bool {
+        !self.projection.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnershipBorrowKind {
     Immutable,
@@ -841,6 +852,30 @@ impl ControlFlowGraph {
                     .iter()
                     .any(|kind| *kind == OwnershipCallArgumentKind::Consuming)
             })
+    }
+
+    /// Return normalized partial-move events in source/CFG order.
+    ///
+    /// Projection moves are currently provenance groundwork: the bootstrap
+    /// checker still rejects non-copy aggregate fields before code generation.
+    /// Exposing them separately ensures future owned aggregate checking can
+    /// consume the typed projection path and reaching definitions directly.
+    pub fn partial_moves(&self) -> impl Iterator<Item = (ControlFlowNodeId, &OwnershipMove)> {
+        self.nodes.iter().flat_map(|node| {
+            node.ownership
+                .moves
+                .iter()
+                .filter(|movement| movement.is_partial())
+                .map(move |movement| (node.id, movement))
+        })
+    }
+
+    /// Return partial-move events attached to one normalized CFG node.
+    pub fn partial_moves_at(&self, id: ControlFlowNodeId) -> impl Iterator<Item = &OwnershipMove> {
+        self.node(id)
+            .into_iter()
+            .flat_map(|node| node.ownership.moves.iter())
+            .filter(|movement| movement.is_partial())
     }
 
     /// Return values at normalized `return` evaluation nodes in source order.
