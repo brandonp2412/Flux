@@ -310,6 +310,20 @@ pub struct OwnershipCall {
     pub span: SourceSpan,
 }
 
+/// A normalized point at which a non-copy definition's storage is no longer
+/// needed by any reachable successor and may be released.
+///
+/// The bootstrap list representation does not own heap storage yet, so these
+/// facts do not emit a native destructor call. Keeping the fact on the typed
+/// CFG nevertheless makes the eventual drop/owned-resource lowering consume
+/// the same reaching-definition and borrow regions as move validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipDrop {
+    pub definition: ControlFlowDefinitionId,
+    pub name: String,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlFlowOwnership {
     pub reads: Vec<String>,
@@ -524,6 +538,7 @@ pub struct ControlFlowGraph {
     borrow_starts: Vec<OwnershipBorrowStart>,
     borrow_ends: Vec<OwnershipBorrowEnd>,
     borrow_lifetimes: Vec<OwnershipBorrowLifetime>,
+    drops: Vec<(ControlFlowNodeId, OwnershipDrop)>,
 }
 
 impl ControlFlowGraph {
@@ -723,6 +738,13 @@ impl ControlFlowGraph {
         self.borrow_lifetimes
             .iter()
             .filter(move |lifetime| lifetime.active_before.contains(&id))
+    }
+
+    /// Returns the normalized drop facts attached to a CFG evaluation node.
+    /// Facts are ordered by node and definition identity for deterministic IR
+    /// consumers.
+    pub fn drops(&self) -> &[(ControlFlowNodeId, OwnershipDrop)] {
+        &self.drops
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -1312,12 +1334,14 @@ impl<'a> ControlFlowBuilder<'a> {
             borrow_starts: Vec::new(),
             borrow_ends: Vec::new(),
             borrow_lifetimes: Vec::new(),
+            drops: Vec::new(),
         };
         populate_call_argument_definitions(&mut graph, self.signatures);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
         graph.borrow_lifetimes = compute_borrow_lifetimes(&graph);
+        graph.drops = compute_drop_facts(&graph);
         graph
     }
 
@@ -4751,6 +4775,152 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
             ControlFlowBorrowState { borrows }
         })
         .collect()
+}
+
+fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, OwnershipDrop)> {
+    let is_non_copy_storage = |ty: &Type| {
+        matches!(ty, Type::List(_))
+            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    };
+    let mut drops = Vec::new();
+
+    for node in &graph.nodes {
+        if !graph.is_reachable(node.id) {
+            continue;
+        }
+        let Some(live_before) = graph.definition_live_before(node.id) else {
+            continue;
+        };
+        let Some(live_after) = graph.definition_live_after(node.id) else {
+            continue;
+        };
+        let moved = graph.move_state_before(node.id);
+
+        let mut candidates = live_before.live().to_vec();
+        candidates.sort();
+        for definition in candidates {
+            if live_after.contains(definition)
+                || moved.is_some_and(|state| state.is_definition_moved(definition))
+            {
+                continue;
+            }
+
+            let Some((name, ty, span)) = definition_details(graph, definition) else {
+                continue;
+            };
+            if !is_non_copy_storage(&ty) {
+                continue;
+            }
+            let consumed_on_reachable_path = graph.nodes.iter().any(|move_node| {
+                graph.is_reachable(move_node.id)
+                    && graph
+                        .move_state_before(move_node.id)
+                        .is_some_and(|state| state.is_definition_moved(definition))
+                    && cfg_can_reach(graph, node.id, move_node.id)
+            });
+            if consumed_on_reachable_path {
+                // The transfer consumes the reaching source at this node;
+                // its destination, not the source definition, owns the next
+                // eventual drop point.
+                continue;
+            }
+
+            // A last use is not a drop if one of the reachable successor
+            // states still borrows the definition. This is the same edge
+            // boundary used by inferred borrow lifetimes and prevents a
+            // future resource destructor from running before a view ends.
+            let borrowed_by_successor = graph
+                .outgoing(node.id)
+                .filter(|edge| graph.is_reachable(edge.to))
+                .filter_map(|edge| graph.borrow_state_before(edge.to))
+                .any(|state| {
+                    state
+                        .borrows()
+                        .iter()
+                        .any(|borrow| borrow.source_definition == definition)
+                });
+            if borrowed_by_successor {
+                continue;
+            }
+
+            drops.push((
+                node.id,
+                OwnershipDrop {
+                    definition,
+                    name,
+                    span,
+                },
+            ));
+        }
+    }
+    drops.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.definition.cmp(&right.1.definition))
+    });
+    drops.dedup();
+    drops
+}
+
+fn cfg_can_reach(
+    graph: &ControlFlowGraph,
+    from: ControlFlowNodeId,
+    target: ControlFlowNodeId,
+) -> bool {
+    if from == target {
+        return true;
+    }
+    let mut pending = vec![from];
+    let mut visited = BTreeSet::new();
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        for edge in graph.outgoing(current) {
+            if !graph.is_reachable(edge.to) {
+                continue;
+            }
+            if edge.to == target {
+                return true;
+            }
+            pending.push(edge.to);
+        }
+    }
+    false
+}
+
+fn definition_details(
+    graph: &ControlFlowGraph,
+    definition: ControlFlowDefinitionId,
+) -> Option<(String, Type, SourceSpan)> {
+    match definition {
+        ControlFlowDefinitionId::Parameter(index) => graph
+            .parameters
+            .get(index)
+            .map(|parameter| (parameter.name.clone(), parameter.ty.clone(), parameter.span)),
+        ControlFlowDefinitionId::Node { node, index } => graph
+            .nodes
+            .get(node.0)
+            .and_then(|node| node.definitions.get(index))
+            .map(|definition| {
+                (
+                    definition.name.clone(),
+                    definition.ty.clone(),
+                    definition.span,
+                )
+            }),
+        ControlFlowDefinitionId::Scoped { node, index } => graph
+            .scoped_definitions
+            .get(node.0)
+            .and_then(|definitions| definitions.get(index))
+            .map(|definition| {
+                (
+                    definition.name.clone(),
+                    definition.ty.clone(),
+                    definition.span,
+                )
+            }),
+    }
 }
 
 fn compute_move_states(

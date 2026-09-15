@@ -14,6 +14,7 @@ use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
     ControlFlowValueKind, ControlFlowValueRegionKind, ControlFlowValueUseKind,
 };
+use fluxc::semantic::SemanticDatabase;
 use fluxc::{
     DiagnosticStage, SourceId, check_source, check_source_all, check_source_all_with_id,
     compile_to_c, compile_to_c_header, diagnostics_to_json,
@@ -31,6 +32,65 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
     }
     let id = hash & 0x00FF_FFFF;
     if id == 0 { 1 } else { id }
+}
+
+#[test]
+fn ownership_ir_records_definition_scoped_drop_points() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    let first: i64 = values[0]
+    print(first)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("drop-point fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let drops = graph
+        .drops()
+        .iter()
+        .filter(|(_, drop)| drop.name == "values")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        drops.len(),
+        1,
+        "one definition-scoped list drop is expected"
+    );
+    assert!(matches!(
+        drops[0].1.definition,
+        ControlFlowDefinitionId::Node { .. }
+    ));
+}
+
+#[test]
+fn ownership_ir_does_not_drop_moved_definitions() {
+    let source = r#"
+fn main() -> i64 {
+    let source: i64[] = [4, 8]
+    let destination: i64[] = source
+    print(destination.count)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("move/drop fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    assert!(
+        graph
+            .drops()
+            .iter()
+            .any(|(_, drop)| drop.name == "destination")
+    );
+    assert!(
+        !graph.drops().iter().any(|(_, drop)| drop.name == "source"),
+        "unexpected source drops: {:?}",
+        graph.drops()
+    );
 }
 
 #[test]
