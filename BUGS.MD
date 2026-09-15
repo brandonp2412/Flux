@@ -4,5 +4,7 @@
 [x] Output for flux run should be pretty
 [x] Output for flux run should have q to quit
 [x] Ctrl+space vscode on android.notify() isn't giving named param options autocomplete
-[ ] Reload on linux isn't actually a reload it's destroying + recreating the entire
-window
+[x] Linux development reload currently uses the documented controlled-restart
+path: it compiles the replacement before stopping the old process, preserves
+compatible primitive view state, and recreates the native window. In-process
+Fast Refresh/window preservation remains an intentional open roadmap item.
