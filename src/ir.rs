@@ -3120,23 +3120,32 @@ fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
     for node in &mut graph.nodes {
         let mut moves = std::mem::take(&mut node.ownership.moves);
         for movement in &mut moves {
-            let value = graph
-                .values
-                .iter()
-                .filter(|value| {
-                    matches!(
-                        &value.kind,
-                        ControlFlowValueKind::NameRead { name, .. } if name == &movement.source
-                    )
-                })
-                .min_by_key(|value| {
-                    (
-                        if value.span == movement.span { 0 } else { 1 },
-                        if value.producer == node.id { 0 } else { 1 },
-                        value.span.column,
-                        value.id.0,
-                    )
-                });
+            let projected_value = movement.is_partial().then(|| {
+                graph
+                    .values
+                    .iter()
+                    .filter(|value| value.producer == node.id && value.span == movement.span)
+                    .min_by_key(|value| value.id.0)
+            });
+            let value = projected_value.flatten().or_else(|| {
+                graph
+                    .values
+                    .iter()
+                    .filter(|value| {
+                        matches!(
+                            &value.kind,
+                            ControlFlowValueKind::NameRead { name, .. } if name == &movement.source
+                        )
+                    })
+                    .min_by_key(|value| {
+                        (
+                            if value.span == movement.span { 0 } else { 1 },
+                            if value.producer == node.id { 0 } else { 1 },
+                            value.span.column,
+                            value.id.0,
+                        )
+                    })
+            });
             movement.value = value.map(|value| value.id);
             movement.source_definitions = value
                 .and_then(|value| match &value.kind {
