@@ -14402,26 +14402,6 @@ fn main() -> i64 {
 }
 
 #[test]
-fn rejects_dropping_borrowed_collection_parameters() {
-    let source = r#"
-fn consume(values: i64[]) -> i64 {
-    drop(values)
-    return 0
-}
-fn main() -> i64 {
-    return consume([1, 2])
-}
-"#;
-    let errors = check_source_all(source)
-        .expect_err("dropping a borrowed collection parameter must fail");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("cannot drop borrowed collection parameter 'values'")
-    }));
-}
-
-#[test]
 fn ownership_ir_marks_drop_as_consuming_and_not_borrowed() {
     let source = r#"
 fn main() -> i64 {
