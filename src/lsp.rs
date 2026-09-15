@@ -677,6 +677,13 @@ fn completion_items(source: &str) -> Vec<JsonValue> {
     push_completion_item(
         &mut items,
         &mut seen,
+        "drop",
+        3,
+        "fn drop(value: non-copy list) -> void",
+    );
+    push_completion_item(
+        &mut items,
+        &mut seen,
         "contains",
         3,
         "fn contains(collection: list | set | map, key: scalar) -> bool",
@@ -3315,6 +3322,14 @@ fn signature_help_for_document_cached(
         return Some(signature_help_for_builtin(
             "print",
             &["value: i64 | bool | str | error"],
+            "void",
+            active_parameter,
+        ));
+    }
+    if call_name == "drop" {
+        return Some(signature_help_for_builtin(
+            "drop",
+            &["value: T[]"],
             "void",
             active_parameter,
         ));
@@ -6020,7 +6035,7 @@ fn semantic_identifier_kind(
     if matches!(word, "i64" | "bool" | "str" | "error" | "void" | "set") {
         return SemanticTokenKind::Type;
     }
-    if word == "print" {
+    if matches!(word, "print" | "drop") {
         return SemanticTokenKind::Function;
     }
     if crate::typecheck::BUILTIN_VIEW_ELEMENT_KINDS.contains(&word)
@@ -12604,6 +12619,8 @@ mod tests {
         assert!(json.contains("\"label\":\"Count\""));
         assert!(json.contains("\"label\":\"main\""));
         assert!(json.contains("fn main() -> i64"));
+        assert!(json.contains("\"label\":\"drop\""));
+        assert!(json.contains("fn drop(value: non-copy list) -> void"));
         assert!(json.contains("\"label\":\"take\""));
         assert!(json.contains("fn take(list: T[], count: i64) -> T[]"));
         assert!(json.contains("\"label\":\"skip\""));
