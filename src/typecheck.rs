@@ -5757,7 +5757,10 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
             Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
             _ => false,
         },
-        Type::Set(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+        Type::Set(inner) => {
+            matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
+                || matches!(inner.as_ref(), Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+        }
         Type::Map(key, value) => {
             matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
         }
@@ -6173,15 +6176,19 @@ pub fn type_of_expr(
                             | ExprKind::Str(_)
                             | ExprKind::Var(_)
                             | ExprKind::Call { .. }
+                            | ExprKind::None
                             | ExprKind::QualifiedCall { .. }
                     )
                 {
                     return Err(diag(
                         item.span,
-                        "set literals currently accept only scalar expressions without spread, optional, or conditional items",
+                        "set literals currently accept only scalar expressions or none without spread or conditional items",
                     ));
                 }
-                if is_set && constant_primitive_value(item, signatures).is_none() {
+                if is_set
+                    && !matches!(item.kind, ExprKind::None)
+                    && constant_primitive_value(item, signatures).is_none()
+                {
                     return Err(diag(
                         item.span,
                         "set literal elements must currently be compile-time primitive values",
@@ -6325,10 +6332,12 @@ pub fn type_of_expr(
                 require_type(item.span, &element_ty, &actual, "list element")?;
             }
             Ok(if is_set {
-                if !matches!(element_ty, Type::I64 | Type::Bool | Type::Str) {
+                let valid_set_element = matches!(element_ty, Type::I64 | Type::Bool | Type::Str)
+                    || matches!(&element_ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str));
+                if !valid_set_element {
                     return Err(diag(
                         first.span,
-                        "set elements must currently have type i64, bool, or str",
+                        "set elements must currently have type i64, bool, str, or their scalar optional forms",
                     ));
                 }
                 Type::Set(Box::new(element_ty))

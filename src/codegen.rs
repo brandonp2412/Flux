@@ -33446,9 +33446,13 @@ fn emit_expr(
             for item in items {
                 let emitted = emit_expr_for_expected(item, element, env, signatures)?;
                 if is_set {
-                    let constant = typecheck::constant_primitive_value(item, signatures)
-                        .expect("set literal elements are compile-time checked");
-                    let key = format!("{}:{:?}", constant.ty().name(), constant);
+                    let key = if matches!(item.kind, ExprKind::None) {
+                        "none".to_string()
+                    } else {
+                        let constant = typecheck::constant_primitive_value(item, signatures)
+                            .expect("set literal elements are compile-time checked");
+                        format!("{}:{:?}", constant.ty().name(), constant)
+                    };
                     if !seen.insert(key) {
                         continue;
                     }

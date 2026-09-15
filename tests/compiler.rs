@@ -18087,6 +18087,53 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_maps_encode_optional_scalar_sets_as_null_or_value() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: map<str, set<i64?>> = {"values": {1, none, 1, 2}}
+    let ordered: set<i64?> = {1, none, 1, 2}
+    print(json.encodeObject(values, encoded))
+    print(json.encodeArray(ordered, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("optional scalar JSON sets should typecheck");
+    let generated = compile_to_c(source).expect("optional scalar JSON sets should lower");
+    assert!(generated.contains("flux__json_encode_nested_object("));
+    let root =
+        std::env::temp_dir().join(format!("flux-json-map-optional-set-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional scalar set directory should be writable");
+    let c_path = root.join("json-map-optional-set.c");
+    let exe_path = root.join("json-map-optional-set");
+    fs::write(&c_path, generated).expect("generated optional scalar set C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional scalar set JSON code");
+    assert!(
+        compile.status.success(),
+        "optional scalar set JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional scalar set JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"values\":[1,null,2]}\nnil\n[1,null,2]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(
