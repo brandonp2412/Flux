@@ -35968,6 +35968,8 @@ fn emit_qualified_call(
                     || json_enum_supported(&element, signatures)
                     || matches!(&*element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures))
                     || json_array_contains_aggregate(&element, signatures)
+                    || (matches!(&*element, Type::Map(_, _))
+                        && json_map_array_type_is_supported(&element, signatures))
                 {
                     let array_ty = Type::List(element.clone());
                     let helper = json_array_aggregate_helper_name(&array_ty, signatures);
@@ -38523,16 +38525,44 @@ fn emit_json_record_helpers(
         } else if matches!(&element_ty, Type::List(_) | Type::Set(_)) {
             json_array_aggregate_helper_name(&element_ty, signatures)
         } else if matches!(&element_ty, Type::Map(_, _)) {
-            json_map_aggregate_helper_name(&element_ty, signatures)
+            if let Type::Map(_, value) = &element_ty {
+                if json_map_contains_aggregate(value, signatures) {
+                    json_map_aggregate_helper_name(&element_ty, signatures)
+                } else {
+                    "flux__json_encode_map_map".to_string()
+                }
+            } else {
+                unreachable!()
+            }
         } else if json_enum_supported(&element_ty, signatures) {
             json_enum_helper_name(&element_ty, signatures)
         } else {
             json_record_helper_name(&element_ty, signatures)
         };
+        let value_call = if let Type::Map(_, value) = &element_ty {
+            if json_map_contains_aggregate(value, signatures) {
+                format!("{value_helper}(value, flux__json_capture)")
+            } else {
+                let kind = json_map_value_kind(value, signatures)
+                    .expect("supported JSON map array values have a native map kind");
+                let (helper, helper_kind) = if kind < 3 {
+                    ("flux__json_encode_object", kind)
+                } else if kind < 6 {
+                    ("flux__json_encode_nested_object", kind - 3)
+                } else if (100000..100003).contains(&kind) {
+                    ("flux__json_encode_optional_object", kind)
+                } else {
+                    ("flux__json_encode_map_map", kind)
+                };
+                format!("{helper}(value, {helper_kind}, flux__json_capture)")
+            }
+        } else {
+            format!("{value_helper}(value, flux__json_capture)")
+        };
         let helper = json_array_aggregate_helper_name(&array_ty, signatures);
         let value_c = c_type(&element_ty, signatures);
         out.push_str(&format!(
-            "static inline const char *{helper}(struct flux__list values, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encodeArray callback\"; if (values.len > 65536 || (values.len != 0 && values.data == NULL)) return \"JSON array is invalid or too large\"; char encoded[393217]; size_t output = 0; encoded[output++] = '['; ptrdiff_t stride = values.stride == 0 ? (ptrdiff_t)sizeof({value_c}) : values.stride; for (size_t index = 0; index < values.len; ++index) {{ if (index != 0) {{ if (output >= sizeof(encoded) - 1) return \"encoded JSON array exceeds 393216 bytes\"; encoded[output++] = ','; }} {value_c} value = *(({value_c} *)((char *)values.data + (ptrdiff_t)index * stride)); flux__json_capture_value = NULL; const char *value_error = {value_helper}(value, flux__json_capture); if (value_error != NULL || flux__json_capture_value == NULL) return value_error == NULL ? \"JSON array encoding failed\" : value_error; size_t value_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - value_length) return \"encoded JSON array exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, value_length); output += value_length; }} if (output >= sizeof(encoded) - 1) return \"encoded JSON array exceeds 393216 bytes\"; encoded[output++] = ']'; encoded[output] = '\\0'; callback(encoded); return NULL; }}\n"
+            "static inline const char *{helper}(struct flux__list values, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encodeArray callback\"; if (values.len > 65536 || (values.len != 0 && values.data == NULL)) return \"JSON array is invalid or too large\"; char encoded[393217]; size_t output = 0; encoded[output++] = '['; ptrdiff_t stride = values.stride == 0 ? (ptrdiff_t)sizeof({value_c}) : values.stride; for (size_t index = 0; index < values.len; ++index) {{ if (index != 0) {{ if (output >= sizeof(encoded) - 1) return \"encoded JSON array exceeds 393216 bytes\"; encoded[output++] = ','; }} {value_c} value = *(({value_c} *)((char *)values.data + (ptrdiff_t)index * stride)); flux__json_capture_value = NULL; const char *value_error = {value_call}; if (value_error != NULL || flux__json_capture_value == NULL) return value_error == NULL ? \"JSON array encoding failed\" : value_error; size_t value_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - value_length) return \"encoded JSON array exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, value_length); output += value_length; }} if (output >= sizeof(encoded) - 1) return \"encoded JSON array exceeds 393216 bytes\"; encoded[output++] = ']'; encoded[output] = '\\0'; callback(encoded); return NULL; }}\n"
         ));
     }
 }
@@ -38552,7 +38582,7 @@ fn collect_json_array_aggregate_types(
                 || (matches!(&element, Type::List(_) | Type::Set(_))
                     && json_array_contains_aggregate(&element, signatures))
                 || (matches!(&element, Type::Map(_, _))
-                    && json_array_contains_aggregate(&element, signatures))
+                    && json_map_array_type_is_supported(&element, signatures))
             {
                 arrays.insert(Type::List(Box::new(element.clone())));
             }
@@ -38598,6 +38628,15 @@ fn json_array_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
         }
         _ => false,
     }
+}
+
+fn json_map_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    let Type::Map(key, value) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    signatures.canonical_type(&key) == Type::Str
+        && (json_map_value_kind(&value, signatures).is_ok()
+            || json_map_contains_aggregate(&value, signatures))
 }
 
 fn collect_json_map_aggregate_types(ty: &Type, signatures: &Signatures, maps: &mut HashSet<Type>) {
