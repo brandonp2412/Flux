@@ -6128,6 +6128,11 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
     if format != PackageFormat::Msix && (msix_certificate.is_some() || msix_publisher.is_some()) {
         return Err("'--certificate' and '--publisher' require '--format msix'".to_string());
     }
+    if msix_certificate.is_some() && msix_publisher.is_none() {
+        return Err(
+            "'--publisher' is required when signing an MSIX with '--certificate'".to_string(),
+        );
+    }
     Ok(PackageOptions {
         output,
         mode,
@@ -11122,7 +11127,13 @@ app OverlayDemo(title: "Overlay")
             Some(std::path::Path::new("publisher.pfx"))
         );
         assert!(
-            package_options(&["--certificate".to_string(), "publisher.p12".to_string(),]).is_err()
+            package_options(&[
+                "--format".to_string(),
+                "msix".to_string(),
+                "--certificate".to_string(),
+                "publisher.p12".to_string(),
+            ])
+            .is_err()
         );
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
