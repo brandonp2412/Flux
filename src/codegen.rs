@@ -4681,6 +4681,7 @@ static inline const char *flux__json_encode_array(struct flux__list values, int 
     if (callback == NULL) return "invalid json.encodeArray callback";
     if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002))) return "invalid json.encodeArray element kind";
     if (values.len > 65536) return "JSON array exceeds 65536 elements";
+    if (values.len != 0 && values.data == NULL) return "JSON array has missing element storage";
     char encoded[393217]; size_t output = 0; encoded[output++] = '[';
     ptrdiff_t stride = values.stride;
     if (stride == 0) stride = kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : kind == 2 ? (ptrdiff_t)sizeof(const char *) : kind == 100000 ? (ptrdiff_t)sizeof(struct flux__optional_i64) : kind == 100001 ? (ptrdiff_t)sizeof(struct flux__optional_bool) : (ptrdiff_t)sizeof(struct flux__optional_str);
@@ -4719,6 +4720,7 @@ static inline const char *flux__json_encode_object(struct flux__map values, int 
     if (callback == NULL) return "invalid json.encodeObject callback";
     if (kind < 0 || kind > 2) return "invalid json.encodeObject value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    if ((values.keys.len != 0 && values.keys.data == NULL) || (values.values.len != 0 && values.values.data == NULL)) return "JSON object has missing element storage";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
     ptrdiff_t value_stride = values.values.stride == 0 ? (kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : (ptrdiff_t)sizeof(const char *)) : values.values.stride;
@@ -4739,6 +4741,7 @@ static inline const char *flux__json_encode_optional_object(struct flux__map val
     if (callback == NULL) return "invalid json.encodeObject callback";
     if (kind < 100000 || kind > 100002) return "invalid optional JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    if ((values.keys.len != 0 && values.keys.data == NULL) || (values.values.len != 0 && values.values.data == NULL)) return "JSON object has missing element storage";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
     ptrdiff_t value_stride = values.values.stride == 0 ? (kind == 100000 ? (ptrdiff_t)sizeof(struct flux__optional_i64) : kind == 100001 ? (ptrdiff_t)sizeof(struct flux__optional_bool) : (ptrdiff_t)sizeof(struct flux__optional_str)) : values.values.stride;
@@ -4774,6 +4777,7 @@ static inline const char *flux__json_encode_nested_object(struct flux__map value
     if (callback == NULL) return "invalid json.encodeObject callback";
     if (!((kind >= 0 && kind <= 2) || (kind >= 100003 && kind <= 100005))) return "invalid nested JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    if ((values.keys.len != 0 && values.keys.data == NULL) || (values.values.len != 0 && values.values.data == NULL)) return "JSON object has missing element storage";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
     ptrdiff_t value_stride = values.values.stride == 0 ? (ptrdiff_t)sizeof(struct flux__list) : values.values.stride;
