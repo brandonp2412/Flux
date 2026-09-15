@@ -6339,6 +6339,107 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_receive_bytes_many_drains_borrowed_binary_chunks() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("binary batch listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn consume(_socket: i64, bytes: i64[]) -> void {{
+    print(bytes.count)
+    for index in 0..bytes.count:
+        print(bytes[index])
+}}
+fn main() -> i64 {{
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", {port})
+    print(connectError)
+    print(net.setNonblocking(socket, true))
+    let (ready, readyError) = net.waitReadable(socket, 1000)
+    print(ready)
+    print(readyError)
+    let (received, receiveError) = net.readBytesMany(socket, 64, 8, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("binary batch receive should typecheck");
+    let generated = compile_to_c(&source).expect("binary batch receive should lower");
+    assert!(generated.contains("flux__net_receive_bytes_many("));
+    assert!(generated.contains("readBytesMany requires a nonblocking TCP socket"));
+    assert!(generated.contains("readBytesMany cancelled by worker scope"));
+
+    let root =
+        std::env::temp_dir().join(format!("flux-net-read-bytes-many-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("binary batch fixture should be writable");
+    let source_path = root.join("read_bytes_many.flux");
+    fs::write(&source_path, &source).expect("binary batch source should be writable");
+    let binary = root.join("read_bytes_many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .args(["-o"])
+        .arg(&binary)
+        .output()
+        .expect("binary batch executable should build");
+    assert!(
+        built.status.success(),
+        "binary batch build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("binary batch client should connect");
+        stream
+            .write_all(&[0, 255, 65])
+            .expect("binary batch peer should send bytes");
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("binary batch executable should run");
+    server.join().expect("binary batch server should finish");
+    assert!(
+        run.status.success(),
+        "binary batch run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let output = String::from_utf8_lossy(&run.stdout);
+    let lines = output.lines().collect::<Vec<_>>();
+    assert_eq!(&lines[..4], ["nil", "nil", "true", "nil"]);
+    assert!(lines.contains(&"0"));
+    assert!(lines.contains(&"255"));
+    assert!(lines.contains(&"65"));
+    assert!(
+        lines
+            .iter()
+            .skip(lines.len() - 3)
+            .copied()
+            .eq(["3", "nil", "nil"]),
+        "unexpected binary batch output: {output:?}"
+    );
+
+    let invalid = check_source(
+        "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (_received, _failure) = net.readBytesMany(1, 64, 0, consume)\n    return 0\n}\n",
+    )
+    .expect_err("binary batch count must be statically bounded");
+    assert!(
+        invalid
+            .message
+            .contains("net.readBytesMany maxCount must be between 1 and 2147483647")
+    );
+
+    let unused = "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn hidden(socket: i64) -> void {\n    let (_received, _failure) = net.readBytesMany(socket, 64, 8, consume)\n}\nfn main() -> i64 {\n    return 0\n}\n";
+    let unused_generated =
+        compile_to_c(unused).expect("dead binary batch receive should typecheck");
+    assert!(!unused_generated.contains("flux__net_receive_bytes_many("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_timed_text_send_applies_nonblocking_backpressure_and_tree_shakes() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("timed-send listener should bind");
     let port = listener.local_addr().unwrap().port();

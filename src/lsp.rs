@@ -1465,6 +1465,10 @@ fn add_qualified_namespace_completions(
                 "fn net.readBytes(socket: i64, maxBytes: i64, callback: fn(i64, i64[]) -> void) -> (i64, error)",
             ),
             (
+                "readBytesMany",
+                "fn net.readBytesMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, i64[]) -> void) -> (i64, error)",
+            ),
+            (
                 "readBytesTimeout",
                 "fn net.readBytesTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
             ),
@@ -3565,6 +3569,19 @@ fn signature_help_for_document_cached(
                         &[
                             "socket: i64",
                             "maxBytes: i64",
+                            "callback: fn(i64, i64[]) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "readBytesMany" | "receiveBytesMany" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readBytesMany",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
                             "callback: fn(i64, i64[]) -> void",
                         ],
                         "(i64, error)",
@@ -9897,6 +9914,32 @@ mod tests {
             "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -&gt; void) -&gt; (i64, error)"
         ) || help.contains(
             "fn net.readMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, str) -> void) -> (i64, error)"
+        ));
+    }
+
+    #[test]
+    fn signature_help_supports_receive_bytes_many() {
+        let uri = "file:///tmp/network-receive-bytes-many.flux";
+        let source = "fn consume(_socket: i64, _bytes: i64[]) -> void {\n}\nfn main() -> i64 {\n    let (bytes, failure) = net.readBytesMany(1, 4096, 8, consume)\n    print(bytes)\n    print(failure)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("net.readBytesMany("))
+            .expect("binary batch call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("net.readBytesMany(").unwrap() + "net.readBytesMany(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("binary batch call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn net.readBytesMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, i64[]) -> void) -> (i64, error)"
         ));
     }
 

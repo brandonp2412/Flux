@@ -7525,6 +7525,39 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_receive_bytes_with_timeout(int64_t socket_handle, int64_t max_bytes, int64_t timeout_millis, void (*callback)(int64_t, struct flux__list)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(-1, false, "invalid socket handle"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_progress_result(-1, false, "readBytesTimeout maxBytes must be between 1 and 65536"); if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_progress_result(-1, false, "readBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_progress_result(-1, false, "failed to inspect socket type"); if (socket_type != SOCK_STREAM) return flux__net_progress_result(-1, false, "readBytesTimeout requires a TCP socket"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_progress_result(-1, false, "failed to inspect TCP socket state"); if (accepting != 0) return flux__net_progress_result(-1, false, "readBytesTimeout requires a connected TCP socket"); struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLIN, .revents = 0 }; int ready = flux__net_poll_cancellable(&descriptor, 1, timeout_millis); if (ready == -2) return flux__net_progress_result(-1, false, "readBytesTimeout cancelled by worker scope"); if (ready == 0) return flux__net_progress_result(0, false, NULL); if (ready < 0 || (descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result(-1, false, "failed to wait for socket readability"); unsigned char raw[(size_t)max_bytes]; int64_t buffer[(size_t)max_bytes]; ssize_t received; do { received = recv((int)socket_handle, raw, (size_t)max_bytes, MSG_DONTWAIT); } while (received < 0 && errno == EINTR); if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return flux__net_progress_result(0, false, NULL); if (received < 0) return flux__net_progress_result(-1, false, "failed to receive bytes"); for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index]; callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }); return flux__net_progress_result((int64_t)received, true, NULL); }
 "#);
     }
+    if runtime_usage.contains("flux__net_receive_bytes_many(") {
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_receive_bytes_many(int64_t socket_handle, int64_t max_bytes, int64_t max_count, void (*callback)(int64_t, struct flux__list)) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, "readBytesMany maxBytes must be between 1 and 65536");
+    if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, "readBytesMany maxCount must be between 1 and 2147483647");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_STREAM) return flux__net_result(-1, "readBytesMany requires a TCP socket");
+    int accepting = 0; socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, "failed to inspect TCP socket state");
+    if (accepting != 0) return flux__net_result(-1, "readBytesMany requires a connected TCP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "readBytesMany requires a nonblocking TCP socket");
+    unsigned char raw[65536]; int64_t buffer[65536]; int64_t total = 0;
+    for (int64_t count = 0; count < max_count; ++count) {
+        if (flux__worker_cancelled()) return flux__net_result(total, "readBytesMany cancelled by worker scope");
+        ssize_t received;
+        do { received = recv((int)socket_handle, raw, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR);
+        if (received < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(total, NULL);
+            return flux__net_result(total, "failed to receive bytes");
+        }
+        for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index];
+        callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) });
+        if (received > 0 && total > INT64_MAX - (int64_t)received) return flux__net_result(total, "received byte count overflow");
+        total += (int64_t)received;
+        if (received == 0) return flux__net_result(total, NULL);
+    }
+    return flux__net_result(total, NULL);
+}
+"#);
+    }
     if runtime_usage.contains("flux__net_send_bytes(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect socket type\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"writeBytes requires a TCP socket\"); ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride; int64_t sent = 0; for (size_t index = 0; index < bytes.len; ++index) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) return flux__net_result(sent, \"writeBytes byte values must be between 0 and 255\"); unsigned char byte = (unsigned char)value; ssize_t written; do { written = send((int)socket_handle, &byte, 1, MSG_NOSIGNAL); } while (written < 0 && errno == EINTR); if (written < 0) return flux__net_result(sent, \"failed to write bytes\"); if (written == 0) return flux__net_result(sent, \"socket closed while writing bytes\"); sent += written; } return flux__net_result(sent, NULL); }\n");
     }
@@ -34658,6 +34691,23 @@ fn emit_qualified_call(
                     format!(
                         "flux__net_receive_bytes({}, {}, {})",
                         socket_handle.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "readBytesMany" | "receiveBytesMany" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_count = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_receive_bytes_many({}, {}, {}, {})",
+                        socket_handle.code, max_bytes.code, max_count.code, callback.code
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
