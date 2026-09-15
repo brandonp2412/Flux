@@ -17125,20 +17125,39 @@ fn main() -> i64 {
     );
     let _ = fs::remove_dir_all(&root);
 
-    let program = fluxc::parser::parse(source).expect("preferences source should parse");
-    let signatures = fluxc::typecheck::check(&program).expect("preferences should typecheck");
+    let android_source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn start() -> void {
+    let _write_error: error = preferences.set("theme", "dark")
+    let _read_error: error = preferences.get("theme", "light", show)
+    let _remove_error: error = preferences.remove("theme")
+}
+
+view Root {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Preferences"
+}
+
+app Root(onStart: start)
+"#;
+    let android_program =
+        fluxc::parser::parse(android_source).expect("Android preferences source should parse");
+    let android_signatures =
+        fluxc::typecheck::check(&android_program).expect("Android preferences should typecheck");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
+        &android_program,
+        &android_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Android,
     )
-    .expect_err("preferences should reject Android until a native settings store is defined");
-    assert!(
-        android
-            .message
-            .contains("preferences.* currently requires the Linux")
-    );
+    .expect("preferences should lower through the native Android settings store");
+    assert!(android.contains("app/flux/runtime/FluxPreferences"));
+    assert!(android.contains("flux__preferences_get("));
 }
 
 #[test]

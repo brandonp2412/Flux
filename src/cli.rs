@@ -6567,10 +6567,15 @@ fn android_has_generated_secure_storage(c_source: &str) -> bool {
         || c_source.contains("flux__android_secure_remove(")
 }
 
+fn android_has_generated_preferences(c_source: &str) -> bool {
+    c_source.contains("flux__preferences_")
+}
+
 fn android_has_generated_java(c_source: &str) -> bool {
     android_has_generated_activity(c_source)
         || android_has_generated_background_runner(c_source)
         || android_has_generated_secure_storage(c_source)
+        || android_has_generated_preferences(c_source)
 }
 
 fn android_background_runner_java_source() -> &'static str {
@@ -6777,6 +6782,38 @@ public final class FluxSecureStorage {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+"#
+}
+
+fn android_preferences_java_source() -> &'static str {
+    r#"package app.flux.runtime;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+
+public final class FluxPreferences {
+    private static final String PREFS = "flux_preferences";
+
+    private FluxPreferences() {}
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    public static synchronized String get(Context context, String key, String fallback) {
+        if (context == null || key == null || key.isEmpty() || fallback == null) return fallback;
+        return prefs(context).getString(key, fallback);
+    }
+
+    public static synchronized boolean set(Context context, String key, String value) {
+        if (context == null || key == null || key.isEmpty() || value == null) return false;
+        return prefs(context).edit().putString(key, value).commit();
+    }
+
+    public static synchronized boolean remove(Context context, String key) {
+        if (context == null || key == null || key.isEmpty()) return false;
+        return prefs(context).edit().remove(key).commit();
     }
 }
 "#
@@ -8961,6 +8998,13 @@ fn compile_android_activity_dex(
         })?;
         java_sources.push(java_source);
     }
+    if android_has_generated_preferences(c_source) {
+        let java_source = java_dir.join("FluxPreferences.java");
+        fs::write(&java_source, android_preferences_java_source()).map_err(|error| {
+            format!("failed to write compiler-generated Android preferences: {error}")
+        })?;
+        java_sources.push(java_source);
+    }
     let work_manager_classpath = if android_has_generated_work_manager_worker(c_source) {
         android_work_manager_classpath()?
     } else {
@@ -9035,6 +9079,18 @@ fn compile_android_activity_dex(
             return Err(CliError::Message(format!(
                 "javac did not produce the compiler-generated Android secure storage class '{}'",
                 storage_class.display()
+            )));
+        }
+    }
+    if android_has_generated_preferences(c_source) {
+        let preferences_class = runtime_classes.join("FluxPreferences.class");
+        if !generated_classes
+            .iter()
+            .any(|path| path == &preferences_class)
+        {
+            return Err(CliError::Message(format!(
+                "javac did not produce the compiler-generated Android preferences class '{}'",
+                preferences_class.display()
             )));
         }
     }

@@ -1366,10 +1366,13 @@ pub fn emit_c_for_target_with_source_metadata(
             "TLS and cryptographic APIs require a desktop/server target",
         ));
     }
-    if target != NativeTarget::Linux && runtime_usage.contains("flux__preferences_") {
+    if target != NativeTarget::Linux
+        && target != NativeTarget::Android
+        && runtime_usage.contains("flux__preferences_")
+    {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
-            "preferences.* currently requires the Linux desktop/server target",
+            "preferences.* requires the Linux desktop/server or Android application target",
         ));
     }
     if runtime_usage.contains("flux__clipboard_") && program.application.is_none() {
@@ -1460,7 +1463,10 @@ pub fn emit_c_for_target_with_source_metadata(
         translations,
         program_uses_background(program, &reachable_functions, &function_ir),
         program.application.is_some() && target == NativeTarget::Linux,
-        program.application.is_some() && target == NativeTarget::Android,
+        target == NativeTarget::Android
+            && (program.application.is_some()
+                || runtime_usage.contains("flux__android_")
+                || runtime_usage.contains("flux__preferences_")),
         target == NativeTarget::Windows
             && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
     );
@@ -6727,7 +6733,7 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
         out.push_str("static inline int64_t flux__time_local_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid local calendar component\\n\", stderr); abort(); } bool leap = year % INT64_C(4) == 0 && (year % INT64_C(100) != 0 || year % INT64_C(400) == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid local calendar day\\n\", stderr); abort(); } int64_t tm_year; if (__builtin_sub_overflow(year, INT64_C(1900), &tm_year) || (int64_t)(int)tm_year != tm_year) { fputs(\"Flux runtime error: local calendar year exceeds platform range\\n\", stderr); abort(); } struct tm value = { .tm_year = (int)tm_year, .tm_mon = (int)month - 1, .tm_mday = (int)day, .tm_hour = (int)hour, .tm_min = (int)minute, .tm_sec = (int)second, .tm_isdst = -1 }; time_t native_seconds = mktime(&value); if (native_seconds == (time_t)-1 || (int64_t)native_seconds != (int64_t)(time_t)native_seconds) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } int64_t result; if (__builtin_mul_overflow((int64_t)native_seconds, INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: local calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
 
-    if runtime_usage.contains("flux__preferences_") {
+    if runtime_usage.contains("flux__preferences_") && !uses_android {
         out.push_str(
             r#"static const char *flux__preferences_path(void) {
     static char path[4096];
@@ -6842,6 +6848,29 @@ static const char *flux__preferences_remove(const char *key) {
 }
 "#,
         );
+    }
+    if runtime_usage.contains("flux__preferences_") && uses_android {
+        out.push_str(r#"static const char *flux__preferences_get(const char *key, const char *fallback, void (*callback)(const char *)) {
+    if (key == NULL || key[0] == '\0' || fallback == NULL || callback == NULL || flux__android_activity == NULL) return "invalid preference arguments";
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return "Android JNI is unavailable";
+    const char *error = NULL; jclass cls = (*env)->FindClass(env, "app/flux/runtime/FluxPreferences"); jstring key_string = NULL; jstring fallback_string = NULL; jstring value = NULL; const char *text = NULL;
+    if (cls == NULL) error = "Android preference runtime is unavailable";
+    jmethodID get = cls == NULL ? NULL : (*env)->GetStaticMethodID(env, cls, "get", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    key_string = flux__android_utf8_string(env, key); fallback_string = flux__android_utf8_string(env, fallback);
+    if (error == NULL && (get == NULL || key_string == NULL || fallback_string == NULL)) error = "failed to prepare Android preference read";
+    if (error == NULL) value = (jstring)(*env)->CallStaticObjectMethod(env, cls, get, flux__android_activity->clazz, key_string, fallback_string);
+    if (error == NULL && (*env)->ExceptionCheck(env)) error = "failed to read Android preference";
+    if (error == NULL && value != NULL) { text = (*env)->GetStringUTFChars(env, value, NULL); if (text == NULL) error = "failed to decode Android preference"; else { callback(text); (*env)->ReleaseStringUTFChars(env, value, text); } }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value != NULL) (*env)->DeleteLocalRef(env, value); if (fallback_string != NULL) (*env)->DeleteLocalRef(env, fallback_string); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (cls != NULL) (*env)->DeleteLocalRef(env, cls); flux__android_release_env(detach); return error;
+}
+static const char *flux__preferences_set(const char *key, const char *value) {
+    if (key == NULL || key[0] == '\0' || value == NULL || flux__android_activity == NULL) return "invalid preference arguments";
+    bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return "Android JNI is unavailable"; jclass cls = (*env)->FindClass(env, "app/flux/runtime/FluxPreferences"); jstring key_string = flux__android_utf8_string(env, key); jstring value_string = flux__android_utf8_string(env, value); jmethodID set = cls == NULL ? NULL : (*env)->GetStaticMethodID(env, cls, "set", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z"); bool stored = set != NULL && key_string != NULL && value_string != NULL && (*env)->CallStaticBooleanMethod(env, cls, set, flux__android_activity->clazz, key_string, value_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (value_string != NULL) (*env)->DeleteLocalRef(env, value_string); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (cls != NULL) (*env)->DeleteLocalRef(env, cls); flux__android_release_env(detach); return stored ? NULL : "failed to store Android preference";
+}
+static const char *flux__preferences_remove(const char *key) {
+    if (key == NULL || key[0] == '\0' || flux__android_activity == NULL) return "invalid preference arguments"; bool detach = false; JNIEnv *env = flux__android_get_env(&detach); if (env == NULL) return "Android JNI is unavailable"; jclass cls = (*env)->FindClass(env, "app/flux/runtime/FluxPreferences"); jstring key_string = flux__android_utf8_string(env, key); jmethodID remove = cls == NULL ? NULL : (*env)->GetStaticMethodID(env, cls, "remove", "(Landroid/content/Context;Ljava/lang/String;)Z"); bool removed = remove != NULL && key_string != NULL && (*env)->CallStaticBooleanMethod(env, cls, remove, flux__android_activity->clazz, key_string) == JNI_TRUE && !(*env)->ExceptionCheck(env); if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); if (key_string != NULL) (*env)->DeleteLocalRef(env, key_string); if (cls != NULL) (*env)->DeleteLocalRef(env, cls); flux__android_release_env(detach); return removed ? NULL : "failed to remove Android preference";
+}
+"#);
     }
     if runtime_usage.contains("flux__crypto_sha256(") {
         out.push_str(r#"static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
