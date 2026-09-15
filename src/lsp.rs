@@ -940,14 +940,20 @@ fn add_named_argument_completions(
     } else {
         return;
     };
-    let already_typed = prefix
-        .rsplit_once('(')
-        .map(|(_, args)| args.split(',').any(|arg| arg.trim_start().contains(':')))
-        .unwrap_or(false);
-    if already_typed {
-        return;
-    }
     if let Some(param) = params.get(active_parameter) {
+        let already_typed = prefix
+            .rsplit_once('(')
+            .map(|(_, args)| {
+                args.split(',').any(|arg| {
+                    arg.trim_start()
+                        .strip_prefix(&format!("{}:", param.name))
+                        .is_some()
+                })
+            })
+            .unwrap_or(false);
+        if already_typed {
+            return;
+        }
         push_completion_item(
             items,
             seen,
@@ -12125,6 +12131,31 @@ mod tests {
         ))
         .to_json();
         assert!(items.contains("channelId: "), "completion items: {items}");
+    }
+
+    #[test]
+    fn android_call_completion_suggests_remaining_named_parameters() {
+        let uri = "file:///tmp/android-remaining-named-argument.flux";
+        let source = "fn main() -> i64 {\n    android.notify(channelId: \"updates\",\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line = source.lines().nth(1).unwrap();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(1),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(
+            items.contains("notificationId: "),
+            "completion items: {items}"
+        );
+        assert!(
+            !items.contains("channelId: "),
+            "already supplied parameter should not be suggested: {items}"
+        );
     }
 
     #[test]
