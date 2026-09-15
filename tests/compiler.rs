@@ -28465,6 +28465,46 @@ fn main() -> i64 {
 }
 
 #[test]
+fn semantic_cfg_retains_await_boundaries_in_typed_values() {
+    let source = r#"
+async fn fetch_value() -> i64 {
+    return 7
+}
+
+async fn main() -> i64 {
+    let value: i64 = await fetch_value()
+    return value
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1311))
+        .expect("await expression should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let root = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::Await { .. }))
+        .expect("await should be retained as a typed value");
+    let ControlFlowValueKind::Await { value: awaited } = root.kind else {
+        panic!("initializer root should retain the await boundary");
+    };
+    let awaited_value = graph
+        .value(awaited)
+        .expect("awaited call should remain a typed child value");
+    assert!(matches!(
+        awaited_value.kind,
+        ControlFlowValueKind::Call { ref callee, .. } if callee == "fetch_value"
+    ));
+    assert!(
+        graph
+            .value_uses()
+            .iter()
+            .any(|usage| usage.user == root.id && usage.value == awaited)
+    );
+}
+
+#[test]
 fn semantic_cfg_tracks_control_dependent_value_uses_and_prunes_short_circuit_rhs() {
     let source = r#"
 fn dead() -> bool {

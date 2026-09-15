@@ -36,6 +36,12 @@ pub enum ControlFlowValueKind {
     AnonymousFunction {
         body: ControlFlowValueId,
     },
+    /// An explicit suspension boundary around the awaited value.  Keeping the
+    /// inner call as a normal value preserves its argument provenance while
+    /// making suspension visible to typed-IR consumers.
+    Await {
+        value: ControlFlowValueId,
+    },
     Call {
         callee: String,
         arguments: Vec<ControlFlowValueId>,
@@ -2115,20 +2121,34 @@ impl<'a> ControlFlowBuilder<'a> {
                 name: name.clone(),
                 definitions: self.scoped_definition_for(name).into_iter().collect(),
             },
-            ExprKind::Await(awaited) => match &awaited.kind {
-                ExprKind::Call {
-                    name,
-                    args,
-                    named_args,
-                } => ControlFlowValueKind::Call {
-                    callee: name.clone(),
-                    arguments: self.lower_call_arguments(producer, args, named_args),
-                },
-                _ => {
-                    let _ = self.lower_scalar_expr(producer, awaited);
-                    ControlFlowValueKind::Opaque
-                }
-            },
+            ExprKind::Await(awaited) => {
+                let kind = match &awaited.kind {
+                    ExprKind::Call {
+                        name,
+                        args,
+                        named_args,
+                    } => ControlFlowValueKind::Call {
+                        callee: name.clone(),
+                        arguments: self.lower_call_arguments(producer, args, named_args),
+                    },
+                    _ => ControlFlowValueKind::Opaque,
+                };
+                let awaited_types = self.expression_types(expr);
+                let awaited = self.push_typed_values_with_types(
+                    producer,
+                    awaited.span,
+                    kind,
+                    typecheck::constant_primitive_value(awaited, self.signatures),
+                    false,
+                    awaited_types,
+                );
+                awaited
+                    .into_iter()
+                    .next()
+                    .map_or(ControlFlowValueKind::Opaque, |value| {
+                        ControlFlowValueKind::Await { value }
+                    })
+            }
             ExprKind::AnonymousFunction { params, body, .. } => {
                 let definitions = params
                     .iter()
@@ -2589,6 +2609,18 @@ impl<'a> ControlFlowBuilder<'a> {
             .find(|(candidate, _)| *candidate == span)
             .map(|(_, types)| types.clone())
             .unwrap_or_default();
+        self.push_typed_values_with_types(producer, span, kind, constant, is_result, types)
+    }
+
+    fn push_typed_values_with_types(
+        &mut self,
+        producer: ControlFlowNodeId,
+        span: SourceSpan,
+        kind: ControlFlowValueKind,
+        constant: Option<ConstantValue>,
+        is_result: bool,
+        types: Vec<Type>,
+    ) -> Vec<ControlFlowValueId> {
         let scalar = types.len() == 1;
         types
             .into_iter()
@@ -3162,6 +3194,9 @@ fn collect_call_argument_definitions(
             }
         }
         ControlFlowValueKind::InterfacePack { value, .. } => {
+            collect_call_argument_definitions(*value, values, visited, definitions);
+        }
+        ControlFlowValueKind::Await { value } => {
             collect_call_argument_definitions(*value, values, visited, definitions);
         }
         ControlFlowValueKind::Literal
@@ -3828,6 +3863,14 @@ fn collect_value_uses(
                     ControlFlowValueRegionKind::DeferredBody,
                 );
             }
+            ControlFlowValueKind::Await { value: awaited } => {
+                push_value_use(
+                    &mut uses,
+                    value.id,
+                    *awaited,
+                    ControlFlowValueUseKind::Eager,
+                );
+            }
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
@@ -4360,6 +4403,7 @@ fn ir_value_is_discardable(
     };
     let result = match &value.kind {
         ControlFlowValueKind::Literal | ControlFlowValueKind::AnonymousFunction { .. } => true,
+        ControlFlowValueKind::Await { .. } => false,
         ControlFlowValueKind::NameRead { .. } => signatures.is_copy_type(&value.ty),
         ControlFlowValueKind::List { items } => items.iter().all(|item| child(*item, visiting)),
         ControlFlowValueKind::Map { entries } => entries
