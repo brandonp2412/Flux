@@ -4484,6 +4484,7 @@ static inline int flux__json_valid_number(const char *value) {
     return *cursor == '\0';
 }
 static inline const char *flux__json_parse_value(const char **cursor, const char *end, int depth, void (*callback)(const char *, const char *)) {
+    if (callback == NULL) return "invalid json.parse callback";
     if (depth > 128) return "JSON nesting exceeds 128 levels";
     flux__json_skip_ws(cursor, end);
     if (*cursor >= end) return "JSON value is incomplete";
