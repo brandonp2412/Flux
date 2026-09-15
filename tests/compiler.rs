@@ -24223,6 +24223,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_in_await_call_arguments() {
+    let source = r#"
+async fn echo(value: i64) -> void {
+    print(value)
+}
+
+async fn main() -> i64 {
+    let input: i64 = 5
+    await echo(input + 2)
+    return 0
+}
+"#;
+
+    check_source(source).expect("await constant argument should typecheck");
+    let generated = compile_to_c(source).expect("await constant argument should compile");
+    assert!(generated.contains("flux__async_start_cont_echo(INT64_C(7)"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
+        "typed IR constants should reach async suspension calls"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {

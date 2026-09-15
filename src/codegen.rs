@@ -19362,6 +19362,7 @@ fn async_release_prototype(function: &Function) -> String {
 
 #[derive(Clone)]
 struct AsyncContinuationPlan {
+    cfg_constant_values: HashMap<(u32, usize, usize, usize), ConstantValue>,
     locals: Vec<(String, Type)>,
     resume_locals: Vec<(String, Type)>,
     mutable: HashSet<String>,
@@ -20786,6 +20787,7 @@ fn async_continuation_plan(
     }
 
     Some(AsyncContinuationPlan {
+        cfg_constant_values: HashMap::new(),
         locals: locals.into_iter().collect(),
         resume_locals: resume_locals.into_iter().collect(),
         mutable,
@@ -24334,7 +24336,9 @@ fn emit_async_suspend_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    let (callee, args, named_args) = direct_await_call(await_expr).ok_or_else(|| {
+    let rewritten_await =
+        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_constant_values);
+    let (callee, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
         diag(
             await_expr.span,
             "async continuation lowering requires a direct async function call",
@@ -28441,8 +28445,9 @@ fn emit_function(
         async_loop_control: None,
     };
     if function.asynchronous
-        && let Some(plan) = async_continuation_plan(function, signatures)
+        && let Some(mut plan) = async_continuation_plan(function, signatures)
     {
+        plan.cfg_constant_values = cfg_constant_values.clone();
         emit_source_line(out, function.span, source_paths);
         emit_async_continuation_function(
             out,
@@ -38446,6 +38451,9 @@ fn substitute_nested_ir_constant_arguments(
     let mut rewritten = expr.clone();
     let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, constant_values);
     match &mut rewritten.kind {
+        ExprKind::Await(awaited) => {
+            **awaited = substitute_nested_ir_constant_arguments(awaited, constant_values);
+        }
         ExprKind::Call {
             args, named_args, ..
         }
