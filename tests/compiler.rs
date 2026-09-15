@@ -13728,6 +13728,74 @@ fn main() -> i64 {
 }
 
 #[test]
+fn definition_liveness_keeps_same_named_branch_bindings_separate() {
+    let source = r#"
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn main() -> i64 {
+    let source: i64[] = [10, 20, 30, 40]
+    if positive(1):
+        let view: i64[] = source[1:]
+        print(view[0])
+    else:
+        let view: i64[] = source[2:]
+        print(view[0])
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1213))
+        .expect("same-named branch bindings should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let view_definitions = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| {
+            node.definitions.iter().enumerate().map(move |(index, definition)| {
+                (
+                    fluxc::ir::ControlFlowDefinitionId::Node {
+                        node: node.id,
+                        index,
+                    },
+                    definition,
+                )
+            })
+        })
+        .filter(|(_, definition)| definition.name == "view")
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>();
+    assert_eq!(view_definitions.len(), 2);
+
+    let print_nodes = graph
+        .nodes()
+        .iter()
+        .filter(|node| node.ownership.reads.iter().any(|read| read == "view"))
+        .collect::<Vec<_>>();
+    assert_eq!(print_nodes.len(), 2);
+    for node in print_nodes {
+        let live = graph
+            .definition_live_before(node.id)
+            .expect("every CFG node should expose definition liveness")
+            .live();
+        let reaching = graph
+            .definitions_reaching_before(node.id, "view")
+            .expect("the view read should have reaching definitions");
+        assert_eq!(reaching.len(), 1);
+        assert_eq!(
+            live.iter()
+                .filter(|definition| view_definitions.contains(definition))
+                .count(),
+            1,
+            "a branch-local read must keep only its own same-named definition live"
+        );
+        assert!(live.contains(reaching.iter().next().unwrap()));
+    }
+}
+
+#[test]
 fn borrow_source_definition_identity_preserves_live_owner_move_rejection() {
     let source = r#"
 fn main() -> i64 {
