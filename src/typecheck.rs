@@ -5751,6 +5751,7 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
 fn json_map_value_type_is_supported(ty: &Type) -> bool {
     match ty {
         Type::I64 | Type::Bool | Type::Str => true,
+        Type::Optional(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
         Type::List(inner) | Type::Set(inner) => {
             matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
         }
@@ -6025,6 +6026,9 @@ pub fn type_of_expr(
                 ));
             }
             let primitive = |item: &Expr| -> Result<Type, Diagnostic> {
+                if matches!(item.kind, ExprKind::None) {
+                    return Ok(Type::Optional(Box::new(Type::Void)));
+                }
                 if !matches!(
                     item.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
@@ -6105,7 +6109,16 @@ pub fn type_of_expr(
             if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
                 return Err(diag(items[0].span, "map keys must be i64, bool, or str"));
             }
-            let value_ty = primitive(&items[1])?;
+            let mut value_ty = primitive(&items[1])?;
+            if matches!(value_ty, Type::I64 | Type::Bool | Type::Str)
+                && items
+                    .iter()
+                    .skip(3)
+                    .step_by(2)
+                    .any(|item| matches!(item.kind, ExprKind::None))
+            {
+                value_ty = Type::Optional(Box::new(value_ty));
+            }
             let mut seen_keys = HashSet::new();
             seen_keys.insert(format!(
                 "{}:{:?}",

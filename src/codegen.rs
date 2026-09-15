@@ -4379,6 +4379,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_object(")
         || runtime_usage.contains("flux__json_encode_nested_object(")
         || runtime_usage.contains("flux__json_encode_map_map(")
+        || runtime_usage.contains("flux__json_encode_optional_object(")
         || runtime_usage.contains("flux__json_encode_record_")
         || runtime_usage.contains("flux__json_encode_enum_")
         || runtime_usage.contains("flux__json_encode_optional_aggregate_")
@@ -4405,6 +4406,9 @@ static inline const char *flux__json_encode_recursive_array(struct flux__list va
 static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_optional_object(struct flux__map values, int kind, void (*callback)(const char *));
+static _Thread_local const char *flux__json_capture_value;
+static inline void flux__json_capture(const char *value);
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
 static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_null(void (*callback)(const char *));
@@ -4653,6 +4657,41 @@ static inline const char *flux__json_encode_object(struct flux__map values, int 
     }
     if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
+static inline const char *flux__json_encode_optional_object(struct flux__map values, int kind, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeObject callback";
+    if (kind < 100000 || kind > 100002) return "invalid optional JSON object value kind";
+    if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    char encoded[393217]; size_t output = 0; encoded[output++] = '{';
+    ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
+    ptrdiff_t value_stride = values.values.stride == 0 ? (kind == 100000 ? (ptrdiff_t)sizeof(struct flux__optional_i64) : kind == 100001 ? (ptrdiff_t)sizeof(struct flux__optional_bool) : (ptrdiff_t)sizeof(struct flux__optional_str)) : values.values.stride;
+    for (size_t index = 0; index < values.keys.len; index += 1) {
+        const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride));
+        if (key == NULL) return "JSON object contains a null key";
+        size_t key_length = 0; while (key_length <= 65536 && key[key_length] != '\0') key_length += 1;
+        if (key_length > 65536) return "JSON object key exceeds 65536 bytes";
+        if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = ','; }
+        flux__json_capture_value = NULL;
+        const char *key_error = flux__json_encode_string(key, flux__json_capture);
+        if (key_error != NULL || flux__json_capture_value == NULL) return key_error == NULL ? "JSON object encoding failed" : key_error;
+        size_t encoded_key_length = strlen(flux__json_capture_value);
+        if (output > sizeof(encoded) - 1 - encoded_key_length - 1) return "encoded JSON object exceeds 393216 bytes";
+        memcpy(encoded + output, flux__json_capture_value, encoded_key_length); output += encoded_key_length; encoded[output++] = ':';
+        if (kind == 100000) {
+            struct flux__optional_i64 value = *((struct flux__optional_i64 *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
+            if (!value.has_value) { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; }
+            else { int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)value.value); if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON object exceeds 393216 bytes"; output += (size_t)written; }
+        } else if (kind == 100001) {
+            struct flux__optional_bool value = *((struct flux__optional_bool *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
+            const char *literal = !value.has_value ? "null" : value.value ? "true" : "false"; size_t length = strlen(literal);
+            if (output > sizeof(encoded) - 1 - length) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, literal, length); output += length;
+        } else {
+            struct flux__optional_str value = *((struct flux__optional_str *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
+            if (!value.has_value) { if (output > sizeof(encoded) - 1 - 4) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, "null", 4); output += 4; }
+            else { flux__json_capture_value = NULL; const char *value_error = flux__json_encode_string(value.value, flux__json_capture); if (value_error != NULL || flux__json_capture_value == NULL) return value_error == NULL ? "JSON object encoding failed" : value_error; size_t length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - length) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, flux__json_capture_value, length); output += length; }
+        }
+    }
+    if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
     if (kind < 0 || kind > 2) return "invalid nested JSON object value kind";
@@ -4749,7 +4788,9 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
             ? flux__json_encode_object(child, kind, flux__json_capture)
             : kind < 6
                 ? flux__json_encode_nested_object(child, kind - 3, flux__json_capture)
-                : flux__json_encode_map_map(child, kind - 6, flux__json_capture);
+                : kind >= 100000 && kind < 100003
+                    ? flux__json_encode_optional_object(child, kind, flux__json_capture)
+                    : flux__json_encode_map_map(child, kind - 6, flux__json_capture);
         if (error != NULL) return error;
         if (flux__json_capture_value == NULL) return "JSON object encoding failed";
         size_t child_length = strlen(flux__json_capture_value);
@@ -32948,6 +32989,12 @@ fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'stat
         Type::I64 => Ok(0),
         Type::Bool => Ok(1),
         Type::Str => Ok(2),
+        Type::Optional(inner) => match signatures.canonical_type(&inner) {
+            Type::I64 => Ok(100000),
+            Type::Bool => Ok(100001),
+            Type::Str => Ok(100002),
+            _ => Err("json.encodeObject requires scalar optional values"),
+        },
         Type::List(inner) | Type::Set(inner) => match signatures.canonical_type(&inner) {
             Type::I64 => Ok(3),
             Type::Bool => Ok(4),
@@ -33057,7 +33104,22 @@ fn emit_expr(
                     return Err(diag(pair[0].span, "map literal contains a duplicate key"));
                 }
                 keys.push(emit_expr(&pair[0], env, signatures)?.code);
-                values.push(emit_expr(&pair[1], env, signatures)?.code);
+                let emitted_value = emit_expr(&pair[1], env, signatures)?;
+                let value_code = if matches!(value.as_ref(), Type::Optional(_))
+                    && !matches!(emitted_value.ty, Type::Optional(_))
+                {
+                    format!(
+                        "(({}){{ .has_value = true, .value = {} }})",
+                        value_c, emitted_value.code
+                    )
+                } else if matches!(value.as_ref(), Type::Optional(_))
+                    && matches!(pair[1].kind, ExprKind::None)
+                {
+                    format!("(({}){{ .has_value = false }})", value_c)
+                } else {
+                    emitted_value.code
+                };
+                values.push(value_code);
             }
             let len = keys.len();
             EmittedExpr {
@@ -35810,7 +35872,11 @@ fn emit_qualified_call(
                 }
                 let kind = json_map_value_kind(&element, signatures)
                     .map_err(|message| diag(span, message))?;
-                if kind >= 6 {
+                if kind >= 100006 {
+                    ("flux__json_encode_map_map", kind - 6, 0)
+                } else if kind >= 100000 {
+                    ("flux__json_encode_optional_object", kind, 0)
+                } else if kind >= 6 {
                     ("flux__json_encode_map_map", kind - 6, 0)
                 } else if kind >= 3 {
                     ("flux__json_encode_nested_object", kind - 3, 0)

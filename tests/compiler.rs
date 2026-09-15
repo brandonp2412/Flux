@@ -17919,6 +17919,52 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_maps_encode_optional_scalar_values_as_null_or_value() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let flags: map<str, bool?> = {"yes": true, "no": none}
+    let nested: map<str, map<str, str?>> = {"values": {"present": "ok", "absent": none}}
+    print(json.encodeObject(flags, encoded))
+    print(json.encode(nested, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("optional JSON map values should typecheck");
+    let generated = compile_to_c(source).expect("optional JSON map values should lower");
+    assert!(generated.contains("flux__json_encode_optional_object("));
+    let root = std::env::temp_dir().join(format!("flux-json-map-optional-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional JSON map directory should be writable");
+    let c_path = root.join("json-map-optional.c");
+    let exe_path = root.join("json-map-optional");
+    fs::write(&c_path, generated).expect("generated optional JSON map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional JSON map code");
+    assert!(
+        compile.status.success(),
+        "optional JSON map C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional JSON map program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"yes\":true,\"no\":null}\nnil\n{\"values\":{\"present\":\"ok\",\"absent\":null}}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(
