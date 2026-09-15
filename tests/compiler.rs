@@ -19403,6 +19403,8 @@ fn main() -> i64 {
     check_source(source).expect("nested JSON scalar arrays should typecheck");
     let generated = compile_to_c(source).expect("nested JSON scalar arrays should lower");
     assert!(generated.contains("flux__json_encode_nested_array("));
+    assert!(generated.contains("JSON array has missing element storage"));
+    assert!(generated.contains("JSON nested array has missing element storage"));
     let root = std::env::temp_dir().join(format!("flux-json-nested-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary nested JSON directory should be writable");
