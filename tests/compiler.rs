@@ -19452,6 +19452,7 @@ fn main() -> i64 {
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
     assert!(generated.contains("flux__tls_read("));
     assert!(generated.contains("flux__tls_bounded_length(value, 65536"));
+    assert!(generated.contains("TLS read contained NUL in text payload"));
     assert!(generated.contains("invalid or closed TLS session"));
 
     let root = std::env::temp_dir().join(format!("flux-tls-contract-{}", std::process::id()));
