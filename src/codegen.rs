@@ -38522,6 +38522,8 @@ fn emit_json_record_helpers(
             json_optional_aggregate_helper_name(&element_ty, signatures)
         } else if matches!(&element_ty, Type::List(_) | Type::Set(_)) {
             json_array_aggregate_helper_name(&element_ty, signatures)
+        } else if matches!(&element_ty, Type::Map(_, _)) {
+            json_map_aggregate_helper_name(&element_ty, signatures)
         } else if json_enum_supported(&element_ty, signatures) {
             json_enum_helper_name(&element_ty, signatures)
         } else {
@@ -38548,6 +38550,8 @@ fn collect_json_array_aggregate_types(
                 || json_enum_supported(&element, signatures)
                 || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures))
                 || (matches!(&element, Type::List(_) | Type::Set(_))
+                    && json_array_contains_aggregate(&element, signatures))
+                || (matches!(&element, Type::Map(_, _))
                     && json_array_contains_aggregate(&element, signatures))
             {
                 arrays.insert(Type::List(Box::new(element.clone())));
@@ -38588,6 +38592,10 @@ fn json_array_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
             json_record_supported(ty, signatures) || json_enum_supported(ty, signatures)
         }
         Type::List(inner) | Type::Set(inner) => json_array_contains_aggregate(&inner, signatures),
+        Type::Map(key, value) => {
+            signatures.canonical_type(&key) == Type::Str
+                && json_map_contains_aggregate(&value, signatures)
+        }
         _ => false,
     }
 }

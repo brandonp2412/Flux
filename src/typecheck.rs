@@ -5832,6 +5832,10 @@ fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                 || json_enum_type_is_supported(&inner, signatures)
         }
         Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
+        Type::Map(key, value) => {
+            signatures.canonical_type(&key) == Type::Str
+                && json_map_contains_aggregate(&value, signatures)
+        }
         Type::Record(_) | Type::Named(_) => {
             json_record_type_is_supported(ty, signatures)
                 || json_enum_type_is_supported(ty, signatures)
@@ -5897,6 +5901,24 @@ fn json_optional_aggregate_type_is_supported(ty: &Type, signatures: &Signatures)
     };
     json_record_type_is_supported(&inner, signatures)
         || json_enum_type_is_supported(&inner, signatures)
+}
+
+fn json_map_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::Record(_) | Type::Named(_) => {
+            json_record_type_is_supported(ty, signatures)
+                || json_enum_type_is_supported(ty, signatures)
+        }
+        Type::Optional(inner) => {
+            json_record_type_is_supported(&inner, signatures)
+                || json_enum_type_is_supported(&inner, signatures)
+        }
+        Type::Map(key, value) => {
+            signatures.canonical_type(&key) == Type::Str
+                && json_map_contains_aggregate(&value, signatures)
+        }
+        _ => false,
+    }
 }
 
 fn json_enum_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
@@ -11048,7 +11070,7 @@ fn check_qualified_call(
                 if !valid_element {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeArray values must be a list of scalar or scalar-optional values or recursively nested arrays",
+                        "json.encodeArray values must be a list of supported scalar, aggregate, or recursively nested values",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
