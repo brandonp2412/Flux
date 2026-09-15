@@ -5817,6 +5817,17 @@ fn json_scalar_optional_type_is_supported(ty: &Type, signatures: &Signatures) ->
     }
 }
 
+fn json_optional_aggregate_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    let Type::Optional(inner) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    let Type::Named(_) = signatures.canonical_type(&inner) else {
+        return false;
+    };
+    json_record_type_is_supported(&inner, signatures)
+        || json_enum_type_is_supported(&inner, signatures)
+}
+
 fn json_enum_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     let Type::Named(name) = signatures.canonical_type(ty) else {
         return false;
@@ -10836,7 +10847,10 @@ fn check_qualified_call(
                 let value = signatures.canonical_type(&value);
                 let valid = match &value {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(_) => json_scalar_optional_type_is_supported(&value, signatures),
+                    Type::Optional(_) => {
+                        json_scalar_optional_type_is_supported(&value, signatures)
+                            || json_optional_aggregate_type_is_supported(&value, signatures)
+                    }
                     Type::List(element) => json_array_type_is_supported(
                         &signatures.canonical_type(element),
                         signatures,

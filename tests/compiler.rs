@@ -16614,6 +16614,65 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_encodes_copy_optional_named_aggregates() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+enum Choice {
+    Number(i64)
+    Empty
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let user: User? = User { name: "Ada", age: 42 }
+    let noUser: User? = none
+    let choice: Choice? = Choice.Number(7)
+    let noChoice: Choice? = none
+    print(json.encode(user, encoded))
+    print(json.encode(noUser, encoded))
+    print(json.encode(choice, encoded))
+    print(json.encode(noChoice, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("Copy optional aggregates should typecheck for JSON encoding");
+    let generated = compile_to_c(source).expect("optional aggregate JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_optional_aggregate_optional_named_User"));
+    assert!(generated.contains("flux__json_encode_optional_aggregate_optional_named_Choice"));
+    let root = std::env::temp_dir().join(format!("flux-json-optional-aggregate-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("optional aggregate JSON directory should be writable");
+    let c_path = root.join("optional-aggregate-json.c");
+    let exe_path = root.join("optional-aggregate-json");
+    fs::write(&c_path, generated).expect("optional aggregate JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional aggregate JSON");
+    assert!(
+        compile.status.success(),
+        "optional aggregate JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional aggregate JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"name\":\"Ada\",\"age\":42}\nnil\nnull\nnil\n{\"Number\":7}\nnil\nnull\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_encodes_copy_records_with_scalar_optional_fields() {
     let source = r#"
 fn emit(value: str) -> void {

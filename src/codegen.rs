@@ -1527,7 +1527,8 @@ pub fn emit_c_for_target_with_source_metadata(
     // Anonymous records were already defined above, so both aggregate forms can
     // share the same bounded callback-scoped encoder generation here.
     emit_json_record_helpers(&mut out, signatures, &function_ir, &runtime_usage);
-    emit_json_enum_helpers(&mut out, signatures, &function_ir);
+    emit_json_enum_helpers(&mut out, signatures, &function_ir, &runtime_usage);
+    emit_json_optional_aggregate_helpers(&mut out, signatures, &function_ir, &runtime_usage);
 
     emit_interface_value_definitions(
         &mut out,
@@ -4378,6 +4379,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_map_map(")
         || runtime_usage.contains("flux__json_encode_record_")
         || runtime_usage.contains("flux__json_encode_enum_")
+        || runtime_usage.contains("flux__json_encode_optional_aggregate_")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -35737,6 +35739,19 @@ fn emit_qualified_call(
                         Type::I64 => "flux__json_encode_optional_i64",
                         Type::Bool => "flux__json_encode_optional_bool",
                         Type::Str => "flux__json_encode_optional_str",
+                        Type::Named(_) if json_record_supported(&inner, signatures)
+                            || json_enum_supported(&inner, signatures) => {
+                            return Ok((
+                                format!(
+                                    "{}({}, {})",
+                                    json_optional_aggregate_helper_name(&value.ty, signatures),
+                                    value.code,
+                                    callback.code
+                                ),
+                                vec![Type::Error],
+                                None,
+                            ));
+                        }
                         _ => {
                             return Err(diag(
                                 span,
@@ -37930,6 +37945,13 @@ fn json_enum_helper_name(ty: &Type, signatures: &Signatures) -> String {
     format!("flux__json_encode_enum_{}", type_mangle(ty, signatures))
 }
 
+fn json_optional_aggregate_helper_name(ty: &Type, signatures: &Signatures) -> String {
+    format!(
+        "flux__json_encode_optional_aggregate_{}",
+        type_mangle(ty, signatures)
+    )
+}
+
 fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
     let Type::Named(name) = signatures.canonical_type(ty) else { return false };
     signatures.enum_type(&name).is_some_and(|definition| definition.variants.iter().all(|variant| {
@@ -38005,13 +38027,19 @@ fn emit_json_record_helpers(
     function_ir: &FunctionIrCache,
     runtime_usage: &str,
 ) {
-    if !runtime_usage.contains("flux__json_encode_record_") && !runtime_usage.contains("flux__json_encode_enum_") {
+    if !runtime_usage.contains("flux__json_encode_record_")
+        && !runtime_usage.contains("flux__json_encode_enum_")
+        && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
+    {
         return;
     }
     let mut records = HashSet::new();
     for function in function_ir.values() {
         for value in function.values() {
             collect_json_record_types(&value.ty, signatures, &mut records);
+            if let Type::Optional(inner) = signatures.canonical_type(&value.ty) {
+                collect_json_record_types(&inner, signatures, &mut records);
+            }
         }
     }
     let mut records = records.into_iter().collect::<Vec<_>>();
@@ -38089,12 +38117,24 @@ fn emit_json_enum_helpers(
     out: &mut String,
     signatures: &Signatures,
     function_ir: &FunctionIrCache,
+    runtime_usage: &str,
 ) {
+    if !runtime_usage.contains("flux__json_encode_enum_")
+        && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
+    {
+        return;
+    }
     let mut enums = HashSet::new();
     for function in function_ir.values() {
         for value in function.values() {
             let ty = signatures.canonical_type(&value.ty);
-            if json_enum_supported(&ty, signatures) { enums.insert(ty); }
+            if json_enum_supported(&ty, signatures) {
+                enums.insert(ty);
+            } else if let Type::Optional(inner) = ty {
+                if json_enum_supported(&inner, signatures) {
+                    enums.insert(*inner);
+                }
+            }
         }
     }
     let mut enums = enums.into_iter().collect::<Vec<_>>();
@@ -38128,6 +38168,48 @@ fn emit_json_enum_helpers(
             out.push_str("encoded[output++] = '}'; break; }\n");
         }
         out.push_str("default: return \"invalid JSON enum tag\"; } if (output >= sizeof(encoded)) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
+    }
+}
+
+fn emit_json_optional_aggregate_helpers(
+    out: &mut String,
+    signatures: &Signatures,
+    function_ir: &FunctionIrCache,
+    runtime_usage: &str,
+) {
+    if !runtime_usage.contains("flux__json_encode_optional_aggregate_") {
+        return;
+    }
+    let mut optionals = HashSet::new();
+    for function in function_ir.values() {
+        for value in function.values() {
+            let Type::Optional(inner) = signatures.canonical_type(&value.ty) else {
+                continue;
+            };
+            let Type::Named(_) = signatures.canonical_type(&inner) else {
+                continue;
+            };
+            if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures) {
+                optionals.insert(Type::Optional(inner));
+            }
+        }
+    }
+    let mut optionals = optionals.into_iter().collect::<Vec<_>>();
+    optionals.sort_by_key(|ty| ty.name());
+    for ty in optionals {
+        let Type::Optional(inner) = signatures.canonical_type(&ty) else {
+            continue;
+        };
+        let helper = json_optional_aggregate_helper_name(&ty, signatures);
+        let inner_helper = if json_enum_supported(&inner, signatures) {
+            json_enum_helper_name(&inner, signatures)
+        } else {
+            json_record_helper_name(&inner, signatures)
+        };
+        out.push_str(&format!(
+            "static inline const char *{helper}({} value, void (*callback)(const char *)) {{ if (callback == NULL) return \"invalid json.encode callback\"; if (!value.has_value) {{ callback(\"null\"); return NULL; }} return {inner_helper}(value.value, callback); }}\n",
+            c_type(&ty, signatures)
+        ));
     }
 }
 
