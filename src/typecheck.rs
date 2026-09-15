@@ -5952,9 +5952,9 @@ pub fn type_of_expr(
                         let Type::Map(key, value) = map_ty else {
                             unreachable!("nested map literal must have map type");
                         };
-                        if *key != Type::Str
-                            || !matches!(*value, Type::I64 | Type::Bool | Type::Str)
-                        {
+                        let scalar_map_value = matches!(*value, Type::I64 | Type::Bool | Type::Str)
+                            || matches!(*value, Type::List(ref inner) if matches!(**inner, Type::I64 | Type::Bool | Type::Str));
+                        if *key != Type::Str || !scalar_map_value {
                             return Err(diag(
                                 item.span,
                                 "nested map literal values must be string-keyed scalar maps",
@@ -10771,10 +10771,14 @@ fn check_qualified_call(
                                 ),
                                 Type::Map(inner_key, inner_value) => {
                                     signatures.canonical_type(&inner_key) == Type::Str
-                                        && matches!(
-                                            signatures.canonical_type(&inner_value),
-                                            Type::I64 | Type::Bool | Type::Str
-                                        )
+                                        && match signatures.canonical_type(&inner_value) {
+                                            Type::I64 | Type::Bool | Type::Str => true,
+                                            Type::List(inner) => matches!(
+                                                signatures.canonical_type(&inner),
+                                                Type::I64 | Type::Bool | Type::Str
+                                            ),
+                                            _ => false,
+                                        }
                                 }
                                 _ => false,
                             }
@@ -10867,10 +10871,14 @@ fn check_qualified_call(
                     ),
                     Type::Map(inner_key, inner_value) => {
                         signatures.canonical_type(&inner_key) == Type::Str
-                            && matches!(
-                                signatures.canonical_type(&inner_value),
-                                Type::I64 | Type::Bool | Type::Str
-                            )
+                            && match signatures.canonical_type(&inner_value) {
+                                Type::I64 | Type::Bool | Type::Str => true,
+                                Type::List(inner) => matches!(
+                                    signatures.canonical_type(&inner),
+                                    Type::I64 | Type::Bool | Type::Str
+                                ),
+                                _ => false,
+                            }
                     }
                     _ => false,
                 };

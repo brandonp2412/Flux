@@ -1626,7 +1626,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encodeObject",
             3,
-            "fn json.encodeObject(values: map<str, i64|bool|str|scalar[]|map<str, scalar>>, callback: fn(str) -> void) -> error",
+            "fn json.encodeObject(values: map<str, i64|bool|str|scalar[]|map<str, scalar|scalar[]>>, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,

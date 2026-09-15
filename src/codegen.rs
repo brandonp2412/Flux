@@ -4681,7 +4681,7 @@ static inline void flux__json_capture(const char *value) {
 }
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
-    if (kind < 0 || kind > 2) return "invalid nested JSON object value kind";
+    if (kind < 0 || kind > 5) return "invalid nested JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
@@ -4698,7 +4698,9 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         memcpy(encoded + output, flux__json_capture_value, encoded_key_length); output += encoded_key_length;
         flux__json_capture_value = NULL;
         struct flux__map child = *((struct flux__map *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
-        const char *error = flux__json_encode_object(child, kind, flux__json_capture);
+        const char *error = kind < 3
+            ? flux__json_encode_object(child, kind, flux__json_capture)
+            : flux__json_encode_nested_object(child, kind - 3, flux__json_capture);
         if (error != NULL) return error;
         if (flux__json_capture_value == NULL) return "JSON object encoding failed";
         size_t child_length = strlen(flux__json_capture_value);
@@ -35667,6 +35669,17 @@ fn emit_qualified_call(
                             Type::I64 => 6,
                             Type::Bool => 7,
                             Type::Str => 8,
+                            Type::List(inner) => match signatures.canonical_type(&inner) {
+                                Type::I64 => 9,
+                                Type::Bool => 10,
+                                Type::Str => 11,
+                                _ => {
+                                    return Err(diag(
+                                        span,
+                                        "json.encodeObject requires scalar-map values",
+                                    ));
+                                }
+                            },
                             _ => {
                                 return Err(diag(
                                     span,

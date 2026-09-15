@@ -17423,6 +17423,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_nested_map_scalar_lists_encode_natively() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: map<str, map<str, i64[]>> = {"numbers": {"values": [1, -2]}}
+    let encodingError: error = json.encode(values, encoded)
+    print(encodingError)
+    return 0
+}
+"#;
+    check_source(source).expect("nested map scalar lists should typecheck");
+    let generated = compile_to_c(source).expect("nested map scalar lists should lower");
+    assert!(generated.contains("flux__json_encode_map_map("));
+    let root = std::env::temp_dir().join(format!("flux-json-map-list-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON map-list directory should be writable");
+    let c_path = root.join("json-map-list.c");
+    let exe_path = root.join("json-map-list");
+    fs::write(&c_path, generated).expect("generated JSON map-list C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested map scalar-list code");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested map scalar-list program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"numbers\":{\"values\":[1,-2]}}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(
