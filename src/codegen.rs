@@ -7638,6 +7638,9 @@ static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (ha
 static inline bool flux__tls_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
 static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, const char *server_name, const char *ca_file) {
     if (socket_handle < 0 || socket_handle > INT_MAX || server_name == NULL || server_name[0] == '\0' || ca_file == NULL) return flux__tls_result(-1, "invalid TLS wrap arguments");
+    size_t server_name_length = 0; size_t ca_file_length = 0;
+    if (!flux__tls_bounded_length(server_name, 65536, &server_name_length) || !flux__tls_bounded_length(ca_file, 65536, &ca_file_length)) return flux__tls_result(-1, "TLS wrap string exceeds 65536 bytes");
+    (void)server_name_length; (void)ca_file_length;
     SSL_CTX *context = SSL_CTX_new(TLS_client_method());
     if (context == NULL) return flux__tls_result(-1, "failed to create TLS context");
     SSL_CTX_set_verify(context, SSL_VERIFY_PEER, NULL);
@@ -7652,6 +7655,9 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
 }
 static inline struct flux__net_i64_error flux__tls_listen(int64_t socket_handle, const char *certificate, const char *key) {
     if (socket_handle < 0 || socket_handle > INT_MAX || certificate == NULL || certificate[0] == '\0' || key == NULL || key[0] == '\0') return flux__tls_result(-1, "invalid TLS server arguments");
+    size_t certificate_length = 0; size_t key_length = 0;
+    if (!flux__tls_bounded_length(certificate, 65536, &certificate_length) || !flux__tls_bounded_length(key, 65536, &key_length)) return flux__tls_result(-1, "TLS server path exceeds 65536 bytes");
+    (void)certificate_length; (void)key_length;
     SSL_CTX *context = SSL_CTX_new(TLS_server_method());
     if (context == NULL) return flux__tls_result(-1, "failed to create TLS server context");
     if (SSL_CTX_use_certificate_file(context, certificate, SSL_FILETYPE_PEM) != 1 || SSL_CTX_use_PrivateKey_file(context, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load or validate TLS server certificate"); }

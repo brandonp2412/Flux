@@ -19448,6 +19448,8 @@ fn main() -> i64 {
     assert!(generated.contains("#include <openssl/ssl.h>"));
     assert!(generated.contains("SSL_CTX_set_verify"));
     assert!(generated.contains("SSL_get_verify_result"));
+    assert!(generated.contains("TLS wrap string exceeds 65536 bytes"));
+    assert!(generated.contains("TLS server path exceeds 65536 bytes"));
     assert!(generated.contains("flux__tls_read("));
     assert!(generated.contains("flux__tls_bounded_length(value, 65536"));
     assert!(generated.contains("invalid or closed TLS session"));
