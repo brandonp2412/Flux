@@ -14665,6 +14665,19 @@ fn main() -> i64 {
             .collect::<Vec<_>>(),
         vec!["drop"]
     );
+    let after_drop = graph
+        .nodes()
+        .iter()
+        .find(|candidate| candidate.id != node.id && candidate.span.line >= node.span.line)
+        .and_then(|candidate| graph.move_state_before(candidate.id));
+    assert!(
+        after_drop.is_some_and(|state| {
+            call.argument_definitions_at(0)
+                .iter()
+                .all(|definition| state.is_definition_moved(*definition))
+        }),
+        "the normalized consuming call must feed the move-state fixed point"
+    );
     let calls = graph.ownership_calls().collect::<Vec<_>>();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, node.id);

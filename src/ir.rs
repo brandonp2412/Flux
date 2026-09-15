@@ -5761,6 +5761,27 @@ fn compute_move_states(
                     .or_insert((movement.source.clone(), movement.span));
             }
         }
+        // Consuming calls are ownership boundaries in their own right.  The
+        // explicit `drop` lowering currently emits a matching OwnershipMove,
+        // but future owned/resource calls may be represented only by their
+        // typed call mode.  Consume the normalized argument definitions here
+        // so move-state propagation cannot silently depend on a parallel
+        // source-shaped event.
+        for call in &nodes[id.0].ownership.calls {
+            if !call.is_consuming() {
+                continue;
+            }
+            for (index, kind) in call.argument_kinds.iter().enumerate() {
+                if *kind != OwnershipCallArgumentKind::Consuming {
+                    continue;
+                }
+                for definition in call.argument_definitions_at(index) {
+                    outgoing_state
+                        .entry(*definition)
+                        .or_insert((call.callee.clone(), call.span));
+                }
+            }
+        }
 
         for edge in edges.iter().filter(|edge| edge.from == id) {
             let target = edge.to.0;
