@@ -15963,10 +15963,16 @@ fn main() -> i64 {
     let nul: error = json.parse("\"\\u0000\"", token)
     let loneHigh: error = json.parse("\"\\uD800\"", token)
     let loneLow: error = json.parse("\"\\uDC00\"", token)
+    let leadingZero: error = json.parse("01", token)
+    let plusSign: error = json.parse("+1", token)
+    let missingExponent: error = json.parse("1e-", token)
     print(valid)
     print(nul)
     print(loneHigh)
     print(loneLow)
+    print(leadingZero)
+    print(plusSign)
+    print(missingExponent)
     return 0
 }
 "#;
@@ -15996,6 +16002,7 @@ fn main() -> i64 {
     assert!(stdout.contains("JSON unicode escape decodes to a NUL byte"));
     assert!(stdout.contains("JSON unicode high surrogate must be followed by a low surrogate"));
     assert!(stdout.contains("JSON unicode low surrogate must follow a high surrogate"));
+    assert_eq!(stdout.matches("JSON primitive is invalid").count(), 3);
     let _ = fs::remove_dir_all(&root);
 }
 

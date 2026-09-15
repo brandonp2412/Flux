@@ -4358,6 +4358,15 @@ static inline const char *flux__json_decode_unicode(const char **cursor, const c
     } else if (codepoint >= 0xDC00u && codepoint <= 0xDFFFu) return "JSON unicode low surrogate must follow a high surrogate";
     return flux__json_append_codepoint(target, length, codepoint);
 }
+static inline int flux__json_valid_number(const char *value) {
+    const unsigned char *cursor = (const unsigned char *)value;
+    if (*cursor == '-') cursor += 1;
+    if (*cursor == '0') cursor += 1;
+    else { if (*cursor < '1' || *cursor > '9') return 0; while (*cursor >= '0' && *cursor <= '9') cursor += 1; }
+    if (*cursor == '.') { cursor += 1; if (*cursor < '0' || *cursor > '9') return 0; while (*cursor >= '0' && *cursor <= '9') cursor += 1; }
+    if (*cursor == 'e' || *cursor == 'E') { cursor += 1; if (*cursor == '+' || *cursor == '-') cursor += 1; if (*cursor < '0' || *cursor > '9') return 0; while (*cursor >= '0' && *cursor <= '9') cursor += 1; }
+    return *cursor == '\0';
+}
 static inline const char *flux__json_parse_value(const char **cursor, const char *end, int depth, void (*callback)(const char *, const char *)) {
     if (depth > 128) return "JSON nesting exceeds 128 levels";
     flux__json_skip_ws(cursor, end);
@@ -4408,7 +4417,7 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
     size_t length = (size_t)(*cursor - start); if (length == 0 || length > 64) return "JSON primitive is invalid or too long";
     char token[65]; memcpy(token, start, length); token[length] = '\0';
     if (strcmp(token, "true") && strcmp(token, "false") && strcmp(token, "null")) {
-        char *end_number = NULL; strtod(token, &end_number); if (end_number == token || *end_number != '\0' || strchr(token, 'x') != NULL || strchr(token, 'X') != NULL) return "JSON primitive is invalid";
+        if (!flux__json_valid_number(token)) return "JSON primitive is invalid";
         callback("number", token); return NULL;
     }
     callback(strcmp(token, "null") == 0 ? "null" : "boolean", token); return NULL;
