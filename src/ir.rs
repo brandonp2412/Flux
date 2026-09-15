@@ -537,6 +537,28 @@ impl ControlFlowMoveState {
         })
     }
 
+    /// Return whether the complete value for `definition` has been consumed.
+    ///
+    /// This deliberately differs from `is_definition_projection_moved`: a
+    /// partial field move must not be reported as a whole-value move, because
+    /// future aggregate ownership checking may still permit unrelated fields
+    /// to be read or transferred. Keeping the distinction in normalized move
+    /// state prevents each ownership consumer from interpreting empty paths
+    /// independently.
+    pub fn is_definition_whole_moved(&self, definition: ControlFlowDefinitionId) -> bool {
+        self.moved
+            .iter()
+            .any(|binding| binding.definition == definition && binding.projection.is_empty())
+    }
+
+    /// Return whether at least one partial projection of `definition` has
+    /// been consumed, excluding a whole-value move.
+    pub fn is_definition_partially_moved(&self, definition: ControlFlowDefinitionId) -> bool {
+        self.moved
+            .iter()
+            .any(|binding| binding.definition == definition && !binding.projection.is_empty())
+    }
+
     /// Return the exact consumed projections for one reaching definition.
     ///
     /// This is a borrowed view so ownership checking and later lowering can
@@ -6220,7 +6242,30 @@ mod tests {
             .map(|binding| binding.projection.clone())
             .collect::<Vec<_>>();
         assert_eq!(projections, vec![path(&["payload", "bytes"])]);
-        assert!(state.is_definition_projection_moved(definition, &path(&["payload"])));
+        assert!(!state.is_definition_whole_moved(definition));
+        assert!(state.is_definition_partially_moved(definition));
+        assert!(state.is_definition_partially_moved(sibling));
         assert!(!state.is_definition_projection_moved(definition, &path(&["other"])));
+        assert!(state.is_definition_projection_moved(definition, &path(&["payload"])));
+    }
+
+    #[test]
+    fn normalized_move_queries_distinguish_whole_value_consumption() {
+        let definition = ControlFlowDefinitionId::Node {
+            node: super::ControlFlowNodeId(7),
+            index: 1,
+        };
+        let state = ControlFlowMoveState {
+            reachable: true,
+            moved: vec![OwnershipMovedBinding {
+                definition,
+                name: "value".to_string(),
+                projection: Vec::new(),
+                origin: SourceSpan::new(11, 2, 1),
+            }],
+        };
+        assert!(state.is_definition_whole_moved(definition));
+        assert!(!state.is_definition_partially_moved(definition));
+        assert!(state.is_definition_projection_moved(definition, &["nested".to_string()]));
     }
 }
