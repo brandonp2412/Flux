@@ -25,6 +25,13 @@ pub use parser::GRAMMAR_VERSION;
 pub use terminal::{DiagnosticSource, TerminalRenderOptions, render_diagnostics};
 pub use typecheck::UI_API_VERSION;
 
+/// Compatibility version for Flux's source-level type and memory model.
+///
+/// The version covers the meaning of `Copy`, `Send`, moves, immutable borrows,
+/// and the explicitly rejected ownership-sensitive shapes.  It is independent
+/// of the parser, formatter, package, UI, and native ABI versions.
+pub const TYPE_MEMORY_MODEL_VERSION: u32 = 1;
+
 pub fn compile_to_c(source: &str) -> Result<String, Diagnostic> {
     compile_to_c_with_source(source, SourceId::UNKNOWN)
 }

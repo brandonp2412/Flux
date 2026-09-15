@@ -27727,6 +27727,19 @@ fn native_abi_policy_has_a_stable_discoverable_version() {
 }
 
 #[test]
+fn type_memory_model_has_a_stable_discoverable_version() {
+    assert_eq!(fluxc::TYPE_MEMORY_MODEL_VERSION, 1);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["memory", "--version"])
+        .output()
+        .expect("flux memory --version should launch");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn formatter_contract_has_a_stable_discoverable_version() {
     assert_eq!(fluxc::formatter::FORMATTER_VERSION, 2);
 
