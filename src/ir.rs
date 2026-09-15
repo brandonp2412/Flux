@@ -1436,12 +1436,16 @@ impl<'a> ControlFlowBuilder<'a> {
             &self.parameters,
             self.signatures,
         );
-        let move_states_before = compute_move_states(
-            &self.nodes,
-            &self.edges,
+        // Resolve move provenance before the fixed-point move analysis.  The
+        // move state must consume the same definition-scoped facts that were
+        // attached to each normalized ownership event, rather than rebuilding
+        // a name-based approximation while propagating through the CFG.
+        populate_move_source_definitions_on_nodes(
+            &mut self.nodes,
+            &self.values,
             &reaching_definitions_before,
-            self.entry,
         );
+        let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
         let (definition_live_before, definition_live_after) =
@@ -1500,7 +1504,6 @@ impl<'a> ControlFlowBuilder<'a> {
         };
         populate_call_argument_definitions(&mut graph, self.signatures);
         populate_return_ownership(&mut graph, self.signatures);
-        populate_move_source_definitions(&mut graph);
         populate_borrow_source_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
@@ -3125,24 +3128,25 @@ fn expr_is_consuming_drop(expr: &Expr) -> bool {
 }
 
 /// Attach reaching-definition identity to move events after the CFG has been
-/// normalized.  Keeping this as a post-pass means move construction can stay
-/// local to expression lowering while all ownership consumers observe the
-/// same definition map used by use-after-move analysis.
-fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
-    let reaching_definitions_before = graph.reaching_definitions_before.clone();
-    for node in &mut graph.nodes {
+/// normalized but before ownership fixed points run. Keeping this separate
+/// from expression lowering means every ownership consumer observes the same
+/// definition-scoped facts instead of rebuilding a name-based approximation.
+fn populate_move_source_definitions_on_nodes(
+    nodes: &mut [ControlFlowNode],
+    values: &[ControlFlowValue],
+    reaching_definitions_before: &[Option<ReachingDefinitionMap>],
+) {
+    for node in nodes {
         let mut moves = std::mem::take(&mut node.ownership.moves);
         for movement in &mut moves {
             let projected_value = movement.is_partial().then(|| {
-                graph
-                    .values
+                values
                     .iter()
                     .filter(|value| value.producer == node.id && value.span == movement.span)
                     .min_by_key(|value| value.id.0)
             });
             let value = projected_value.flatten().or_else(|| {
-                graph
-                    .values
+                values
                     .iter()
                     .filter(|value| {
                         matches!(
@@ -5574,7 +5578,6 @@ fn definition_details(
 fn compute_move_states(
     nodes: &[ControlFlowNode],
     edges: &[ControlFlowEdge],
-    reaching_definitions_before: &[Option<ReachingDefinitionMap>],
     entry: ControlFlowNodeId,
 ) -> Vec<ControlFlowMoveState> {
     let mut states =
@@ -5590,14 +5593,13 @@ fn compute_move_states(
             outgoing_state.remove(&ControlFlowDefinitionId::Node { node: id, index });
         }
         for movement in &nodes[id.0].ownership.moves {
-            let Some(definitions) = reaching_definitions_before
-                .get(id.0)
-                .and_then(Option::as_ref)
-                .and_then(|reaching| reaching.get(&movement.source))
-            else {
+            if movement.source_definitions.is_empty() {
+                // Internal CFG construction populates this field before
+                // propagation. Keep incomplete synthetic facts harmless for
+                // callers that construct graphs in isolation.
                 continue;
-            };
-            for definition in definitions {
+            }
+            for definition in &movement.source_definitions {
                 outgoing_state
                     .entry(*definition)
                     .and_modify(|(_, origin)| {

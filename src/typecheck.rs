@@ -5151,9 +5151,8 @@ fn check_cfg_moved_reads(
             .ownership
             .borrows
             .iter()
-            .filter_map(|borrow| {
-                let definitions = graph.definitions_reaching_before(node.id, &borrow.source)?;
-                definitions.iter().find_map(|definition| {
+            .flat_map(|borrow| {
+                borrow.source_definitions.iter().filter_map(|definition| {
                     state
                         .origin_for_definition(*definition)
                         .map(|origin| (borrow.source.clone(), origin))
@@ -5218,11 +5217,9 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
                 .borrow_lifetimes_before(node.id)
                 .filter(|lifetime| {
                     lifetime.source == ownership_move.source
-                        && graph.definition_reaches_before(
-                            node.id,
-                            &ownership_move.source,
-                            lifetime.source_definition,
-                        )
+                        && ownership_move
+                            .source_definitions
+                            .contains(&lifetime.source_definition)
                         && lifetime.borrower != ownership_move.source
                         && lifetime.borrower != ownership_move.destination
                 })
