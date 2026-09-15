@@ -2887,6 +2887,12 @@ fn build_msix_bundle(
                     .arg(&signed_output),
                 "MSIX package signing",
             )?;
+            run_checked(
+                Command::new("signtool")
+                    .args(["verify", "/pa", "/all"])
+                    .arg(&signed_output),
+                "MSIX package signature verification",
+            )?;
             fs::remove_file(output)
                 .map_err(|error| format!("failed to replace unsigned MSIX: {error}"))?;
             fs::rename(&signed_output, output)
