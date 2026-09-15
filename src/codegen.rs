@@ -38579,8 +38579,12 @@ fn emit_json_record_helpers(
             continue;
         };
         let element_ty = signatures.canonical_type(&element_ty);
-        let value_helper = if let Type::Optional(_inner) = &element_ty {
-            json_optional_aggregate_helper_name(&element_ty, signatures)
+        let value_helper = if let Type::Optional(inner) = &element_ty {
+            if matches!(signatures.canonical_type(inner), Type::Map(_, _)) {
+                "flux__json_encode_optional_map".to_string()
+            } else {
+                json_optional_aggregate_helper_name(&element_ty, signatures)
+            }
         } else if matches!(&element_ty, Type::List(_) | Type::Set(_)) {
             json_array_aggregate_helper_name(&element_ty, signatures)
         } else if matches!(&element_ty, Type::Map(_, _)) {
@@ -38598,7 +38602,27 @@ fn emit_json_record_helpers(
         } else {
             json_record_helper_name(&element_ty, signatures)
         };
-        let value_call = if let Type::Map(_, value) = &element_ty {
+        let value_call = if let Type::Optional(inner) = &element_ty {
+            if let Type::Map(_, map_value) = signatures.canonical_type(inner) {
+                let map_value = signatures.canonical_type(&map_value);
+                let kind = json_map_value_kind(&map_value, signatures)
+                    .expect("supported optional JSON map array values have a native map kind");
+                let (helper, helper_kind) = if kind < 3 {
+                    ("flux__json_encode_object", kind)
+                } else if kind < 6 {
+                    ("flux__json_encode_nested_object", kind - 3)
+                } else if (100000..100003).contains(&kind) {
+                    ("flux__json_encode_optional_object", kind)
+                } else {
+                    ("flux__json_encode_map_map", kind)
+                };
+                format!(
+                    "(value.has_value ? {helper}(value.value, {helper_kind}, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
+                )
+            } else {
+                format!("{value_helper}(value, flux__json_capture)")
+            }
+        } else if let Type::Map(_, value) = &element_ty {
             if json_map_contains_aggregate(value, signatures) {
                 format!("{value_helper}(value, flux__json_capture)")
             } else {
@@ -38637,7 +38661,7 @@ fn collect_json_array_aggregate_types(
             let element = signatures.canonical_type(&element);
             if json_record_supported(&element, signatures)
                 || json_enum_supported(&element, signatures)
-                || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures))
+                || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures) || matches!(signatures.canonical_type(inner), Type::Map(key, _) if signatures.canonical_type(&key) == Type::Str))
                 || (matches!(&element, Type::List(_) | Type::Set(_))
                     && json_array_contains_aggregate(&element, signatures))
                 || (matches!(&element, Type::Map(_, _))
@@ -38681,6 +38705,9 @@ fn json_array_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
             json_record_supported(ty, signatures) || json_enum_supported(ty, signatures)
         }
         Type::List(inner) | Type::Set(inner) => json_array_contains_aggregate(&inner, signatures),
+        Type::Optional(inner) => {
+            matches!(signatures.canonical_type(&inner), Type::Map(key, _) if signatures.canonical_type(&key) == Type::Str)
+        }
         Type::Map(key, value) => {
             signatures.canonical_type(&key) == Type::Str
                 && json_map_array_type_is_supported(&Type::Map(key, value), signatures)

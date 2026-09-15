@@ -18612,6 +18612,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_optional_maps_inside_arrays_and_maps_encode_natively() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let first: map<str, i64>? = {"a": 1}
+    let second: map<str, i64>? = {"b": 2}
+    let values: map<str, i64>?[] = [first, none, second]
+    let object: map<str, map<str, i64>?> = {"present": {"x": 1}, "absent": none}
+    let arrayError: error = json.encodeArray(values, encoded)
+    let objectError: error = json.encode(object, encoded)
+    print(arrayError)
+    print(objectError)
+    return 0
+}
+"#;
+    check_source(source).expect("optional maps inside JSON arrays/maps should typecheck");
+    let generated =
+        compile_to_c(source).expect("optional maps inside JSON arrays/maps should lower");
+    let root = std::env::temp_dir().join(format!("flux-json-optional-map-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary optional-map directory should be writable");
+    let c_path = root.join("json-optional-map.c");
+    let exe_path = root.join("json-optional-map");
+    fs::write(&c_path, generated).expect("generated optional-map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional-map JSON code");
+    assert!(
+        compile.status.success(),
+        "optional-map JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional-map JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[{\"a\":1},null,{\"b\":2}]\n{\"present\":{\"x\":1},\"absent\":null}\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_named_copy_structs_and_nested_structs_encode_natively() {
     let source = r#"
 struct Address {
