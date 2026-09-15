@@ -1649,6 +1649,11 @@ impl<'a> ControlFlowBuilder<'a> {
             &self.values,
             &reaching_definitions_before,
         );
+        // Consuming-call modes and argument provenance are inputs to move
+        // propagation, not a post-processing view of its result. Populate
+        // them before the fixed point so normalized consuming boundaries can
+        // actually invalidate their reaching definitions.
+        populate_call_argument_definitions(&mut self.nodes, &self.values, self.signatures);
         let move_states_before = compute_move_states(&self.nodes, &self.edges, self.entry);
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
@@ -1706,7 +1711,6 @@ impl<'a> ControlFlowBuilder<'a> {
             borrow_lifetimes: Vec::new(),
             drops: Vec::new(),
         };
-        populate_call_argument_definitions(&mut graph, self.signatures);
         populate_return_ownership(&mut graph, self.signatures);
         populate_borrow_source_definitions(&mut graph);
         graph.borrow_states_before = compute_borrow_states(&graph);
@@ -3386,14 +3390,17 @@ fn populate_move_source_definitions_on_nodes(
     }
 }
 
-fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: &Signatures) {
-    let values = graph.values.clone();
-    for node in &mut graph.nodes {
+fn populate_call_argument_definitions(
+    nodes: &mut [ControlFlowNode],
+    values: &[ControlFlowValue],
+    signatures: &Signatures,
+) {
+    for node in nodes {
         for call in &mut node.ownership.calls {
             call.argument_definitions = call
                 .arguments
                 .iter()
-                .map(|argument| call_argument_definitions(*argument, &values))
+                .map(|argument| call_argument_definitions(*argument, values))
                 .collect();
             call.argument_kinds = call
                 .arguments
@@ -3423,7 +3430,7 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                     if ownership_kind_for_value(value, signatures)
                         == OwnershipCallArgumentKind::ImmutableBorrow
                     {
-                        call_argument_definitions(*argument, &values)
+                        call_argument_definitions(*argument, values)
                     } else {
                         Vec::new()
                     }
