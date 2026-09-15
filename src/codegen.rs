@@ -4290,6 +4290,15 @@ fn emit_runtime_prelude(
     for (size_t index = 0; index < length; index += 1) {
         unsigned char byte = (unsigned char)buffer[index];
         if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+        if (byte == '%') {
+            if (index + 2 >= length) return "URI contains an incomplete percent escape";
+            unsigned char high = (unsigned char)buffer[index + 1];
+            unsigned char low = (unsigned char)buffer[index + 2];
+            bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+            bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+            if (!high_hex || !low_hex) return "URI contains an invalid percent escape";
+            index += 2;
+        }
     }
     char *scheme_end = strchr(buffer, ':');
     if (scheme_end == NULL || scheme_end == buffer) return "URI must include a scheme";

@@ -5202,7 +5202,9 @@ fn parsed(scheme: str, authority: str, path: str, query: str, fragment: str) -> 
 }
 fn main() -> i64 {
     print(uri.parse("custom+v1://example.test/a/b?x=1#frag", parsed))
+    print(uri.parse("custom+v1://example.test/a%20b", parsed))
     print(uri.parse("mailto:alice@example.test", parsed))
+    print(uri.parse("custom://example.test/%ZZ", parsed))
     print(uri.parse("not a URI", parsed))
     return 0
 }
@@ -5255,7 +5257,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains whitespace or control characters\n"
+        "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\ncustom+v1\nexample.test\n/a%20b\n\n\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains an invalid percent escape\nURI contains whitespace or control characters\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
