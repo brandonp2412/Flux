@@ -5953,8 +5953,10 @@ fn span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlFlowDefinitionId, ControlFlowMoveState, OwnershipMove, OwnershipMovedBinding,
-        insert_move_projection,
+        ControlFlowDefinitionId, ControlFlowEdge, ControlFlowEdgeKind, ControlFlowMoveState,
+        ControlFlowNode, ControlFlowNodeId, ControlFlowNodeKind, ControlFlowOwnership,
+        OwnershipCall, OwnershipCallArgumentKind, OwnershipMove, OwnershipMovedBinding,
+        compute_move_states, insert_move_projection,
     };
     use crate::diagnostic::SourceSpan;
 
@@ -6009,6 +6011,80 @@ mod tests {
             &[]
         ));
         assert_eq!(state[&definition].1, vec![Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn cfg_consuming_call_subsumes_prior_partial_move() {
+        let definition = ControlFlowDefinitionId::Parameter(0);
+        let span = SourceSpan::new(1, 1, 1);
+        let nodes = vec![
+            ControlFlowNode {
+                id: ControlFlowNodeId(0),
+                kind: ControlFlowNodeKind::Entry,
+                span,
+                value_types: Vec::new(),
+                values: Vec::new(),
+                definitions: Vec::new(),
+                ownership: ControlFlowOwnership::default(),
+            },
+            ControlFlowNode {
+                id: ControlFlowNodeId(1),
+                kind: ControlFlowNodeKind::Statement,
+                span,
+                value_types: Vec::new(),
+                values: Vec::new(),
+                definitions: Vec::new(),
+                ownership: ControlFlowOwnership {
+                    moves: vec![OwnershipMove {
+                        source: "value".to_string(),
+                        destination: "field".to_string(),
+                        projection: path(&["left"]),
+                        value: None,
+                        source_definitions: vec![definition],
+                        span,
+                    }],
+                    calls: vec![OwnershipCall {
+                        callee: "consume".to_string(),
+                        arguments: vec![],
+                        argument_kinds: vec![OwnershipCallArgumentKind::Consuming],
+                        argument_definitions: vec![vec![definition]],
+                        borrowed_argument_definitions: vec![Vec::new()],
+                        span,
+                    }],
+                    ..ControlFlowOwnership::default()
+                },
+            },
+            ControlFlowNode {
+                id: ControlFlowNodeId(2),
+                kind: ControlFlowNodeKind::Exit,
+                span,
+                value_types: Vec::new(),
+                values: Vec::new(),
+                definitions: Vec::new(),
+                ownership: ControlFlowOwnership::default(),
+            },
+        ];
+        let edges = vec![
+            ControlFlowEdge {
+                from: ControlFlowNodeId(0),
+                to: ControlFlowNodeId(1),
+                kind: ControlFlowEdgeKind::Next,
+            },
+            ControlFlowEdge {
+                from: ControlFlowNodeId(1),
+                to: ControlFlowNodeId(2),
+                kind: ControlFlowEdgeKind::Next,
+            },
+        ];
+
+        let states = compute_move_states(&nodes, &edges, ControlFlowNodeId(0));
+        assert_eq!(
+            states[2]
+                .moved_projections_for_definition(definition)
+                .map(|binding| binding.projection.clone())
+                .collect::<Vec<_>>(),
+            vec![Vec::<String>::new()]
+        );
     }
 
     #[test]
