@@ -19799,6 +19799,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__str_length("));
     assert!(generated.contains("invalid UTF-8 string"));
     assert!(generated.contains("flux__str_slice("));
+    assert!(generated.contains("flux__str_bounded_length(value, 65536"));
     assert!(generated.contains("UTF-8 boundaries"));
     assert!(generated.contains("char result[65537]"));
 }
