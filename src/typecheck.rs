@@ -11496,6 +11496,24 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
+            "zoneOffset" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("time.zoneOffset expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let timestamp = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &timestamp,
+                    "time.zoneOffset unixMillis",
+                )?;
+                let zone = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &zone, "time.zoneOffset zone")?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
             | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
             | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"

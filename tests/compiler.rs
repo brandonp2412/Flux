@@ -96,6 +96,46 @@ fn main() -> i64 {
 }
 
 #[test]
+fn named_time_zone_offset_is_checked_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let (offset, result) = time.zoneOffset(946782245006, "America/New_York")
+    if result != nil:
+        return 1
+    print(offset)
+    return 0
+}
+"#;
+    check_source(source).expect("named-zone offset should typecheck");
+    let generated = compile_to_c(source).expect("named-zone offset should lower");
+    assert!(generated.contains("flux__time_zone_offset("));
+    let root = std::env::temp_dir().join(format!("flux-zone-offset-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("zone offset fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("zone offset source should be writable");
+    let binary = root.join("zone-offset");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("zone offset binary should build");
+    assert!(
+        build.status.success(),
+        "zone offset build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("zone offset binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "-300");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn ui_targets_integrate_callbacks_with_native_event_loops() {
     let source = r#"
 view Screen {

@@ -6651,6 +6651,55 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
 }
 "#);
     }
+    if runtime_usage.contains("flux__time_zone_offset(") {
+        out.push_str(r#"struct flux__time_i64_error { int64_t v0; const char *v1; };
+static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms, const char *zone) {
+#if defined(__GLIBC__)
+    static volatile int flux_time_zone_offset_lock = 0;
+    if (zone == NULL || zone[0] == '\0') return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone must not be empty" };
+    size_t zone_length = strlen(zone);
+    if (zone_length > 128) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone is too long" };
+    for (size_t index = 0; index < zone_length; index += 1) {
+        unsigned char byte = (unsigned char)zone[index];
+        if (byte < 0x20 || byte == 0x7f) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone contains a control character" };
+    }
+    if (zone[0] == '/' || strstr(zone, "..") != NULL) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone is not a valid IANA name" };
+    char zone_path[160];
+    int zone_path_length = snprintf(zone_path, sizeof(zone_path), "/usr/share/zoneinfo/%s", zone);
+    if (zone_path_length < 0 || (size_t)zone_path_length >= sizeof(zone_path)) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone is too long" };
+    FILE *zone_file = fopen(zone_path, "rb");
+    if (zone_file == NULL) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone could not be loaded" };
+    fclose(zone_file);
+    int64_t seconds = unix_ms / INT64_C(1000);
+    if (unix_ms % INT64_C(1000) < 0) seconds -= INT64_C(1);
+    time_t native_seconds = (time_t)seconds;
+    if ((int64_t)native_seconds != seconds) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset timestamp exceeds platform range" };
+    while (__sync_lock_test_and_set(&flux_time_zone_offset_lock, 1) != 0) { }
+    const char *previous_zone = getenv("TZ");
+    char previous_zone_copy[129];
+    bool had_previous_zone = previous_zone != NULL;
+    if (had_previous_zone) {
+        size_t previous_length = strlen(previous_zone);
+        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_offset_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset previous host zone is too long" }; }
+        memcpy(previous_zone_copy, previous_zone, previous_length + 1);
+    }
+    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_offset_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone could not be selected" }; }
+    tzset();
+    struct tm value;
+    const char *error = NULL;
+    if (localtime_r(&native_seconds, &value) == NULL) error = "time.zoneOffset calendar conversion failed";
+    int64_t offset = error == NULL ? (int64_t)(value.__tm_gmtoff / 60) : 0;
+    if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
+    tzset();
+    __sync_lock_release(&flux_time_zone_offset_lock);
+    return (struct flux__time_i64_error){ .v0 = offset, .v1 = error };
+#else
+    (void)unix_ms; (void)zone;
+    return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset is unavailable on this native target" };
+#endif
+}
+"#);
+    }
     if runtime_usage.contains("flux__time_utc_unix_millis(") {
         out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
@@ -35543,6 +35592,21 @@ fn emit_qualified_call(
                     ),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "zoneOffset" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        "invalid time.zoneOffset call reached code generation",
+                    ));
+                }
+                let timestamp = emit_expr(&args[0], env, signatures)?;
+                let zone = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__time_zone_offset({}, {})", timestamp.code, zone.code),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__time_i64_error".to_string()),
                 ));
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
