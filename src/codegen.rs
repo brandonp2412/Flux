@@ -4322,6 +4322,90 @@ fn emit_runtime_prelude(
 }
 "#);
     }
+    if runtime_usage.contains("flux__json_parse(") || runtime_usage.contains("flux__json_encode_string(") {
+        out.push_str(r#"static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
+static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
+static inline const char *flux__json_skip_ws(const char **cursor, const char *end) {
+    while (*cursor < end && (**cursor == ' ' || **cursor == '\n' || **cursor == '\r' || **cursor == '\t')) *cursor += 1;
+    return NULL;
+}
+static inline const char *flux__json_parse_value(const char **cursor, const char *end, int depth, void (*callback)(const char *, const char *)) {
+    if (depth > 128) return "JSON nesting exceeds 128 levels";
+    flux__json_skip_ws(cursor, end);
+    if (*cursor >= end) return "JSON value is incomplete";
+    if (**cursor == '{' || **cursor == '[') {
+        bool object = **cursor == '{'; const char *start = object ? "start_object" : "start_array"; const char *finish = object ? "end_object" : "end_array"; char close = object ? '}' : ']';
+        *cursor += 1; callback(start, ""); flux__json_skip_ws(cursor, end);
+        if (*cursor < end && **cursor == close) { *cursor += 1; callback(finish, ""); return NULL; }
+        while (*cursor < end) {
+            if (object) {
+                if (**cursor != '"') return "JSON object keys must be strings";
+                const char *key_start = ++*cursor; char key[65537]; size_t key_len = 0;
+                while (*cursor < end && **cursor != '"') {
+                    unsigned char byte = (unsigned char)**cursor;
+                    if (byte < 0x20 || byte == '\\') return "JSON object key contains an unsupported escape or control character";
+                    if (key_len >= 65536) return "JSON string exceeds 65536 bytes";
+                    key[key_len++] = (char)byte; *cursor += 1;
+                }
+                if (*cursor >= end) return "JSON string is incomplete"; key[key_len] = '\0'; *cursor += 1; callback("key", key); flux__json_skip_ws(cursor, end);
+                if (*cursor >= end || **cursor != ':') return "JSON object key must be followed by ':'"; *cursor += 1;
+            }
+            const char *error = flux__json_parse_value(cursor, end, depth + 1, callback); if (error != NULL) return error;
+            flux__json_skip_ws(cursor, end);
+            if (*cursor >= end) return "JSON container is incomplete";
+            if (**cursor == close) { *cursor += 1; callback(finish, ""); return NULL; }
+            if (**cursor != ',') return "JSON container expects ',' or its closing delimiter";
+            *cursor += 1; flux__json_skip_ws(cursor, end); if (*cursor >= end || **cursor == close) return "JSON container has a trailing comma";
+        }
+        return "JSON container is incomplete";
+    }
+    if (**cursor == '"') {
+        *cursor += 1; char text[65537]; size_t length = 0;
+        while (*cursor < end && **cursor != '"') {
+            unsigned char byte = (unsigned char)**cursor;
+            if (byte < 0x20) return "JSON string contains a control character";
+            if (byte == '\\') {
+                *cursor += 1; if (*cursor >= end) return "JSON string has an incomplete escape"; char escaped = **cursor;
+                if (escaped == 'u') return "JSON unicode escapes are not supported by the borrowed bootstrap string parser";
+                if (!(escaped == '"' || escaped == '\\' || escaped == '/' || escaped == 'b' || escaped == 'f' || escaped == 'n' || escaped == 'r' || escaped == 't')) return "JSON string has an invalid escape";
+                if (length >= 65536) return "JSON string exceeds 65536 bytes"; text[length++] = escaped == 'b' ? '\b' : escaped == 'f' ? '\f' : escaped == 'n' ? '\n' : escaped == 'r' ? '\r' : escaped == 't' ? '\t' : escaped; *cursor += 1; continue;
+            }
+            if (length >= 65536) return "JSON string exceeds 65536 bytes"; text[length++] = (char)byte; *cursor += 1;
+        }
+        if (*cursor >= end) return "JSON string is incomplete"; text[length] = '\0'; *cursor += 1; callback("string", text); return NULL;
+    }
+    const char *start = *cursor;
+    while (*cursor < end && **cursor != ' ' && **cursor != '\n' && **cursor != '\r' && **cursor != '\t' && **cursor != ',' && **cursor != ']' && **cursor != '}') *cursor += 1;
+    size_t length = (size_t)(*cursor - start); if (length == 0 || length > 64) return "JSON primitive is invalid or too long";
+    char token[65]; memcpy(token, start, length); token[length] = '\0';
+    if (strcmp(token, "true") && strcmp(token, "false") && strcmp(token, "null")) {
+        char *end_number = NULL; strtod(token, &end_number); if (end_number == token || *end_number != '\0' || strchr(token, 'x') != NULL || strchr(token, 'X') != NULL) return "JSON primitive is invalid";
+        callback("number", token); return NULL;
+    }
+    callback(strcmp(token, "null") == 0 ? "null" : "boolean", token); return NULL;
+}
+static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *)) {
+    if (value == NULL || callback == NULL) return "invalid json.parse arguments";
+    size_t length = strlen(value); if (length == 0) return "JSON value must not be empty"; if (length > 65536) return "JSON value exceeds 65536 bytes";
+    const char *cursor = value; const char *end = value + length; const char *error = flux__json_parse_value(&cursor, end, 0, callback); if (error != NULL) return error;
+    flux__json_skip_ws(&cursor, end); if (cursor != end) return "JSON has trailing data"; return NULL;
+}
+static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *)) {
+    if (value == NULL || callback == NULL) return "invalid json.encodeString arguments";
+    size_t length = strlen(value); if (length > 65536) return "JSON string exceeds 65536 bytes";
+    char encoded[262149]; size_t output = 0; encoded[output++] = '"';
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)value[index]; const char *escape = NULL;
+        if (byte == '"') escape = "\\\""; else if (byte == '\\') escape = "\\\\"; else if (byte == '\b') escape = "\\b"; else if (byte == '\f') escape = "\\f"; else if (byte == '\n') escape = "\\n"; else if (byte == '\r') escape = "\\r"; else if (byte == '\t') escape = "\\t";
+        if (escape != NULL) { size_t count = strlen(escape); memcpy(encoded + output, escape, count); output += count; }
+        else if (byte < 0x20) { int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; }
+        else encoded[output++] = (char)byte;
+        if (output + 2 >= sizeof(encoded)) return "encoded JSON string exceeds 262144 bytes";
+    }
+    encoded[output++] = '"'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+"#);
+    }
     if runtime_usage.contains("flux__url_decode_component(") {
         out.push_str(r#"static inline const char *flux__url_decode_component(const char *value, void (*callback)(const char *)) {
     size_t length = strlen(value);
@@ -34514,6 +34598,19 @@ fn emit_qualified_call(
             vec![Type::Error],
             None,
         ));
+    }
+    if namespace == "json" {
+        if !named_args.is_empty() || args.len() != 2 {
+            return Err(diag(span, "invalid JSON call reached code generation"));
+        }
+        let value = emit_expr(&args[0], env, signatures)?;
+        let callback = emit_expr(&args[1], env, signatures)?;
+        let helper = match name {
+            "parse" => "flux__json_parse",
+            "encodeString" => "flux__json_encode_string",
+            _ => return Err(diag(span, "unknown JSON call reached code generation")),
+        };
+        return Ok((format!("{}({}, {})", helper, value.code, callback.code), vec![Type::Error], None));
     }
     if namespace == "windows" {
         if !named_args.is_empty() {

@@ -15894,6 +15894,7 @@ fn main() -> i64 {
     print("banner=$BANNER cost=\$5")
     return 0
 }
+
 "#;
 
     check_source(source).expect("compile-time interpolation should typecheck");
@@ -15907,6 +15908,47 @@ fn main() -> i64 {
     let formatted_again = fluxc::formatter::format_source(&formatted)
         .expect("formatted interpolation should reparse");
     assert_eq!(formatted_again, formatted);
+}
+
+#[test]
+fn json_streaming_parse_and_string_encoding_are_native_and_tree_shaken() {
+    let source = r#"
+fn token(_kind: str, _value: str) -> void {
+}
+fn encoded(_value: str) -> void {
+}
+fn main() -> i64 {
+    let parseError: error = json.parse("{\"name\":\"Flux\",\"ok\":true,\"items\":[1,2]}", token)
+    let encodeError: error = json.encodeString("line\n\"quoted\"", encoded)
+    print(parseError)
+    print(encodeError)
+    return 0
+}
+"#;
+    check_source(source).expect("JSON streaming APIs should typecheck");
+    let generated = compile_to_c(source).expect("JSON streaming APIs should lower");
+    assert!(generated.contains("flux__json_parse("));
+    assert!(generated.contains("flux__json_encode_string("));
+    assert!(generated.contains("JSON container expects ',' or its closing delimiter"));
+    assert!(generated.contains("JSON string has an invalid escape"));
+    let root = std::env::temp_dir().join(format!("flux-json-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON directory should be writable");
+    let c_path = root.join("json.c");
+    let exe_path = root.join("json");
+    fs::write(&c_path, generated).expect("generated JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON native code");
+    assert!(compile.status.success(), "JSON C should compile: {}", String::from_utf8_lossy(&compile.stderr));
+    let output = Command::new(&exe_path).output().expect("JSON program should run");
+    assert!(output.status.success(), "JSON program should exit cleanly");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "nil\nnil\n");
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

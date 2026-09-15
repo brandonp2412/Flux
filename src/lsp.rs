@@ -1568,6 +1568,13 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "json" {
+        push_completion_item(items, seen, "parse", 3,
+            "fn json.parse(value: str, callback: fn(str, str) -> void) -> error");
+        push_completion_item(items, seen, "encodeString", 3,
+            "fn json.encodeString(value: str, callback: fn(str) -> void) -> error");
+        return true;
+    }
     if namespace == "http" {
         push_completion_item(
             items,
@@ -3613,6 +3620,23 @@ fn signature_help_for_document_cached(
                 "error",
                 active_parameter,
             ));
+        }
+        if namespace == "json" {
+            return match implementation_member {
+                "parse" => Some(signature_help_for_builtin(
+                    "json.parse",
+                    &["value: str", "callback: fn(str, str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encodeString" => Some(signature_help_for_builtin(
+                    "json.encodeString",
+                    &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                _ => None,
+            };
         }
         if namespace == "http" {
             match implementation_member {

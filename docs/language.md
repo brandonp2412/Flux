@@ -541,6 +541,8 @@ let message: str = """
 
 Triple-quoted `"""..."""` strings use the same escapes as ordinary strings. When the opening delimiter is followed by a newline and the closing delimiter is on its own indented line, Flux removes the delimiter-only leading/trailing line and strips the shared indentation from non-empty content lines. This keeps source indentation out of the runtime value. A `#` inside any string remains ordinary text; Flux still has no comment syntax outside strings. The formatter preserves multiline literal blocks verbatim while formatting the surrounding Flux source, so readable indentation and line breaks are retained exactly as written.
 
+The bootstrap JSON surface is ownership-safe and streaming rather than a hidden dynamic object model. `json.parse(value, callback)` validates a bounded JSON document and calls `callback(kind, token)` for structural tokens (`start_object`, `end_object`, `start_array`, `end_array`), object keys, strings, numbers, booleans, and null. Each token is borrowed only for the callback invocation. `json.encodeString(value, callback)` emits one escaped JSON string literal to a callback using bounded native scratch storage that cannot escape. Both operations return an `error`, are tree-shakeable, and have compiler/LSP support. Owned JSON trees, aggregate-to-JSON encoding, and Unicode escape decoding remain ownership-dependent follow-up work.
+
 ## Compile-time constants
 
 Top-level constants use `const name: type = expression`. Constants are evaluated by the compiler and substituted directly into generated code rather than emitted as mutable/runtime globals:
