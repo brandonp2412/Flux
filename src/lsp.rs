@@ -1983,6 +1983,13 @@ fn add_qualified_namespace_completions(
                 &format!("fn time.{member}(unixMillis: i64) -> i64"),
             );
         }
+        push_completion_item(
+            items,
+            seen,
+            "localOffset",
+            3,
+            "fn time.localOffset(unixMillis: i64) -> i64",
+        );
         return true;
     }
     if namespace == "file" {
@@ -4367,7 +4374,8 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "localYear" | "localMonth" | "localDay" | "localHour" | "localMinute"
-                | "localSecond" | "localMillisecond" | "localWeekday" | "localDayOfYear" => {
+                | "localSecond" | "localMillisecond" | "localWeekday" | "localDayOfYear"
+                | "localOffset" => {
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
                         &["unixMillis: i64"],
@@ -8243,6 +8251,7 @@ mod tests {
         assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.localYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.localDayOfYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.localOffset(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error"));
         assert!(time_items.contains("fn time.seconds(value: i64) -> i64"));
         assert!(time_items.contains("fn time.minutes(value: i64) -> i64"));

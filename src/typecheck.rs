@@ -11302,7 +11302,7 @@ fn check_qualified_call(
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
             | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
             | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
-            | "localWeekday" | "localDayOfYear" => {
+            | "localWeekday" | "localDayOfYear" | "localOffset" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,

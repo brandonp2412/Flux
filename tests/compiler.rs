@@ -47497,3 +47497,52 @@ fn main() -> i64 {{
     server.join().unwrap();
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn local_time_offset_is_typed_native_and_dst_aware() {
+    let source = r#"
+fn main() -> i64 {
+    print(time.localOffset(1577836800000))
+    print(time.localOffset(1593561600000))
+    return 0
+}
+"#;
+    check_source(source).expect("local offset should typecheck");
+    let generated = compile_to_c(source).expect("local offset should lower natively");
+    assert!(generated.contains("flux__time_local_offset(int64_t unix_ms)"));
+    assert!(generated.contains("mktime(&local_value)"));
+    assert!(generated.contains("difftime(local_seconds, utc_as_local_seconds)"));
+
+    let root = std::env::temp_dir().join(format!("flux-local-offset-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("local offset fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("local offset source should be writable");
+    let binary = root.join("local-offset");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("local offset binary should build");
+    assert!(
+        build.status.success(),
+        "local offset build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .env("TZ", "America/New_York")
+        .output()
+        .expect("local offset binary should run");
+    assert!(run.status.success());
+    let values = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(|line| {
+            line.parse::<i64>()
+                .expect("local offset output should be i64")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec![-300, -240]);
+    let _ = fs::remove_dir_all(root);
+}
