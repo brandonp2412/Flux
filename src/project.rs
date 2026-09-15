@@ -64,10 +64,10 @@ impl ProjectAnalysis {
             }
             // A corrupt or stale artifact is not usable, but leaving it in
             // place makes every subsequent build pay the same failed parse
-            // and checksum cost. Remove only this exact cache entry; a
-            // concurrent writer may have replaced it, in which case the
-            // normal atomic-rename/cache-miss path remains safe.
-            let _ = fs::remove_file(&path);
+            // and checksum cost. Remove it only if the bytes we inspected
+            // are still there: another process may have atomically published
+            // a valid replacement between the read and this cleanup.
+            remove_cache_artifact_if_unchanged(&path, &cached);
         }
 
         let generated = self.emit_c_for_target(native_target)?;
@@ -138,6 +138,15 @@ impl ProjectAnalysis {
             &self.translations,
             target,
         )
+    }
+}
+
+fn remove_cache_artifact_if_unchanged(path: &Path, inspected: &str) {
+    let Ok(current) = fs::read_to_string(path) else {
+        return;
+    };
+    if current == inspected {
+        let _ = fs::remove_file(path);
     }
 }
 
