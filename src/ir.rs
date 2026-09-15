@@ -432,6 +432,22 @@ pub struct OwnershipDrop {
     pub span: SourceSpan,
 }
 
+/// One normalized ownership event at a CFG node.
+///
+/// Consumers that need the complete ownership boundary for a node can use
+/// this view instead of independently walking the parallel borrow/move/call/
+/// return/drop vectors.  The references deliberately preserve the typed
+/// event payloads; no source-AST reconstruction or lossy name-only event is
+/// involved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlowOwnershipEvent<'a> {
+    Borrow(&'a OwnershipBorrow),
+    Move(&'a OwnershipMove),
+    Call(&'a OwnershipCall),
+    Return(&'a OwnershipReturn),
+    Drop(&'a OwnershipDrop),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlFlowOwnership {
     pub reads: Vec<String>,
@@ -999,6 +1015,48 @@ impl ControlFlowGraph {
     pub fn ownership_returns_at(&self, id: ControlFlowNodeId) -> &[OwnershipReturn] {
         self.node(id)
             .map_or(&[], |node| node.ownership.returns.as_slice())
+    }
+
+    /// Return every ownership event attached to one normalized node.
+    ///
+    /// Events are emitted in a stable category order (borrows, moves, calls,
+    /// returns, drops), and each category retains the deterministic order
+    /// established by CFG normalization.  This is intentionally a borrowed
+    /// view, so ownership analyses can inspect the complete node boundary
+    /// without allocating or copying event payloads.
+    pub fn ownership_events_at(&self, id: ControlFlowNodeId) -> Vec<ControlFlowOwnershipEvent<'_>> {
+        let Some(node) = self.node(id) else {
+            return Vec::new();
+        };
+        node.ownership
+            .borrows
+            .iter()
+            .map(ControlFlowOwnershipEvent::Borrow)
+            .chain(
+                node.ownership
+                    .moves
+                    .iter()
+                    .map(ControlFlowOwnershipEvent::Move),
+            )
+            .chain(
+                node.ownership
+                    .calls
+                    .iter()
+                    .map(ControlFlowOwnershipEvent::Call),
+            )
+            .chain(
+                node.ownership
+                    .returns
+                    .iter()
+                    .map(ControlFlowOwnershipEvent::Return),
+            )
+            .chain(
+                node.ownership
+                    .drops
+                    .iter()
+                    .map(ControlFlowOwnershipEvent::Drop),
+            )
+            .collect()
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {

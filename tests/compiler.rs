@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fluxc::ast::Type;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowValueKind, ControlFlowValueRegionKind, ControlFlowValueUseKind,
-    OwnershipCallArgumentKind,
+    ControlFlowOwnershipEvent, ControlFlowValueKind, ControlFlowValueRegionKind,
+    ControlFlowValueUseKind, OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -76,6 +76,7 @@ fn main() -> i64 {
     print(destination.count)
     return 0
 }
+
 "#;
     let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("move/drop fixture should typecheck");
@@ -93,6 +94,42 @@ fn main() -> i64 {
         "unexpected source drops: {:?}",
         graph.drops()
     );
+}
+
+#[test]
+fn ownership_ir_exposes_one_complete_node_event_stream() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    drop(values)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("ownership event fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let node = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.ownership
+                .calls
+                .iter()
+                .any(|call| call.callee == "drop")
+        })
+        .expect("drop node should be present");
+    let events = graph.ownership_events_at(node.id);
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ControlFlowOwnershipEvent::Call(call) if call.callee == "drop"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ControlFlowOwnershipEvent::Move(movement) if movement.source == "values"
+    )));
 }
 
 #[test]
