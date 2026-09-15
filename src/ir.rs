@@ -5260,6 +5260,20 @@ fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, Owner
         let mut candidates = live_before.live().to_vec();
         candidates.sort();
         for definition in candidates {
+            // A consuming boundary at this node transfers or releases the
+            // definition before any implicit end-of-liveness release could
+            // be emitted.  In particular, `drop(values)` records its move
+            // on the same normalized evaluation node where `values` leaves
+            // the live set; looking only at the incoming move state would
+            // incorrectly manufacture a second drop for the consumed value.
+            if node
+                .ownership
+                .moves
+                .iter()
+                .any(|movement| movement.source_definitions.contains(&definition))
+            {
+                continue;
+            }
             if live_after.contains(definition)
                 || moved.is_some_and(|state| state.is_definition_moved(definition))
             {

@@ -14506,6 +14506,50 @@ fn main() -> i64 {
             .collect::<Vec<_>>(),
         vec!["drop"]
     );
+    assert!(
+        graph
+            .drops_at(node.id)
+            .is_some_and(|drops| drops.is_empty()),
+        "an explicit consuming drop must not also create an implicit drop"
+    );
+}
+
+#[test]
+fn ownership_ir_drops_the_destination_of_a_non_copy_transfer() {
+    let source = r#"
+fn main() -> i64 {
+    let source: i64[] = [1, 2]
+    let destination: i64[] = source
+    print(destination.count)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1424))
+        .expect("transfer source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let destination = graph
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            node.definitions
+                .iter()
+                .enumerate()
+                .find(|(_, definition)| definition.name == "destination")
+                .map(|(index, _)| ControlFlowDefinitionId::Node {
+                    node: node.id,
+                    index,
+                })
+        })
+        .expect("destination definition should be present");
+    assert!(
+        graph
+            .drops()
+            .iter()
+            .any(|(_, drop)| drop.definition == destination),
+        "the transferred destination should have one eventual implicit drop"
+    );
 }
 
 #[test]
