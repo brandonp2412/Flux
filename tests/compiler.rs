@@ -28954,6 +28954,50 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
 }
 
 #[test]
+fn project_codegen_cache_reuses_formatting_only_source_edits() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-codegen-format-cache-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("format cache project should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(
+        &source_path,
+        "fn main() -> i64 {\n    let value: i64 = 1\n    return value\n}\n",
+    )
+    .expect("initial source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&source_path, &std::collections::HashMap::new())
+        .expect("initial source should analyze");
+    let first_c = first
+        .emit_c_cached(&root)
+        .expect("initial source should emit C");
+    fs::write(
+        &source_path,
+        "fn main() -> i64 {  \n    let value: i64 = 1  \n    return value  \n}  \n",
+    )
+    .expect("formatting-only source should be writable");
+    cache.invalidate_path(&source_path);
+    let second = cache
+        .analyze_with_overlays(&source_path, &std::collections::HashMap::new())
+        .expect("formatting-only source should analyze");
+    let second_c = second
+        .emit_c_cached(&root)
+        .expect("formatting-only source should emit C");
+    assert_eq!(first_c, second_c);
+    assert_eq!(
+        fs::read_dir(root.join(".flux/cache"))
+            .expect("codegen cache should be readable")
+            .count(),
+        1,
+        "formatting-only edits should reuse one native cache artifact"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_codegen_cache_separates_native_targets() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-codegen-target-cache-{}",

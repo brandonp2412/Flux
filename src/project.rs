@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::Program;
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
-use crate::{codegen, parser, typecheck};
+use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
@@ -147,7 +147,12 @@ fn codegen_cache_fingerprint(
     for source in &analysis.sources {
         add(source.path.to_string_lossy().as_bytes());
         add(source.module_name.as_bytes());
-        add(source.text.as_bytes());
+        // Formatting-only edits do not change the parsed program or native
+        // output. Hash the canonical form so the durable native cache can be
+        // reused during ordinary editor formatting/save cycles.
+        let canonical =
+            formatter::format_source(&source.text).unwrap_or_else(|_| source.text.clone());
+        add(canonical.as_bytes());
     }
     add(analysis
         .signatures
