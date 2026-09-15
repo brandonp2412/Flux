@@ -16605,11 +16605,88 @@ fn main() -> i64 {
     let c_path = root.join("enum-json.c");
     let exe_path = root.join("enum-json");
     fs::write(&c_path, generated).expect("enum JSON C should be writable");
-    let compile = Command::new("clang").args(["-std=c11", "-O2"]).arg(&c_path).arg("-o").arg(&exe_path).output().expect("clang should compile enum JSON");
-    assert!(compile.status.success(), "enum JSON C should compile: {}", String::from_utf8_lossy(&compile.stderr));
-    let output = Command::new(&exe_path).output().expect("enum JSON program should run");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile enum JSON");
+    assert!(
+        compile.status.success(),
+        "enum JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("enum JSON program should run");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "{\"Number\":7}\nnil\n{\"Word\":\"ok\"}\nnil\n{\"End\":null}\nnil\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"Number\":7}\nnil\n{\"Word\":\"ok\"}\nnil\n{\"End\":null}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_encodes_copy_enums_with_nested_record_payloads() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+
+enum Event {
+    Created(User)
+    Changed(i64, User)
+    Empty
+}
+
+enum Envelope {
+    Event(Event)
+}
+
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    print(json.encode(Event.Created(User { name: "Ada", age: 42 }), emit))
+    print(json.encode(Event.Changed(7, User { name: "Lin", age: 3 }), emit))
+    print(json.encode(Event.Empty(), emit))
+    print(json.encode(Envelope.Event(Event.Created(User { name: "Jo", age: 5 })), emit))
+    return 0
+}
+"#;
+    check_source(source).expect("aggregate enum payloads should typecheck as JSON values");
+    let generated = compile_to_c(source).expect("aggregate enum JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_enum_named_Event"));
+    let root = std::env::temp_dir().join(format!("flux-json-enum-record-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("enum record JSON temp directory should be writable");
+    let c_path = root.join("enum-record-json.c");
+    let exe_path = root.join("enum-record-json");
+    fs::write(&c_path, generated).expect("enum record JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile enum record JSON");
+    assert!(
+        compile.status.success(),
+        "enum record JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("enum record JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"Created\":{\"name\":\"Ada\",\"age\":42}}\nnil\n{\"Changed\":[7,{\"name\":\"Lin\",\"age\":3}]}\nnil\n{\"Empty\":null}\nnil\n{\"Event\":{\"Created\":{\"name\":\"Jo\",\"age\":5}}}\nnil\n"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -16647,7 +16724,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("optional aggregate JSON should lower natively");
     assert!(generated.contains("flux__json_encode_optional_aggregate_optional_named_User"));
     assert!(generated.contains("flux__json_encode_optional_aggregate_optional_named_Choice"));
-    let root = std::env::temp_dir().join(format!("flux-json-optional-aggregate-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-optional-aggregate-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("optional aggregate JSON directory should be writable");
     let c_path = root.join("optional-aggregate-json.c");
@@ -16697,7 +16777,8 @@ fn main() -> i64 {
 "#;
     check_source(source).expect("records with scalar optional fields should typecheck");
     let generated = compile_to_c(source).expect("optional record JSON should lower natively");
-    let root = std::env::temp_dir().join(format!("flux-json-record-optional-{}", std::process::id()));
+    let root =
+        std::env::temp_dir().join(format!("flux-json-record-optional-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("optional record JSON temp directory should be writable");
     let c_path = root.join("record-optional-json.c");

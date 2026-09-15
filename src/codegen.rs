@@ -1791,18 +1791,15 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <pthread.h>\n");
     }
-    if runtime_usage.contains("struct flux__optional_i64")
-        || runtime_usage.contains("flux__json_")
+    if runtime_usage.contains("struct flux__optional_i64") || runtime_usage.contains("flux__json_")
     {
         out.push_str("struct flux__optional_i64 { bool has_value; int64_t value; };\n");
     }
-    if runtime_usage.contains("struct flux__optional_bool")
-        || runtime_usage.contains("flux__json_")
+    if runtime_usage.contains("struct flux__optional_bool") || runtime_usage.contains("flux__json_")
     {
         out.push_str("struct flux__optional_bool { bool has_value; bool value; };\n");
     }
-    if runtime_usage.contains("struct flux__optional_str")
-        || runtime_usage.contains("flux__json_")
+    if runtime_usage.contains("struct flux__optional_str") || runtime_usage.contains("flux__json_")
     {
         out.push_str("struct flux__optional_str { bool has_value; const char *value; };\n");
     }
@@ -35739,8 +35736,10 @@ fn emit_qualified_call(
                         Type::I64 => "flux__json_encode_optional_i64",
                         Type::Bool => "flux__json_encode_optional_bool",
                         Type::Str => "flux__json_encode_optional_str",
-                        Type::Record(_) | Type::Named(_) if json_record_supported(&inner, signatures)
-                            || json_enum_supported(&inner, signatures) => {
+                        Type::Record(_) | Type::Named(_)
+                            if json_record_supported(&inner, signatures)
+                                || json_enum_supported(&inner, signatures) =>
+                        {
                             return Ok((
                                 format!(
                                     "{}({}, {})",
@@ -35766,8 +35765,11 @@ fn emit_qualified_call(
                     ));
                 }
             }
-            if json_record_supported(&value.ty, signatures) || json_enum_supported(&value.ty, signatures) {
-                let helper = if matches!(signatures.canonical_type(&value.ty), Type::Named(ref name) if signatures.enum_type(name).is_some()) {
+            if json_record_supported(&value.ty, signatures)
+                || json_enum_supported(&value.ty, signatures)
+            {
+                let helper = if matches!(signatures.canonical_type(&value.ty), Type::Named(ref name) if signatures.enum_type(name).is_some())
+                {
                     json_enum_helper_name(&value.ty, signatures)
                 } else {
                     json_record_helper_name(&value.ty, signatures)
@@ -37953,10 +37955,24 @@ fn json_optional_aggregate_helper_name(ty: &Type, signatures: &Signatures) -> St
 }
 
 fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
-    let Type::Named(name) = signatures.canonical_type(ty) else { return false };
-    signatures.enum_type(&name).is_some_and(|definition| definition.variants.iter().all(|variant| {
-        variant.payloads.iter().all(|payload| matches!(signatures.canonical_type(payload), Type::I64 | Type::Bool | Type::Str))
-    }))
+    let Type::Named(name) = signatures.canonical_type(ty) else {
+        return false;
+    };
+    signatures.enum_type(&name).is_some_and(|definition| {
+        definition.variants.iter().all(|variant| {
+            variant
+                .payloads
+                .iter()
+                .all(|payload| match signatures.canonical_type(payload) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) | Type::Named(_) => {
+                        json_record_supported(payload, signatures)
+                            || json_enum_supported(payload, signatures)
+                    }
+                    _ => false,
+                })
+        })
+    })
 }
 
 fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
@@ -37998,6 +38014,16 @@ fn collect_json_record_types(ty: &Type, signatures: &Signatures, records: &mut H
     let ty = signatures.canonical_type(ty);
     let fields = match &ty {
         Type::Record(fields) => fields.clone(),
+        Type::Named(name) if signatures.enum_type(name).is_some() => {
+            if let Some(definition) = signatures.enum_type(name) {
+                for variant in &definition.variants {
+                    for payload in &variant.payloads {
+                        collect_json_record_types(payload, signatures, records);
+                    }
+                }
+            }
+            return;
+        }
         Type::Named(name) => signatures
             .struct_type(name)
             .map(|structure| {
@@ -38088,15 +38114,15 @@ fn emit_json_record_helpers(
                 Type::Bool => format!("flux__json_encode_bool({field_expr}, flux__json_capture)"),
                 Type::Str => format!("flux__json_encode_string({field_expr}, flux__json_capture)"),
                 Type::Optional(inner) => match signatures.canonical_type(&inner) {
-                    Type::I64 => format!(
-                        "flux__json_encode_optional_i64({field_expr}, flux__json_capture)"
-                    ),
-                    Type::Bool => format!(
-                        "flux__json_encode_optional_bool({field_expr}, flux__json_capture)"
-                    ),
-                    Type::Str => format!(
-                        "flux__json_encode_optional_str({field_expr}, flux__json_capture)"
-                    ),
+                    Type::I64 => {
+                        format!("flux__json_encode_optional_i64({field_expr}, flux__json_capture)")
+                    }
+                    Type::Bool => {
+                        format!("flux__json_encode_optional_bool({field_expr}, flux__json_capture)")
+                    }
+                    Type::Str => {
+                        format!("flux__json_encode_optional_str({field_expr}, flux__json_capture)")
+                    }
                     _ => continue,
                 },
                 Type::Record(_) | Type::Named(_) => format!(
@@ -38129,46 +38155,121 @@ fn emit_json_enum_helpers(
         for value in function.values() {
             let ty = signatures.canonical_type(&value.ty);
             if json_enum_supported(&ty, signatures) {
-                enums.insert(ty);
+                collect_json_enum_types(&ty, signatures, &mut enums);
             } else if let Type::Optional(inner) = ty {
                 if json_enum_supported(&inner, signatures) {
-                    enums.insert(*inner);
+                    collect_json_enum_types(&inner, signatures, &mut enums);
                 }
             }
         }
     }
     let mut enums = enums.into_iter().collect::<Vec<_>>();
-    enums.sort_by_key(|ty| ty.name());
+    enums.sort_by_key(|ty| (json_enum_depth(ty, signatures), ty.name()));
     for ty in enums {
-        let Type::Named(name) = signatures.canonical_type(&ty) else { continue };
-        let Some(definition) = signatures.enum_type(&name) else { continue };
+        let Type::Named(name) = signatures.canonical_type(&ty) else {
+            continue;
+        };
+        let Some(definition) = signatures.enum_type(&name) else {
+            continue;
+        };
         let helper = json_enum_helper_name(&ty, signatures);
         out.push_str(&format!("static inline const char *{helper}(struct {} value, void (*callback)(const char *)) {{ char encoded[393217]; size_t output = 0; switch (value.tag) {{\n", struct_c_name(&name)));
         for variant in &definition.variants {
             let key = variant.name.replace('"', "\\\"");
-            let prefix = if variant.payloads.len() > 1 { format!("{{\\\"{}\\\":[", key) } else { format!("{{\\\"{}\\\":", key) };
+            let prefix = if variant.payloads.len() > 1 {
+                format!("{{\\\"{}\\\":[", key)
+            } else {
+                format!("{{\\\"{}\\\":", key)
+            };
             let prefix_length = key.len() + 4 + usize::from(variant.payloads.len() > 1);
-            out.push_str(&format!("case {}: {{ memcpy(encoded + output, \"{}\", {}); output += {}; ", enum_tag_value_name(&name, &variant.name), prefix, prefix_length, prefix_length));
+            out.push_str(&format!(
+                "case {}: {{ memcpy(encoded + output, \"{}\", {}); output += {}; ",
+                enum_tag_value_name(&name, &variant.name),
+                prefix,
+                prefix_length,
+                prefix_length
+            ));
             if variant.payloads.is_empty() {
                 out.push_str("memcpy(encoded + output, \"null\", 4); output += 4; ");
             } else {
                 for (index, payload) in variant.payloads.iter().enumerate() {
-                    if index > 0 { out.push_str("encoded[output++] = ','; "); }
-                    let expr = format!("value.payload.{}.v{}", enum_payload_member_name(&variant.name), index);
+                    if index > 0 {
+                        out.push_str("encoded[output++] = ','; ");
+                    }
+                    let expr = format!(
+                        "value.payload.{}.v{}",
+                        enum_payload_member_name(&variant.name),
+                        index
+                    );
                     let call = match signatures.canonical_type(payload) {
                         Type::I64 => format!("flux__json_encode_int({expr}, flux__json_capture)"),
                         Type::Bool => format!("flux__json_encode_bool({expr}, flux__json_capture)"),
-                        Type::Str => format!("flux__json_encode_string({expr}, flux__json_capture)"),
+                        Type::Str => {
+                            format!("flux__json_encode_string({expr}, flux__json_capture)")
+                        }
+                        Type::Record(_) | Type::Named(_)
+                            if json_enum_supported(payload, signatures) =>
+                        {
+                            format!(
+                                "{}({expr}, flux__json_capture)",
+                                json_enum_helper_name(payload, signatures)
+                            )
+                        }
+                        Type::Record(_) | Type::Named(_)
+                            if json_record_supported(payload, signatures) =>
+                        {
+                            format!(
+                                "{}({expr}, flux__json_capture)",
+                                json_record_helper_name(payload, signatures)
+                            )
+                        }
                         _ => continue,
                     };
-                    out.push_str(&format!("flux__json_capture_value = NULL; const char *payload_error = {call}; if (payload_error != NULL || flux__json_capture_value == NULL) return payload_error == NULL ? \"JSON enum payload encoding failed\" : payload_error; size_t payload_length = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - payload_length) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, payload_length); output += payload_length; "));
+                    out.push_str(&format!("flux__json_capture_value = NULL; const char *payload_error_{index} = {call}; if (payload_error_{index} != NULL || flux__json_capture_value == NULL) return payload_error_{index} == NULL ? \"JSON enum payload encoding failed\" : payload_error_{index}; size_t payload_length_{index} = strlen(flux__json_capture_value); if (output > sizeof(encoded) - 1 - payload_length_{index}) return \"encoded JSON enum exceeds 393216 bytes\"; memcpy(encoded + output, flux__json_capture_value, payload_length_{index}); output += payload_length_{index}; "));
                 }
-                if variant.payloads.len() > 1 { out.push_str("encoded[output++] = ']'; "); }
+                if variant.payloads.len() > 1 {
+                    out.push_str("encoded[output++] = ']'; ");
+                }
             }
             out.push_str("encoded[output++] = '}'; break; }\n");
         }
         out.push_str("default: return \"invalid JSON enum tag\"; } if (output >= sizeof(encoded)) return \"encoded JSON enum exceeds 393216 bytes\"; encoded[output] = '\\0'; callback(encoded); return NULL; }\n");
     }
+}
+
+fn collect_json_enum_types(ty: &Type, signatures: &Signatures, enums: &mut HashSet<Type>) {
+    let ty = signatures.canonical_type(ty);
+    let Type::Named(name) = &ty else { return };
+    if signatures.enum_type(name).is_none()
+        || !json_enum_supported(&ty, signatures)
+        || !enums.insert(ty.clone())
+    {
+        return;
+    }
+    let Some(definition) = signatures.enum_type(name) else {
+        return;
+    };
+    for variant in &definition.variants {
+        for payload in &variant.payloads {
+            collect_json_enum_types(payload, signatures, enums);
+        }
+    }
+}
+
+fn json_enum_depth(ty: &Type, signatures: &Signatures) -> usize {
+    let Type::Named(name) = signatures.canonical_type(ty) else {
+        return 0;
+    };
+    let Some(definition) = signatures.enum_type(&name) else {
+        return 0;
+    };
+    1 + definition
+        .variants
+        .iter()
+        .flat_map(|variant| variant.payloads.iter())
+        .map(|payload| json_enum_depth(payload, signatures))
+        .max()
+        .unwrap_or(0)
 }
 
 fn emit_json_optional_aggregate_helpers(
@@ -38186,7 +38287,8 @@ fn emit_json_optional_aggregate_helpers(
             let Type::Optional(inner) = signatures.canonical_type(&value.ty) else {
                 continue;
             };
-            if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures) {
+            if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures)
+            {
                 optionals.insert(Type::Optional(inner));
             }
         }

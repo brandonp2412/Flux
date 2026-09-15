@@ -5781,9 +5781,7 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                         signatures.canonical_type(&inner),
                         Type::I64 | Type::Bool | Type::Str
                     ),
-                    Type::Record(_) => {
-                        json_record_type_is_supported(&field.ty, signatures)
-                    }
+                    Type::Record(_) => json_record_type_is_supported(&field.ty, signatures),
                     _ => false,
                 })
         }
@@ -5831,12 +5829,17 @@ fn json_enum_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     };
     signatures.enum_type(&name).is_some_and(|definition| {
         definition.variants.iter().all(|variant| {
-            variant.payloads.iter().all(|payload| {
-                matches!(
-                    signatures.canonical_type(payload),
-                    Type::I64 | Type::Bool | Type::Str
-                )
-            })
+            variant
+                .payloads
+                .iter()
+                .all(|payload| match signatures.canonical_type(payload) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Record(_) | Type::Named(_) => {
+                        json_record_type_is_supported(payload, signatures)
+                            || json_enum_type_is_supported(payload, signatures)
+                    }
+                    _ => false,
+                })
         })
     })
 }
@@ -10869,7 +10872,7 @@ fn check_qualified_call(
                 if !valid {
                     return Err(diag(
                         args[0].span,
-                        "json.encode value must be an i64, bool, str, scalar/nested list, scalar map, or Copy record",
+                        "json.encode value must be an i64, bool, str, scalar/nested list, scalar map, or supported Copy record/enum",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
