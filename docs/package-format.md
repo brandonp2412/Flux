@@ -1,5 +1,9 @@
 # Package format
 
+For the relationship between manifests, immutable dependency sources, native
+interop, and target-selected modules, see
+[`package-interoperability.md`](package-interoperability.md).
+
 Flux package manifests use `flux.toml`. The manifest schema has an explicit compatibility version so compiler upgrades cannot silently reinterpret an existing package.
 
 ## Version 1

@@ -1329,5 +1329,5 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 - [ ] Android, iOS, Windows, macOS, Linux, web, and headless/server targets meet documented support tiers.
 - [x] Production-quality LSP/debugger/profiler. The compiler-native LSP, source-level debugger, and opt-in profiler/devtools workflows are implemented through the user-facing `flux` commands, share the compiler's source/diagnostic/build model, and are covered by the complete Rust/compiler suite plus native debugger/profiler regressions.
 - [ ] Automatic save-triggered hot reload is production-ready for development workflows.
-- [ ] Package ecosystem and platform interoperability are documented and tested.
+- [x] Package ecosystem and platform interoperability are documented and tested in [`docs/package-interoperability.md`](docs/package-interoperability.md), with regression coverage for dependency resolution/lockfiles/cache isolation, native package metadata and C headers, target-selected modules, and direct platform lowering.
 - [x] Flux can build substantial real applications without resorting to an OOP architecture.
