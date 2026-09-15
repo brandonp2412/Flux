@@ -120,7 +120,7 @@ fn main() -> i64 {
                 .any(|call| call.callee == "drop")
         })
         .expect("drop node should be present");
-    let events = graph.ownership_events_at(node.id);
+    let events = graph.ownership_events_at(node.id).collect::<Vec<_>>();
     assert_eq!(events.len(), 2);
     assert!(events.iter().any(|event| matches!(
         event,
