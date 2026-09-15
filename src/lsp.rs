@@ -1402,6 +1402,10 @@ fn add_qualified_namespace_completions(
                 "fn net.writeBytesTimeout(socket: i64, bytes: i64[], timeoutMillis: i64) -> (i64, error)",
             ),
             (
+                "writeBytesFromTimeout",
+                "fn net.writeBytesFromTimeout(socket: i64, bytes: i64[], offset: i64, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
+            (
                 "writeTimeout",
                 "fn net.writeTimeout(socket: i64, text: str, timeoutMillis: i64) -> (i64, error)",
             ),
@@ -3321,6 +3325,14 @@ fn signature_help_for_document_cached(
                         "net.writeBytesTimeout",
                         &["socket: i64", "bytes: i64[]", "timeoutMillis: i64"],
                         "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "sendBytesProgressWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.writeBytesFromTimeout",
+                        &["socket: i64", "bytes: i64[]", "offset: i64", "timeoutMillis: i64"],
+                        "(i64, bool, error)",
                         active_parameter,
                     ));
                 }

@@ -45977,6 +45977,7 @@ fn main() -> i64 {
     print(failure)
     return 0
 }
+
 "#;
     check_source(source).expect("timed binary write should typecheck");
     let generated = compile_to_c(source).expect("timed binary write should lower");
@@ -46030,6 +46031,66 @@ fn main() -> i64 {
             .message
             .contains("timeoutMillis must be -1 or between 0 and 2147483647")
     );
+}
+
+#[test]
+fn binary_socket_resumable_timed_write_is_typed_bounded_and_tree_shaken() {
+    let source = r#"
+fn main() -> i64 {
+    let (offset, complete, failure) = net.writeBytesFromTimeout(-1, [65, 0, 255], 0, 0)
+    print(offset)
+    print(complete)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("resumable timed binary write should typecheck");
+    let generated = compile_to_c(source).expect("resumable timed binary write should lower");
+    assert!(generated.contains("flux__net_send_bytes_progress_with_timeout("));
+    assert!(generated.contains("writeBytesFromTimeout offset exceeds byte length"));
+    assert!(generated.contains("writeBytesFromTimeout cancelled by worker scope"));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-write-bytes-progress-timeout-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("resumable timed binary fixture should be writable");
+    let c_path = root.join("write_bytes_progress_timeout.c");
+    let exe_path = root.join("write_bytes_progress_timeout");
+    fs::write(&c_path, generated).expect("generated resumable timed binary C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile resumable timed binary write");
+    assert!(
+        compile.status.success(),
+        "resumable timed binary C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("resumable timed binary program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "0\nfalse\ninvalid socket handle\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    let invalid_offset = r#"
+fn main() -> i64 {
+    let (offset, _, _) = net.writeBytesFromTimeout(1, [65], -1, 0)
+    return offset
+}
+"#;
+    let error = check_source(invalid_offset)
+        .expect_err("resumable timed binary write must reject negative literal offsets");
+    assert!(error.message.contains("offset must be non-negative"));
 }
 
 #[test]
