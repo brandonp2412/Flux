@@ -39042,6 +39042,37 @@ app Screen(onConfigurationChanged: configurationChanged)
 }
 
 #[test]
+fn windows_configuration_lifecycle_callback_dispatches_native_system_messages() {
+    let source = r#"
+fn configurationChanged() -> void {
+    print("configuration changed")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+
+app Screen(onConfigurationChanged: configurationChanged)
+"#;
+    check_source(source).expect("Windows configuration callback should typecheck");
+    let program = fluxc::parser::parse(source).expect("Windows configuration source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("Windows configuration source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows configuration callback should lower");
+    assert!(generated.contains("case WM_SETTINGCHANGE: case WM_DISPLAYCHANGE:"));
+    assert!(generated.contains("flux__fn_configurationChanged();"));
+}
+
+#[test]
 fn linux_application_state_restoration_uses_bounded_atomic_storage() {
     let source = r#"
 fn saveState() -> str {

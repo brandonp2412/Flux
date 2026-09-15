@@ -12451,6 +12451,8 @@ fn emit_windows_native_application(
     let on_save_state = application_metadata_function(application, "on_save_state");
     let on_restore_state = application_metadata_function(application, "on_restore_state");
     let on_exit = application_metadata_function(application, "on_exit");
+    let on_configuration_changed =
+        application_metadata_function(application, "on_configuration_changed");
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
@@ -13151,7 +13153,17 @@ fn emit_windows_native_application(
     let exit_callback = on_exit
         .map(|function| format!("{}();", function_c_name(function)))
         .unwrap_or_default();
-    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
+    let configuration_callback = on_configuration_changed
+        .map(|function| format!("{}();", function_c_name(function)))
+        .unwrap_or_default();
+    let configuration_messages = if on_configuration_changed.is_some() {
+        format!(
+            " case WM_SETTINGCHANGE: case WM_DISPLAYCHANGE: {{ {configuration_callback} flux__win_refresh(); return 0; }}"
+        )
+    } else {
+        String::new()
+    };
+    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
