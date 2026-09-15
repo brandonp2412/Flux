@@ -5615,6 +5615,53 @@ fn main() -> i64 {
 }
 
 #[test]
+fn general_uri_normalization_is_bounded_borrowed_and_runnable() {
+    let source = r#"
+fn normalized(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    print(uri.normalize("CuStOm://host/a%2fb", normalized))
+    print(uri.normalize("custom://host/%ZZ", normalized))
+    return 0
+}
+"#;
+    check_source(source).expect("URI normalization should typecheck");
+    let generated = compile_to_c(source).expect("URI normalization should lower natively");
+    assert!(generated.contains("flux__uri_normalize("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let root = std::env::temp_dir().join(format!("flux-uri-normalize-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI normalization fixture should be writable");
+    let source_path = root.join("uri_normalize.flux");
+    fs::write(&source_path, source).expect("URI normalization source should be writable");
+    let binary = root.join("uri_normalize");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI normalization binary should build");
+    assert!(
+        built.status.success(),
+        "URI normalization build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI normalization binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "custom://host/a%2Fb\nnil\nURI contains an invalid percent escape\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn general_uri_component_decoding_is_bounded_borrowed_and_tree_shaken() {
     let source = r#"
 fn decoded(value: str) -> void {

@@ -1689,6 +1689,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn uri.encode(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "normalize",
+            3,
+            "fn uri.normalize(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "json" {
@@ -3964,7 +3971,7 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "decode" | "encode" => Some(signature_help_for_builtin(
+                "decode" | "encode" | "normalize" => Some(signature_help_for_builtin(
                     &format!("uri.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
                     "error",
@@ -10547,6 +10554,7 @@ mod tests {
         assert!(items.contains(
             "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error"
         ));
+        assert!(items.contains("fn uri.normalize(value: str, callback: fn(str) -> void) -> error"));
     }
 
     #[test]

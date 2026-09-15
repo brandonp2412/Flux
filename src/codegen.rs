@@ -4241,6 +4241,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__uri_parse(")
         || runtime_usage.contains("flux__url_decode_component(")
         || runtime_usage.contains("flux__url_encode_component(")
+        || runtime_usage.contains("flux__uri_normalize(")
         || runtime_usage.contains("flux__url_decode_form_component(")
         || runtime_usage.contains("flux__url_encode_form_component(")
         || runtime_usage.contains("flux__url_parse_form_query(")
@@ -4953,6 +4954,41 @@ static inline const char *flux__json_encode_optional_bool(struct flux__optional_
 static inline const char *flux__json_encode_optional_str(struct flux__optional_str value, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encode callback";
     return value.has_value ? flux__json_encode_string(value.value, callback) : flux__json_encode_null(callback);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__uri_normalize(") {
+        out.push_str(r#"static inline const char *flux__uri_normalize(const char *value, void (*callback)(const char *)) {
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "URI exceeds 65536 bytes";
+    if (length == 0) return "URI must not be empty";
+    char buffer[65537];
+    memcpy(buffer, value, length + 1);
+    char *scheme_end = strchr(buffer, ':');
+    if (scheme_end == NULL || scheme_end == buffer) return "URI must include a scheme";
+    for (char *part = buffer; part < scheme_end; part += 1) {
+        unsigned char byte = (unsigned char)*part;
+        bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+            || (part != buffer && ((byte >= '0' && byte <= '9') || byte == '+' || byte == '-' || byte == '.'));
+        if (!valid) return "URI scheme is invalid";
+        if (byte >= 'A' && byte <= 'Z') *part = (char)(byte - 'A' + 'a');
+    }
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)buffer[index];
+        if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+        if (byte != '%') continue;
+        if (index + 2 >= length) return "URI contains an incomplete percent escape";
+        unsigned char high = (unsigned char)buffer[index + 1];
+        unsigned char low = (unsigned char)buffer[index + 2];
+        bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+        bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+        if (!high_hex || !low_hex) return "URI contains an invalid percent escape";
+        if (high >= 'a' && high <= 'f') buffer[index + 1] = (char)(high - 'a' + 'A');
+        if (low >= 'a' && low <= 'f') buffer[index + 2] = (char)(low - 'a' + 'A');
+        index += 2;
+    }
+    callback(buffer);
+    return NULL;
 }
 "#);
     }
@@ -36268,7 +36304,7 @@ fn emit_qualified_call(
     }
     if namespace == "uri" {
         if !named_args.is_empty()
-            || !matches!(name, "parse" | "decode" | "encode")
+            || !matches!(name, "parse" | "decode" | "encode" | "normalize")
             || args.len() != 2
         {
             return Err(diag(span, "invalid URI call reached code generation"));
@@ -36283,6 +36319,13 @@ fn emit_qualified_call(
                     value.code,
                     callback.code,
                 ),
+                vec![Type::Error],
+                None,
+            ));
+        }
+        if name == "normalize" {
+            return Ok((
+                format!("flux__uri_normalize({}, {})", value.code, callback.code),
                 vec![Type::Error],
                 None,
             ));
