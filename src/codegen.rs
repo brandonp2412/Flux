@@ -6595,6 +6595,7 @@ static inline struct flux__net_i64_error flux__websocket_read_frame(int socket_h
     else if (frame->length == 127) { unsigned char extended[8]; if (!flux__websocket_read_all(socket_handle, extended, 8)) return flux__websocket_result(-1, "failed to receive WebSocket frame length"); frame->length = 0; for (size_t index = 0; index < 8; index += 1) { if (frame->length > (UINT64_MAX >> 8)) return flux__websocket_result(-1, "WebSocket frame length overflows"); frame->length = (frame->length << 8) | extended[index]; } }
     if (frame->length > (uint64_t)capacity) return flux__websocket_result(-1, "WebSocket frame exceeds 65536 bytes");
     bool masked = (header[1] & 128) != 0; if (require_mask && !masked) return flux__websocket_result(-1, "WebSocket client frame is not masked");
+    if (!require_mask && masked) return flux__websocket_result(-1, "WebSocket server frame must not be masked");
     unsigned char mask[4]; if (masked && !flux__websocket_read_all(socket_handle, mask, 4)) return flux__websocket_result(-1, "failed to receive WebSocket mask");
     if (!flux__websocket_read_all(socket_handle, payload, (size_t)frame->length)) return flux__websocket_result(-1, "failed to receive WebSocket payload");
     if (masked) for (size_t index = 0; index < (size_t)frame->length; index += 1) payload[index] ^= mask[index % 4];
