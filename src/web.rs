@@ -704,7 +704,9 @@ fn emit_runtime(
     for state in &view.states {
         out.push_str("state[");
         out.push_str(&js_string(&state.name));
-        out.push_str("]=fluxRestoredState!==null&&Object.prototype.hasOwnProperty.call(fluxRestoredState,");
+        out.push_str(
+            "]=fluxRestoredState!==null&&Object.prototype.hasOwnProperty.call(fluxRestoredState,",
+        );
         out.push_str(&js_string(&state.name));
         out.push_str(")&&");
         let restored_type = match &state.ty {
@@ -755,7 +757,9 @@ fn emit_runtime(
     for element in &view.elements {
         emit_refresh(out, element, &state_names, &derived_names, web_functions)?;
     }
-    out.push_str("try{sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state));}catch(_){}\n}\n");
+    out.push_str(
+        "try{sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state));}catch(_){}\n}\n",
+    );
 
     for element in &view.elements {
         emit_events(out, element, &state_names, &derived_names, web_functions)?;
@@ -1262,7 +1266,9 @@ app Demo
         assert!(output.contains("addEventListener('click'"));
         assert!(output.contains("state[\"active\"]="));
         assert!(output.contains("fluxRefresh();"));
-        assert!(output.contains("sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state))"));
+        assert!(
+            output.contains("sessionStorage.setItem(fluxStateStorageKey,JSON.stringify(state))")
+        );
         assert!(!output.contains("methodChannel"));
     }
 

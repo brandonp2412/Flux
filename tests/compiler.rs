@@ -7192,6 +7192,28 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_multi_readiness_bounds_native_descriptor_storage() {
+    let handles = std::iter::repeat_n("1", 1025)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "fn ready(_socket: i64) -> void {{\n}}\nfn main() -> i64 {{\n    let (count, failure) = net.waitReadableMany([{handles}], 0, ready)\n    print(count)\n    print(failure)\n    return 0\n}}\n"
+    );
+    let error =
+        check_source(&source).expect_err("readiness descriptor cap must be statically checked");
+    assert!(
+        error
+            .message
+            .contains("net.waitReadableMany sockets must contain at most 1024 handles")
+    );
+
+    let source = "fn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let sockets: i64[] = [1]\n    let (count, failure) = net.waitReadableMany(sockets, 0, ready)\n    print(count)\n    print(failure)\n    return 0\n}\n";
+    let generated = compile_to_c(source).expect("readiness lists should still lower");
+    assert!(generated.contains("sockets.len > 1024"));
+    assert!(generated.contains("struct pollfd descriptors[1024]"));
+}
+
+#[test]
 fn udp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
@@ -9561,11 +9583,28 @@ fn main() -> i64 {
     let source_path = root.join("main.flux");
     fs::write(&source_path, source).expect("time formatter source should be writable");
     let binary = root.join("time-format");
-    let built = Command::new(env!("CARGO_BIN_EXE_flux")).arg("build").arg(&source_path).arg("-o").arg(&binary).output().expect("time formatter binary should build");
-    assert!(built.status.success(), "time formatter build failed: {}", String::from_utf8_lossy(&built.stderr));
-    let run = Command::new(&binary).output().expect("time formatter binary should run");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("time formatter binary should build");
+    assert!(
+        built.status.success(),
+        "time formatter build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("time formatter binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(), vec!["2000-01-02T03:04:05.006Z", "1969-12-31T23:59:59.999Z"]);
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout)
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["2000-01-02T03:04:05.006Z", "1969-12-31T23:59:59.999Z"]
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -9590,11 +9629,26 @@ fn main() -> i64 {
     let source_path = root.join("main.flux");
     fs::write(&source_path, source).expect("negative-year source should be writable");
     let binary = root.join("negative-year");
-    let built = Command::new(env!("CARGO_BIN_EXE_flux")).arg("build").arg(&source_path).arg("-o").arg(&binary).output().expect("negative-year binary should build");
-    assert!(built.status.success(), "negative-year build failed: {}", String::from_utf8_lossy(&built.stderr));
-    let run = Command::new(&binary).output().expect("negative-year binary should run");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("negative-year binary should build");
+    assert!(
+        built.status.success(),
+        "negative-year build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("negative-year binary should run");
     assert!(run.status.success());
-    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "-0001-01-02T03:04:05.006Z");
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "-0001-01-02T03:04:05.006Z"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -9622,7 +9676,9 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("duration constructors should lower");
     assert!(generated.contains("flux_mul_i64(flux__local_value, INT64_C(1000))"));
     assert!(generated.contains("flux_mul_i64(INT64_C(2), INT64_C(1000))"));
-    assert!(generated.contains("flux_mul_i64(flux_mul_i64(INT64_C(3), INT64_C(60)), INT64_C(1000))"));
+    assert!(
+        generated.contains("flux_mul_i64(flux_mul_i64(INT64_C(3), INT64_C(60)), INT64_C(1000))")
+    );
     assert!(generated.contains("flux_mul_i64(flux_mul_i64(flux_mul_i64(INT64_C(4), INT64_C(60)), INT64_C(60)), INT64_C(1000))"));
     assert!(generated.contains("flux__local_millisecond = INT64_C(5)"));
 }
@@ -9642,15 +9698,19 @@ fn main() -> i64 {
 
 #[test]
 fn duration_unit_constructors_reject_constant_overflow() {
-    for (name, value) in [("seconds", "9223372036854776"), ("minutes", "153722867280913")]
-    {
+    for (name, value) in [
+        ("seconds", "9223372036854776"),
+        ("minutes", "153722867280913"),
+    ] {
         let source = format!(
             "fn main() -> i64 {{\n    let value: i64 = time.{name}({value})\n    return value\n}}\n"
         );
         let error = check_source(&source)
             .expect_err("constant duration conversion overflow must be diagnosed statically");
         assert!(
-            error.message.contains("duration overflows i64 milliseconds"),
+            error
+                .message
+                .contains("duration overflows i64 milliseconds"),
             "unexpected diagnostic for time.{name}: {}",
             error.message
         );
@@ -9662,9 +9722,13 @@ fn main() -> i64 {
     return value
 }
 "#;
-    let error = check_source(source)
-        .expect_err("hour conversion overflow must be diagnosed statically");
-    assert!(error.message.contains("duration overflows i64 milliseconds"));
+    let error =
+        check_source(source).expect_err("hour conversion overflow must be diagnosed statically");
+    assert!(
+        error
+            .message
+            .contains("duration overflows i64 milliseconds")
+    );
 }
 
 #[test]
@@ -9686,8 +9750,13 @@ fn main() -> i64 {
 fn larger_duration_unit_constructors_reject_constant_overflow() {
     for (name, value) in [("days", "106751991168"), ("weeks", "15250284453")] {
         let source = format!("fn main() -> i64 {{\n    return time.{name}({value})\n}}\n");
-        let error = check_source(&source).expect_err("large duration conversion overflow must be diagnosed statically");
-        assert!(error.message.contains("duration overflows i64 milliseconds"));
+        let error = check_source(&source)
+            .expect_err("large duration conversion overflow must be diagnosed statically");
+        assert!(
+            error
+                .message
+                .contains("duration overflows i64 milliseconds")
+        );
     }
 }
 
@@ -13931,15 +14000,18 @@ fn main() -> i64 {
         .nodes()
         .iter()
         .flat_map(|node| {
-            node.definitions.iter().enumerate().map(move |(index, definition)| {
-                (
-                    fluxc::ir::ControlFlowDefinitionId::Node {
-                        node: node.id,
-                        index,
-                    },
-                    definition,
-                )
-            })
+            node.definitions
+                .iter()
+                .enumerate()
+                .map(move |(index, definition)| {
+                    (
+                        fluxc::ir::ControlFlowDefinitionId::Node {
+                            node: node.id,
+                            index,
+                        },
+                        definition,
+                    )
+                })
         })
         .filter(|(_, definition)| definition.name == "view")
         .map(|(id, _)| id)
@@ -16252,9 +16324,11 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(source).expect_err("non-string interpolation must be rejected");
-    assert!(error
-        .message
-        .contains("string interpolation binding must be str"));
+    assert!(
+        error
+            .message
+            .contains("string interpolation binding must be str")
+    );
 }
 
 #[test]
@@ -16291,8 +16365,14 @@ fn main() -> i64 {
         .arg(&exe_path)
         .output()
         .expect("clang should compile JSON native code");
-    assert!(compile.status.success(), "JSON C should compile: {}", String::from_utf8_lossy(&compile.stderr));
-    let output = Command::new(&exe_path).output().expect("JSON program should run");
+    assert!(
+        compile.status.success(),
+        "JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON program should run");
     assert!(output.status.success(), "JSON program should exit cleanly");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "nil\nnil\n");
     let _ = fs::remove_dir_all(&root);
@@ -16341,11 +16421,23 @@ fn main() -> i64 {
         .arg(&exe_path)
         .output()
         .expect("clang should compile Unicode JSON native code");
-    assert!(compile.status.success(), "Unicode JSON C should compile: {}", String::from_utf8_lossy(&compile.stderr));
-    let output = Command::new(&exe_path).output().expect("Unicode JSON program should run");
-    assert!(output.status.success(), "Unicode JSON program should exit cleanly");
+    assert!(
+        compile.status.success(),
+        "Unicode JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("Unicode JSON program should run");
+    assert!(
+        output.status.success(),
+        "Unicode JSON program should exit cleanly"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("Flux 🚀\n"), "decoded JSON string was not delivered: {stdout:?}");
+    assert!(
+        stdout.starts_with("Flux 🚀\n"),
+        "decoded JSON string was not delivered: {stdout:?}"
+    );
     assert!(stdout.contains("JSON unicode escape decodes to a NUL byte"));
     assert!(stdout.contains("JSON unicode high surrogate must be followed by a low surrogate"));
     assert!(stdout.contains("JSON unicode low surrogate must follow a high surrogate"));
@@ -16386,9 +16478,9 @@ fn main() -> i64 {
     let errors = check_source_all(live)
         .expect_err("an optional list reborrow must keep its owner live until its last use");
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("cannot move non-copy binding 'values' while borrowed view 'view' is still live")
+        error.message.contains(
+            "cannot move non-copy binding 'values' while borrowed view 'view' is still live",
+        )
     }));
 
     let after_last_use = r#"
@@ -46850,7 +46942,11 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(source).expect_err("oversized WebSocket control payload should fail");
-    assert!(error.message.contains("websocket.ping payload must be at most 125 bytes"));
+    assert!(
+        error
+            .message
+            .contains("websocket.ping payload must be at most 125 bytes")
+    );
 }
 
 #[test]
@@ -46862,7 +46958,11 @@ fn main() -> i64 {
 }
 "#;
     let error = check_source(source).expect_err("reserved WebSocket close code should fail");
-    assert!(error.message.contains("websocket.closeWithCode code is invalid"));
+    assert!(
+        error
+            .message
+            .contains("websocket.closeWithCode code is invalid")
+    );
 }
 
 #[test]
@@ -46987,9 +47087,17 @@ fn main() -> i64 {{
     }
     assert!(String::from_utf8_lossy(&handshake).contains("101 Switching Protocols"));
     fn masked_frame(fin: bool, opcode: u8, payload: &[u8], key: [u8; 4]) -> Vec<u8> {
-        let mut frame = vec![if fin { 0x80 | opcode } else { opcode }, 0x80 | payload.len() as u8];
+        let mut frame = vec![
+            if fin { 0x80 | opcode } else { opcode },
+            0x80 | payload.len() as u8,
+        ];
         frame.extend_from_slice(&key);
-        frame.extend(payload.iter().enumerate().map(|(index, byte)| byte ^ key[index % 4]));
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ key[index % 4]),
+        );
         frame
     }
     client
@@ -47007,7 +47115,10 @@ fn main() -> i64 {{
         && response.windows(3).any(|window| window == [0x81, 2, b'o']))
     {
         let received = client.read(&mut chunk).unwrap();
-        assert!(received > 0, "WebSocket server should send pong and text response");
+        assert!(
+            received > 0,
+            "WebSocket server should send pong and text response"
+        );
         response.extend_from_slice(&chunk[..received]);
     }
     server.join().unwrap();

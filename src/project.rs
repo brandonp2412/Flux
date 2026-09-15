@@ -746,14 +746,13 @@ fn load_report_with_overlays_and_parse_cache(
                 )]
             })?
     } else if has_registry_dependencies {
-        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
-            |error| {
+        let provider =
+            crate::package_ecosystem::configured_registry_provider(false).map_err(|error| {
                 vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
                 )]
-            },
-        )?;
+            })?;
         let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
             &module_root,
             &provider,
@@ -889,14 +888,13 @@ pub fn analyze_package_test(
                 )]
             })?
     } else if has_registry_dependencies {
-        let provider = crate::package_ecosystem::configured_registry_provider(false).map_err(
-            |error| {
+        let provider =
+            crate::package_ecosystem::configured_registry_provider(false).map_err(|error| {
                 vec![Diagnostic::global(
                     DiagnosticStage::Parse,
                     format!("failed to configure package registry: {error}"),
                 )]
-            },
-        )?;
+            })?;
         let (graph, roots) = crate::package_ecosystem::materialize_package_registry_dependencies(
             &package_root,
             &provider,
@@ -1760,7 +1758,10 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
             ));
             continue;
         }
-        let canonical_member = match canonical_source(&canonical_manifest.parent().unwrap().join(member_path), "workspace member") {
+        let canonical_member = match canonical_source(
+            &canonical_manifest.parent().unwrap().join(member_path),
+            "workspace member",
+        ) {
             Ok(path) => path,
             Err(member_diagnostics) => {
                 diagnostics.extend(member_diagnostics);
@@ -1781,7 +1782,10 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         if !canonical_member.is_dir() {
             diagnostics.push(Diagnostic::global(
                 DiagnosticStage::Parse,
-                format!("workspace member '{}' must be a directory", member_path.display()),
+                format!(
+                    "workspace member '{}' must be a directory",
+                    member_path.display()
+                ),
             ));
             continue;
         }
@@ -1789,14 +1793,20 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest, Vec<Diagnostic>> {
         if !member_manifest.is_file() {
             diagnostics.push(Diagnostic::global(
                 DiagnosticStage::Parse,
-                format!("workspace member '{}' must contain flux.toml", member_path.display()),
+                format!(
+                    "workspace member '{}' must contain flux.toml",
+                    member_path.display()
+                ),
             ));
             continue;
         }
         if !workspace_member_names.insert(canonical_member.clone()) {
             diagnostics.push(Diagnostic::global(
                 DiagnosticStage::Parse,
-                format!("[workspace].members repeats '{}', including through path normalization", member_path.display()),
+                format!(
+                    "[workspace].members repeats '{}', including through path normalization",
+                    member_path.display()
+                ),
             ));
             continue;
         }
@@ -1973,9 +1983,7 @@ pub fn read_workspace_members(
 /// Return the root package followed by its explicitly declared workspace
 /// members. Direct source-file projects return only the supplied source.
 pub fn workspace_package_targets(target: &Path) -> Result<Vec<PathBuf>, Vec<Diagnostic>> {
-    if !target.is_dir()
-        && target.file_name().and_then(|name| name.to_str()) != Some("flux.toml")
-    {
+    if !target.is_dir() && target.file_name().and_then(|name| name.to_str()) != Some("flux.toml") {
         return Ok(vec![target.to_path_buf()]);
     }
     let manifest = read_package_manifest_target(target, "workspace discovery")?;
@@ -2040,9 +2048,7 @@ fn read_package_manifest_target(
     read_manifest(&manifest_path)
 }
 
-fn workspace_root_manifest(
-    manifest: &PackageManifest,
-) -> Result<PackageManifest, Vec<Diagnostic>> {
+fn workspace_root_manifest(manifest: &PackageManifest) -> Result<PackageManifest, Vec<Diagnostic>> {
     let package_root = manifest
         .path
         .parent()
@@ -4193,8 +4199,12 @@ fn valid_mime_type(value: &str) -> bool {
     };
     !kind.is_empty()
         && !subtype.is_empty()
-        && kind.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        && subtype.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'*'))
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        && subtype
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'*'))
 }
 
 fn valid_android_permission(value: &str) -> bool {

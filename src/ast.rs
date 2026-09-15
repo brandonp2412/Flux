@@ -70,10 +70,16 @@ impl Type {
         if let Some(inner) = input.strip_suffix("[]") {
             return Some(Self::List(Box::new(Self::parse(inner)?)));
         }
-        if let Some(inner) = input.strip_prefix("set<").and_then(|value| value.strip_suffix('>')) {
+        if let Some(inner) = input
+            .strip_prefix("set<")
+            .and_then(|value| value.strip_suffix('>'))
+        {
             return Some(Self::Set(Box::new(Self::parse(inner)?)));
         }
-        if let Some(inner) = input.strip_prefix("map<").and_then(|value| value.strip_suffix('>')) {
+        if let Some(inner) = input
+            .strip_prefix("map<")
+            .and_then(|value| value.strip_suffix('>'))
+        {
             let parts = split_type_commas(inner);
             if parts.len() != 2 {
                 return None;

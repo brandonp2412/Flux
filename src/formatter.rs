@@ -1145,7 +1145,11 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
             "{{{}}}",
             items
                 .chunks(2)
-                .map(|entry| format!("{}: {}", format_expr(&entry[0], 0), format_expr(&entry[1], 0)))
+                .map(|entry| format!(
+                    "{}: {}",
+                    format_expr(&entry[0], 0),
+                    format_expr(&entry[1], 0)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

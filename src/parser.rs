@@ -3,12 +3,11 @@ use crate::ast::{
     EnumVariant, Expr, ExprKind, FlowDirection, Function, GridLayout, GridTrack, ImportDef,
     InterfaceDef, InterfaceFunction, InterfaceImpl, InterfaceImplMapping, InterfaceParent,
     InterpolatedStringPart, ListMatchArm, ListMatchExprArm, ListMatchPattern, ListRestPattern,
-    MapPatternEntry,
-    MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding, PatternLogicalOp,
-    Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect, ShellRedirectMode,
-    Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern, StructPatternField,
-    Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty, ViewState,
-    ViewStateTransition,
+    MapPatternEntry, MatchArm, MatchExprArm, MatchPattern, NamedArg, Param, PatternBinding,
+    PatternLogicalOp, Program, RecordLiteralField, RelationalPattern, RouteDef, ShellRedirect,
+    ShellRedirectMode, Stmt, StmtKind, StructDef, StructField, StructLiteralField, StructPattern,
+    StructPatternField, Type, TypeAlias, UnaryOp, ViewDef, ViewDerived, ViewElement, ViewProperty,
+    ViewState, ViewStateTransition,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 
@@ -3516,8 +3515,7 @@ fn parse_list_match_expr_arm(line: &Line) -> Result<ListMatchExprArm, Diagnostic
 
 fn is_list_match_arm_line(line: &Line) -> bool {
     let Some(colon) = find_top_level_colon(&line.text) else {
-        return line.text.trim_start().starts_with('[')
-            || line.text.trim_start().starts_with('{');
+        return line.text.trim_start().starts_with('[') || line.text.trim_start().starts_with('{');
     };
     let pattern = line.text[..colon].trim();
     pattern.starts_with('[')
@@ -3800,7 +3798,10 @@ fn parse_list_match_pattern(
         return Ok(ListMatchPattern::Wildcard { span });
     }
     if trimmed.starts_with('{') {
-        let Some(inner) = trimmed.strip_prefix('{').and_then(|value| value.strip_suffix('}')) else {
+        let Some(inner) = trimmed
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+        else {
             return Err(diag(line, "map match patterns must end with '}'"));
         };
         let mut entries = Vec::new();
@@ -3809,10 +3810,17 @@ fn parse_list_match_pattern(
                 let Some(colon) = find_top_level_colon(part) else {
                     return Err(diag(line, "map match entries use 'key: binding' syntax"));
                 };
-                let (key_source, key_column) = trim_with_column(part[..colon].trim(), column + leading + 1 + part_offset);
-                let (binding_source, binding_column) = trim_with_column(part[colon + 1..].trim(), column + leading + 1 + part_offset + colon + 1);
+                let (key_source, key_column) =
+                    trim_with_column(part[..colon].trim(), column + leading + 1 + part_offset);
+                let (binding_source, binding_column) = trim_with_column(
+                    part[colon + 1..].trim(),
+                    column + leading + 1 + part_offset + colon + 1,
+                );
                 if key_source.is_empty() || binding_source.is_empty() {
-                    return Err(diag(line, "map match entries require both a key and binding"));
+                    return Err(diag(
+                        line,
+                        "map match entries require both a key and binding",
+                    ));
                 }
                 let key = parse_expression_at(key_source, line, key_column)?;
                 validate_identifier(binding_source, line)?;
@@ -4976,9 +4984,8 @@ fn split_top_level_commas_with_offsets(input: &str) -> Vec<(&str, usize)> {
         match byte {
             b'(' | b'{' | b'[' => depth += 1,
             b')' | b'}' | b']' => depth = depth.saturating_sub(1),
-            b'<'
-                if input[..index].trim_end().ends_with("map")
-                    || input[..index].trim_end().ends_with("set") =>
+            b'<' if input[..index].trim_end().ends_with("map")
+                || input[..index].trim_end().ends_with("set") =>
             {
                 angle_depth += 1;
             }
@@ -7196,19 +7203,34 @@ impl ExprParser<'_> {
     }
 
     fn parse_set_literal(&mut self, open_span: SourceSpan) -> Result<Expr, Diagnostic> {
-        if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBrace)
+        ) {
             let checkpoint = self.index;
             let key = self.parse_conditional()?;
-            if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Colon)) {
+            if matches!(
+                self.tokens.get(self.index).map(|token| &token.kind),
+                Some(TokenKind::Colon)
+            ) {
                 self.index += 1;
                 let mut entries = vec![key, self.parse_conditional()?];
-                while matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Comma)) {
+                while matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::Comma)
+                ) {
                     self.index += 1;
-                    if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+                    if matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::RBrace)
+                    ) {
                         break;
                     }
                     let key = self.parse_conditional()?;
-                    if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::Colon)) {
+                    if !matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::Colon)
+                    ) {
                         return Err(diag(self.line, "expected ':' in map literal"));
                     }
                     self.index += 1;
@@ -7216,38 +7238,62 @@ impl ExprParser<'_> {
                     entries.push(key);
                     entries.push(value);
                 }
-                let close = self.tokens.get(self.index).cloned().ok_or_else(|| diag(self.line, "expected '}' after map literal"))?;
+                let close = self
+                    .tokens
+                    .get(self.index)
+                    .cloned()
+                    .ok_or_else(|| diag(self.line, "expected '}' after map literal"))?;
                 if !matches!(close.kind, TokenKind::RBrace) {
                     return Err(diag(self.line, "expected '}' after map literal"));
                 }
                 self.index += 1;
                 return Ok(Expr {
                     line: self.line,
-                    span: SourceSpan::new(self.line, open_span.column, close.span.column + close.span.length - open_span.column),
+                    span: SourceSpan::new(
+                        self.line,
+                        open_span.column,
+                        close.span.column + close.span.length - open_span.column,
+                    ),
                     kind: ExprKind::Map(entries),
                 });
             }
             self.index = checkpoint;
         }
         let mut items = Vec::new();
-        if !matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) {
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBrace)
+        ) {
             loop {
                 items.push(self.parse_conditional()?);
                 match self.tokens.get(self.index).map(|token| &token.kind) {
                     Some(TokenKind::Comma) => {
                         self.index += 1;
-                        if matches!(self.tokens.get(self.index).map(|token| &token.kind), Some(TokenKind::RBrace)) { break; }
+                        if matches!(
+                            self.tokens.get(self.index).map(|token| &token.kind),
+                            Some(TokenKind::RBrace)
+                        ) {
+                            break;
+                        }
                     }
                     Some(TokenKind::RBrace) => break,
                     _ => return Err(diag(self.line, "expected ',' or '}' in set literal")),
                 }
             }
         }
-        let close = self.tokens.get(self.index).cloned().ok_or_else(|| diag(self.line, "expected '}' after set literal"))?;
+        let close = self
+            .tokens
+            .get(self.index)
+            .cloned()
+            .ok_or_else(|| diag(self.line, "expected '}' after set literal"))?;
         self.index += 1;
         Ok(Expr {
             line: self.line,
-            span: SourceSpan::new(self.line, open_span.column, close.span.column + close.span.length - open_span.column),
+            span: SourceSpan::new(
+                self.line,
+                open_span.column,
+                close.span.column + close.span.length - open_span.column,
+            ),
             kind: ExprKind::Set(items),
         })
     }

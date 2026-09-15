@@ -4325,7 +4325,9 @@ fn emit_runtime_prelude(
 }
 "#);
     }
-    if runtime_usage.contains("flux__json_parse(") || runtime_usage.contains("flux__json_encode_string(") {
+    if runtime_usage.contains("flux__json_parse(")
+        || runtime_usage.contains("flux__json_encode_string(")
+    {
         out.push_str(r#"static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
 static inline const char *flux__json_skip_ws(const char **cursor, const char *end) {
@@ -7660,7 +7662,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if runtime_usage.contains("flux__net_wait_readable_many(")
         || runtime_usage.contains("flux__net_wait_writable_many(")
     {
-        out.push_str("static inline struct flux__net_i64_error flux__net_wait_many(struct flux__list sockets, int64_t timeout_millis, short events, void (*callback)(int64_t), const char *timeout_error, const char *wait_error) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, timeout_error); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > (size_t)INT64_MAX) return flux__net_result(-1, \"too many socket handles\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[sockets.len]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = events, .revents = 0 }; } int result = flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len, timeout_millis); if (result == -2) return flux__net_result(-1, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_result(-1, wait_error); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0 || (events == POLLOUT && (revents & POLLHUP) != 0)) return flux__net_result(-1, \"socket readiness failed\"); bool is_ready = events == POLLIN ? (revents & (POLLIN | POLLHUP)) != 0 : (revents & POLLOUT) != 0; if (is_ready) { callback((int64_t)descriptors[index].fd); ready += 1; } } return flux__net_result(ready, NULL); }\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_wait_many(struct flux__list sockets, int64_t timeout_millis, short events, void (*callback)(int64_t), const char *timeout_error, const char *wait_error) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, timeout_error); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > 1024) return flux__net_result(-1, \"too many socket handles for readiness wait (maximum is 1024)\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[1024]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = events, .revents = 0 }; } int result = flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len, timeout_millis); if (result == -2) return flux__net_result(-1, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_result(-1, wait_error); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0 || (events == POLLOUT && (revents & POLLHUP) != 0)) return flux__net_result(-1, \"socket readiness failed\"); bool is_ready = events == POLLIN ? (revents & (POLLIN | POLLHUP)) != 0 : (revents & POLLOUT) != 0; if (is_ready) { callback((int64_t)descriptors[index].fd); ready += 1; } } return flux__net_result(ready, NULL); }\n");
         if runtime_usage.contains("flux__net_wait_readable_many(") {
             out.push_str("static inline struct flux__net_i64_error flux__net_wait_readable_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t)) { return flux__net_wait_many(sockets, timeout_millis, POLLIN, callback, \"waitReadableMany timeoutMillis must be -1 or between 0 and 2147483647\", \"failed to wait for socket readability\"); }\n");
         }
@@ -7669,7 +7671,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         }
     }
     if runtime_usage.contains("flux__net_wait_ready_many(") {
-        out.push_str("static inline struct flux__net_i64_error flux__net_wait_ready_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t, bool, bool)) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, \"waitReadyMany timeoutMillis must be -1 or between 0 and 2147483647\"); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > (size_t)INT64_MAX) return flux__net_result(-1, \"too many socket handles\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[sockets.len]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = POLLIN | POLLOUT, .revents = 0 }; } int result = flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len, timeout_millis); if (result == -2) return flux__net_result(-1, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_result(-1, \"failed to wait for socket readiness\"); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0) return flux__net_result(-1, \"socket readiness failed\"); bool readable = (revents & (POLLIN | POLLHUP)) != 0; bool writable = (revents & POLLOUT) != 0 && (revents & POLLHUP) == 0; if (readable || writable) { callback((int64_t)descriptors[index].fd, readable, writable); ready += 1; } } return flux__net_result(ready, NULL); }\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_wait_ready_many(struct flux__list sockets, int64_t timeout_millis, void (*callback)(int64_t, bool, bool)) { if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, \"waitReadyMany timeoutMillis must be -1 or between 0 and 2147483647\"); if (sockets.len == 0) return flux__net_result(0, NULL); if (sockets.len > 1024) return flux__net_result(-1, \"too many socket handles for readiness wait (maximum is 1024)\"); ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; struct pollfd descriptors[1024]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = POLLIN | POLLOUT, .revents = 0 }; } int result = flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len, timeout_millis); if (result == -2) return flux__net_result(-1, \"socket readiness wait cancelled by worker scope\"); if (result < 0) return flux__net_result(-1, \"failed to wait for socket readiness\"); if (result == 0) return flux__net_result(0, NULL); int64_t ready = 0; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) return flux__net_result(-1, \"invalid socket handle\"); if ((revents & POLLERR) != 0) return flux__net_result(-1, \"socket readiness failed\"); bool readable = (revents & (POLLIN | POLLHUP)) != 0; bool writable = (revents & POLLOUT) != 0 && (revents & POLLHUP) == 0; if (readable || writable) { callback((int64_t)descriptors[index].fd, readable, writable); ready += 1; } } return flux__net_result(ready, NULL); }\n");
     }
 
     if runtime_usage.contains("flux_add_i64(") {
@@ -33623,7 +33625,14 @@ fn emit_qualified_call(
                 let session = emit_expr(&args[0], env, signatures)?;
                 let max_bytes = emit_expr(&args[1], env, signatures)?;
                 let callback = emit_expr(&args[2], env, signatures)?;
-                return Ok((format!("flux__websocket_read_bytes({}, {}, {})", session.code, max_bytes.code, callback.code), vec![Type::I64, Type::Error], Some("flux__net_i64_error".to_string())));
+                return Ok((
+                    format!(
+                        "flux__websocket_read_bytes({}, {}, {})",
+                        session.code, max_bytes.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
             }
             "writeText" if args.len() == 2 => {
                 let session = emit_expr(&args[0], env, signatures)?;
@@ -33640,19 +33649,41 @@ fn emit_qualified_call(
             "writeBytes" if args.len() == 2 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let bytes = emit_expr(&args[1], env, signatures)?;
-                return Ok((format!("flux__websocket_write_bytes({}, {})", session.code, bytes.code), vec![Type::Error], None));
+                return Ok((
+                    format!(
+                        "flux__websocket_write_bytes({}, {})",
+                        session.code, bytes.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "ping" | "pong" if args.len() == 2 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let value = emit_expr(&args[1], env, signatures)?;
-                let helper = if name == "ping" { "flux__websocket_write_ping" } else { "flux__websocket_write_pong" };
-                return Ok((format!("{}({}, {})", helper, session.code, value.code), vec![Type::Error], None));
+                let helper = if name == "ping" {
+                    "flux__websocket_write_ping"
+                } else {
+                    "flux__websocket_write_pong"
+                };
+                return Ok((
+                    format!("{}({}, {})", helper, session.code, value.code),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "closeWithCode" if args.len() == 3 => {
                 let session = emit_expr(&args[0], env, signatures)?;
                 let code = emit_expr(&args[1], env, signatures)?;
                 let reason = emit_expr(&args[2], env, signatures)?;
-                return Ok((format!("flux__websocket_close_with_code({}, {}, {})", session.code, code.code, reason.code), vec![Type::Error], None));
+                return Ok((
+                    format!(
+                        "flux__websocket_close_with_code({}, {}, {})",
+                        session.code, code.code, reason.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "close" if args.len() == 1 => {
                 let session = emit_expr(&args[0], env, signatures)?;
@@ -34094,7 +34125,10 @@ fn emit_qualified_call(
                 let offset = emit_expr(&args[2], env, signatures)?;
                 let timeout = emit_expr(&args[3], env, signatures)?;
                 return Ok((
-                    format!("flux__net_send_bytes_progress_with_timeout({}, {}, {}, {})", socket_handle.code, bytes.code, offset.code, timeout.code),
+                    format!(
+                        "flux__net_send_bytes_progress_with_timeout({}, {}, {}, {})",
+                        socket_handle.code, bytes.code, offset.code, timeout.code
+                    ),
                     vec![Type::I64, Type::Bool, Type::Error],
                     Some("flux__net_i64_bool_error".to_string()),
                 ));
@@ -34767,7 +34801,11 @@ fn emit_qualified_call(
             "encodeString" => "flux__json_encode_string",
             _ => return Err(diag(span, "unknown JSON call reached code generation")),
         };
-        return Ok((format!("{}({}, {})", helper, value.code, callback.code), vec![Type::Error], None));
+        return Ok((
+            format!("{}({}, {})", helper, value.code, callback.code),
+            vec![Type::Error],
+            None,
+        ));
     }
     if namespace == "windows" {
         if !named_args.is_empty() {
@@ -35100,7 +35138,10 @@ fn emit_qualified_call(
             }
             "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
                 if args.len() != 1 {
-                    return Err(diag(span, "invalid time duration call reached code generation"));
+                    return Err(diag(
+                        span,
+                        "invalid time duration call reached code generation",
+                    ));
                 }
                 let value = emit_expr(&args[0], env, signatures)?;
                 let code = match name {
@@ -35189,10 +35230,19 @@ fn emit_qualified_call(
                 ));
             }
             "formatUtc" => {
-                if args.len() != 2 { return Err(diag(span, "invalid time call reached code generation")); }
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid time call reached code generation"));
+                }
                 let timestamp = emit_expr(&args[0], env, signatures)?;
                 let callback = emit_expr(&args[1], env, signatures)?;
-                return Ok((format!("flux__time_format_utc({}, {})", timestamp.code, callback.code), vec![Type::Error], None));
+                return Ok((
+                    format!(
+                        "flux__time_format_utc({}, {})",
+                        timestamp.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
             | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {

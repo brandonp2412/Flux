@@ -1282,7 +1282,10 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "websocket" {
         for (label, detail) in [
-            ("connect", "fn websocket.connect(socket: i64, host: str) -> (i64, error)"),
+            (
+                "connect",
+                "fn websocket.connect(socket: i64, host: str) -> (i64, error)",
+            ),
             ("accept", "fn websocket.accept(socket: i64) -> (i64, error)"),
             (
                 "readText",
@@ -1300,9 +1303,18 @@ fn add_qualified_namespace_completions(
                 "writeBytes",
                 "fn websocket.writeBytes(session: i64, bytes: i64[]) -> error",
             ),
-            ("ping", "fn websocket.ping(session: i64, payload: str) -> error"),
-            ("pong", "fn websocket.pong(session: i64, payload: str) -> error"),
-            ("closeWithCode", "fn websocket.closeWithCode(session: i64, code: i64, reason: str) -> error"),
+            (
+                "ping",
+                "fn websocket.ping(session: i64, payload: str) -> error",
+            ),
+            (
+                "pong",
+                "fn websocket.pong(session: i64, payload: str) -> error",
+            ),
+            (
+                "closeWithCode",
+                "fn websocket.closeWithCode(session: i64, code: i64, reason: str) -> error",
+            ),
             ("close", "fn websocket.close(session: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -1576,10 +1588,20 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "json" {
-        push_completion_item(items, seen, "parse", 3,
-            "fn json.parse(value: str, callback: fn(str, str) -> void) -> error");
-        push_completion_item(items, seen, "encodeString", 3,
-            "fn json.encodeString(value: str, callback: fn(str) -> void) -> error");
+        push_completion_item(
+            items,
+            seen,
+            "parse",
+            3,
+            "fn json.parse(value: str, callback: fn(str, str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "encodeString",
+            3,
+            "fn json.encodeString(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "http" {
@@ -1902,7 +1924,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
         );
-        push_completion_item(items, seen, "format", 3, "fn time.format(unixMillis: i64, callback: fn(str) -> void) -> error");
+        push_completion_item(
+            items,
+            seen,
+            "format",
+            3,
+            "fn time.format(unixMillis: i64, callback: fn(str) -> void) -> error",
+        );
         for member in [
             "year",
             "month",
@@ -3345,7 +3373,12 @@ fn signature_help_for_document_cached(
                 "sendBytesProgressWithTimeout" => {
                     return Some(signature_help_for_builtin(
                         "net.writeBytesFromTimeout",
-                        &["socket: i64", "bytes: i64[]", "offset: i64", "timeoutMillis: i64"],
+                        &[
+                            "socket: i64",
+                            "bytes: i64[]",
+                            "offset: i64",
+                            "timeoutMillis: i64",
+                        ],
                         "(i64, bool, error)",
                         active_parameter,
                     ));
@@ -3968,9 +4001,21 @@ fn signature_help_for_document_cached(
                     vec!["session: i64", "value: str"],
                     "error",
                 ),
-                "ping" => ("websocket.ping", vec!["session: i64", "payload: str"], "error"),
-                "pong" => ("websocket.pong", vec!["session: i64", "payload: str"], "error"),
-                "closeWithCode" => ("websocket.closeWithCode", vec!["session: i64", "code: i64", "reason: str"], "error"),
+                "ping" => (
+                    "websocket.ping",
+                    vec!["session: i64", "payload: str"],
+                    "error",
+                ),
+                "pong" => (
+                    "websocket.pong",
+                    vec!["session: i64", "payload: str"],
+                    "error",
+                ),
+                "closeWithCode" => (
+                    "websocket.closeWithCode",
+                    vec!["session: i64", "code: i64", "reason: str"],
+                    "error",
+                ),
                 "close" => ("websocket.close", vec!["session: i64"], "error"),
                 _ => return None,
             };
@@ -4260,7 +4305,12 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 "formatUtc" => {
-                    return Some(signature_help_for_builtin("time.formatUtc", &["unixMillis: i64", "callback: fn(str) -> void"], "error", active_parameter));
+                    return Some(signature_help_for_builtin(
+                        "time.formatUtc",
+                        &["unixMillis: i64", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
                 }
                 "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
                 | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" => {
@@ -10267,7 +10317,10 @@ mod tests {
             ("time.days(", "fn time.days(value: i64) -> i64"),
             ("time.weeks(", "fn time.weeks(value: i64) -> i64"),
         ] {
-            let line_index = source.lines().position(|line| line.contains(needle)).unwrap();
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap();
             let line = source.lines().nth(line_index).unwrap();
             let cursor = line.find(needle).unwrap() + needle.len();
             let help = signature_help_for_document(

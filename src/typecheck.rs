@@ -8,6 +8,10 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::ir::ControlFlowGraph;
 
+/// The native multi-socket readiness helpers use a bounded stack descriptor
+/// array. Keep the source-level literal check in sync with that native limit.
+pub const MAX_SOCKET_READINESS_DESCRIPTORS: usize = 1024;
+
 #[derive(Debug, Clone)]
 pub struct Signature {
     pub public: bool,
@@ -5728,7 +5732,10 @@ pub fn type_of_expr(
                 }
                 return Err(diag(
                     expr.span,
-                    &format!("string interpolation binding must be str, got {}", ty.name()),
+                    &format!(
+                        "string interpolation binding must be str, got {}",
+                        ty.name()
+                    ),
                 ));
             }
             for part in parts {
@@ -7764,14 +7771,16 @@ fn check_qualified_call(
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!(
-                            "websocket.connect expects 2 arguments, got {}",
-                            args.len()
-                        ),
+                        &format!("websocket.connect expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let socket = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &socket, "websocket.connect socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "websocket.connect socket",
+                )?;
                 let host = type_of_expr(&args[1], env, signatures)?;
                 require_type(args[1].span, &Type::Str, &host, "websocket.connect host")?;
                 return Ok(vec![Type::I64, Type::Error]);
@@ -7832,19 +7841,44 @@ fn check_qualified_call(
                 if args.len() != 3 {
                     return Err(diag(
                         span,
-                        &format!("websocket.readBytes expects 3 arguments, got {}", args.len()),
+                        &format!(
+                            "websocket.readBytes expects 3 arguments, got {}",
+                            args.len()
+                        ),
                     ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.readBytes session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.readBytes session",
+                )?;
                 let max_bytes = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &max_bytes, "websocket.readBytes maxBytes")?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value)) {
-                    return Err(diag(args[1].span, "websocket.readBytes maxBytes must be between 1 and 65536"));
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &max_bytes,
+                    "websocket.readBytes maxBytes",
+                )?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if !(1..=65536).contains(&value))
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "websocket.readBytes maxBytes must be between 1 and 65536",
+                    ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::List(Box::new(Type::I64))], returns: Vec::new() };
-                require_type(args[2].span, &expected, &callback, "websocket.readBytes callback")?;
+                let expected = Type::Function {
+                    params: vec![Type::List(Box::new(Type::I64))],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "websocket.readBytes callback",
+                )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "writeText" => {
@@ -7875,42 +7909,104 @@ fn check_qualified_call(
             }
             "writeBytes" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("websocket.writeBytes expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "websocket.writeBytes expects 2 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.writeBytes session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.writeBytes session",
+                )?;
                 let bytes = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "websocket.writeBytes bytes")?;
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "websocket.writeBytes bytes",
+                )?;
                 return Ok(vec![Type::Error]);
             }
             "ping" | "pong" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("websocket.{name} expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("websocket.{name} expects 2 arguments, got {}", args.len()),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, &format!("websocket.{name} session"))?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    &format!("websocket.{name} session"),
+                )?;
                 let payload = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &payload, &format!("websocket.{name} payload"))?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::Str(value)) if value.len() > 125) {
-                    return Err(diag(args[1].span, &format!("websocket.{name} payload must be at most 125 bytes")));
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &payload,
+                    &format!("websocket.{name} payload"),
+                )?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::Str(value)) if value.len() > 125)
+                {
+                    return Err(diag(
+                        args[1].span,
+                        &format!("websocket.{name} payload must be at most 125 bytes"),
+                    ));
                 }
                 return Ok(vec![Type::Error]);
             }
             "closeWithCode" => {
                 if args.len() != 3 {
-                    return Err(diag(span, &format!("websocket.closeWithCode expects 3 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!(
+                            "websocket.closeWithCode expects 3 arguments, got {}",
+                            args.len()
+                        ),
+                    ));
                 }
                 let session = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &session, "websocket.closeWithCode session")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &session,
+                    "websocket.closeWithCode session",
+                )?;
                 let code = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::I64, &code, "websocket.closeWithCode code")?;
-                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if value < 1000 || value >= 5000 || (1004..=1006).contains(&value) || value == 1015) {
-                    return Err(diag(args[1].span, "websocket.closeWithCode code is invalid; use a non-reserved RFC 6455 close code"));
+                require_type(
+                    args[1].span,
+                    &Type::I64,
+                    &code,
+                    "websocket.closeWithCode code",
+                )?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if value < 1000 || value >= 5000 || (1004..=1006).contains(&value) || value == 1015)
+                {
+                    return Err(diag(
+                        args[1].span,
+                        "websocket.closeWithCode code is invalid; use a non-reserved RFC 6455 close code",
+                    ));
                 }
                 let reason = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::Str, &reason, "websocket.closeWithCode reason")?;
-                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::Str(value)) if value.len() > 123) {
-                    return Err(diag(args[2].span, "websocket.closeWithCode reason must be at most 123 bytes"));
+                require_type(
+                    args[2].span,
+                    &Type::Str,
+                    &reason,
+                    "websocket.closeWithCode reason",
+                )?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::Str(value)) if value.len() > 123)
+                {
+                    return Err(diag(
+                        args[2].span,
+                        "websocket.closeWithCode reason must be at most 123 bytes",
+                    ));
                 }
                 return Ok(vec![Type::Error]);
             }
@@ -8442,6 +8538,16 @@ fn check_qualified_call(
                     &sockets,
                     &format!("net.{name} sockets"),
                 )?;
+                if let ExprKind::List(items) = &args[0].kind
+                    && items.len() > MAX_SOCKET_READINESS_DESCRIPTORS
+                {
+                    return Err(diag(
+                        args[0].span,
+                        &format!(
+                            "net.{name} sockets must contain at most {MAX_SOCKET_READINESS_DESCRIPTORS} handles"
+                        ),
+                    ));
+                }
                 let timeout = type_of_expr(&args[1], env, signatures)?;
                 require_type(
                     args[1].span,
@@ -8751,18 +8857,46 @@ fn check_qualified_call(
                     ));
                 }
                 let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.writeBytesFromTimeout socket")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    "net.writeBytesFromTimeout socket",
+                )?;
                 let bytes = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                require_type(args[1].span, &Type::List(Box::new(Type::I64)), &bytes, "net.writeBytesFromTimeout bytes")?;
+                require_type(
+                    args[1].span,
+                    &Type::List(Box::new(Type::I64)),
+                    &bytes,
+                    "net.writeBytesFromTimeout bytes",
+                )?;
                 let offset = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::I64, &offset, "net.writeBytesFromTimeout offset")?;
-                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if value < 0) {
-                    return Err(diag(args[2].span, "net.writeBytesFromTimeout offset must be non-negative"));
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &offset,
+                    "net.writeBytesFromTimeout offset",
+                )?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if value < 0)
+                {
+                    return Err(diag(
+                        args[2].span,
+                        "net.writeBytesFromTimeout offset must be non-negative",
+                    ));
                 }
                 let timeout = type_of_expr(&args[3], env, signatures)?;
-                require_type(args[3].span, &Type::I64, &timeout, "net.writeBytesFromTimeout timeoutMillis")?;
-                if matches!(constant_primitive_value(&args[3], signatures), Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value)) {
-                    return Err(diag(args[3].span, "net.writeBytesFromTimeout timeoutMillis must be -1 or between 0 and 2147483647"));
+                require_type(
+                    args[3].span,
+                    &Type::I64,
+                    &timeout,
+                    "net.writeBytesFromTimeout timeoutMillis",
+                )?;
+                if matches!(constant_primitive_value(&args[3], signatures), Some(ConstantValue::I64(value)) if !(-1..=i32::MAX as i64).contains(&value))
+                {
+                    return Err(diag(
+                        args[3].span,
+                        "net.writeBytesFromTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
                 }
                 return Ok(vec![Type::I64, Type::Bool, Type::Error]);
             }
@@ -10297,32 +10431,57 @@ fn check_qualified_call(
     }
     if namespace == "json" {
         if !named_args.is_empty() {
-            return Err(diag(span, &format!("json.{name} accepts positional arguments only")));
+            return Err(diag(
+                span,
+                &format!("json.{name} accepts positional arguments only"),
+            ));
         }
         match name.as_str() {
             "parse" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("json.parse expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("json.parse expects 2 arguments, got {}", args.len()),
+                    ));
                 }
                 let value = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::Str, &value, "json.parse value")?;
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::Str, Type::Str], returns: Vec::new() };
+                let expected = Type::Function {
+                    params: vec![Type::Str, Type::Str],
+                    returns: Vec::new(),
+                };
                 require_type(args[1].span, &expected, &callback, "json.parse callback")?;
                 return Ok(vec![Type::Error]);
             }
             "encodeString" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("json.encodeString expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("json.encodeString expects 2 arguments, got {}", args.len()),
+                    ));
                 }
                 let value = type_of_expr(&args[0], env, signatures)?;
                 require_type(args[0].span, &Type::Str, &value, "json.encodeString value")?;
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
-                require_type(args[1].span, &expected, &callback, "json.encodeString callback")?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    "json.encodeString callback",
+                )?;
                 return Ok(vec![Type::Error]);
             }
-            _ => return Err(diag(*name_span, &format!("json module has no function '{name}'"))),
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("json module has no function '{name}'"),
+                ));
+            }
         }
     }
     if namespace == "browser" {
@@ -11036,13 +11195,29 @@ fn check_qualified_call(
             }
             "formatUtc" => {
                 if args.len() != 2 {
-                    return Err(diag(span, &format!("time.formatUtc expects 2 arguments, got {}", args.len())));
+                    return Err(diag(
+                        span,
+                        &format!("time.formatUtc expects 2 arguments, got {}", args.len()),
+                    ));
                 }
                 let timestamp = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &timestamp, "time.formatUtc unixMillis")?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &timestamp,
+                    "time.formatUtc unixMillis",
+                )?;
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-                let expected = Type::Function { params: vec![Type::Str], returns: Vec::new() };
-                require_type(args[1].span, &expected, &callback, "time.formatUtc callback")?;
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    "time.formatUtc callback",
+                )?;
                 return Ok(vec![Type::Error]);
             }
             "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"

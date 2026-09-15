@@ -2511,8 +2511,11 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
     let sources = validate_project(&manifest.path)?;
     let codegen_target = options.native_target.codegen_target();
     let generated = match fluxc::project::analyze_for_target(&manifest.path, codegen_target)
-        .and_then(|analysis| analysis.emit_c_for_target(codegen_target).map_err(|error| vec![error]))
-    {
+        .and_then(|analysis| {
+            analysis
+                .emit_c_for_target(codegen_target)
+                .map_err(|error| vec![error])
+        }) {
         Ok(generated) => generated,
         Err(diagnostics) => {
             report_diagnostics(&manifest.path, &diagnostics, &sources);
@@ -2672,19 +2675,18 @@ fn build_native_target(
     let native_package = native_package_config_for_target(path)?;
     let sources = validate_project(path)?;
     let codegen_target = native_target.codegen_target();
-    let generated = match fluxc::project::analyze_for_target(path, codegen_target).and_then(
-        |analysis| {
+    let generated =
+        match fluxc::project::analyze_for_target(path, codegen_target).and_then(|analysis| {
             analysis
                 .emit_c_for_target(codegen_target)
                 .map_err(|error| vec![error])
-        },
-    ) {
-        Ok(generated) => generated,
-        Err(diagnostics) => {
-            report_diagnostics(path, &diagnostics, &sources);
-            return Err(CliError::Reported);
-        }
-    };
+        }) {
+            Ok(generated) => generated,
+            Err(diagnostics) => {
+                report_diagnostics(path, &diagnostics, &sources);
+                return Err(CliError::Reported);
+            }
+        };
     let output = if let Some(output) = explicit_output {
         output
     } else {
@@ -2707,14 +2709,7 @@ fn build_native_target(
         false,
     )?;
     if let Some(metadata) = reproducibility {
-        write_reproducibility_metadata(
-            &metadata,
-            &output,
-            path,
-            &generated,
-            mode,
-            &native_target,
-        )?;
+        write_reproducibility_metadata(&metadata, &output, path, &generated, mode, &native_target)?;
     }
     println!("built ({}): {}", mode.name(), output.display());
     Ok(())
@@ -2753,20 +2748,21 @@ fn build_package_directory(
         return Err(error);
     }
     if native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
-        && (!manifest.linux.uri_schemes.is_empty()
-            || !manifest.linux.file_associations.is_empty())
+        && (!manifest.linux.uri_schemes.is_empty() || !manifest.linux.file_associations.is_empty())
     {
         let applications = output.join("share/applications");
-        fs::create_dir_all(&applications).map_err(|error| {
-            format!("failed to create desktop metadata directory: {error}")
-        })?;
+        fs::create_dir_all(&applications)
+            .map_err(|error| format!("failed to create desktop metadata directory: {error}"))?;
         let desktop = linux_desktop_entry(
             &manifest.name,
             &manifest.linux.uri_schemes,
             &manifest.linux.file_associations,
         );
-        fs::write(applications.join(format!("{}.desktop", manifest.name)), desktop)
-            .map_err(|error| format!("failed to write desktop metadata: {error}"))?;
+        fs::write(
+            applications.join(format!("{}.desktop", manifest.name)),
+            desktop,
+        )
+        .map_err(|error| format!("failed to write desktop metadata: {error}"))?;
     }
     Ok(())
 }
@@ -2777,19 +2773,24 @@ fn msix_version(manifest: &fluxc::project::PackageManifest) -> Result<String, Cl
     let major = components
         .next()
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| CliError::Message("MSIX package versions must start with numeric SemVer components".to_string()))?;
+        .ok_or_else(|| {
+            CliError::Message(
+                "MSIX package versions must start with numeric SemVer components".to_string(),
+            )
+        })?;
     let minor = components
         .next()
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| CliError::Message("MSIX package versions must include major.minor.patch".to_string()))?;
+        .ok_or_else(|| {
+            CliError::Message("MSIX package versions must include major.minor.patch".to_string())
+        })?;
     let patch = components
         .next()
         .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| CliError::Message("MSIX package versions must include major.minor.patch".to_string()))?;
-    if major > u64::from(u16::MAX)
-        || minor > u64::from(u16::MAX)
-        || patch > u64::from(u16::MAX)
-    {
+        .ok_or_else(|| {
+            CliError::Message("MSIX package versions must include major.minor.patch".to_string())
+        })?;
+    if major > u64::from(u16::MAX) || minor > u64::from(u16::MAX) || patch > u64::from(u16::MAX) {
         return Err(CliError::Message(
             "MSIX package version components must fit within 16-bit unsigned integers".to_string(),
         ));
@@ -2818,21 +2819,24 @@ fn build_msix_bundle(
 ) -> Result<(), CliError> {
     if native_target.codegen_target() != fluxc::codegen::NativeTarget::Windows {
         return Err(CliError::Message(
-            "MSIX packaging requires a Windows Clang target such as x86_64-pc-windows-gnu".to_string(),
+            "MSIX packaging requires a Windows Clang target such as x86_64-pc-windows-gnu"
+                .to_string(),
         ));
     }
     if let Some(parent) = output.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent).map_err(|error| {
-            format!("failed to create MSIX output directory '{}': {error}", parent.display())
+            format!(
+                "failed to create MSIX output directory '{}': {error}",
+                parent.display()
+            )
         })?;
     }
     let staging_root = package_staging_dir();
     let result = (|| -> Result<(), CliError> {
-        fs::create_dir_all(&staging_root).map_err(|error| {
-            format!("failed to create MSIX staging directory: {error}")
-        })?;
+        fs::create_dir_all(&staging_root)
+            .map_err(|error| format!("failed to create MSIX staging directory: {error}"))?;
         let staged = staging_root.join("package");
         build_package_directory(manifest, generated, &staged, mode, native_target)?;
         fs::create_dir_all(staged.join("Assets"))
@@ -2843,12 +2847,16 @@ fn build_msix_bundle(
         )
         .map_err(|error| format!("failed to write AppxManifest.xml: {error}"))?;
         const EMPTY_PNG: &[u8] = &[
-            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1,
-            0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84,
-            120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29,
-            0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
         ];
-        for name in ["StoreLogo.png", "Square44x44Logo.png", "Square150x150Logo.png"] {
+        for name in [
+            "StoreLogo.png",
+            "Square44x44Logo.png",
+            "Square150x150Logo.png",
+        ] {
             fs::write(staged.join("Assets").join(name), EMPTY_PNG)
                 .map_err(|error| format!("failed to write MSIX asset '{name}': {error}"))?;
         }
@@ -3176,8 +3184,8 @@ fn run_tests_single(target: &Path, options: TestOptions) -> Result<(), CliError>
 }
 
 fn run_tests(target: &Path, options: TestOptions) -> Result<(), CliError> {
-    let workspace_targets = fluxc::project::workspace_package_targets(target)
-        .map_err(|diagnostics| {
+    let workspace_targets =
+        fluxc::project::workspace_package_targets(target).map_err(|diagnostics| {
             diagnostics
                 .into_iter()
                 .map(|diagnostic| diagnostic.message)
@@ -4942,7 +4950,10 @@ fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliErro
         None
     };
     let mut command = Command::new(path);
-    command.env("FLUX_RELOAD_STATE_PATH", development_reload_state_path(target));
+    command.env(
+        "FLUX_RELOAD_STATE_PATH",
+        development_reload_state_path(target),
+    );
     if let Some(manifest_path) = manifest_path
         && let Ok(manifest) = fluxc::project::read_manifest(&manifest_path)
         && let Some(asset_root) = manifest.assets
@@ -5003,7 +5014,10 @@ fn development_reload_state_path(target: &Path) -> PathBuf {
     let target_hash = target.to_string_lossy().bytes().fold(0_u64, |hash, byte| {
         hash.wrapping_mul(16777619).wrapping_add(u64::from(byte))
     });
-    path.push(format!("fluxc-run-{}-{target_hash:016x}.state", std::process::id()));
+    path.push(format!(
+        "fluxc-run-{}-{target_hash:016x}.state",
+        std::process::id()
+    ));
     path
 }
 
@@ -5610,7 +5624,17 @@ fn emit_llvm_from_c(c_source: &str) -> Result<String, String> {
     }
     let mut command = Command::new("clang");
     command
-        .args(["-S", "-emit-llvm", "-std=c17", "-fwrapv", "-x", "c", "-o", "-", "-"])
+        .args([
+            "-S",
+            "-emit-llvm",
+            "-std=c17",
+            "-fwrapv",
+            "-x",
+            "c",
+            "-o",
+            "-",
+            "-",
+        ])
         .args(&cflags)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -6097,7 +6121,9 @@ fn build_options(args: &[String], default_mode: BuildMode) -> Result<BuildOption
             }
             "--reproducibility" => {
                 if reproducibility.is_some() {
-                    return Err("reproducibility metadata path may only be specified once".to_string());
+                    return Err(
+                        "reproducibility metadata path may only be specified once".to_string()
+                    );
                 }
                 let Some(path) = args.get(index + 1) else {
                     return Err("'--reproducibility' requires an output path".to_string());
@@ -9632,8 +9658,16 @@ fn build_native_configured(
         Vec::new()
     };
     let crypto = c_source.contains("#include <openssl/sha.h>");
-    let crypto_cflags = if crypto { pkg_config_flags("--cflags", "openssl")? } else { Vec::new() };
-    let crypto_libs = if crypto { pkg_config_flags("--libs", "openssl")? } else { Vec::new() };
+    let crypto_cflags = if crypto {
+        pkg_config_flags("--cflags", "openssl")?
+    } else {
+        Vec::new()
+    };
+    let crypto_libs = if crypto {
+        pkg_config_flags("--libs", "openssl")?
+    } else {
+        Vec::new()
+    };
     let mut native_cflags = gtk_cflags;
     native_cflags.extend(sqlite_cflags);
     native_cflags.extend(crypto_cflags);
@@ -9782,11 +9816,10 @@ fn native_temporary_artifact_path(output: &Path, c_source: &str) -> PathBuf {
 }
 
 fn install_native_artifact(source: &Path, output: &Path) -> std::io::Result<()> {
-    let temporary = native_temporary_artifact_path(output, &format!(
-        "cache:{}:{}",
-        source.display(),
-        output.display()
-    ));
+    let temporary = native_temporary_artifact_path(
+        output,
+        &format!("cache:{}:{}", source.display(), output.display()),
+    );
     let result = (|| {
         fs::copy(source, &temporary)?;
         fs::rename(&temporary, output)
@@ -9848,20 +9881,31 @@ fn write_reproducibility_metadata(
         .and_then(|targets| targets.first().cloned())
         .and_then(|manifest| manifest.parent().map(Path::to_path_buf));
     let lock_hash = lock_root
-        .or_else(|| manifest_path.as_deref().and_then(Path::parent).map(Path::to_path_buf))
+        .or_else(|| {
+            manifest_path
+                .as_deref()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        })
         .map(|root| root.join("flux.lock"))
         .and_then(|path| reproducibility_file_hash(&path))
         .unwrap_or_else(|| "none".to_string());
     let gtk = generated.contains("#include <gtk/gtk.h>");
     let sqlite = generated.contains("#include <sqlite3.h>");
-    let toolchain = native_toolchain_cache_identity(gtk, sqlite, native_target)
-        .map_err(CliError::Message)?;
+    let toolchain =
+        native_toolchain_cache_identity(gtk, sqlite, native_target).map_err(CliError::Message)?;
     let sysroot_hash = native_sysroot_cache_identity(native_target.sysroot.as_deref());
     let mut metadata = String::new();
     metadata.push_str("format = \"flux-reproducibility-v1\"\n");
-    metadata.push_str(&format!("flux_version = \"{}\"\n", env!("CARGO_PKG_VERSION")));
+    metadata.push_str(&format!(
+        "flux_version = \"{}\"\n",
+        env!("CARGO_PKG_VERSION")
+    ));
     metadata.push_str(&format!("mode = \"{}\"\n", mode.name()));
-    metadata.push_str(&format!("source_hash = \"{:016x}\"\n", reproducibility_hash(generated.as_bytes())));
+    metadata.push_str(&format!(
+        "source_hash = \"{:016x}\"\n",
+        reproducibility_hash(generated.as_bytes())
+    ));
     let artifact_hash = reproducibility_file_hash(artifact).ok_or_else(|| {
         CliError::Message(format!(
             "failed to hash reproducibility artifact '{}'",
@@ -9910,9 +9954,7 @@ fn write_reproducibility_metadata(
     Ok(())
 }
 
-fn parse_reproducibility_metadata(
-    path: &Path,
-) -> Result<BTreeMap<String, String>, CliError> {
+fn parse_reproducibility_metadata(path: &Path) -> Result<BTreeMap<String, String>, CliError> {
     let source = fs::read_to_string(path).map_err(|error| {
         CliError::Message(format!(
             "failed to read reproducibility metadata '{}': {error}",
@@ -9944,10 +9986,7 @@ fn parse_reproducibility_metadata(
             )));
         }
         let raw_value = raw_value.trim();
-        if raw_value.len() < 2
-            || !raw_value.starts_with('"')
-            || !raw_value.ends_with('"')
-        {
+        if raw_value.len() < 2 || !raw_value.starts_with('"') || !raw_value.ends_with('"') {
             return Err(CliError::Message(format!(
                 "reproducibility metadata value for '{key}' must be quoted in '{}'",
                 path.display()
@@ -10302,17 +10341,15 @@ mod tests {
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
-        build_native_configured,
-        build_native_instrumented, build_options, compile_web_html, debug_options,
-        demangle_profile_symbols, display_flux_symbol, find_android_compile_jar,
-        emit_llvm_from_c, github_repository_parts, json_string, native_build_cache_path_configured,
+        build_native_configured, build_native_instrumented, build_options, compile_web_html,
+        debug_options, demangle_profile_symbols, display_flux_symbol, emit_llvm_from_c,
+        find_android_compile_jar, github_repository_parts, json_string, linux_desktop_entry,
+        msix_manifest_xml, msix_version, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
         package_artifact_name, package_options, parse_adb_devices, profile_options,
-        linux_desktop_entry,
         profile_report_addresses, publish_registry_package_command, registry_publish_options,
         select_android_run_target, split_symbols_options, stage_android_package_assets,
         stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
-        msix_manifest_xml, msix_version,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
     };

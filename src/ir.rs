@@ -663,11 +663,17 @@ impl ControlFlowGraph {
         self.live_after.get(id.0)
     }
 
-    pub fn definition_live_before(&self, id: ControlFlowNodeId) -> Option<&ControlFlowDefinitionLiveState> {
+    pub fn definition_live_before(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> Option<&ControlFlowDefinitionLiveState> {
         self.definition_live_before.get(id.0)
     }
 
-    pub fn definition_live_after(&self, id: ControlFlowNodeId) -> Option<&ControlFlowDefinitionLiveState> {
+    pub fn definition_live_after(
+        &self,
+        id: ControlFlowNodeId,
+    ) -> Option<&ControlFlowDefinitionLiveState> {
         self.definition_live_after.get(id.0)
     }
 
@@ -1231,11 +1237,8 @@ impl<'a> ControlFlowBuilder<'a> {
         );
         let (live_before, live_after) =
             compute_liveness(&self.nodes, &self.edges, &self.parameters);
-        let (definition_live_before, definition_live_after) = compute_definition_liveness(
-            &self.nodes,
-            &self.edges,
-            &reaching_definitions_before,
-        );
+        let (definition_live_before, definition_live_after) =
+            compute_definition_liveness(&self.nodes, &self.edges, &reaching_definitions_before);
         let (value_uses, value_regions) = collect_value_uses(&self.values);
         let reachable_values = compute_reachable_values(
             &self.nodes,
@@ -3384,7 +3387,12 @@ fn collect_value_uses(
             ControlFlowValueKind::Map { entries } => {
                 for (key, mapped_value) in entries {
                     push_value_use(&mut uses, value.id, *key, ControlFlowValueUseKind::Eager);
-                    push_value_use(&mut uses, value.id, *mapped_value, ControlFlowValueUseKind::Eager);
+                    push_value_use(
+                        &mut uses,
+                        value.id,
+                        *mapped_value,
+                        ControlFlowValueUseKind::Eager,
+                    );
                 }
             }
             ControlFlowValueKind::ListIf {
@@ -4394,10 +4402,8 @@ fn compute_definition_liveness(
             break;
         }
     }
-    let into_state = |bindings: BTreeSet<ControlFlowDefinitionId>| {
-        ControlFlowDefinitionLiveState {
-            live: bindings.into_iter().collect(),
-        }
+    let into_state = |bindings: BTreeSet<ControlFlowDefinitionId>| ControlFlowDefinitionLiveState {
+        live: bindings.into_iter().collect(),
     };
     (
         before.into_iter().map(into_state).collect(),
@@ -4626,7 +4632,8 @@ fn compute_move_states(
     reaching_definitions_before: &[Option<ReachingDefinitionMap>],
     entry: ControlFlowNodeId,
 ) -> Vec<ControlFlowMoveState> {
-    let mut states = vec![None::<BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>>; nodes.len()];
+    let mut states =
+        vec![None::<BTreeMap<ControlFlowDefinitionId, (String, SourceSpan)>>; nodes.len()];
     states[entry.0] = Some(BTreeMap::new());
     let mut queue = VecDeque::from([entry]);
 
@@ -4679,7 +4686,11 @@ fn compute_move_states(
                 reachable: true,
                 moved: moved
                     .into_iter()
-                    .map(|(definition, (name, origin))| OwnershipMovedBinding { definition, name, origin })
+                    .map(|(definition, (name, origin))| OwnershipMovedBinding {
+                        definition,
+                        name,
+                        origin,
+                    })
                     .collect(),
             },
             None => ControlFlowMoveState::default(),
