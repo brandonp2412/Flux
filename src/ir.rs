@@ -767,8 +767,7 @@ impl ControlFlowGraph {
 
     /// Returns the normalized releases at one CFG node.
     pub fn drops_at(&self, id: ControlFlowNodeId) -> Option<&[OwnershipDrop]> {
-        self.node(id)
-            .map(|node| node.ownership.drops.as_slice())
+        self.node(id).map(|node| node.ownership.drops.as_slice())
     }
 
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
@@ -2835,13 +2834,13 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 .arguments
                 .iter()
                 .map(|argument| {
-                    let is_borrowed = values
-                        .get(argument.0)
-                        .is_some_and(|value| match signatures.canonical_type(&value.ty) {
-                            Type::List(_) => true,
-                            Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
-                            _ => false,
-                        });
+                    let is_borrowed = values.get(argument.0).is_some_and(|value| match signatures
+                        .canonical_type(&value.ty)
+                    {
+                        Type::List(_) => true,
+                        Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
+                        _ => false,
+                    });
                     if is_borrowed {
                         OwnershipCallArgumentKind::ImmutableBorrow
                     } else {
@@ -2884,21 +2883,139 @@ fn call_argument_definitions(
     argument: ControlFlowValueId,
     values: &[ControlFlowValue],
 ) -> Vec<ControlFlowDefinitionId> {
-    let Some(value) = values.get(argument.0) else {
-        return Vec::new();
-    };
-    let mut definitions = match &value.kind {
-        ControlFlowValueKind::NameRead { definitions, .. } => definitions.clone(),
-        ControlFlowValueKind::Field { base, .. }
-        | ControlFlowValueKind::ListOptional { value: base }
-        | ControlFlowValueKind::ListSpread { value: base }
-        | ControlFlowValueKind::Index { base, .. }
-        | ControlFlowValueKind::Slice { base, .. } => call_argument_definitions(*base, values),
-        _ => Vec::new(),
-    };
+    let mut definitions = Vec::new();
+    let mut visited = BTreeSet::new();
+    collect_call_argument_definitions(argument, values, &mut visited, &mut definitions);
     definitions.sort();
     definitions.dedup();
     definitions
+}
+
+/// Collect the concrete definitions that back a list-valued call argument.
+///
+/// A borrowed list can be hidden behind a conditional/list-match arm, a
+/// compiler-known view transform, or a nested list literal.  Walking those
+/// typed value nodes here keeps call-boundary provenance aligned with the
+/// normalized value graph instead of silently reducing the argument to an
+/// opaque temporary.  Scalar conditions, indexes, and callback bodies are
+/// deliberately not traversed because they do not own list storage.
+fn collect_call_argument_definitions(
+    argument: ControlFlowValueId,
+    values: &[ControlFlowValue],
+    visited: &mut BTreeSet<ControlFlowValueId>,
+    definitions: &mut Vec<ControlFlowDefinitionId>,
+) {
+    if !visited.insert(argument) {
+        return;
+    }
+    let Some(value) = values.get(argument.0) else {
+        return;
+    };
+    let is_list = |ty: &Type| {
+        matches!(ty, Type::List(_))
+            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    };
+    if !is_list(&value.ty) {
+        return;
+    }
+    match &value.kind {
+        ControlFlowValueKind::NameRead {
+            definitions: reached,
+            ..
+        } => {
+            definitions.extend(reached.iter().copied());
+        }
+        ControlFlowValueKind::List { items } => {
+            for item in items {
+                collect_call_argument_definitions(*item, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::ListIf {
+            condition,
+            value,
+            else_value,
+        } => {
+            let known_condition = values
+                .get(condition.0)
+                .and_then(|condition| {
+                    condition
+                        .constant
+                        .as_ref()
+                        .or(condition.source_constant.as_ref())
+                })
+                .and_then(|constant| match constant {
+                    ConstantValue::Bool(value) => Some(*value),
+                    _ => None,
+                });
+            if known_condition != Some(false) {
+                collect_call_argument_definitions(*value, values, visited, definitions);
+            }
+            if known_condition != Some(true)
+                && let Some(else_value) = else_value
+            {
+                collect_call_argument_definitions(*else_value, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::ListComprehension { value, .. } => {
+            collect_call_argument_definitions(*value, values, visited, definitions);
+        }
+        ControlFlowValueKind::ListSpread { value }
+        | ControlFlowValueKind::ListOptional { value }
+        | ControlFlowValueKind::Field { base: value, .. }
+        | ControlFlowValueKind::Index { base: value, .. }
+        | ControlFlowValueKind::Slice { base: value, .. } => {
+            collect_call_argument_definitions(*value, values, visited, definitions);
+        }
+        ControlFlowValueKind::Call { callee, arguments } => {
+            let count = if matches!(crate::builtin_names::global_impl(callee), "concat") {
+                2
+            } else {
+                1
+            };
+            for argument in arguments.iter().take(count) {
+                collect_call_argument_definitions(*argument, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::QualifiedCall { arguments, .. }
+        | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
+            for argument in arguments {
+                collect_call_argument_definitions(*argument, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::Match { arms, .. } | ControlFlowValueKind::ListMatch { arms, .. } => {
+            for arm in arms {
+                collect_call_argument_definitions(*arm, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::Conditional {
+            then_value,
+            else_value,
+            ..
+        } => {
+            collect_call_argument_definitions(*then_value, values, visited, definitions);
+            collect_call_argument_definitions(*else_value, values, visited, definitions);
+        }
+        ControlFlowValueKind::OptionalCascadeCall {
+            optional,
+            arguments,
+            ..
+        } => {
+            collect_call_argument_definitions(*optional, values, visited, definitions);
+            for argument in arguments {
+                collect_call_argument_definitions(*argument, values, visited, definitions);
+            }
+        }
+        ControlFlowValueKind::InterfacePack { value, .. } => {
+            collect_call_argument_definitions(*value, values, visited, definitions);
+        }
+        ControlFlowValueKind::Literal
+        | ControlFlowValueKind::AnonymousFunction { .. }
+        | ControlFlowValueKind::Map { .. }
+        | ControlFlowValueKind::StructLiteral { .. }
+        | ControlFlowValueKind::Unary { .. }
+        | ControlFlowValueKind::Binary { .. }
+        | ControlFlowValueKind::Opaque => {}
+    }
 }
 
 fn collect_evaluation_types(

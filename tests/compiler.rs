@@ -111,7 +111,12 @@ fn main() -> i64 {
     let graph = database
         .control_flow_graph("main")
         .expect("main CFG should be available");
-    assert!(graph.drops().iter().any(|(_, drop)| drop.name == "destination"));
+    assert!(
+        graph
+            .drops()
+            .iter()
+            .any(|(_, drop)| drop.name == "destination")
+    );
     assert!(!graph.drops().iter().any(|(_, drop)| drop.name == "values"));
 }
 
@@ -144,11 +149,17 @@ fn main() -> i64 {
         .find(|drop| drop.name == "values")
         .expect("drop must be attached to its boundary node");
     assert_eq!(attached, indexed_drop);
-    assert!(graph
-        .nodes()
-        .iter()
-        .filter(|candidate| candidate.id != *node)
-        .all(|candidate| candidate.ownership.drops.iter().all(|drop| drop.name != "values")));
+    assert!(
+        graph
+            .nodes()
+            .iter()
+            .filter(|candidate| candidate.id != *node)
+            .all(|candidate| candidate
+                .ownership
+                .drops
+                .iter()
+                .all(|drop| drop.name != "values"))
+    );
 }
 
 #[test]
@@ -15025,6 +15036,77 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_call_arguments_retain_nested_list_expression_provenance() {
+    let source = r#"
+fn consume(rows: i64[][]) -> i64 {
+    return rows[0][0]
+}
+
+fn main() -> i64 {
+    let row: i64[] = [4, 8]
+    return consume([if true: row])
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1418))
+        .expect("nested list call fixture should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let call = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.calls.iter())
+        .find(|call| call.callee == "consume")
+        .expect("nested list call should have an ownership boundary");
+    assert_eq!(
+        call.argument_kinds,
+        vec![OwnershipCallArgumentKind::ImmutableBorrow]
+    );
+    assert_eq!(call.argument_definitions.len(), 1);
+    assert!(
+        call.argument_definitions[0]
+            .iter()
+            .any(|definition| graph.definition_name(*definition) == Some("row"))
+    );
+}
+
+#[test]
+fn ownership_ir_call_arguments_prune_statically_unselected_list_branches() {
+    let source = r#"
+fn consume(rows: i64[][]) -> i64 {
+    return rows[0][0]
+}
+
+fn main() -> i64 {
+    let skipped: i64[] = [1, 2]
+    let selected: i64[] = [3, 4]
+    return consume([if false: skipped else: selected])
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(1419))
+        .expect("dead nested list call fixture should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let call = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.calls.iter())
+        .find(|call| call.callee == "consume")
+        .expect("dead nested list call should have an ownership boundary");
+    assert!(
+        call.argument_definitions[0]
+            .iter()
+            .any(|definition| graph.definition_name(*definition) == Some("selected"))
+    );
+    assert!(
+        !call.argument_definitions[0]
+            .iter()
+            .any(|definition| graph.definition_name(*definition) == Some("skipped"))
+    );
+}
+
+#[test]
 fn sibling_borrow_source_definitions_keep_identity() {
     let source = r#"
 fn positive(value: i64) -> bool {
@@ -19651,10 +19733,8 @@ fn main() -> i64 {
 }
 "#;
     check_source(source).expect("TLS socket validation source should typecheck");
-    let root = std::env::temp_dir().join(format!(
-        "flux-tls-socket-validation-{}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("flux-tls-socket-validation-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("TLS socket validation fixture should be writable");
     let source_path = root.join("main.flux");
@@ -19799,7 +19879,10 @@ fn main() -> i64 {{
         String::from_utf8_lossy(&run.stderr)
     );
     let stdout = String::from_utf8_lossy(&run.stdout);
-    assert!(stdout.matches("HTTP/1.0 200").count() >= 2, "TLS responses missing: {stdout}");
+    assert!(
+        stdout.matches("HTTP/1.0 200").count() >= 2,
+        "TLS responses missing: {stdout}"
+    );
     assert!(
         stdout.contains("nil\n"),
         "TLS error result missing: {stdout}"
