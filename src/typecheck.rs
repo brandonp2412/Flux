@@ -5821,9 +5821,6 @@ fn json_optional_aggregate_type_is_supported(ty: &Type, signatures: &Signatures)
     let Type::Optional(inner) = signatures.canonical_type(ty) else {
         return false;
     };
-    let Type::Named(_) = signatures.canonical_type(&inner) else {
-        return false;
-    };
     json_record_type_is_supported(&inner, signatures)
         || json_enum_type_is_supported(&inner, signatures)
 }
@@ -14652,6 +14649,7 @@ fn require_known_type(
                 | Type::Function { .. }
                 | Type::List(_)
                 | Type::Map(_, _) => Ok(()),
+                Type::Record(_) if signatures.is_copy_type(&actual) => Ok(()),
                 Type::Named(name)
                     if (signatures.struct_type(name).is_some()
                         || signatures.enum_type(name).is_some()

@@ -16632,10 +16632,14 @@ fn main() -> i64 {
     let noUser: User? = none
     let choice: Choice? = Choice.Number(7)
     let noChoice: Choice? = none
+    let anonymous: (name: str, age: i64)? = (name: "Lin", age: 3)
+    let noAnonymous: (name: str, age: i64)? = none
     print(json.encode(user, encoded))
     print(json.encode(noUser, encoded))
     print(json.encode(choice, encoded))
     print(json.encode(noChoice, encoded))
+    print(json.encode(anonymous, encoded))
+    print(json.encode(noAnonymous, encoded))
     return 0
 }
 "#;
@@ -16667,7 +16671,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "{\"name\":\"Ada\",\"age\":42}\nnil\nnull\nnil\n{\"Number\":7}\nnil\nnull\nnil\n"
+        "{\"name\":\"Ada\",\"age\":42}\nnil\nnull\nnil\n{\"Number\":7}\nnil\nnull\nnil\n{\"name\":\"Lin\",\"age\":3}\nnil\nnull\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

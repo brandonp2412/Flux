@@ -35739,7 +35739,7 @@ fn emit_qualified_call(
                         Type::I64 => "flux__json_encode_optional_i64",
                         Type::Bool => "flux__json_encode_optional_bool",
                         Type::Str => "flux__json_encode_optional_str",
-                        Type::Named(_) if json_record_supported(&inner, signatures)
+                        Type::Record(_) | Type::Named(_) if json_record_supported(&inner, signatures)
                             || json_enum_supported(&inner, signatures) => {
                             return Ok((
                                 format!(
@@ -38184,9 +38184,6 @@ fn emit_json_optional_aggregate_helpers(
     for function in function_ir.values() {
         for value in function.values() {
             let Type::Optional(inner) = signatures.canonical_type(&value.ty) else {
-                continue;
-            };
-            let Type::Named(_) = signatures.canonical_type(&inner) else {
                 continue;
             };
             if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures) {
