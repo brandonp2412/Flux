@@ -2,6 +2,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, UdpSocket};
 #[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -10500,6 +10502,59 @@ fn main() -> i64 {
         error
             .message
             .contains("directory.list callback: expected fn(str) -> void")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_list_rejects_truncated_utf8_entry_names_without_overread() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-directory-list-invalid-utf8-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("invalid UTF-8 directory fixture should be writable");
+    let invalid_name = std::ffi::OsString::from_vec(vec![b't', 0xC3]);
+    fs::write(root.join(invalid_name), "bad").expect("invalid UTF-8 entry should be writable");
+    let escaped = root
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn show(_name: str) -> void {{
+}}
+fn main() -> i64 {{
+    let failure: error = directory.list("{}", show)
+    print(failure)
+    return 0
+}}
+"#,
+        escaped
+    );
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, &source).expect("invalid UTF-8 list source should be writable");
+    let binary = root.join("directory-list-invalid-utf8");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("invalid UTF-8 directory list binary should build");
+    assert!(
+        built.status.success(),
+        "invalid UTF-8 directory list build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("invalid UTF-8 directory list binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "directory entry name is not valid UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
