@@ -3241,6 +3241,12 @@ fn check_function_all(
     }
     let mut env = HashMap::new();
     let mut mutable = HashSet::new();
+    let mut borrowed_list_parameters = function
+        .params
+        .iter()
+        .filter(|param| matches!(signatures.canonical_type(&param.ty), Type::List(_)))
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
     for param in &function.params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
@@ -3297,6 +3303,7 @@ fn check_function_all(
         &function.body,
         &mut env,
         &mut mutable,
+        &mut borrowed_list_parameters,
         &return_types,
         signatures,
         diagnostics,
@@ -3907,12 +3914,34 @@ fn check_block_all(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
     mutable: &mut HashSet<String>,
+    borrowed_list_parameters: &mut HashSet<String>,
     return_types: &[Type],
     signatures: &Signatures,
     diagnostics: &mut Vec<Diagnostic>,
     loop_depth: usize,
 ) {
     for stmt in body {
+        if let StmtKind::Expr(Expr {
+            kind:
+                ExprKind::Call {
+                    name,
+                    args,
+                    named_args,
+                },
+            ..
+        }) = &stmt.kind
+            && name == "drop"
+            && args.len() == 1
+            && named_args.is_empty()
+            && let ExprKind::Var(name) = &args[0].kind
+            && borrowed_list_parameters.contains(name)
+        {
+            diagnostics.push(diag(
+                args[0].span,
+                &format!("cannot consume borrowed list parameter '{name}'"),
+            ));
+            continue;
+        }
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -3979,6 +4008,12 @@ fn check_block_all(
                     Err(diagnostic) => diagnostics.push(diagnostic),
                 }
                 if !duplicate {
+                    if matches!(signatures.canonical_type(ty), Type::List(_))
+                        && let ExprKind::Var(source) = &expr.kind
+                        && borrowed_list_parameters.contains(source)
+                    {
+                        borrowed_list_parameters.insert(name.clone());
+                    }
                     env.insert(name.clone(), signatures.canonical_type(ty));
                     if matches!(stmt.kind, StmtKind::Var { .. }) {
                         mutable.insert(name.clone());
@@ -4668,6 +4703,7 @@ fn check_block_all(
                     body,
                     &mut then_env,
                     &mut then_mutable,
+                    borrowed_list_parameters,
                     return_types,
                     signatures,
                     diagnostics,
@@ -4682,6 +4718,7 @@ fn check_block_all(
                     else_body,
                     &mut else_env,
                     &mut else_mutable,
+                    borrowed_list_parameters,
                     return_types,
                     signatures,
                     diagnostics,
@@ -4731,6 +4768,7 @@ fn check_block_all(
                     body,
                     &mut nested,
                     &mut nested_mutable,
+                    borrowed_list_parameters,
                     return_types,
                     signatures,
                     diagnostics,
@@ -4788,6 +4826,7 @@ fn check_block_all(
                     body,
                     &mut nested,
                     &mut nested_mutable,
+                    borrowed_list_parameters,
                     return_types,
                     signatures,
                     diagnostics,
@@ -4811,6 +4850,7 @@ fn check_block_all(
                     body,
                     &mut nested,
                     &mut nested_mutable,
+                    borrowed_list_parameters,
                     return_types,
                     signatures,
                     diagnostics,
@@ -4973,6 +5013,7 @@ fn check_block_all(
                         &arm.body,
                         &mut nested,
                         &mut nested_mutable,
+                        borrowed_list_parameters,
                         return_types,
                         signatures,
                         diagnostics,
@@ -5069,6 +5110,7 @@ fn check_block_all(
                             &arm.body,
                             &mut nested,
                             &mut nested_mutable,
+                            borrowed_list_parameters,
                             return_types,
                             signatures,
                             diagnostics,

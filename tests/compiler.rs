@@ -14482,6 +14482,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_drop_cannot_consume_borrowed_list_parameters() {
+    let source = r#"
+fn discard(values: i64[]) -> void {
+    let alias: i64[] = values
+    drop(alias)
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    discard(values)
+    return 0
+}
+"#;
+    let errors = check_source_all(source)
+        .expect_err("a borrowed list parameter must not be consumed by drop");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("cannot consume borrowed list parameter 'alias'")
+    }));
+}
+
+#[test]
 fn ownership_ir_marks_drop_as_consuming_and_not_borrowed() {
     let source = r#"
 fn main() -> i64 {
