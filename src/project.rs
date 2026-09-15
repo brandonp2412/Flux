@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::Program;
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
@@ -70,7 +71,17 @@ impl ProjectAnalysis {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+        // A target directory may be shared by concurrent `flux build`/`flux
+        // run` processes.  A PID is not sufficient to distinguish writers in
+        // containers or separate PID namespaces, and a colliding temporary
+        // name lets one writer remove another writer's artifact after rename
+        // fails.  The timestamp is only a name component; cache correctness
+        // still comes from the validated header and atomic rename.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
         // Persist the complete artifact before publishing its name. A rename
         // alone prevents readers from observing a partial file, but without a
         // synced temporary file a power loss could still leave the published
