@@ -5910,3 +5910,41 @@ fn insert_move_projection(projections: &mut Vec<Vec<String>>, incoming: &[String
 fn span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
     (span.source_id.value(), span.line, span.column, span.length)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::insert_move_projection;
+
+    fn path(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    #[test]
+    fn partial_move_projection_set_keeps_disjoint_paths_and_minimizes_prefixes() {
+        let mut projections = Vec::new();
+        assert!(insert_move_projection(
+            &mut projections,
+            &path(&["left", "value"])
+        ));
+        assert!(insert_move_projection(
+            &mut projections,
+            &path(&["right", "value"])
+        ));
+        assert_eq!(
+            projections,
+            vec![path(&["left", "value"]), path(&["right", "value"])]
+        );
+        assert!(insert_move_projection(&mut projections, &path(&["left"])));
+        assert_eq!(
+            projections,
+            vec![path(&["left"]), path(&["right", "value"])]
+        );
+        assert!(!insert_move_projection(
+            &mut projections,
+            &path(&["left", "other"])
+        ));
+        assert!(insert_move_projection(&mut projections, &[]));
+        assert_eq!(projections, vec![Vec::<String>::new()]);
+        assert!(!insert_move_projection(&mut projections, &path(&["right"])));
+    }
+}
