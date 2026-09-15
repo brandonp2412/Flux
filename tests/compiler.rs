@@ -42009,6 +42009,8 @@ app DynamicBackground
     .expect("dynamic Android backgroundColor should lower");
 
     assert!(android.contains("static bool flux__android_valid_ui_color"));
+    assert!(android.contains("while (length <= 9 && value[length] != '\\0') length += 1;"));
+    assert!(android.contains("while (length <= 65536 && value[length] != '\\0') length += 1;"));
     assert!(android.contains("const char *child_background_value = flux__ui_state_tone"));
     assert!(android.contains("const char *refresh_background_value = flux__ui_state_tone"));
     assert!(android.contains("styleViewBackground"));

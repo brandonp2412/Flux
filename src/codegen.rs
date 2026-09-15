@@ -2194,7 +2194,9 @@ fn emit_runtime_prelude(
     if uses_android && runtime_usage.contains("flux__android_valid_ui_color(") {
         out.push_str("static bool flux__android_valid_ui_color(const char *value) {\n");
         out.push_str("    if (value == NULL) return false;\n");
-        out.push_str("    size_t length = strlen(value);\n");
+        out.push_str("    size_t length = 0;\n");
+        out.push_str("    while (length <= 9 && value[length] != '\\0') length += 1;\n");
+        out.push_str("    if (length > 9) return false;\n");
         out.push_str("    if ((length == 7 || length == 9) && value[0] == '#') return strspn(value + 1, \"0123456789abcdefABCDEF\") == length - 1;\n");
         out.push_str("    return ");
         for (index, token) in crate::typecheck::SEMANTIC_UI_COLOR_TOKENS
@@ -2299,8 +2301,9 @@ fn emit_runtime_prelude(
             "static jstring flux__android_utf8_string(JNIEnv *env, const char *value) {\n",
         );
         out.push_str("    if (value == NULL) return NULL;\n");
-        out.push_str("    size_t length = strlen(value);\n");
-        out.push_str("    if (length > INT32_MAX) return NULL;\n");
+        out.push_str("    size_t length = 0;\n");
+        out.push_str("    while (length <= 65536 && value[length] != '\\0') length += 1;\n");
+        out.push_str("    if (length > 65536 || length > INT32_MAX) return NULL;\n");
         out.push_str("    jbyteArray bytes = (*env)->NewByteArray(env, (jsize)length);\n");
         out.push_str("    if (bytes == NULL) return NULL;\n");
         out.push_str(
