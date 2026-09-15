@@ -2868,12 +2868,21 @@ fn build_msix_bundle(
             fs::write(staged.join("Assets").join(name), EMPTY_PNG)
                 .map_err(|error| format!("failed to write MSIX asset '{name}': {error}"))?;
         }
+        fs::write(staged.join("[Content_Types].xml"), msix_content_types_xml())
+            .map_err(|error| format!("failed to write MSIX content types: {error}"))?;
+        fs::write(
+            staged.join("AppxBlockMap.xml"),
+            msix_block_map_xml(&staged)?,
+        )
+        .map_err(|error| format!("failed to write MSIX block map: {error}"))?;
+        let mut files = msix_files(&staged)?;
+        files.sort();
         run_checked(
             Command::new("zip")
                 .current_dir(&staged)
-                .args(["-X", "-q", "-r"])
+                .args(["-X", "-q"])
                 .arg(output)
-                .arg("."),
+                .args(files.iter().map(|path| path.as_os_str())),
             "MSIX package archive",
         )?;
         if let Some(certificate) = certificate {
@@ -2906,6 +2915,137 @@ fn build_msix_bundle(
         return Err(error);
     }
     Ok(())
+}
+
+fn msix_content_types_xml() -> &'static str {
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"exe\" ContentType=\"application/octet-stream\"/></Types>\n"
+}
+
+fn msix_files(root: &Path) -> Result<Vec<PathBuf>, CliError> {
+    fn visit(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), CliError> {
+        let mut entries = fs::read_dir(current)
+            .map_err(|error| format!("failed to enumerate MSIX staging directory: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to read MSIX staging entry: {error}"))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect MSIX staging entry: {error}"))?;
+            if file_type.is_dir() {
+                visit(root, &path, files)?;
+            } else if file_type.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("failed to normalize MSIX path: {error}"))?
+                    .to_path_buf();
+                files.push(relative);
+            } else {
+                return Err(CliError::Message(
+                    "MSIX staging contains an unsupported non-file entry".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn msix_block_map_xml(root: &Path) -> Result<String, CliError> {
+    use std::fmt::Write as _;
+
+    let mut files = msix_files(root)?;
+    files.retain(|path| {
+        path != Path::new("AppxBlockMap.xml") && path != Path::new("AppxSignature.p7x")
+    });
+    files.sort();
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<BlockMap xmlns=\"http://schemas.microsoft.com/appx/2010/blockmap\" HashMethod=\"http://www.w3.org/2001/04/xmlenc#sha256\">\n",
+    );
+    for relative in files {
+        let bytes = fs::read(root.join(&relative))
+            .map_err(|error| format!("failed to read MSIX block-map input: {error}"))?;
+        let name = relative.to_string_lossy().replace('/', "\\");
+        let local_file_header_size = 30usize
+            .checked_add(name.len())
+            .ok_or_else(|| CliError::Message("MSIX file name is too long".to_string()))?;
+        write!(
+            xml,
+            "  <File Name=\"{}\" Size=\"{}\" LfhSize=\"{}\">",
+            xml_escape(&name),
+            bytes.len(),
+            local_file_header_size
+        )
+        .expect("writing to String cannot fail");
+        for block in bytes.chunks(64 * 1024) {
+            let hash = fluxc::package_ecosystem::sha256_bytes(block);
+            write!(
+                xml,
+                "<Block Hash=\"{}\"/>",
+                base64_encode(&hex_decode(&hash)?)
+            )
+            .expect("writing to String cannot fail");
+        }
+        xml.push_str("</File>\n");
+    }
+    xml.push_str("</BlockMap>\n");
+    Ok(xml)
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, CliError> {
+    if value.len() % 2 != 0 {
+        return Err(CliError::Message(
+            "MSIX block-map hash has an invalid hexadecimal length".to_string(),
+        ));
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16).ok_or_else(|| {
+                CliError::Message("MSIX block-map hash contains invalid hexadecimal".to_string())
+            })?;
+            let low = (pair[1] as char).to_digit(16).ok_or_else(|| {
+                CliError::Message("MSIX block-map hash contains invalid hexadecimal".to_string())
+            })?;
+            Ok(((high << 4) | low) as u8)
+        })
+        .collect()
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0] as usize;
+        output.push(ALPHABET[first >> 2] as char);
+        let second = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        output.push(ALPHABET[((first & 0x03) << 4) | (second >> 4)] as char);
+        if chunk.len() > 1 {
+            let third = if chunk.len() > 2 {
+                chunk[2] as usize
+            } else {
+                0
+            };
+            output.push(ALPHABET[((second & 0x0f) << 2) | (third >> 6)] as char);
+            if chunk.len() > 2 {
+                output.push(ALPHABET[third & 0x3f] as char);
+            } else {
+                output.push('=');
+            }
+        } else {
+            output.push_str("==");
+        }
+    }
+    output
 }
 
 fn linux_desktop_entry(name: &str, uri_schemes: &[String], file_associations: &[String]) -> String {
@@ -10406,18 +10546,20 @@ mod tests {
         android_job_service_java_source, android_manifest_xml, android_native_link_args,
         android_publish_options, android_secure_storage_java_source,
         android_work_manager_worker_java_source, apple_module_map, apple_module_name,
-        build_native_configured, build_native_instrumented, build_options, compile_web_html,
-        debug_options, demangle_profile_symbols, display_flux_symbol, emit_llvm_from_c,
-        find_android_compile_jar, github_repository_parts, json_string, linux_desktop_entry,
-        msix_manifest_xml, msix_version, native_build_cache_path_configured,
-        native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
-        package_artifact_name, package_options, parse_adb_devices, profile_options,
-        profile_report_addresses, publish_registry_package_command, registry_publish_options,
-        select_android_run_target, split_symbols_options, stage_android_package_assets,
-        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
+        base64_encode, build_native_configured, build_native_instrumented, build_options,
+        compile_web_html, debug_options, demangle_profile_symbols, display_flux_symbol,
+        emit_llvm_from_c, find_android_compile_jar, github_repository_parts, json_string,
+        linux_desktop_entry, msix_block_map_xml, msix_content_types_xml, msix_manifest_xml,
+        msix_version, native_build_cache_path_configured, native_cache_entry_is_valid,
+        native_package_config_for_target, output_with_timeout, package_artifact_name,
+        package_options, parse_adb_devices, profile_options, profile_report_addresses,
+        publish_registry_package_command, registry_publish_options, select_android_run_target,
+        split_symbols_options, stage_android_package_assets, stage_package_assets,
+        symbolize_options, test_options, validate_android_publish_manifest,
         waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
         windows_native_system_libraries, write_native_cache_metadata,
     };
+    use std::fs;
 
     static REGISTRY_PUBLISH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -11181,6 +11323,27 @@ app OverlayDemo(title: "Overlay")
         assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
         assert!(xml.contains("runFullTrust"));
         assert!(msix_version(&manifest).is_ok());
+    }
+
+    #[test]
+    fn msix_metadata_contains_content_types_and_sha256_block_map() {
+        let root = std::env::temp_dir().join(format!("flux-msix-metadata-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Assets")).expect("MSIX fixture directory should be writable");
+        fs::write(root.join("AppxManifest.xml"), b"manifest")
+            .expect("manifest fixture should write");
+        fs::write(root.join("Assets/icon.png"), b"png").expect("asset fixture should write");
+
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
+        assert_eq!(base64_encode(b"M"), "TQ==");
+        assert!(msix_content_types_xml().contains("Extension=\"xml\""));
+        let block_map = msix_block_map_xml(&root).expect("block map should generate");
+        assert!(block_map.contains("Name=\"AppxManifest.xml\" Size=\"8\" LfhSize=\"46\""));
+        assert!(block_map.contains("Name=\"Assets\\icon.png\" Size=\"3\" LfhSize=\"45\""));
+        assert!(block_map.contains("Hash=\""));
+        assert!(!block_map.contains("5d41402abc4b2a76b9719d911017c592"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
