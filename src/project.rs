@@ -5073,3 +5073,41 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
         .next()
         .expect("project analysis returns diagnostics on failure")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::remove_cache_artifact_if_unchanged;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "flux-project-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn cache_cleanup_removes_the_inspected_artifact() {
+        let path = test_path("cache-cleanup");
+        fs::write(&path, "stale").expect("cache fixture should be writable");
+
+        remove_cache_artifact_if_unchanged(&path, "stale");
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cache_cleanup_preserves_a_concurrent_replacement() {
+        let path = test_path("cache-replacement");
+        fs::write(&path, "fresh").expect("cache fixture should be writable");
+
+        remove_cache_artifact_if_unchanged(&path, "stale");
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "fresh");
+        let _ = fs::remove_file(path);
+    }
+}
