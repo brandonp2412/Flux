@@ -15688,6 +15688,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_classifies_non_copy_set_and_map_calls_as_borrows() {
+    let source = r#"
+fn inspectSet(values: set<i64>) -> bool {
+    return contains(values, 2)
+}
+
+fn inspectMap(values: map<str, i64>) -> bool {
+    return contains(values, "answer")
+}
+
+fn main() -> i64 {
+    if inspectSet({1, 2}) && inspectMap(map{"answer": 42}):
+        return 0
+    return 1
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1218))
+        .expect("set and map call ownership facts should analyze");
+
+    for (function, expected) in [
+        ("inspectSet", Type::Set(Box::new(Type::I64))),
+        (
+            "inspectMap",
+            Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+        ),
+    ] {
+        let graph = database
+            .control_flow_graph(function)
+            .expect("collection function should expose a CFG");
+        let call = graph
+            .nodes()
+            .iter()
+            .flat_map(|node| node.ownership.calls.iter())
+            .find(|call| call.callee == "contains")
+            .expect("contains call should be recorded");
+        assert_eq!(
+            call.argument_kinds[0],
+            OwnershipCallArgumentKind::ImmutableBorrow
+        );
+        assert_eq!(
+            graph
+                .value(call.arguments[0])
+                .expect("collection argument value")
+                .ty,
+            expected
+        );
+        assert_eq!(call.borrowed_argument_definitions[0].len(), 1);
+    }
+}
+
+#[test]
 fn ownership_ir_call_arguments_retain_nested_list_expression_provenance() {
     let source = r#"
 fn consume(rows: i64[][]) -> i64 {

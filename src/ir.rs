@@ -332,7 +332,7 @@ pub struct OwnershipCall {
     pub arguments: Vec<ControlFlowValueId>,
     /// Ownership mode for each argument at this call boundary. `Consuming`
     /// is reserved for a future owned-value ABI; bootstrap calls are either
-    /// ordinary `Copy` values or immutable list/view borrows.
+    /// ordinary `Copy` values or immutable collection/view borrows.
     pub argument_kinds: Vec<OwnershipCallArgumentKind>,
     /// Source definitions reached by each argument at this call boundary.
     /// This remains parallel to `arguments` for future consuming-call checks.
@@ -3217,8 +3217,15 @@ fn ownership_kind_for_value(
     signatures: &Signatures,
 ) -> OwnershipCallArgumentKind {
     match signatures.canonical_type(&value.ty) {
-        Type::List(_) => OwnershipCallArgumentKind::ImmutableBorrow,
-        Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)) => {
+        Type::List(_) | Type::Set(_) | Type::Map(_, _) => {
+            OwnershipCallArgumentKind::ImmutableBorrow
+        }
+        Type::Optional(inner)
+            if matches!(
+                inner.as_ref(),
+                Type::List(_) | Type::Set(_) | Type::Map(_, _)
+            ) =>
+        {
             OwnershipCallArgumentKind::ImmutableBorrow
         }
         _ => OwnershipCallArgumentKind::Copy,
@@ -3260,8 +3267,8 @@ fn populate_return_ownership(graph: &mut ControlFlowGraph, signatures: &Signatur
 
 /// Resolve the reaching source definitions for a call argument without
 /// re-walking the checked AST.  A projection still borrows its root value, so
-/// fields, indexes, slices, and optional list projections must retain the
-/// concrete definition identity of their source owner at the call boundary.
+/// fields, indexes, slices, and optional collection projections must retain
+/// the concrete definition identity of their source owner at the call boundary.
 /// Keeping this provenance on the typed value graph is important when a
 /// future consuming-call contract is added: it must reject a move of the
 /// owner while a projected argument is still live rather than treating the
@@ -3278,14 +3285,15 @@ fn call_argument_definitions(
     definitions
 }
 
-/// Collect the concrete definitions that back a list-valued call argument.
+/// Collect the concrete definitions that back a non-copy collection-valued
+/// call argument.
 ///
-/// A borrowed list can be hidden behind a conditional/list-match arm, a
-/// compiler-known view transform, or a nested list literal.  Walking those
+/// A borrowed collection can be hidden behind a conditional/list-match arm, a
+/// compiler-known view transform, or a nested list literal. Walking those
 /// typed value nodes here keeps call-boundary provenance aligned with the
 /// normalized value graph instead of silently reducing the argument to an
-/// opaque temporary.  Scalar conditions, indexes, and callback bodies are
-/// deliberately not traversed because they do not own list storage.
+/// opaque temporary. Scalar conditions, indexes, and callback bodies are
+/// deliberately not traversed because they do not own collection storage.
 fn collect_call_argument_definitions(
     argument: ControlFlowValueId,
     values: &[ControlFlowValue],
@@ -3298,11 +3306,11 @@ fn collect_call_argument_definitions(
     let Some(value) = values.get(argument.0) else {
         return;
     };
-    let is_list = |ty: &Type| {
-        matches!(ty, Type::List(_))
-            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
+    let is_non_copy_collection = |ty: &Type| {
+        matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Set(_) | Type::Map(_, _)))
     };
-    if !is_list(&value.ty) {
+    if !is_non_copy_collection(&value.ty) {
         return;
     }
     match &value.kind {
