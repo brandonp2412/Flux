@@ -35058,6 +35058,26 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
             }
+            "milliseconds" | "seconds" | "minutes" | "hours" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid time duration call reached code generation"));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                let code = match name {
+                    "milliseconds" => value.code,
+                    "seconds" => format!("flux_mul_i64({}, INT64_C(1000))", value.code),
+                    "minutes" => format!(
+                        "flux_mul_i64(flux_mul_i64({}, INT64_C(60)), INT64_C(1000))",
+                        value.code
+                    ),
+                    "hours" => format!(
+                        "flux_mul_i64(flux_mul_i64(flux_mul_i64({}, INT64_C(60)), INT64_C(60)), INT64_C(1000))",
+                        value.code
+                    ),
+                    _ => unreachable!(),
+                };
+                return Ok((code, vec![Type::I64], None));
+            }
             "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid time call reached code generation"));

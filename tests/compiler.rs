@@ -9568,6 +9568,48 @@ fn main() -> i64 {
 }
 
 #[test]
+fn duration_unit_constructors_are_checked_and_native() {
+    let source = r#"
+fn convert(value: i64) -> i64 {
+    return time.seconds(value)
+}
+
+fn main() -> i64 {
+    let second: i64 = time.seconds(2)
+    let minute: i64 = time.minutes(3)
+    let hour: i64 = time.hours(4)
+    let millisecond: i64 = time.milliseconds(5)
+    print(second)
+    print(minute)
+    print(hour)
+    print(millisecond)
+    print(convert(6))
+    return 0
+}
+"#;
+    check_source(source).expect("duration constructors should typecheck");
+    let generated = compile_to_c(source).expect("duration constructors should lower");
+    assert!(generated.contains("flux_mul_i64(flux__local_value, INT64_C(1000))"));
+    assert!(generated.contains("flux_mul_i64(INT64_C(2), INT64_C(1000))"));
+    assert!(generated.contains("flux_mul_i64(flux_mul_i64(INT64_C(3), INT64_C(60)), INT64_C(1000))"));
+    assert!(generated.contains("flux_mul_i64(flux_mul_i64(flux_mul_i64(INT64_C(4), INT64_C(60)), INT64_C(60)), INT64_C(1000))"));
+    assert!(generated.contains("flux__local_millisecond = INT64_C(5)"));
+}
+
+#[test]
+fn duration_unit_constructors_reject_wrong_types() {
+    let source = r#"
+fn main() -> i64 {
+    let value: i64 = time.seconds("two")
+    return value
+}
+"#;
+    let error = check_source(source).expect_err("duration constructors must be typed");
+    assert!(error.message.contains("time.seconds value"));
+    assert!(error.message.contains("expected i64"));
+}
+
+#[test]
 fn structured_timers_run_repeat_cancel_and_tree_shake() {
     let source = r#"
 fn once() -> void {

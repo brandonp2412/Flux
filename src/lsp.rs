@@ -1855,6 +1855,14 @@ fn add_qualified_namespace_completions(
         return true;
     }
     if namespace == "time" {
+        for (label, detail) in [
+            ("milliseconds", "fn time.milliseconds(value: i64) -> i64"),
+            ("seconds", "fn time.seconds(value: i64) -> i64"),
+            ("minutes", "fn time.minutes(value: i64) -> i64"),
+            ("hours", "fn time.hours(value: i64) -> i64"),
+        ] {
+            push_completion_item(items, seen, label, 3, detail);
+        }
         push_completion_item(items, seen, "now", 3, "fn time.now() -> i64");
         push_completion_item(items, seen, "monotonic", 3, "fn time.monotonic() -> i64");
         push_completion_item(
@@ -4197,6 +4205,14 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
                         &[],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "milliseconds" | "seconds" | "minutes" | "hours" => {
+                    return Some(signature_help_for_builtin(
+                        &format!("time.{member}"),
+                        &["value: i64"],
                         "i64",
                         active_parameter,
                     ));
@@ -8119,6 +8135,8 @@ mod tests {
         assert!(time_items.contains("fn time.millis(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.weekday(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.seconds(value: i64) -> i64"));
+        assert!(time_items.contains("fn time.minutes(value: i64) -> i64"));
 
         let file_line = source
             .lines()
@@ -10212,6 +10230,30 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_duration_unit_constructors() {
+        let uri = "file:///tmp/duration-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(time.seconds(2))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("time.seconds("))
+            .expect("duration call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("time.seconds(").unwrap() + "time.seconds(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("duration call should have signature help")
+        .to_json();
+        assert!(help.contains("fn time.seconds(value: i64) -> i64"));
     }
 
     #[test]
