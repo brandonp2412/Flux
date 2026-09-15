@@ -1818,17 +1818,25 @@ impl<'a> ControlFlowBuilder<'a> {
             } => {
                 let node = self.node(ControlFlowNodeKind::Loop, stmt.span);
                 let mut definitions = Vec::new();
+                let iterable_types = self
+                    .scalar_expression_type(iterable)
+                    .map(|ty| match self.signatures.canonical_type(&ty) {
+                        Type::List(element) | Type::Set(element) => (None, Some(*element)),
+                        Type::Map(key, value) => (Some(*key), Some(*value)),
+                        _ => (None, None),
+                    })
+                    .unwrap_or((None, None));
                 if let Some(index_name) = index_name {
                     definitions.push(ControlFlowDefinition {
                         name: index_name.clone(),
-                        ty: Type::I64,
+                        ty: iterable_types.0.clone().unwrap_or(Type::I64),
                         span: index_span.unwrap_or(stmt.span),
                     });
                 }
-                if let Some(Type::List(element)) = self.scalar_expression_type(iterable) {
+                if let Some(element) = iterable_types.1 {
                     definitions.push(ControlFlowDefinition {
                         name: name.clone(),
-                        ty: *element,
+                        ty: element,
                         span: *name_span,
                     });
                 }
@@ -3273,10 +3281,19 @@ fn collect_block_evaluation_types(
                 if let Some(index_name) = index_name {
                     nested.insert(index_name.clone(), Type::I64);
                 }
-                if let Ok(ty) = typecheck::type_of_expr(iterable, env, signatures)
-                    && let Type::List(element) = signatures.canonical_type(&ty)
-                {
-                    nested.insert(name.clone(), *element);
+                if let Ok(ty) = typecheck::type_of_expr(iterable, env, signatures) {
+                    match signatures.canonical_type(&ty) {
+                        Type::List(element) | Type::Set(element) => {
+                            nested.insert(name.clone(), *element);
+                        }
+                        Type::Map(key, value) => {
+                            if let Some(index_name) = index_name {
+                                nested.insert(index_name.clone(), *key);
+                            }
+                            nested.insert(name.clone(), *value);
+                        }
+                        _ => {}
+                    }
                 }
                 collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
             }

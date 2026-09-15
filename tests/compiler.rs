@@ -95,6 +95,57 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_types_all_collection_iteration_bindings() {
+    let source = r#"
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 1}
+    for key, value in values:
+        print(key)
+        print(value)
+    let unique: set<i64> = {2}
+    for index, value in unique:
+        print(index + value)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("collection iteration fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let loops = graph
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == ControlFlowNodeKind::Loop)
+        .collect::<Vec<_>>();
+    assert_eq!(loops.len(), 2);
+    let map_loop = loops
+        .iter()
+        .find(|node| {
+            node.definitions
+                .iter()
+                .any(|definition| definition.name == "key")
+        })
+        .expect("map loop should retain its key definition");
+    assert_eq!(map_loop.definitions[0].name, "key");
+    assert_eq!(map_loop.definitions[0].ty, fluxc::ast::Type::Str);
+    assert_eq!(map_loop.definitions[1].name, "value");
+    assert_eq!(map_loop.definitions[1].ty, fluxc::ast::Type::I64);
+    let set_loop = loops
+        .iter()
+        .find(|node| {
+            node.definitions
+                .iter()
+                .any(|definition| definition.name == "index")
+        })
+        .expect("set loop should retain its index definition");
+    assert_eq!(set_loop.definitions[0].name, "index");
+    assert_eq!(set_loop.definitions[0].ty, fluxc::ast::Type::I64);
+    assert_eq!(set_loop.definitions[1].name, "value");
+    assert_eq!(set_loop.definitions[1].ty, fluxc::ast::Type::I64);
+}
+
+#[test]
 fn ownership_ir_waits_for_borrowed_view_before_dropping_owner() {
     let source = r#"
 fn main() -> i64 {
