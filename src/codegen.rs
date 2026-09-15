@@ -7744,11 +7744,19 @@ static const char *flux__preferences_remove(const char *key) {
 }
 "#);
     }
+    if runtime_usage.contains("flux__crypto_sha256(")
+        || runtime_usage.contains("flux__crypto_sha512(")
+        || runtime_usage.contains("flux__crypto_sha384(")
+        || runtime_usage.contains("flux__crypto_hmac_sha256(")
+        || runtime_usage.contains("flux__crypto_hmac_sha512(")
+    {
+        out.push_str("static inline bool flux__crypto_bounded_length(const char *value, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= 65536 && value[cursor] != '\\0') cursor += 1; if (cursor > 65536) return false; *length = cursor; return true; }\n");
+    }
     if runtime_usage.contains("flux__crypto_sha256(") {
         out.push_str(r#"static inline const char *flux__crypto_sha256(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid crypto.sha256 arguments";
-    size_t length = strlen(value);
-    if (length > 65536) return "crypto.sha256 input exceeds 65536 bytes";
+    size_t length = 0;
+    if (!flux__crypto_bounded_length(value, &length)) return "crypto.sha256 input exceeds 65536 bytes";
     unsigned char digest[SHA256_DIGEST_LENGTH];
     if (SHA256((const unsigned char *)value, length, digest) == NULL) return "SHA-256 failed";
     char encoded[SHA256_DIGEST_LENGTH * 2 + 1];
@@ -7765,8 +7773,8 @@ static const char *flux__preferences_remove(const char *key) {
     if runtime_usage.contains("flux__crypto_sha512(") {
         out.push_str(r#"static inline const char *flux__crypto_sha512(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid crypto.sha512 arguments";
-    size_t length = strlen(value);
-    if (length > 65536) return "crypto.sha512 input exceeds 65536 bytes";
+    size_t length = 0;
+    if (!flux__crypto_bounded_length(value, &length)) return "crypto.sha512 input exceeds 65536 bytes";
     unsigned char digest[SHA512_DIGEST_LENGTH];
     if (SHA512((const unsigned char *)value, length, digest) == NULL) return "SHA-512 failed";
     char encoded[SHA512_DIGEST_LENGTH * 2 + 1];
@@ -7783,8 +7791,8 @@ static const char *flux__preferences_remove(const char *key) {
     if runtime_usage.contains("flux__crypto_sha384(") {
         out.push_str(r#"static inline const char *flux__crypto_sha384(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid crypto.sha384 arguments";
-    size_t length = strlen(value);
-    if (length > 65536) return "crypto.sha384 input exceeds 65536 bytes";
+    size_t length = 0;
+    if (!flux__crypto_bounded_length(value, &length)) return "crypto.sha384 input exceeds 65536 bytes";
     unsigned char digest[SHA384_DIGEST_LENGTH];
     if (SHA384((const unsigned char *)value, length, digest) == NULL) return "SHA-384 failed";
     char encoded[SHA384_DIGEST_LENGTH * 2 + 1];
@@ -7801,9 +7809,9 @@ static const char *flux__preferences_remove(const char *key) {
     if runtime_usage.contains("flux__crypto_hmac_sha256(") {
         out.push_str(r#"static inline const char *flux__crypto_hmac_sha256(const char *key, const char *value, void (*callback)(const char *)) {
     if (key == NULL || value == NULL || callback == NULL) return "invalid crypto.hmacSha256 arguments";
-    size_t key_length = strlen(key);
-    size_t value_length = strlen(value);
-    if (key_length > 65536 || value_length > 65536) return "crypto.hmacSha256 input exceeds 65536 bytes";
+    size_t key_length = 0;
+    size_t value_length = 0;
+    if (!flux__crypto_bounded_length(key, &key_length) || !flux__crypto_bounded_length(value, &value_length)) return "crypto.hmacSha256 input exceeds 65536 bytes";
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digest_length = 0;
     if (HMAC(EVP_sha256(), key, (int)key_length, (const unsigned char *)value, value_length, digest, &digest_length) == NULL || digest_length != SHA256_DIGEST_LENGTH) return "HMAC-SHA-256 failed";
@@ -7821,9 +7829,9 @@ static const char *flux__preferences_remove(const char *key) {
     if runtime_usage.contains("flux__crypto_hmac_sha512(") {
         out.push_str(r#"static inline const char *flux__crypto_hmac_sha512(const char *key, const char *value, void (*callback)(const char *)) {
     if (key == NULL || value == NULL || callback == NULL) return "invalid crypto.hmacSha512 arguments";
-    size_t key_length = strlen(key);
-    size_t value_length = strlen(value);
-    if (key_length > 65536 || value_length > 65536) return "crypto.hmacSha512 input exceeds 65536 bytes";
+    size_t key_length = 0;
+    size_t value_length = 0;
+    if (!flux__crypto_bounded_length(key, &key_length) || !flux__crypto_bounded_length(value, &value_length)) return "crypto.hmacSha512 input exceeds 65536 bytes";
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int digest_length = 0;
     if (HMAC(EVP_sha512(), key, (int)key_length, (const unsigned char *)value, value_length, digest, &digest_length) == NULL || digest_length != SHA512_DIGEST_LENGTH) return "HMAC-SHA-512 failed";

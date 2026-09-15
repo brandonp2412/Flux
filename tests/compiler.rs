@@ -20795,6 +20795,9 @@ fn main() -> i64 {
     check_source(source).expect("crypto.sha256 should typecheck");
     let generated = compile_to_c(source).expect("crypto.sha256 should lower natively");
     assert!(generated.contains("#include <openssl/sha.h>"));
+    assert!(generated.contains("flux__crypto_bounded_length"));
+    assert!(generated.contains("if (!flux__crypto_bounded_length(value, &length))"));
+    assert!(generated.contains("if (!flux__crypto_bounded_length(key, &key_length) || !flux__crypto_bounded_length(value, &value_length))"));
     assert!(generated.contains("SHA256((const unsigned char *)value"));
     assert!(generated.contains("crypto.sha256 input exceeds 65536 bytes"));
     assert!(generated.contains("flux__crypto_sha512("));
