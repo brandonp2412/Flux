@@ -4219,9 +4219,30 @@ fn emit_runtime_prelude(
         out.push_str("static inline void flux__process_exit(int64_t code) { if (code < 0 || code > 255) { fputs(\"Flux runtime error: process.exit code must be between 0 and 255\\n\", stderr); abort(); } exit((int)code); }\n");
     }
 
+    if runtime_usage.contains("flux__url_parse_http(")
+        || runtime_usage.contains("flux__uri_parse(")
+        || runtime_usage.contains("flux__url_decode_component(")
+        || runtime_usage.contains("flux__url_encode_component(")
+        || runtime_usage.contains("flux__url_decode_form_component(")
+        || runtime_usage.contains("flux__url_encode_form_component(")
+        || runtime_usage.contains("flux__url_parse_form_query(")
+    {
+        out.push_str(
+            r#"static inline bool flux__bounded_url_length(const char *value, size_t *length) {
+    if (value == NULL || length == NULL) return false;
+    for (size_t index = 0; index <= 65536; index += 1) {
+        if (value[index] == '\0') { *length = index; return true; }
+    }
+    return false;
+}
+"#,
+        );
+    }
+
     if runtime_usage.contains("flux__url_parse_http(") {
         out.push_str(r#"static inline const char *flux__url_parse_http(const char *value, void (*callback)(const char *, const char *, int64_t, const char *)) {
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "URL exceeds 65536 bytes";
     if (length == 0) return "URL must not be empty";
     if (length > 65536) return "URL exceeds 65536 bytes";
     char buffer[65537];
@@ -4310,7 +4331,8 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__uri_parse(") {
         out.push_str(r#"static inline const char *flux__uri_parse(const char *value, void (*callback)(const char *, const char *, const char *, const char *, const char *)) {
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "URI exceeds 65536 bytes";
     if (length == 0) return "URI must not be empty";
     if (length > 65536) return "URI exceeds 65536 bytes";
     char buffer[65537];
@@ -4898,7 +4920,8 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     }
     if runtime_usage.contains("flux__url_decode_component(") {
         out.push_str(r#"static inline const char *flux__url_decode_component(const char *value, void (*callback)(const char *)) {
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "URL component exceeds 65536 bytes";
     if (length > 65536) return "URL component exceeds 65536 bytes";
     char decoded[65537];
     size_t output = 0;
@@ -4928,7 +4951,8 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     if runtime_usage.contains("flux__url_encode_component(") {
         out.push_str(r#"static inline const char *flux__url_encode_component(const char *value, void (*callback)(const char *)) {
     static const char hex[] = "0123456789ABCDEF";
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "URL component exceeds 65536 bytes";
     if (length > 65536) return "URL component exceeds 65536 bytes";
     size_t encoded_length = 0;
     for (size_t input = 0; input < length; input += 1) {
@@ -4958,7 +4982,8 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     }
     if runtime_usage.contains("flux__url_decode_form_component(") {
         out.push_str(r#"static inline const char *flux__url_decode_form_component(const char *value, void (*callback)(const char *)) {
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "Form URL component exceeds 65536 bytes";
     if (length > 65536) return "Form URL component exceeds 65536 bytes";
     char decoded[65537];
     size_t output = 0;
@@ -4992,7 +5017,8 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     if runtime_usage.contains("flux__url_encode_form_component(") {
         out.push_str(r#"static inline const char *flux__url_encode_form_component(const char *value, void (*callback)(const char *)) {
     static const char hex[] = "0123456789ABCDEF";
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "Form URL component exceeds 65536 bytes";
     if (length > 65536) return "Form URL component exceeds 65536 bytes";
     size_t encoded_length = 0;
     for (size_t input = 0; input < length; input += 1) {
@@ -5024,7 +5050,8 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     }
     if runtime_usage.contains("flux__url_parse_form_query(") {
         out.push_str(r#"static inline const char *flux__url_parse_form_query(const char *value, void (*callback)(const char *, const char *)) {
-    size_t length = strlen(value);
+    size_t length = 0;
+    if (!flux__bounded_url_length(value, &length)) return "Form URL query exceeds 65536 bytes";
     if (length > 65536) return "Form URL query exceeds 65536 bytes";
     size_t cursor = value[0] == '?' ? 1 : 0;
     while (cursor < length) {

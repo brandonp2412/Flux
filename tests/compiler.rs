@@ -5289,6 +5289,10 @@ fn main() -> i64 {
     check_source(source).expect("HTTP URL parsing should typecheck");
     let generated = compile_to_c(source).expect("HTTP URL parsing should lower natively");
     assert!(generated.contains("flux__url_parse_http("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(!generated.contains(
+        "flux__url_parse_http(const char *value, void (*callback)(const char *, const char *, int64_t, const char *)) {\n    size_t length = strlen(value);"
+    ));
     assert!(generated.contains("#include <strings.h>"));
     assert!(!generated.contains("#include <sys/socket.h>"));
 
@@ -5363,6 +5367,10 @@ fn main() -> i64 {
     check_source(source).expect("general URI parsing should typecheck");
     let generated = compile_to_c(source).expect("general URI parsing should lower natively");
     assert!(generated.contains("flux__uri_parse("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(!generated.contains(
+        "flux__uri_parse(const char *value, void (*callback)(const char *, const char *, const char *, const char *, const char *)) {\n    size_t length = strlen(value);"
+    ));
     assert!(!generated.contains("#include <sys/socket.h>"));
 
     let invalid_callback = check_source(
