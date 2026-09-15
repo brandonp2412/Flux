@@ -10844,7 +10844,7 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
-            "milliseconds" | "seconds" | "minutes" | "hours" => {
+            "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
                 if args.len() != 1 {
                     return Err(diag(
                         span,
@@ -10863,6 +10863,8 @@ fn check_qualified_call(
                     "seconds" => 1_000_i64,
                     "minutes" => 60_000_i64,
                     "hours" => 3_600_000_i64,
+                    "days" => 86_400_000_i64,
+                    "weeks" => 604_800_000_i64,
                     _ => unreachable!(),
                 };
                 if let Some(ConstantValue::I64(value)) =

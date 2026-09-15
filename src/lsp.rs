@@ -1860,6 +1860,8 @@ fn add_qualified_namespace_completions(
             ("seconds", "fn time.seconds(value: i64) -> i64"),
             ("minutes", "fn time.minutes(value: i64) -> i64"),
             ("hours", "fn time.hours(value: i64) -> i64"),
+            ("days", "fn time.days(value: i64) -> i64"),
+            ("weeks", "fn time.weeks(value: i64) -> i64"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
@@ -4209,7 +4211,7 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
-                "milliseconds" | "seconds" | "minutes" | "hours" => {
+                "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
                     return Some(signature_help_for_builtin(
                         &format!("time.{member}"),
                         &["value: i64"],
@@ -10254,6 +10256,32 @@ mod tests {
         .expect("duration call should have signature help")
         .to_json();
         assert!(help.contains("fn time.seconds(value: i64) -> i64"));
+    }
+
+    #[test]
+    fn signature_help_supports_day_and_week_duration_constructors() {
+        let uri = "file:///tmp/larger-duration-signatures.flux";
+        let source = "fn main() -> i64 {\n    print(time.days(2))\n    print(time.weeks(1))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            ("time.days(", "fn time.days(value: i64) -> i64"),
+            ("time.weeks(", "fn time.weeks(value: i64) -> i64"),
+        ] {
+            let line_index = source.lines().position(|line| line.contains(needle)).unwrap();
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .unwrap()
+            .to_json();
+            assert!(help.contains(expected));
+        }
     }
 
     #[test]

@@ -35076,7 +35076,7 @@ fn emit_qualified_call(
                 };
                 return Ok((format!("{helper}()"), vec![Type::I64], None));
             }
-            "milliseconds" | "seconds" | "minutes" | "hours" => {
+            "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks" => {
                 if args.len() != 1 {
                     return Err(diag(span, "invalid time duration call reached code generation"));
                 }
@@ -35090,6 +35090,14 @@ fn emit_qualified_call(
                     ),
                     "hours" => format!(
                         "flux_mul_i64(flux_mul_i64(flux_mul_i64({}, INT64_C(60)), INT64_C(60)), INT64_C(1000))",
+                        value.code
+                    ),
+                    "days" => format!(
+                        "flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64({}, INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))",
+                        value.code
+                    ),
+                    "weeks" => format!(
+                        "flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64({}, INT64_C(7)), INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))",
                         value.code
                     ),
                     _ => unreachable!(),

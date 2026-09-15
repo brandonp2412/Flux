@@ -9637,6 +9637,30 @@ fn main() -> i64 {
 }
 
 #[test]
+fn larger_duration_unit_constructors_are_checked_and_native() {
+    let source = r#"
+fn main() -> i64 {
+    let day: i64 = time.days(2)
+    let week: i64 = time.weeks(3)
+    return day + week
+}
+"#;
+    check_source(source).expect("day/week constructors should typecheck");
+    let generated = compile_to_c(source).expect("day/week constructors should lower");
+    assert!(generated.contains("flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64(INT64_C(2), INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))"));
+    assert!(generated.contains("flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64(INT64_C(3), INT64_C(7)), INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))"));
+}
+
+#[test]
+fn larger_duration_unit_constructors_reject_constant_overflow() {
+    for (name, value) in [("days", "106751991168"), ("weeks", "15250284453")] {
+        let source = format!("fn main() -> i64 {{\n    return time.{name}({value})\n}}\n");
+        let error = check_source(&source).expect_err("large duration conversion overflow must be diagnosed statically");
+        assert!(error.message.contains("duration overflows i64 milliseconds"));
+    }
+}
+
+#[test]
 fn structured_timers_run_repeat_cancel_and_tree_shake() {
     let source = r#"
 fn once() -> void {
