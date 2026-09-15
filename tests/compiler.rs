@@ -6606,6 +6606,109 @@ fn main() -> i64 {{
 }
 
 #[test]
+fn socket_receive_bytes_from_many_drains_borrowed_udp_datagrams() {
+    let receiver = UdpSocket::bind("127.0.0.1:0").expect("binary UDP receiver should bind");
+    let port = receiver.local_addr().unwrap().port();
+    drop(receiver);
+    let source = format!(
+        r#"fn consume(_socket: i64, bytes: i64[], host: str, port: i64) -> void {{
+    print(host)
+    print(port)
+    print(bytes.count)
+    for index in 0..bytes.count:
+        print(bytes[index])
+}}
+fn main() -> i64 {{
+    let (socket, bindError) = net.udpBind("127.0.0.1", {port})
+    print(bindError)
+    print(net.setNonblocking(socket, true))
+    let (ready, readyError) = net.waitReadable(socket, 1000)
+    print(ready)
+    print(readyError)
+    let (received, receiveError) = net.readBytesFromMany(socket, 64, 8, consume)
+    print(received)
+    print(receiveError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("UDP binary batch receive should typecheck");
+    let generated = compile_to_c(&source).expect("UDP binary batch receive should lower");
+    assert!(generated.contains("flux__net_receive_bytes_from_many("));
+    assert!(generated.contains("readBytesFromMany requires a nonblocking UDP socket"));
+    assert!(generated.contains("readBytesFromMany cancelled by worker scope"));
+    let timed = "fn consume(_socket: i64, _bytes: i64[], _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesFromManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
+    check_source(timed).expect("timed UDP binary batch receive should typecheck");
+    let timed_generated = compile_to_c(timed).expect("timed UDP binary batch receive should lower");
+    assert!(timed_generated.contains("flux__net_receive_bytes_from_many_with_timeout("));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-net-read-bytes-from-many-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UDP binary fixture should be writable");
+    let source_path = root.join("read_bytes_from_many.flux");
+    fs::write(&source_path, &source).expect("UDP binary source should be writable");
+    let binary = root.join("read_bytes_from_many");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .args(["-o"])
+        .arg(&binary)
+        .output()
+        .expect("UDP binary executable should build");
+    assert!(
+        built.status.success(),
+        "UDP binary build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let child = Command::new(&binary)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("UDP binary executable should run");
+    let sender = UdpSocket::bind("127.0.0.1:0").expect("UDP binary sender should bind");
+    let sender_thread = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        sender
+            .send_to(&[0, 255, 65], ("127.0.0.1", port))
+            .expect("UDP binary peer should send first datagram");
+        sender
+            .send_to(&[7, 8], ("127.0.0.1", port))
+            .expect("UDP binary peer should send second datagram");
+    });
+    let run = child
+        .wait_with_output()
+        .expect("UDP binary executable should finish");
+    sender_thread
+        .join()
+        .expect("UDP binary sender should finish");
+    assert!(
+        run.status.success(),
+        "UDP binary run failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let output = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        output.contains("0\n255\n65"),
+        "first datagram bytes missing: {output:?}"
+    );
+    assert!(
+        output.contains("7\n8"),
+        "second datagram bytes missing: {output:?}"
+    );
+    assert!(
+        output.contains("5\nnil\nnil"),
+        "aggregate UDP result missing: {output:?}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn socket_timed_text_send_applies_nonblocking_backpressure_and_tree_shakes() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("timed-send listener should bind");
     let port = listener.local_addr().unwrap().port();

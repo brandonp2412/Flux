@@ -1473,6 +1473,14 @@ fn add_qualified_namespace_completions(
                 "fn net.readBytesManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
             ),
             (
+                "readBytesFromMany",
+                "fn net.readBytesFromMany(socket: i64, maxBytes: i64, maxCount: i64, callback: fn(i64, i64[], str, i64) -> void) -> (i64, error)",
+            ),
+            (
+                "readBytesFromManyTimeout",
+                "fn net.readBytesFromManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, i64[], str, i64) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readBytesTimeout",
                 "fn net.readBytesTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
             ),
@@ -3646,6 +3654,33 @@ fn signature_help_for_document_cached(
                             "maxCount: i64",
                             "timeoutMillis: i64",
                             "callback: fn(i64, i64[]) -> void",
+                        ],
+                        "(i64, bool, error)",
+                        active_parameter,
+                    ));
+                }
+                "readBytesFromMany" | "receiveBytesFromMany" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readBytesFromMany",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "callback: fn(i64, i64[], str, i64) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "readBytesFromManyTimeout" | "receiveBytesFromManyWithTimeout" => {
+                    return Some(signature_help_for_builtin(
+                        "net.readBytesFromManyTimeout",
+                        &[
+                            "socket: i64",
+                            "maxBytes: i64",
+                            "maxCount: i64",
+                            "timeoutMillis: i64",
+                            "callback: fn(i64, i64[], str, i64) -> void",
                         ],
                         "(i64, bool, error)",
                         active_parameter,

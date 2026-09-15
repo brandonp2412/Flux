@@ -5255,6 +5255,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_receive_text_from_many_with_timeout(")
         || runtime_usage.contains("flux__net_send_bytes_progress_with_timeout(")
         || runtime_usage.contains("flux__net_receive_bytes_with_timeout(")
+        || runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(")
     {
         out.push_str("struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n");
         out.push_str("static inline struct flux__net_i64_bool_error flux__net_progress_result(int64_t offset, bool complete, const char *error) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = complete, .v2 = error }; return result; }\n");
@@ -5288,6 +5289,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_receive_text_from_many(")
         || runtime_usage.contains("flux__net_receive_text_from_many_with_timeout(")
         || runtime_usage.contains("flux__net_receive_bytes_with_timeout(")
+        || runtime_usage.contains("flux__net_receive_bytes_many_with_timeout(")
+        || runtime_usage.contains("flux__net_receive_bytes_from_many(")
+        || runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(")
         || uses_cancellable_http;
     if runtime_usage.contains("flux__net_wait_readable(")
         || runtime_usage.contains("flux__net_wait_writable(")
@@ -6483,6 +6487,60 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if (ready < 0) return flux__net_progress_result(-1, false, "failed to wait for UDP readability");
     if ((descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result(-1, false, "invalid socket handle");
     struct flux__net_i64_error result = flux__net_receive_text_from_many(socket_handle, max_bytes, max_count, callback);
+    if (result.v1 != NULL) return flux__net_progress_result(result.v0, false, result.v1);
+    return flux__net_progress_result(result.v0, true, NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_receive_bytes_from_many(") {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_receive_bytes_from_many(int64_t socket_handle, int64_t max_bytes, int64_t max_count, void (*callback)(int64_t, struct flux__list, const char *, int64_t)) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, "readBytesFromMany maxBytes must be between 1 and 65536");
+    if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, "readBytesFromMany maxCount must be between 1 and 2147483647");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_DGRAM) return flux__net_result(-1, "readBytesFromMany requires a UDP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
+    if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "readBytesFromMany requires a nonblocking UDP socket");
+    unsigned char raw[65536]; int64_t buffer[65536]; int64_t total = 0;
+    for (int64_t count = 0; count < max_count; ++count) {
+        if (flux__worker_cancelled()) return flux__net_result(total, "readBytesFromMany cancelled by worker scope");
+        struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer); ssize_t received;
+        do { peer_length = sizeof(peer); received = recvfrom((int)socket_handle, raw, (size_t)max_bytes, 0, (struct sockaddr *)&peer, &peer_length); } while (received < 0 && errno == EINTR);
+        if (received < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(total, NULL); return flux__net_result(total, "failed to receive bytes"); }
+        for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index];
+        char host[INET6_ADDRSTRLEN]; const void *address = NULL; int64_t port = -1;
+        if (peer.ss_family == AF_INET) { struct sockaddr_in *ipv4 = (struct sockaddr_in *)&peer; address = &ipv4->sin_addr; port = (int64_t)ntohs(ipv4->sin_port); }
+        else if (peer.ss_family == AF_INET6) { struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)&peer; address = &ipv6->sin6_addr; port = (int64_t)ntohs(ipv6->sin6_port); }
+        else return flux__net_result(total, "UDP peer address has unsupported family");
+        if (inet_ntop(peer.ss_family, address, host, sizeof(host)) == NULL) return flux__net_result(total, "failed to format UDP peer address");
+        callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }, host, port);
+        if (received > 0 && total > INT64_MAX - (int64_t)received) return flux__net_result(total, "received byte count overflow");
+        total += (int64_t)received;
+    }
+    return flux__net_result(total, NULL);
+}
+"#);
+    }
+    if runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(") {
+        out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_receive_bytes_from_many_with_timeout(int64_t socket_handle, int64_t max_bytes, int64_t max_count, int64_t timeout_millis, void (*callback)(int64_t, struct flux__list, const char *, int64_t)) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(-1, false, "invalid socket handle");
+    if (max_bytes < 1 || max_bytes > 65536) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout maxBytes must be between 1 and 65536");
+    if (max_count < 1 || max_count > INT_MAX) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout maxCount must be between 1 and 2147483647");
+    if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout timeoutMillis must be -1 or between 0 and 2147483647");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_progress_result(-1, false, "failed to inspect socket type");
+    if (socket_type != SOCK_DGRAM) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout requires a UDP socket");
+    int flags = fcntl((int)socket_handle, F_GETFL, 0);
+    if (flags < 0 || (flags & O_NONBLOCK) == 0) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout requires a nonblocking UDP socket");
+    struct pollfd descriptor = { .fd = (int)socket_handle, .events = POLLIN, .revents = 0 };
+    int ready = flux__net_poll_cancellable(&descriptor, 1, timeout_millis);
+    if (ready == -2) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout cancelled by worker scope");
+    if (ready == 0) return flux__net_progress_result(0, false, NULL);
+    if (ready < 0 || (descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result(-1, false, "failed to wait for UDP readability");
+    struct flux__net_i64_error result = flux__net_receive_bytes_from_many(socket_handle, max_bytes, max_count, callback);
     if (result.v1 != NULL) return flux__net_progress_result(result.v0, false, result.v1);
     return flux__net_progress_result(result.v0, true, NULL);
 }
@@ -35469,6 +35527,45 @@ fn emit_qualified_call(
                 return Ok((
                     format!(
                         "flux__net_receive_bytes_many_with_timeout({}, {}, {}, {}, {})",
+                        socket_handle.code,
+                        max_bytes.code,
+                        max_count.code,
+                        timeout.code,
+                        callback.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
+                ));
+            }
+            "readBytesFromMany" | "receiveBytesFromMany" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_count = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_receive_bytes_from_many({}, {}, {}, {})",
+                        socket_handle.code, max_bytes.code, max_count.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "readBytesFromManyTimeout" | "receiveBytesFromManyWithTimeout" => {
+                if args.len() != 5 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let max_count = emit_expr(&args[2], env, signatures)?;
+                let timeout = emit_expr(&args[3], env, signatures)?;
+                let callback = emit_expr(&args[4], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_receive_bytes_from_many_with_timeout({}, {}, {}, {}, {})",
                         socket_handle.code,
                         max_bytes.code,
                         max_count.code,
