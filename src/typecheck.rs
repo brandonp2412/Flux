@@ -9704,31 +9704,7 @@ fn check_qualified_call(
                 return Ok(vec![Type::Error]);
             }
             "sendBytesTo" => {
-                if args.len() != 4 {
-                    return Err(diag(span, "net.sendBytesTo expects 4 arguments"));
-                }
-                let handle = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::I64, &handle, "net.sendBytesTo socket")?;
-                let host = type_of_expr(&args[1], env, signatures)?;
-                require_type(args[1].span, &Type::Str, &host, "net.sendBytesTo host")?;
-                let port = type_of_expr(&args[2], env, signatures)?;
-                require_type(args[2].span, &Type::I64, &port, "net.sendBytesTo port")?;
-                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value))
-                {
-                    return Err(diag(
-                        args[2].span,
-                        "net.sendBytesTo port must be between 1 and 65535",
-                    ));
-                }
-                let bytes = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
-                require_type(
-                    args[3].span,
-                    &Type::List(Box::new(Type::I64)),
-                    &bytes,
-                    "net.sendBytesTo bytes",
-                )?;
-                validate_literal_byte_list(&args[3], signatures, "net.sendBytesTo")?;
-                return Ok(vec![Type::I64, Type::Error]);
+                return check_net_send_bytes_to(span, args, env, signatures);
             }
             "receiveTextWithTimeout" => {
                 if args.len() != 4 {
@@ -13863,6 +13839,42 @@ fn constant_duration_millis(expr: &Expr, signatures: &Signatures) -> Option<i64>
         }
         _ => None,
     }
+}
+
+#[inline(never)]
+fn check_net_send_bytes_to(
+    span: SourceSpan,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    if args.len() != 4 {
+        return Err(diag(span, "net.sendBytesTo expects 4 arguments"));
+    }
+    let handle = type_of_expr(&args[0], env, signatures)?;
+    require_type(args[0].span, &Type::I64, &handle, "net.sendBytesTo socket")?;
+    let host = type_of_expr(&args[1], env, signatures)?;
+    require_type(args[1].span, &Type::Str, &host, "net.sendBytesTo host")?;
+    let port = type_of_expr(&args[2], env, signatures)?;
+    require_type(args[2].span, &Type::I64, &port, "net.sendBytesTo port")?;
+    if matches!(
+        constant_primitive_value(&args[2], signatures),
+        Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value)
+    ) {
+        return Err(diag(
+            args[2].span,
+            "net.sendBytesTo port must be between 1 and 65535",
+        ));
+    }
+    let bytes = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+    require_type(
+        args[3].span,
+        &Type::List(Box::new(Type::I64)),
+        &bytes,
+        "net.sendBytesTo bytes",
+    )?;
+    validate_literal_byte_list(&args[3], signatures, "net.sendBytesTo")?;
+    Ok(vec![Type::I64, Type::Error])
 }
 
 fn check_await(
