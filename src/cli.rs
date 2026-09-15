@@ -9676,7 +9676,7 @@ fn build_native_configured(
         static_link,
     );
     if cache_enabled && cache.is_file() && native_cache_entry_is_valid(&cache) {
-        fs::copy(&cache, output).map_err(|error| {
+        install_native_artifact(&cache, output).map_err(|error| {
             format!(
                 "failed to restore native build cache '{}' to '{}': {error}",
                 cache.display(),
@@ -9724,7 +9724,8 @@ fn build_native_configured(
     command.args(&native_cflags);
     command.args(["-x", "c", "-"]);
     command.args(&native_libs);
-    command.arg("-o").arg(output);
+    let temporary_output = native_temporary_artifact_path(output, c_source);
+    command.arg("-o").arg(&temporary_output);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -9741,11 +9742,20 @@ fn build_native_configured(
         .wait_with_output()
         .map_err(|error| format!("failed to wait for clang: {error}"))?;
     if !output_result.status.success() {
+        let _ = fs::remove_file(&temporary_output);
         return Err(format!(
             "native backend failed:\n{}",
             String::from_utf8_lossy(&output_result.stderr)
         ));
     }
+    fs::rename(&temporary_output, output).map_err(|error| {
+        let _ = fs::remove_file(&temporary_output);
+        format!(
+            "failed to publish native artifact '{}' to '{}': {error}",
+            temporary_output.display(),
+            output.display()
+        )
+    })?;
     if cache_enabled
         && let Some(parent) = cache.parent()
         && fs::create_dir_all(parent).is_ok()
@@ -9761,6 +9771,30 @@ fn build_native_configured(
         }
     }
     Ok(())
+}
+
+fn native_temporary_artifact_path(output: &Path, c_source: &str) -> PathBuf {
+    output.with_extension(format!(
+        "tmp-build-{}-{:016x}",
+        std::process::id(),
+        reproducibility_hash(c_source.as_bytes())
+    ))
+}
+
+fn install_native_artifact(source: &Path, output: &Path) -> std::io::Result<()> {
+    let temporary = native_temporary_artifact_path(output, &format!(
+        "cache:{}:{}",
+        source.display(),
+        output.display()
+    ));
+    let result = (|| {
+        fs::copy(source, &temporary)?;
+        fs::rename(&temporary, output)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map(|_| ())
 }
 
 fn native_cache_metadata_path(cache: &Path) -> PathBuf {
