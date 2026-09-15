@@ -13936,6 +13936,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_records_typed_call_boundaries() {
+    let source = r#"
+fn consume(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    return consume(values)
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1417))
+        .expect("call-boundary source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let call = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.calls.iter().map(move |call| (node, call)))
+        .find(|(_, call)| call.callee == "consume")
+        .expect("typed call boundary should be attached to the evaluation node");
+    assert_eq!(call.1.arguments.len(), 1);
+    let argument = graph
+        .value(call.1.arguments[0])
+        .expect("call ownership fact should retain its typed argument value");
+    assert!(
+        matches!(argument.kind, ControlFlowValueKind::NameRead { ref name, .. } if name == "values")
+    );
+    assert_eq!(call.1.span.line, argument.span.line);
+    assert!(call.1.span.column < argument.span.column);
+    assert!(call.1.span.length > argument.span.length);
+}
+
+#[test]
 fn sibling_borrow_source_definitions_keep_identity() {
     let source = r#"
 fn positive(value: i64) -> bool {

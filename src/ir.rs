@@ -288,11 +288,25 @@ pub struct OwnershipBorrow {
     pub span: SourceSpan,
 }
 
+/// A typed call boundary recorded alongside normalized ownership facts.
+///
+/// The arguments deliberately remain value IDs rather than source names. This
+/// keeps future consuming-call analysis tied to the same reaching-definition
+/// and value provenance facts used by borrow checking instead of rebuilding a
+/// second call walk from the checked AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipCall {
+    pub callee: String,
+    pub arguments: Vec<ControlFlowValueId>,
+    pub span: SourceSpan,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlFlowOwnership {
     pub reads: Vec<String>,
     pub borrows: Vec<OwnershipBorrow>,
     pub moves: Vec<OwnershipMove>,
+    pub calls: Vec<OwnershipCall>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1880,7 +1894,7 @@ impl<'a> ControlFlowBuilder<'a> {
             value_types,
             values,
             definitions: Vec::new(),
-            ownership: self.ownership_for_expr(expr),
+            ownership: self.ownership_for_expr(id, expr),
         });
         id
     }
@@ -2659,15 +2673,54 @@ impl<'a> ControlFlowBuilder<'a> {
         definitions
     }
 
-    fn ownership_for_expr(&self, expr: &Expr) -> ControlFlowOwnership {
+    fn ownership_for_expr(&self, node: ControlFlowNodeId, expr: &Expr) -> ControlFlowOwnership {
         let mut reads = HashSet::new();
         typecheck::collect_expr_reads(expr, &mut reads);
         let mut reads = reads.into_iter().collect::<Vec<_>>();
         reads.sort();
+        let mut calls = self
+            .values
+            .iter()
+            .filter(|value| value.producer == node)
+            .filter_map(|value| {
+                let (callee, arguments) = match &value.kind {
+                    ControlFlowValueKind::Call { callee, arguments } => {
+                        (callee.clone(), arguments.clone())
+                    }
+                    ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        arguments,
+                    } => (format!("{namespace}.{name}"), arguments.clone()),
+                    ControlFlowValueKind::OptionalCascadeCall {
+                        callee, arguments, ..
+                    } => (callee.clone(), arguments.clone()),
+                    ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        arguments,
+                        ..
+                    } => (format!("{interface}.{capability}"), arguments.clone()),
+                    _ => return None,
+                };
+                Some(OwnershipCall {
+                    callee,
+                    arguments,
+                    span: value.span,
+                })
+            })
+            .collect::<Vec<_>>();
+        calls.sort_by(|left, right| {
+            left.span
+                .column
+                .cmp(&right.span.column)
+                .then_with(|| left.callee.cmp(&right.callee))
+        });
         ControlFlowOwnership {
             reads,
             borrows: Vec::new(),
             moves: Vec::new(),
+            calls,
         }
     }
 
@@ -2687,6 +2740,7 @@ impl<'a> ControlFlowBuilder<'a> {
             reads: Vec::new(),
             borrows: Vec::new(),
             moves,
+            calls: Vec::new(),
         }
     }
 }
