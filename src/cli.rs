@@ -140,6 +140,8 @@ struct PackageOptions {
     mode: BuildMode,
     format: PackageFormat,
     native_target: NativeTargetOptions,
+    msix_certificate: Option<PathBuf>,
+    msix_publisher: Option<String>,
     locked: bool,
 }
 
@@ -2619,6 +2621,8 @@ fn package_target(target: &Path, options: PackageOptions) -> Result<(), CliError
                 &output,
                 options.mode,
                 &options.native_target,
+                options.msix_certificate.as_deref(),
+                options.msix_publisher.as_deref(),
             )?;
         }
     }
@@ -2801,12 +2805,14 @@ fn msix_version(manifest: &fluxc::project::PackageManifest) -> Result<String, Cl
 fn msix_manifest_xml(
     manifest: &fluxc::project::PackageManifest,
     executable: &str,
+    publisher_identity: Option<&str>,
 ) -> Result<String, CliError> {
     let version = msix_version(manifest)?;
     let name = xml_escape(&manifest.name);
+    let publisher = xml_escape(publisher_identity.unwrap_or("CN=Flux Development"));
     let executable = xml_escape(executable);
     Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"CN=Flux Development\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>Flux Development</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
     ))
 }
 
@@ -2816,6 +2822,8 @@ fn build_msix_bundle(
     output: &Path,
     mode: BuildMode,
     native_target: &NativeTargetOptions,
+    certificate: Option<&Path>,
+    publisher: Option<&str>,
 ) -> Result<(), CliError> {
     if native_target.codegen_target() != fluxc::codegen::NativeTarget::Windows {
         return Err(CliError::Message(
@@ -2843,7 +2851,7 @@ fn build_msix_bundle(
             .map_err(|error| format!("failed to create MSIX asset directory: {error}"))?;
         fs::write(
             staged.join("AppxManifest.xml"),
-            msix_manifest_xml(manifest, &manifest.name)?,
+            msix_manifest_xml(manifest, &manifest.name, publisher)?,
         )
         .map_err(|error| format!("failed to write AppxManifest.xml: {error}"))?;
         const EMPTY_PNG: &[u8] = &[
@@ -2868,6 +2876,22 @@ fn build_msix_bundle(
                 .arg("."),
             "MSIX package archive",
         )?;
+        if let Some(certificate) = certificate {
+            let signed_output = staging_root.join("signed.msix");
+            fs::copy(output, &signed_output)
+                .map_err(|error| format!("failed to stage MSIX for signing: {error}"))?;
+            run_checked(
+                Command::new("signtool")
+                    .args(["sign", "/fd", "SHA256", "/f"])
+                    .arg(certificate)
+                    .arg(&signed_output),
+                "MSIX package signing",
+            )?;
+            fs::remove_file(output)
+                .map_err(|error| format!("failed to replace unsigned MSIX: {error}"))?;
+            fs::rename(&signed_output, output)
+                .map_err(|error| format!("failed to publish signed MSIX: {error}"))?;
+        }
         Ok(())
     })();
     let _ = fs::remove_dir_all(&staging_root);
@@ -6003,6 +6027,8 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
     let mut format = PackageFormat::Directory;
     let mut format_seen = false;
     let mut native_target = NativeTargetOptions::default();
+    let mut msix_certificate = None;
+    let mut msix_publisher = None;
     let mut locked = false;
     let mut index = 0usize;
     while index < args.len() {
@@ -6062,6 +6088,29 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
                 native_target.sysroot = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--certificate" => {
+                if msix_certificate.is_some() {
+                    return Err("MSIX certificate may only be specified once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("'--certificate' requires a certificate path".to_string());
+                };
+                msix_certificate = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--publisher" => {
+                if msix_publisher.is_some() {
+                    return Err("MSIX publisher may only be specified once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("'--publisher' requires an Appx publisher identity".to_string());
+                };
+                if value.is_empty() || value.contains(['"', '<', '>', '&']) {
+                    return Err("'--publisher' must be a non-empty XML-safe identity".to_string());
+                }
+                msix_publisher = Some(value.clone());
+                index += 2;
+            }
             "--locked" => {
                 if locked {
                     return Err("'--locked' may only be specified once".to_string());
@@ -6071,16 +6120,21 @@ fn package_options(args: &[String]) -> Result<PackageOptions, String> {
             }
             flag => {
                 return Err(format!(
-                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static|msix>', '--target <triple>', '--sysroot <directory>', or '--locked'"
+                    "unknown package option '{flag}'; expected '-o <path>', '--mode <debug|profile|release>', '--format <directory|tar.gz|container|systemd|static|msix>', '--target <triple>', '--sysroot <directory>', '--certificate <path>', '--publisher <identity>', or '--locked'"
                 ));
             }
         }
+    }
+    if format != PackageFormat::Msix && (msix_certificate.is_some() || msix_publisher.is_some()) {
+        return Err("'--certificate' and '--publisher' require '--format msix'".to_string());
     }
     Ok(PackageOptions {
         output,
         mode,
         format,
         native_target,
+        msix_certificate,
+        msix_publisher,
         locked,
     })
 }
@@ -10287,7 +10341,7 @@ fn pkg_config_flags(kind: &str, package: &str) -> Result<Vec<String>, String> {
 fn usage() -> String {
     let command = command_name();
     format!(
-        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd|static|msix] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
+        "usage: {command} new <directory> | {command} lock <package-dir|flux.toml> | {command} tree <package-dir|flux.toml> | {command} why <package-dir|flux.toml> <dependency> | {command} check <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} analyze <file.flux|package-dir|flux.toml> [--json] [--locked] | {command} grammar --version | {command} ui --version | {command} abi --version | {command} format <file.flux> [--check] | {command} format --version | {command} emit-c <file.flux|package-dir|flux.toml> [-o file.c] | {command} emit-llvm <file.flux|package-dir|flux.toml> [-o file.ll] | {command} emit-c-header <file.flux|package-dir|flux.toml> [-o file.h] | {command} emit-apple-bindings <package-dir|flux.toml> [-o directory] | {command} build <file.flux|package-dir|flux.toml> [-o binary] [--reproducibility metadata] [--mode debug|profile|release] [--target <clang-triple>] [--sysroot <directory>] [--locked] | {command} verify-reproducibility <metadata-a> <metadata-b> | {command} build android <package-dir|flux.toml> [-o artifact] [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--format apk|aab] | {command} package <package-dir|flux.toml> [-o path] [--mode debug|profile|release] [--format directory|tar.gz|container|systemd|static|msix] [--target <clang-triple>] [--sysroot <directory>] [--certificate <publisher.pfx>] [--locked] | {command} publish package <package-dir|flux.toml> [--repo owner/name] [--registry owner/name] | {command} publish android <package-dir|flux.toml> [-o artifact.aab] [--json] | {command} run <file.flux|package-dir|flux.toml> [--mode debug|profile|release] [--locked] | {command} run android <package-dir|flux.toml> [--mode debug|profile|release] [--abi arm64-v8a|x86_64|armeabi-v7a] [--device <adb-serial>|waydroid] | {command} test <test.flux|package-dir|flux.toml> [--mode debug|profile|release] [--coverage] [--deterministic-time] [--locked] | {command} debug <file.flux|package-dir|flux.toml> [--break <file:line|function>] [--run] | {command} profile <file.flux|package-dir|flux.toml> [--alloc|--leaks|--sample] | {command} symbolize <native-binary> <address> [address ...] | {command} symbols split <native-binary> [-o directory] | {command} devices | {command} doctor | {command} clean <file.flux|package-dir|flux.toml> | {command} lsp"
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
@@ -10307,7 +10361,7 @@ fn usage() -> String {
     )
     .replace(
         "--format directory|tar.gz|container|systemd|msix",
-        "--format directory|tar.gz|container|systemd|static",
+        "--format directory|tar.gz|container|systemd|static|msix",
     )
     .replace(
         "[--alloc|--leaks|--sample]",
@@ -11007,6 +11061,8 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(defaults.format, PackageFormat::Directory);
         assert!(defaults.output.is_none());
         assert_eq!(defaults.native_target, NativeTargetOptions::default());
+        assert!(defaults.msix_certificate.is_none());
+        assert!(defaults.msix_publisher.is_none());
         assert!(!defaults.locked);
         let locked = package_options(&["--locked".to_string()])
             .expect("locked package options should parse");
@@ -11052,6 +11108,22 @@ app OverlayDemo(title: "Overlay")
         let msix = package_options(&["--format".to_string(), "msix".to_string()])
             .expect("MSIX package options should parse");
         assert_eq!(msix.format, PackageFormat::Msix);
+        let signed_msix = package_options(&[
+            "--format".to_string(),
+            "msix".to_string(),
+            "--certificate".to_string(),
+            "publisher.pfx".to_string(),
+            "--publisher".to_string(),
+            "CN=Flux Demo".to_string(),
+        ])
+        .expect("signed MSIX package options should parse");
+        assert_eq!(
+            signed_msix.msix_certificate.as_deref(),
+            Some(std::path::Path::new("publisher.pfx"))
+        );
+        assert!(
+            package_options(&["--certificate".to_string(), "publisher.p12".to_string(),]).is_err()
+        );
         assert!(package_options(&["--format".to_string(), "zip".to_string()]).is_err());
         assert!(package_options(&["--target".to_string(), "not a triple".to_string()]).is_err());
     }
@@ -11083,9 +11155,11 @@ app OverlayDemo(title: "Overlay")
             },
             workspace_members: Vec::new(),
         };
-        let xml = msix_manifest_xml(&manifest, "flux-demo").expect("MSIX manifest should emit");
+        let xml = msix_manifest_xml(&manifest, "flux-demo", Some("CN=Flux Demo"))
+            .expect("MSIX manifest should emit");
         assert!(xml.contains("Name=\"flux-demo\""));
         assert!(xml.contains("Version=\"1.2.3.0\""));
+        assert!(xml.contains("Publisher=\"CN=Flux Demo\""));
         assert!(xml.contains("Executable=\"flux-demo\""));
         assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
         assert!(xml.contains("runFullTrust"));
