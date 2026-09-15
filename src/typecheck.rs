@@ -5094,6 +5094,27 @@ fn check_cfg_moved_reads(
         if !state.reachable() {
             continue;
         }
+        for ownership_move in &node.ownership.moves {
+            if ownership_move.destination == "<drop>"
+                && ownership_move
+                    .source_definitions
+                    .iter()
+                    .any(|definition| matches!(definition, crate::ir::ControlFlowDefinitionId::Parameter(_)))
+            {
+                diagnostics.push(
+                    diag(
+                        ownership_move.span,
+                        &format!(
+                            "cannot drop borrowed collection parameter '{}'",
+                            ownership_move.source
+                        ),
+                    )
+                    .with_note(
+                        "collection parameters are immutable borrowed views; only locally owned collection values may be dropped",
+                    ),
+                );
+            }
+        }
         let mut moved_reads = node
             .ownership
             .borrows
