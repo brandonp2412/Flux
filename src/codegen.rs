@@ -4611,6 +4611,12 @@ static inline const char *flux__json_encode_string(const char *value, void (*cal
     size_t length = 0;
     while (length <= 65536 && value[length] != '\0') length += 1;
     if (length > 65536) return "JSON string exceeds 65536 bytes";
+    /* Validate the complete borrowed input before reserving the large output buffer. */
+    for (size_t index = 0; index < length;) {
+        size_t width = flux__json_utf8_width((const unsigned char *)value + index, (const unsigned char *)value + length);
+        if (width == 0) return "JSON string contains invalid UTF-8";
+        index += width;
+    }
     /* Every input byte can expand to six bytes (for example, \u0001). */
     char encoded[393219]; size_t output = 0; encoded[output++] = '"';
     for (size_t index = 0; index < length; index += 1) {

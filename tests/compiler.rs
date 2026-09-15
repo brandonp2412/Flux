@@ -19171,7 +19171,8 @@ fn main() -> i64 {
 }
 "#;
     check_source(source).expect("native borrowed string JSON source should typecheck");
-    let mut generated = compile_to_c(source).expect("native borrowed string JSON source should lower");
+    let mut generated =
+        compile_to_c(source).expect("native borrowed string JSON source should lower");
     generated.push_str(
         "\nconst char *flux_invalid_utf8(void) { static const char value[] = {(char)0xc3, '(', 0}; return value; }\n",
     );
