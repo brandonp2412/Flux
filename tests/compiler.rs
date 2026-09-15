@@ -28970,6 +28970,47 @@ fn project_analysis_cache_clear_discards_parsed_module_entries() {
 }
 
 #[test]
+fn project_analysis_cache_reuses_semantics_for_formatting_only_edits() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-formatting-cache-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary formatting-cache project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("initial source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("entry should canonicalize");
+    fs::write(&entry, "fn main() -> i64 {\n  return 0\n}\n")
+        .expect("formatting-only edit should be writable");
+    cache.invalidate_path(&entry);
+    let analysis = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("formatting-only edits should remain valid");
+
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 0,
+            rechecked_modules: 0,
+            full_runs: 1,
+        },
+        "canonical-equivalent edits must reuse semantic analysis"
+    );
+    assert_eq!(
+        analysis.sources[0].text,
+        "fn main() -> i64 {\n  return 0\n}\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_codegen_cache_reuses_and_invalidates_generated_c() {
     let root =
         std::env::temp_dir().join(format!("flux-project-codegen-cache-{}", std::process::id()));

@@ -355,7 +355,17 @@ impl ProjectAnalysisCache {
                 // reparsed the graph and reported parse errors above; with an
                 // identical source set and unchanged public surfaces there is
                 // no semantic work left to repeat.
-                previous.analysis.clone()
+                ProjectAnalysis {
+                    // Keep the freshly parsed source metadata and spans so
+                    // editor diagnostics never point into an older buffer.
+                    // The canonical module bytes are unchanged, so the
+                    // previous signatures remain valid without a semantic
+                    // pass.
+                    program: report.program,
+                    signatures: previous.analysis.signatures.clone(),
+                    sources: report.sources,
+                    translations: report.translations,
+                }
             } else {
                 self.incremental_typecheck_runs += 1;
                 self.incremental_typecheck_modules += changed_sources.len();
@@ -577,11 +587,24 @@ fn changed_source_ids(
         if previous.source_id != source.source_id {
             return None;
         }
-        if previous.text != source.text {
+        if source_semantically_changed(&previous.text, &source.text) {
             changed.insert(source.source_id);
         }
     }
     Some(changed)
+}
+
+fn source_semantically_changed(previous: &str, current: &str) -> bool {
+    if previous == current {
+        return false;
+    }
+    match (
+        formatter::format_source(previous),
+        formatter::format_source(current),
+    ) {
+        (Ok(previous), Ok(current)) => previous != current,
+        _ => true,
+    }
 }
 
 fn module_type_surface(program: &Program, source_id: SourceId) -> String {
