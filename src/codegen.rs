@@ -1458,6 +1458,18 @@ pub fn emit_c_for_target_with_source_metadata(
     }
 
     let mut out = String::new();
+    let uses_windows_font_family = target == NativeTarget::Windows
+        && program.application.as_ref().is_some_and(|application| {
+            program
+                .views
+                .iter()
+                .find(|view| view.name == application.view_name)
+                .is_some_and(|view| {
+                    view.elements
+                        .iter()
+                        .any(|element| element.kind == "Text" && view_property(element, "font_family").is_some())
+                })
+        });
     emit_runtime_prelude(
         &mut out,
         &runtime_usage,
@@ -1470,6 +1482,7 @@ pub fn emit_c_for_target_with_source_metadata(
                 || runtime_usage.contains("flux__preferences_")),
         target == NativeTarget::Windows
             && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
+        uses_windows_font_family,
     );
 
     for definition in &program.structs {
@@ -1722,6 +1735,7 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
     uses_windows: bool,
+    uses_windows_font_family: bool,
 ) {
     let uses_byte_timeout = runtime_usage.contains("flux__net_send_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_send_bytes_progress_with_timeout(");
@@ -1993,7 +2007,17 @@ fn emit_runtime_prelude(
     let uses_file_dialog = uses_file_dialog_open_file
         || uses_file_dialog_save_file
         || uses_file_dialog_select_directory;
-    if uses_windows {
+    if uses_windows
+        && (uses_windows_open
+            || uses_clipboard_set_text
+            || uses_clipboard_read_text
+            || uses_menu_show
+            || uses_tray_show
+            || uses_file_dialog
+            || uses_windows_message_box
+            || uses_windows_open
+            || uses_windows_font_family)
+    {
         out.push_str("static HWND flux__windows_active_window = NULL;\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -3220,16 +3244,7 @@ fn emit_runtime_prelude(
             out.push_str("static inline void flux__file_dialog_select_directory(void (*callback)(const char *)) { flux__file_dialog_show(GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, \"Select Folder\", \"_Select\", callback); }\n");
         }
     }
-    if uses_windows
-        && (uses_windows_open
-            || uses_clipboard_set_text
-            || uses_clipboard_read_text
-            || uses_menu_show
-            || uses_tray_show
-            || uses_file_dialog
-            || uses_windows_message_box
-            || uses_windows_open)
-    {
+    if uses_windows {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
     }
@@ -12661,10 +12676,29 @@ fn emit_windows_native_application(
             let italic = boolean_style("italic", false)?;
             let underline = boolean_style("underline", false)?;
             let strikethrough = boolean_style("strikethrough", false)?;
+            let font_family = match view_property(element, "font_family") {
+                Some(property) => {
+                    let value = static_expr_str(&property.value, signatures).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "bootstrap Windows Text.font_family must be a compile-time str value",
+                        )
+                    })?;
+                    if value.is_empty() {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.font_family cannot be empty",
+                        ));
+                    }
+                    value
+                }
+                None => "Segoe UI".to_string(),
+            };
             let font = format!("flux__win_font_{}", element.name);
             let widget = ui_widget_c_name(&element.name);
             out.push_str(&format!(
-                "if ({font} != NULL) {{ DeleteObject({font}); {font} = NULL; }} {font} = CreateFontW(-flux__win_scale(INT64_C({size})), 0, 0, 0, {}, {}, {}, {}, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L\"Segoe UI\"); if ({font} != NULL && {widget} != NULL) SendMessageW({widget}, WM_SETFONT, (WPARAM){font}, TRUE);\n",
+                "if ({font} != NULL) {{ DeleteObject({font}); {font} = NULL; }} wchar_t *flux__win_font_face = flux__windows_utf8_to_wide({}); if (flux__win_font_face == NULL) {{ fputs(\"Flux runtime error: Text.font_family is not valid UTF-8\n\", stderr); abort(); }} {font} = CreateFontW(-flux__win_scale(INT64_C({size})), 0, 0, 0, {}, {}, {}, {}, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, flux__win_font_face); free(flux__win_font_face); if ({font} != NULL && {widget} != NULL) SendMessageW({widget}, WM_SETFONT, (WPARAM){font}, TRUE);\n",
+                c_string(&font_family),
                 if bold { "FW_BOLD" } else { "FW_NORMAL" },
                 if italic { "TRUE" } else { "FALSE" },
                 if underline { "TRUE" } else { "FALSE" },

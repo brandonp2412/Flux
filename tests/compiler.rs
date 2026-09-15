@@ -698,6 +698,7 @@ view Screen {
     Text title at 1,1
         text: query
         color: "#1f2328"
+        fontFamily: "Aptos"
         backgroundColor: "surfaceRaised"
         visible: active
     TextInput input at 2,1
@@ -735,6 +736,8 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     assert!(generated.contains("CreateWindowExA(0, \"BUTTON\""));
     assert!(generated.contains("BS_AUTOCHECKBOX"));
     assert!(generated.contains("BS_AUTORADIOBUTTON"));
+    assert!(generated.contains("flux__windows_utf8_to_wide(\"Aptos\")"));
+    assert!(generated.contains("Text.font_family is not valid UTF-8"));
     assert!(generated.contains("static bool flux__ui_state_active = false;"));
     assert!(generated.contains("static char *flux__ui_state_owned_query = NULL;"));
     assert!(generated.contains("static void flux__ui_set_state_query(const char *value)"));
@@ -804,6 +807,30 @@ app Screen(title: "Image")
     assert!(generated.contains("LR_CREATEDIBSECTION"));
     assert!(generated.contains("SS_BITMAP | SS_CENTERIMAGE"));
     assert!(generated.contains("flux__win_set_bitmap(flux__ui_logo"));
+}
+
+#[test]
+fn windows_text_font_family_rejects_empty_compile_time_value() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Windows"
+        fontFamily: ""
+}
+app Screen(title: "Font")
+"#;
+    let program = fluxc::parser::parse(source).expect("empty Windows font family should parse");
+    let signatures = fluxc::typecheck::check(&program).expect("font family should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows should reject an empty font family");
+    assert!(error.message.contains("Text.font_family cannot be empty"));
 }
 
 #[test]
