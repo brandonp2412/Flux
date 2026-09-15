@@ -4498,13 +4498,18 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
 }
 static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *)) {
     if (value == NULL || callback == NULL) return "invalid json.parse arguments";
-    size_t length = strlen(value); if (length == 0) return "JSON value must not be empty"; if (length > 65536) return "JSON value exceeds 65536 bytes";
+    size_t length = 0;
+    while (length <= 65536 && value[length] != '\0') length += 1;
+    if (length == 0) return "JSON value must not be empty";
+    if (length > 65536) return "JSON value exceeds 65536 bytes";
     const char *cursor = value; const char *end = value + length; const char *error = flux__json_parse_value(&cursor, end, 0, callback); if (error != NULL) return error;
     flux__json_skip_ws(&cursor, end); if (cursor != end) return "JSON has trailing data"; return NULL;
 }
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid json.encodeString arguments";
-    size_t length = strlen(value); if (length > 65536) return "JSON string exceeds 65536 bytes";
+    size_t length = 0;
+    while (length <= 65536 && value[length] != '\0') length += 1;
+    if (length > 65536) return "JSON string exceeds 65536 bytes";
     /* Every input byte can expand to six bytes (for example, \u0001). */
     char encoded[393219]; size_t output = 0; encoded[output++] = '"';
     for (size_t index = 0; index < length; index += 1) {
