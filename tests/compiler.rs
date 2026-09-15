@@ -14654,6 +14654,24 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_drop_rejects_borrowed_collection_projections() {
+    let source = r#"
+fn main() -> i64 {
+    let nested: i64[][] = [[1, 2]]
+    drop(nested[0])
+    return 0
+}
+"#;
+    let errors = check_source_all(source)
+        .expect_err("a nested-list projection is an immutable borrow, not owned storage");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("drop can only consume a named non-copy collection binding")
+    }));
+}
+
+#[test]
 fn ownership_ir_marks_drop_as_consuming_and_not_borrowed() {
     let source = r#"
 fn main() -> i64 {

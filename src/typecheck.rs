@@ -7085,6 +7085,12 @@ pub fn type_of_expr(
                     ),
                 ));
             }
+            if !matches!(args[0].kind, ExprKind::Var(_)) {
+                return Err(diag(
+                    args[0].span,
+                    "drop can only consume a named non-copy collection binding; collection projections are immutable borrows",
+                ));
+            }
             Ok(Type::Void)
         }
         ExprKind::Call {
