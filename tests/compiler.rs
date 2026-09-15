@@ -915,6 +915,7 @@ app Screen
     )
     .expect("dynamic Windows colors should lower");
     assert!(generated.contains("flux__win_parse_color"));
+    assert!(generated.contains("while (length <= 9 && value[length] != '\\0') length += 1;"));
     assert!(generated.contains("flux__win_set_dynamic_background"));
     assert!(generated.contains("flux__win_set_dynamic_text_color"));
     assert!(generated.contains("&flux__win_dynamic_brush_title_background_color"));
