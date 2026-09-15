@@ -6837,6 +6837,8 @@ fn socket_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     assert!(generated.contains("flux__net_send_text_parts("));
     assert!(generated.contains("sendmsg("));
     assert!(generated.contains("MSG_NOSIGNAL"));
+    assert!(generated.contains("sendTextParts text part exceeds 65536 bytes"));
+    assert!(generated.contains("sendTextParts contains a null text part"));
 
     let root = std::env::temp_dir().join(format!("flux-net-scatter-gather-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

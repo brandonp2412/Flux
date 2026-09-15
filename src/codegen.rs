@@ -8197,7 +8197,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         size_t cursor_offset = offset;
         while (cursor < parts.len && vector_count < 64) {
             const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
-            size_t length = strlen(text);
+            if (text == NULL) return "sendTextParts contains a null text part";
+            size_t length = 0;
+            while (length <= 65536 && text[length] != '\0') length += 1;
+            if (length > 65536) return "sendTextParts text part exceeds 65536 bytes";
             if (cursor_offset < length) {
                 vectors[vector_count].iov_base = (void *)(text + cursor_offset);
                 vectors[vector_count].iov_len = length - cursor_offset;
@@ -8221,7 +8224,9 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         size_t remaining = (size_t)sent;
         while (index < parts.len) {
             const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)index * stride));
-            size_t length = strlen(text);
+            size_t length = 0;
+            while (length <= 65536 && text[length] != '\0') length += 1;
+            if (length > 65536) return "sendTextParts text part exceeds 65536 bytes";
             size_t available = length - offset;
             if (remaining < available) {
                 offset += remaining;
