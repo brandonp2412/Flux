@@ -35977,13 +35977,7 @@ fn emit_qualified_call(
                     ));
                 }
                 let element = signatures.canonical_type(&element);
-                if matches!(
-                    element,
-                    Type::Record(_) | Type::Named(_) | Type::Optional(_)
-                ) && (json_record_supported(&element, signatures)
-                    || json_enum_supported(&element, signatures)
-                    || matches!(&element, Type::Optional(inner) if json_record_supported(inner, signatures) || json_enum_supported(inner, signatures)))
-                {
+                if json_map_contains_aggregate(&element, signatures) {
                     let map_ty = Type::Map(Box::new(Type::Str), Box::new(element));
                     let helper = json_map_aggregate_helper_name(&map_ty, signatures);
                     return Ok((
@@ -38446,6 +38440,10 @@ fn emit_json_record_helpers(
         let value_ty = signatures.canonical_type(&value_ty);
         let value_helper = if let Type::Optional(_inner) = &value_ty {
             json_optional_aggregate_helper_name(&value_ty, signatures)
+        } else if matches!(value_ty, Type::Map(_, _))
+            && json_map_contains_aggregate(&value_ty, signatures)
+        {
+            json_map_aggregate_helper_name(&value_ty, signatures)
         } else if json_enum_supported(&value_ty, signatures) {
             json_enum_helper_name(&value_ty, signatures)
         } else {
@@ -38469,13 +38467,7 @@ fn collect_json_map_aggregate_types(ty: &Type, signatures: &Signatures, maps: &m
     match &ty {
         Type::Map(key, value)
             if signatures.canonical_type(key) == Type::Str
-                && (matches!(
-                    signatures.canonical_type(value),
-                    Type::Record(_) | Type::Named(_)
-                ) && (json_record_supported(value, signatures)
-                    || json_enum_supported(value, signatures))
-                    || matches!(signatures.canonical_type(value), Type::Optional(inner)
-                        if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures))) =>
+                && json_map_contains_aggregate(value, signatures) =>
         {
             maps.insert(ty.clone());
         }
@@ -38499,6 +38491,22 @@ fn collect_json_map_aggregate_types(ty: &Type, signatures: &Signatures, maps: &m
             }
         }
         _ => {}
+    }
+}
+
+fn json_map_contains_aggregate(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::Record(_) | Type::Named(_) => {
+            json_record_supported(ty, signatures) || json_enum_supported(ty, signatures)
+        }
+        Type::Optional(inner) => {
+            json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures)
+        }
+        Type::Map(key, value) => {
+            signatures.canonical_type(&key) == Type::Str
+                && json_map_contains_aggregate(&value, signatures)
+        }
+        _ => false,
     }
 }
 

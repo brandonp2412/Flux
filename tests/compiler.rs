@@ -18329,8 +18329,10 @@ fn encoded(value: str) -> void {
 }
 fn main() -> i64 {
     let addresses: map<str, Address> = {"home": Address { city: "Auckland", number: 7 }}
+    let grouped: map<str, map<str, Address>> = {"people": {"home": Address { city: "Wellington", number: 8 }}}
     let statuses: map<str, Status> = {"first": Status.Active(), "second": Status.Named("ready")}
     print(json.encodeObject(addresses, encoded))
+    print(json.encodeObject(grouped, encoded))
     print(json.encode(statuses, encoded))
     return 0
 }
@@ -18363,7 +18365,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "{\"home\":{\"city\":\"Auckland\",\"number\":7}}\nnil\n{\"first\":{\"Active\":null},\"second\":{\"Named\":\"ready\"}}\nnil\n"
+        "{\"home\":{\"city\":\"Auckland\",\"number\":7}}\nnil\n{\"people\":{\"home\":{\"city\":\"Wellington\",\"number\":8}}}\nnil\n{\"first\":{\"Active\":null},\"second\":{\"Named\":\"ready\"}}\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
