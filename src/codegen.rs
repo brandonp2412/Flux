@@ -34078,6 +34078,16 @@ fn emit_expr(
                 if is_set {
                     let key = if matches!(item.kind, ExprKind::None) {
                         "none".to_string()
+                    } else if let ExprKind::QualifiedCall {
+                        namespace,
+                        name,
+                        args,
+                        named_args,
+                        ..
+                    } = &item.kind
+                    {
+                        assert!(args.is_empty() && named_args.is_empty());
+                        format!("enum:{namespace}.{name}")
                     } else {
                         let constant = typecheck::constant_primitive_value(item, signatures)
                             .expect("set literal elements are compile-time checked");

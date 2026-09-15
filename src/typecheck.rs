@@ -5878,6 +5878,25 @@ fn json_map_literal_value_is_constant(value: &Expr, signatures: &Signatures) -> 
     }
 }
 
+fn is_unit_enum_constructor(expr: &Expr, signatures: &Signatures) -> bool {
+    let ExprKind::QualifiedCall {
+        namespace,
+        name,
+        args,
+        named_args,
+        ..
+    } = &expr.kind
+    else {
+        return false;
+    };
+    args.is_empty()
+        && named_args.is_empty()
+        && signatures
+            .enum_type(namespace)
+            .and_then(|definition| definition.variant(name))
+            .is_some_and(|variant| variant.payloads.is_empty())
+}
+
 fn json_map_value_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str => true,
@@ -6349,10 +6368,11 @@ pub fn type_of_expr(
                 if is_set
                     && !matches!(item.kind, ExprKind::None)
                     && constant_primitive_value(item, signatures).is_none()
+                    && !is_unit_enum_constructor(item, signatures)
                 {
                     return Err(diag(
                         item.span,
-                        "set literal elements must currently be compile-time primitive values",
+                        "set literal elements must currently be compile-time primitive values or unit enum constructors",
                     ));
                 }
                 match &item.kind {
@@ -6494,11 +6514,14 @@ pub fn type_of_expr(
             }
             Ok(if is_set {
                 let valid_set_element = matches!(element_ty, Type::I64 | Type::Bool | Type::Str)
-                    || matches!(&element_ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str));
+                    || matches!(&element_ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+                    || items
+                        .iter()
+                        .all(|item| is_unit_enum_constructor(item, signatures));
                 if !valid_set_element {
                     return Err(diag(
                         first.span,
-                        "set elements must currently have type i64, bool, str, or their scalar optional forms",
+                        "set elements must currently have type i64, bool, str, scalar optionals, or one unit enum type",
                     ));
                 }
                 Type::Set(Box::new(element_ty))

@@ -19838,6 +19838,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ordered_sets_accept_unit_enum_values_for_json_arrays() {
+    let source = r#"
+enum Status {
+    Ready
+    Done
+}
+
+fn encoded(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let statuses: set<Status> = {Status.Ready(), Status.Done(), Status.Ready()}
+    let result: error = json.encodeArray(statuses, encoded)
+    print(result)
+    return 0
+}
+"#;
+    check_source(source).expect("unit enum set values should have deterministic identity");
+    let generated = compile_to_c(source).expect("unit enum sets should lower through JSON arrays");
+    let root = std::env::temp_dir().join(format!("flux-json-enum-set-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary enum-set directory should be writable");
+    let c_path = root.join("enum-set-json.c");
+    let exe_path = root.join("enum-set-json");
+    fs::write(&c_path, generated).expect("generated enum-set JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile unit enum-set JSON");
+    assert!(
+        compile.status.success(),
+        "clang failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("unit enum-set JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[{\"Ready\":null},{\"Done\":null}]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(
