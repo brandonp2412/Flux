@@ -9610,6 +9610,33 @@ fn main() -> i64 {
 }
 
 #[test]
+fn duration_unit_constructors_reject_constant_overflow() {
+    for (name, value) in [("seconds", "9223372036854776"), ("minutes", "153722867280913")]
+    {
+        let source = format!(
+            "fn main() -> i64 {{\n    let value: i64 = time.{name}({value})\n    return value\n}}\n"
+        );
+        let error = check_source(&source)
+            .expect_err("constant duration conversion overflow must be diagnosed statically");
+        assert!(
+            error.message.contains("duration overflows i64 milliseconds"),
+            "unexpected diagnostic for time.{name}: {}",
+            error.message
+        );
+    }
+
+    let source = r#"
+fn main() -> i64 {
+    let value: i64 = time.hours(2562047789563)
+    return value
+}
+"#;
+    let error = check_source(source)
+        .expect_err("hour conversion overflow must be diagnosed statically");
+    assert!(error.message.contains("duration overflows i64 milliseconds"));
+}
+
+#[test]
 fn structured_timers_run_repeat_cancel_and_tree_shake() {
     let source = r#"
 fn once() -> void {

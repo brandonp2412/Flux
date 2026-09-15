@@ -10847,6 +10847,23 @@ fn check_qualified_call(
                     &actual,
                     &format!("time.{name} value"),
                 )?;
+                let factor = match name.as_str() {
+                    "milliseconds" => 1_i64,
+                    "seconds" => 1_000_i64,
+                    "minutes" => 60_000_i64,
+                    "hours" => 3_600_000_i64,
+                    _ => unreachable!(),
+                };
+                if let Some(ConstantValue::I64(value)) =
+                    constant_primitive_value(&args[0], signatures)
+                {
+                    if value.checked_mul(factor).is_none() {
+                        return Err(diag(
+                            args[0].span,
+                            &format!("time.{name} duration overflows i64 milliseconds"),
+                        ));
+                    }
+                }
                 return Ok(vec![Type::I64]);
             }
             "sleep" | "sleepMillis" => {
