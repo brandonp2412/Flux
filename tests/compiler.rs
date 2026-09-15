@@ -5627,6 +5627,8 @@ fn normalized(value: str) -> void {
 }
 fn main() -> i64 {
     print(uri.normalize("CuStOm://host/a%2fb", normalized))
+    print(uri.normalize("HTTP://host/a/./b/../c?x=1#frag", normalized))
+    print(uri.normalize("mailto:alice/./../example.test", normalized))
     print(uri.normalize("custom://host/%ZZ", normalized))
     return 0
 }
@@ -5661,7 +5663,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom://host/a%2Fb\nnil\nURI contains an invalid percent escape\n"
+        "custom://host/a%2Fb\nnil\nhttp://host/a/c?x=1#frag\nnil\nmailto:alice/./../example.test\nnil\nURI contains an invalid percent escape\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

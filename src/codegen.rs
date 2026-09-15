@@ -4989,6 +4989,78 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
         if (low >= 'a' && low <= 'f') buffer[index + 2] = (char)(low - 'a' + 'A');
         index += 2;
     }
+    // Dot segments are syntax only for hierarchical URIs. Keep opaque
+    // schemes untouched while canonicalizing a bounded path in place.
+    char *hierarchy = strstr(buffer, "://");
+    if (hierarchy != NULL) {
+        char *path_start = strchr(hierarchy + 3, '/');
+        if (path_start != NULL) {
+            char *path_end = strpbrk(path_start, "?#");
+            if (path_end == NULL) path_end = buffer + length;
+            size_t path_length = (size_t)(path_end - path_start);
+            char path[65537];
+            memcpy(path, path_start, path_length);
+            path[path_length] = '\0';
+            char cleaned[65537];
+            size_t cleaned_length = 0;
+            size_t cursor = 0;
+            while (cursor < path_length) {
+                if (path[cursor] == '/' && cursor + 2 < path_length
+                    && path[cursor + 1] == '.' && path[cursor + 2] == '/') {
+                    cursor += 2;
+                    continue;
+                }
+                if (path[cursor] == '/' && cursor + 2 == path_length
+                    && path[cursor + 1] == '.') {
+                    cursor += 2;
+                    if (cleaned_length == 0) cleaned[cleaned_length++] = '/';
+                    continue;
+                }
+                if (path[cursor] == '/' && cursor + 3 < path_length
+                    && path[cursor + 1] == '.' && path[cursor + 2] == '.'
+                    && path[cursor + 3] == '/') {
+                    while (cleaned_length > 1 && cleaned[cleaned_length - 1] != '/') cleaned_length -= 1;
+                    cursor += 4;
+                    continue;
+                }
+                if (path[cursor] == '/' && cursor + 3 == path_length
+                    && path[cursor + 1] == '.' && path[cursor + 2] == '.') {
+                    while (cleaned_length > 1 && cleaned[cleaned_length - 1] != '/') cleaned_length -= 1;
+                    cursor += 3;
+                    continue;
+                }
+                if (cursor + 1 < path_length && path[cursor] == '.' && path[cursor + 1] == '/') {
+                    cursor += 2;
+                    continue;
+                }
+                if (cursor + 2 == path_length && path[cursor] == '.' && path[cursor + 1] == '.') {
+                    cursor += 2;
+                    continue;
+                }
+                if (path[cursor] == '/') {
+                    cleaned[cleaned_length++] = '/';
+                    cursor += 1;
+                    continue;
+                }
+                size_t segment_start = cursor;
+                while (cursor < path_length && path[cursor] != '/') cursor += 1;
+                size_t segment_length = cursor - segment_start;
+                if (segment_length == 1 && path[segment_start] == '.') continue;
+                if (segment_length == 2 && path[segment_start] == '.' && path[segment_start + 1] == '.') {
+                    while (cleaned_length > 0 && cleaned[cleaned_length - 1] == '/') cleaned_length -= 1;
+                    while (cleaned_length > 0 && cleaned[cleaned_length - 1] != '/') cleaned_length -= 1;
+                    continue;
+                }
+                memcpy(cleaned + cleaned_length, path + segment_start, segment_length);
+                cleaned_length += segment_length;
+            }
+            size_t suffix_length = length - (size_t)(path_end - buffer);
+            memmove(path_start + cleaned_length, path_end, suffix_length + 1);
+            memcpy(path_start, cleaned, cleaned_length);
+            length = (size_t)(path_start - buffer) + cleaned_length + suffix_length;
+            buffer[length] = '\0';
+        }
+    }
     callback(buffer);
     return NULL;
 }
