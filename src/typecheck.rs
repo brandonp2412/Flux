@@ -6969,6 +6969,26 @@ pub fn type_of_expr(
             name,
             args,
             named_args,
+        } if name == "drop" => {
+            if !named_args.is_empty() {
+                return Err(diag(expr.span, "drop does not accept named arguments"));
+            }
+            if args.len() != 1 {
+                return Err(diag(expr.span, "drop expects exactly one non-copy value"));
+            }
+            let ty = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+            if !matches!(ty, Type::List(_)) {
+                return Err(diag(
+                    args[0].span,
+                    &format!("drop expects a non-copy list value, got {}", ty.name()),
+                ));
+            }
+            Ok(Type::Void)
+        }
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
         } if name == "error" => {
             if !named_args.is_empty() {
                 return Err(diag(expr.span, "error does not accept named arguments"));

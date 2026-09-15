@@ -34173,6 +34173,17 @@ fn emit_expr(
                 ty: Type::Void,
             }
         }
+        ExprKind::Call { name, args, .. } if name == "drop" => {
+            let value = emit_expr(&args[0], env, signatures)?;
+            EmittedExpr {
+                // The bootstrap list representation is a borrowed descriptor,
+                // so consuming it has no native destructor yet. Keep the
+                // evaluation explicit while the ownership IR records the
+                // consuming boundary and invalidates the source definition.
+                code: format!("(void)({})", value.code),
+                ty: Type::Void,
+            }
+        }
         ExprKind::Call { name, args, .. } if name == "error" => {
             let message = emit_expr(&args[0], env, signatures)?;
             EmittedExpr {

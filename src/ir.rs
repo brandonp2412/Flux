@@ -2809,10 +2809,60 @@ impl<'a> ControlFlowBuilder<'a> {
                 .cmp(&right.span.column)
                 .then_with(|| left.callee.cmp(&right.callee))
         });
+        if calls.is_empty()
+            && let Expr {
+                span,
+                kind:
+                    ExprKind::Call {
+                        name,
+                        args,
+                        named_args,
+                    },
+                ..
+            } = expr
+            && name == "drop"
+            && args.len() == 1
+            && named_args.is_empty()
+            && let ExprKind::Var(source) = &args[0].kind
+            && let Some(argument) = self.values.iter().rev().find(|value| {
+                value.producer == node
+                    && matches!(
+                        &value.kind,
+                        ControlFlowValueKind::NameRead { name, .. } if name == source
+                    )
+            })
+        {
+            calls.push(OwnershipCall {
+                callee: "drop".to_string(),
+                arguments: vec![argument.id],
+                argument_kinds: Vec::new(),
+                argument_definitions: Vec::new(),
+                borrowed_argument_definitions: Vec::new(),
+                span: *span,
+            });
+        }
+        let moves = if expr_is_consuming_drop(expr)
+            && let Expr {
+                kind: ExprKind::Call { args, .. },
+                ..
+            } = expr
+            && let Some(Expr {
+                kind: ExprKind::Var(source),
+                ..
+            }) = args.first()
+        {
+            vec![OwnershipMove {
+                source: source.clone(),
+                destination: "<drop>".to_string(),
+                span: expr.span,
+            }]
+        } else {
+            Vec::new()
+        };
         ControlFlowOwnership {
             reads,
             borrows: Vec::new(),
-            moves: Vec::new(),
+            moves,
             calls,
             drops: Vec::new(),
         }
@@ -2840,6 +2890,17 @@ impl<'a> ControlFlowBuilder<'a> {
     }
 }
 
+fn expr_is_consuming_drop(expr: &Expr) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "drop" && args.len() == 1 && named_args.is_empty()
+    )
+}
+
 fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: &Signatures) {
     let values = graph.values.clone();
     for node in &mut graph.nodes {
@@ -2853,6 +2914,9 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 .arguments
                 .iter()
                 .map(|argument| {
+                    if call.callee == "drop" {
+                        return OwnershipCallArgumentKind::Consuming;
+                    }
                     let is_borrowed = values.get(argument.0).is_some_and(|value| match signatures
                         .canonical_type(&value.ty)
                     {
@@ -2871,6 +2935,9 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: 
                 .arguments
                 .iter()
                 .map(|argument| {
+                    if call.callee == "drop" {
+                        return Vec::new();
+                    }
                     let Some(value) = values.get(argument.0) else {
                         return Vec::new();
                     };

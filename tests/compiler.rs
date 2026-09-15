@@ -14121,6 +14121,88 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_drop_is_a_consuming_call_boundary_for_non_copy_values() {
+    let valid = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    drop(values)
+    return 0
+}
+"#;
+    check_source(valid).expect("drop should consume a non-copy list");
+    let generated = compile_to_c(valid).expect("drop should lower through native codegen");
+    assert!(generated.contains("(void)("));
+
+    let use_after_drop = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    drop(values)
+    print(values.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(use_after_drop).expect_err("dropped values must not be reusable");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'values'")
+    }));
+
+    let copy_value = r#"
+fn main() -> i64 {
+    let value: i64 = 1
+    drop(value)
+    return 0
+}
+"#;
+    let errors = check_source_all(copy_value).expect_err("drop must reject Copy values");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("drop expects a non-copy list value"))
+    );
+}
+
+#[test]
+fn ownership_ir_marks_drop_as_consuming_and_not_borrowed() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    drop(values)
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1421))
+        .expect("drop source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let node = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.ownership
+                .calls
+                .iter()
+                .any(|call| call.callee == "drop")
+        })
+        .expect("drop call should be represented in the ownership IR");
+    let call = node
+        .ownership
+        .calls
+        .iter()
+        .find(|call| call.callee == "drop")
+        .expect("drop call should have typed ownership facts");
+    assert_eq!(
+        call.argument_kinds,
+        vec![OwnershipCallArgumentKind::Consuming]
+    );
+    assert!(call.borrowed_argument_definitions[0].is_empty());
+    assert_eq!(node.ownership.moves.len(), 1);
+    assert_eq!(node.ownership.moves[0].source, "values");
+}
+
+#[test]
 fn rejects_moving_list_owner_while_control_flow_selected_view_is_live() {
     let enum_match = r#"
 enum Choice {
