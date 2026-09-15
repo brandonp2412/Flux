@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ast::Program;
+use crate::ast::{Expr, ExprKind, Program, UnaryOp};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, formatter, parser, typecheck};
 
@@ -648,6 +648,66 @@ fn module_type_surface(
 ) -> String {
     use std::fmt::Write as _;
 
+    // Constants are part of the semantic API of a module: callers may fold
+    // them into defaults, target metadata, or compile-time branches. Keep a
+    // span-free fingerprint of their expression in the surface identity so a
+    // changed public constant cannot incorrectly reuse the old signatures.
+    fn expr_surface(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Int(value) => format!("i{value}"),
+            ExprKind::Bool(value) => format!("b{value}"),
+            ExprKind::Str(value) => format!("s{:?}", value),
+            ExprKind::InterpolatedString(parts) => {
+                let parts = parts
+                    .iter()
+                    .map(|part| match part {
+                        crate::ast::InterpolatedStringPart::Text(text) => {
+                            format!("t{:?}", text)
+                        }
+                        crate::ast::InterpolatedStringPart::Binding { name, .. } => {
+                            format!("v{name}")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                format!("is[{}]", parts.join(","))
+            }
+            ExprKind::Var(name) => format!("v{name}"),
+            ExprKind::Field {
+                base,
+                name,
+                optional,
+                ..
+            } => {
+                format!("f({},{name},{optional})", expr_surface(base))
+            }
+            ExprKind::Conditional {
+                then_expr,
+                cond,
+                else_expr,
+            } => format!(
+                "c({},{},{})",
+                expr_surface(cond),
+                expr_surface(then_expr),
+                expr_surface(else_expr)
+            ),
+            ExprKind::Unary { op, expr: inner } => {
+                let op = match op {
+                    UnaryOp::Neg => "neg",
+                    UnaryOp::Not => "not",
+                    UnaryOp::Borrow => "borrow",
+                };
+                format!("u({op},{})", expr_surface(inner))
+            }
+            ExprKind::Binary { left, op, right } => {
+                format!("x({op:?},{},{})", expr_surface(left), expr_surface(right))
+            }
+            // These forms are not currently accepted by constant evaluation,
+            // but retaining a deterministic fallback makes this helper robust
+            // if the constant grammar grows before its evaluator does.
+            other => format!("unsupported:{other:?}"),
+        }
+    }
+
     fn param_surface(param: &crate::ast::Param, signatures: &typecheck::Signatures) -> String {
         format!(
             "{}:{:?}:{}:{:?}",
@@ -770,7 +830,14 @@ fn module_type_surface(
         .constants
         .iter()
         .filter(|definition| definition.name_span.source_id == source_id)
-        .map(|definition| (definition.public, &definition.name, &definition.ty))
+        .map(|definition| {
+            (
+                definition.public,
+                &definition.name,
+                &definition.ty,
+                expr_surface(&definition.value),
+            )
+        })
         .collect::<Vec<_>>();
     let routes = program
         .routes
@@ -5076,7 +5143,8 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
 
 #[cfg(test)]
 mod tests {
-    use super::remove_cache_artifact_if_unchanged;
+    use super::{module_type_surface, remove_cache_artifact_if_unchanged};
+    use crate::diagnostic::SourceId;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5109,5 +5177,42 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "fresh");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn semantic_surface_includes_constant_expression_without_source_spans() {
+        let first = crate::parser::parse_with_source(
+            "pub const LIMIT: i64 = 3\nfn main() -> i64 {\n    return LIMIT\n}\n",
+            SourceId::new(41),
+        )
+        .expect("constant fixture should parse");
+        let second = crate::parser::parse_with_source(
+            "\n\npub const LIMIT: i64 = 4\nfn main() -> i64 {\n    return LIMIT\n}\n",
+            SourceId::new(41),
+        )
+        .expect("shifted constant fixture should parse");
+        let first_signatures =
+            crate::typecheck::check(&first).expect("first fixture should typecheck");
+        let second_signatures =
+            crate::typecheck::check(&second).expect("second fixture should typecheck");
+
+        assert_ne!(
+            module_type_surface(&first, &first_signatures, SourceId::new(41)),
+            module_type_surface(&second, &second_signatures, SourceId::new(41)),
+            "a changed constant must invalidate semantic reuse"
+        );
+        assert_eq!(
+            module_type_surface(&first, &first_signatures, SourceId::new(41)),
+            module_type_surface(
+                &crate::parser::parse_with_source(
+                    "\npub const LIMIT: i64 = 3\nfn main() -> i64 {\n    return LIMIT\n}\n",
+                    SourceId::new(41),
+                )
+                .expect("shifted equivalent fixture should parse"),
+                &first_signatures,
+                SourceId::new(41),
+            ),
+            "source-only line shifts must not invalidate the semantic surface"
+        );
     }
 }
