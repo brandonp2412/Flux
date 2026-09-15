@@ -149,6 +149,19 @@ pub struct ControlFlowValue {
     pub constant: Option<ConstantValue>,
 }
 
+/// The evaluation effect of a typed value.
+///
+/// This deliberately has only a conservative two-point lattice for now.  A
+/// value is pure only when every operation needed to produce it is known to be
+/// pure; calls, suspension, and opaque values are observable by default.  The
+/// normalized query is useful to later explicit-effects checking and backend
+/// scheduling without making either of them re-walk checked AST expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ControlFlowValueEffect {
+    Pure,
+    MayEffect,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlFlowValueUseKind {
     Eager,
@@ -844,6 +857,180 @@ impl ControlFlowGraph {
         }
 
         visit(self, id, &mut BTreeSet::new())
+    }
+
+    /// Classify the evaluation of a reachable typed value using its graph
+    /// dependencies.  Unknown or effectful producers are conservatively
+    /// classified as `MayEffect`; unreachable values do not provide an
+    /// optimization/effects proof.
+    pub fn value_effect(&self, id: ControlFlowValueId) -> Option<ControlFlowValueEffect> {
+        if !self.is_value_reachable(id) {
+            return None;
+        }
+
+        fn visit(
+            graph: &ControlFlowGraph,
+            id: ControlFlowValueId,
+            visiting: &mut BTreeSet<ControlFlowValueId>,
+        ) -> ControlFlowValueEffect {
+            if !visiting.insert(id) {
+                return ControlFlowValueEffect::MayEffect;
+            }
+            let Some(value) = graph.value(id) else {
+                return ControlFlowValueEffect::MayEffect;
+            };
+            fn all_pure(
+                graph: &ControlFlowGraph,
+                children: impl IntoIterator<Item = ControlFlowValueId>,
+                visiting: &mut BTreeSet<ControlFlowValueId>,
+            ) -> bool {
+                children
+                    .into_iter()
+                    .all(|child| visit(graph, child, visiting) == ControlFlowValueEffect::Pure)
+            }
+            let effect = match &value.kind {
+                ControlFlowValueKind::Literal | ControlFlowValueKind::AnonymousFunction { .. } => {
+                    ControlFlowValueEffect::Pure
+                }
+                ControlFlowValueKind::NameRead { definitions, .. } => {
+                    if definitions.is_empty() {
+                        ControlFlowValueEffect::MayEffect
+                    } else {
+                        let values = definitions
+                            .iter()
+                            .filter_map(|definition| graph.definition_value(*definition))
+                            .collect::<Vec<_>>();
+                        if values.len() == definitions.len() && all_pure(graph, values, visiting) {
+                            ControlFlowValueEffect::Pure
+                        } else {
+                            ControlFlowValueEffect::MayEffect
+                        }
+                    }
+                }
+                ControlFlowValueKind::Await { .. }
+                | ControlFlowValueKind::Call { .. }
+                | ControlFlowValueKind::OptionalCascadeCall { .. }
+                | ControlFlowValueKind::QualifiedCall { .. }
+                | ControlFlowValueKind::InterfaceDispatch { .. }
+                | ControlFlowValueKind::Opaque => ControlFlowValueEffect::MayEffect,
+                ControlFlowValueKind::InterfacePack { value, .. }
+                | ControlFlowValueKind::ListSpread { value }
+                | ControlFlowValueKind::ListOptional { value }
+                | ControlFlowValueKind::Field { base: value, .. }
+                | ControlFlowValueKind::Unary { operand: value, .. } => {
+                    visit(graph, *value, visiting)
+                }
+                ControlFlowValueKind::List { items } => {
+                    all_pure(graph, items.iter().copied(), visiting)
+                        .then_some(ControlFlowValueEffect::Pure)
+                        .unwrap_or(ControlFlowValueEffect::MayEffect)
+                }
+                ControlFlowValueKind::Map { entries } => all_pure(
+                    graph,
+                    entries.iter().flat_map(|(key, value)| [*key, *value]),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::ListIf {
+                    condition,
+                    value,
+                    else_value,
+                } => all_pure(
+                    graph,
+                    std::iter::once(*condition)
+                        .chain(std::iter::once(*value))
+                        .chain(else_value.iter().copied()),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::Index { base, index, .. } => {
+                    if all_pure(graph, [*base, *index], visiting) {
+                        ControlFlowValueEffect::Pure
+                    } else {
+                        ControlFlowValueEffect::MayEffect
+                    }
+                }
+                ControlFlowValueKind::Slice {
+                    base,
+                    start,
+                    end,
+                    step,
+                } => all_pure(
+                    graph,
+                    std::iter::once(*base)
+                        .chain(start.iter().copied())
+                        .chain(end.iter().copied())
+                        .chain(step.iter().copied()),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::ListComprehension {
+                    iterable,
+                    value,
+                    condition,
+                } => all_pure(
+                    graph,
+                    std::iter::once(*iterable)
+                        .chain(std::iter::once(*value))
+                        .chain(condition.iter().copied()),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::StructLiteral { base, fields, .. } => all_pure(
+                    graph,
+                    base.iter()
+                        .copied()
+                        .chain(fields.iter().map(|(_, value)| *value)),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::Match {
+                    value,
+                    guards,
+                    arms,
+                }
+                | ControlFlowValueKind::ListMatch {
+                    value,
+                    guards,
+                    arms,
+                } => all_pure(
+                    graph,
+                    std::iter::once(*value)
+                        .chain(guards.iter().flatten().copied())
+                        .chain(arms.iter().copied()),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::Conditional {
+                    condition,
+                    then_value,
+                    else_value,
+                } => {
+                    if all_pure(graph, [*condition, *then_value, *else_value], visiting) {
+                        ControlFlowValueEffect::Pure
+                    } else {
+                        ControlFlowValueEffect::MayEffect
+                    }
+                }
+                ControlFlowValueKind::Binary { left, right, .. } => {
+                    if all_pure(graph, [*left, *right], visiting) {
+                        ControlFlowValueEffect::Pure
+                    } else {
+                        ControlFlowValueEffect::MayEffect
+                    }
+                }
+            };
+            visiting.remove(&id);
+            effect
+        }
+
+        Some(visit(self, id, &mut BTreeSet::new()))
     }
 
     /// Return the constant proven safe for direct native emission, if any.

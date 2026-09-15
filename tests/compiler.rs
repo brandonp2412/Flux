@@ -13,8 +13,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fluxc::ast::Type;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowOwnershipEvent, ControlFlowValueKind, ControlFlowValueRegionKind,
-    ControlFlowValueUseKind, OwnershipCallArgumentKind,
+    ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
+    ControlFlowValueRegionKind, ControlFlowValueUseKind, OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -107,6 +107,14 @@ fn main() -> i64 {
         .find(|value| matches!(value.kind, ControlFlowValueKind::Call { .. }))
         .expect("call value should be present");
     assert!(!graph.is_pure_scalar_value(call.id));
+    assert_eq!(
+        graph.value_effect(pure_result.expect("pure result remains in graph").id),
+        Some(ControlFlowValueEffect::Pure)
+    );
+    assert_eq!(
+        graph.value_effect(call.id),
+        Some(ControlFlowValueEffect::MayEffect)
+    );
 }
 
 #[test]
