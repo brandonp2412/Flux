@@ -94,6 +94,27 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_waits_for_borrowed_view_before_dropping_owner() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    let view: i64[] = values[0:1]
+    print(view.count)
+    let destination: i64[] = values
+    print(destination.count)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("borrow/drop fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    assert!(graph.drops().iter().any(|(_, drop)| drop.name == "destination"));
+    assert!(!graph.drops().iter().any(|(_, drop)| drop.name == "values"));
+}
+
+#[test]
 fn json_encodes_copy_aggregate_arrays_natively() {
     let source = r#"
 struct User {
