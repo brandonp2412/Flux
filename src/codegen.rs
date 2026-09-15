@@ -4329,6 +4329,35 @@ static inline const char *flux__json_skip_ws(const char **cursor, const char *en
     while (*cursor < end && (**cursor == ' ' || **cursor == '\n' || **cursor == '\r' || **cursor == '\t')) *cursor += 1;
     return NULL;
 }
+static inline int flux__json_hex_digit(unsigned char value) {
+    if (value >= '0' && value <= '9') return (int)(value - '0');
+    if (value >= 'a' && value <= 'f') return (int)(value - 'a') + 10;
+    if (value >= 'A' && value <= 'F') return (int)(value - 'A') + 10;
+    return -1;
+}
+static inline const char *flux__json_append_codepoint(char *target, size_t *length, uint32_t codepoint) {
+    if (codepoint == 0) return "JSON unicode escape decodes to a NUL byte";
+    size_t width = codepoint <= 0x7Fu ? 1 : codepoint <= 0x7FFu ? 2 : codepoint <= 0xFFFFu ? 3 : 4;
+    if (*length > 65536 - width) return "JSON string exceeds 65536 bytes";
+    if (width == 1) target[(*length)++] = (char)codepoint;
+    else if (width == 2) { target[(*length)++] = (char)(0xC0u | (codepoint >> 6)); target[(*length)++] = (char)(0x80u | (codepoint & 0x3Fu)); }
+    else if (width == 3) { target[(*length)++] = (char)(0xE0u | (codepoint >> 12)); target[(*length)++] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu)); target[(*length)++] = (char)(0x80u | (codepoint & 0x3Fu)); }
+    else { target[(*length)++] = (char)(0xF0u | (codepoint >> 18)); target[(*length)++] = (char)(0x80u | ((codepoint >> 12) & 0x3Fu)); target[(*length)++] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu)); target[(*length)++] = (char)(0x80u | (codepoint & 0x3Fu)); }
+    return NULL;
+}
+static inline const char *flux__json_decode_unicode(const char **cursor, const char *end, char *target, size_t *length) {
+    if ((size_t)(end - *cursor) < 4) return "JSON unicode escape is incomplete";
+    uint32_t codepoint = 0;
+    for (size_t index = 0; index < 4; index += 1) { int digit = flux__json_hex_digit((unsigned char)(*cursor)[index]); if (digit < 0) return "JSON unicode escape contains a non-hex digit"; codepoint = (codepoint << 4) | (uint32_t)digit; }
+    *cursor += 4;
+    if (codepoint >= 0xD800u && codepoint <= 0xDBFFu) {
+        if ((size_t)(end - *cursor) < 6 || (*cursor)[0] != '\\' || (*cursor)[1] != 'u') return "JSON unicode high surrogate must be followed by a low surrogate";
+        uint32_t low = 0; for (size_t index = 0; index < 4; index += 1) { int digit = flux__json_hex_digit((unsigned char)(*cursor)[index + 2]); if (digit < 0) return "JSON unicode escape contains a non-hex digit"; low = (low << 4) | (uint32_t)digit; }
+        if (low < 0xDC00u || low > 0xDFFFu) return "JSON unicode high surrogate must be followed by a low surrogate";
+        *cursor += 6; codepoint = 0x10000u + ((codepoint - 0xD800u) << 10) + (low - 0xDC00u);
+    } else if (codepoint >= 0xDC00u && codepoint <= 0xDFFFu) return "JSON unicode low surrogate must follow a high surrogate";
+    return flux__json_append_codepoint(target, length, codepoint);
+}
 static inline const char *flux__json_parse_value(const char **cursor, const char *end, int depth, void (*callback)(const char *, const char *)) {
     if (depth > 128) return "JSON nesting exceeds 128 levels";
     flux__json_skip_ws(cursor, end);
@@ -4343,9 +4372,9 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
                 const char *key_start = ++*cursor; char key[65537]; size_t key_len = 0;
                 while (*cursor < end && **cursor != '"') {
                     unsigned char byte = (unsigned char)**cursor;
-                    if (byte < 0x20 || byte == '\\') return "JSON object key contains an unsupported escape or control character";
-                    if (key_len >= 65536) return "JSON string exceeds 65536 bytes";
-                    key[key_len++] = (char)byte; *cursor += 1;
+                    if (byte < 0x20) return "JSON object key contains a control character";
+                    if (byte == '\\') { *cursor += 1; if (*cursor >= end) return "JSON object key has an incomplete escape"; char escaped = **cursor; if (escaped == 'u') { *cursor += 1; const char *error = flux__json_decode_unicode(cursor, end, key, &key_len); if (error != NULL) return error; continue; } if (!(escaped == '"' || escaped == '\\' || escaped == '/' || escaped == 'b' || escaped == 'f' || escaped == 'n' || escaped == 'r' || escaped == 't')) return "JSON object key has an invalid escape"; if (key_len >= 65536) return "JSON string exceeds 65536 bytes"; key[key_len++] = escaped == 'b' ? '\b' : escaped == 'f' ? '\f' : escaped == 'n' ? '\n' : escaped == 'r' ? '\r' : escaped == 't' ? '\t' : escaped; *cursor += 1; continue; }
+                    if (key_len >= 65536) return "JSON string exceeds 65536 bytes"; key[key_len++] = (char)byte; *cursor += 1;
                 }
                 if (*cursor >= end) return "JSON string is incomplete"; key[key_len] = '\0'; *cursor += 1; callback("key", key); flux__json_skip_ws(cursor, end);
                 if (*cursor >= end || **cursor != ':') return "JSON object key must be followed by ':'"; *cursor += 1;
@@ -4366,7 +4395,7 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
             if (byte < 0x20) return "JSON string contains a control character";
             if (byte == '\\') {
                 *cursor += 1; if (*cursor >= end) return "JSON string has an incomplete escape"; char escaped = **cursor;
-                if (escaped == 'u') return "JSON unicode escapes are not supported by the borrowed bootstrap string parser";
+                if (escaped == 'u') { *cursor += 1; const char *error = flux__json_decode_unicode(cursor, end, text, &length); if (error != NULL) return error; continue; }
                 if (!(escaped == '"' || escaped == '\\' || escaped == '/' || escaped == 'b' || escaped == 'f' || escaped == 'n' || escaped == 'r' || escaped == 't')) return "JSON string has an invalid escape";
                 if (length >= 65536) return "JSON string exceeds 65536 bytes"; text[length++] = escaped == 'b' ? '\b' : escaped == 'f' ? '\f' : escaped == 'n' ? '\n' : escaped == 'r' ? '\r' : escaped == 't' ? '\t' : escaped; *cursor += 1; continue;
             }
