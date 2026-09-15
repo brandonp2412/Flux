@@ -5751,7 +5751,9 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
 fn json_map_value_type_is_supported(ty: &Type) -> bool {
     match ty {
         Type::I64 | Type::Bool | Type::Str => true,
-        Type::List(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+        Type::List(inner) | Type::Set(inner) => {
+            matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str)
+        }
         Type::Map(key, value) => {
             matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
         }
@@ -6027,7 +6029,7 @@ pub fn type_of_expr(
                     item.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
                 ) {
-                    if let ExprKind::List(values) = &item.kind {
+                    if let ExprKind::List(values) | ExprKind::Set(values) = &item.kind {
                         if values.is_empty() {
                             return Err(diag(
                                 item.span,
@@ -6035,8 +6037,15 @@ pub fn type_of_expr(
                             ));
                         }
                         let list_ty = type_of_expr(item, env, signatures)?;
-                        let Type::List(element) = list_ty else {
-                            return Err(diag(item.span, "map literal values must be scalar lists"));
+                        let is_set = matches!(&item.kind, ExprKind::Set(_));
+                        let element = match list_ty {
+                            Type::List(element) | Type::Set(element) => element,
+                            _ => {
+                                return Err(diag(
+                                    item.span,
+                                    "map literal values must be scalar lists or sets",
+                                ));
+                            }
                         };
                         if !matches!(*element, Type::I64 | Type::Bool | Type::Str)
                             || values
@@ -6045,10 +6054,18 @@ pub fn type_of_expr(
                         {
                             return Err(diag(
                                 item.span,
-                                "map literal lists must contain compile-time scalar values",
+                                if is_set {
+                                    "map literal sets must contain compile-time scalar values"
+                                } else {
+                                    "map literal lists must contain compile-time scalar values"
+                                },
                             ));
                         }
-                        return Ok(Type::List(element));
+                        return Ok(if is_set {
+                            Type::Set(element)
+                        } else {
+                            Type::List(element)
+                        });
                     }
                     if matches!(&item.kind, ExprKind::Map(_)) {
                         let map_ty = type_of_expr(item, env, signatures)?;

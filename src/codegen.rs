@@ -32948,7 +32948,7 @@ fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'stat
         Type::I64 => Ok(0),
         Type::Bool => Ok(1),
         Type::Str => Ok(2),
-        Type::List(inner) => match signatures.canonical_type(&inner) {
+        Type::List(inner) | Type::Set(inner) => match signatures.canonical_type(&inner) {
             Type::I64 => Ok(3),
             Type::Bool => Ok(4),
             Type::Str => Ok(5),

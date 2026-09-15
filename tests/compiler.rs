@@ -17772,12 +17772,15 @@ fn main() -> i64 {
     let numbers: map<str, i64[]> = {"first": [1, -2]}
     let flags: map<str, bool[]> = {"flags": [true, false]}
     let words: map<str, str[]> = {"words": ["a", "b\"c"]}
+    let ordered: map<str, set<i64>> = {"ordered": {3, 1, 3, 2}}
     let numberError: error = json.encodeObject(numbers, encoded)
     let flagError: error = json.encode(flags, encoded)
     let wordError: error = json.encodeObject(words, encoded)
+    let orderedError: error = json.encodeObject(ordered, encoded)
     print(numberError)
     print(flagError)
     print(wordError)
+    print(orderedError)
     return 0
 }
 
@@ -17812,6 +17815,8 @@ fn main() -> i64 {
         "{\"first\":[1,-2]}
 {\"flags\":[true,false]}
 {\"words\":[\"a\",\"b\\\"c\"]}
+{\"ordered\":[3,1,2]}
+nil
 nil
 nil
 nil
