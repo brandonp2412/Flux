@@ -63,3 +63,25 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
         .next()
         .expect("batch checking always returns at least one diagnostic on failure")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compile_to_c;
+
+    #[test]
+    fn directory_listing_validates_borrowed_entry_names() {
+        let source = r#"
+fn visit(_name: str) -> void {
+}
+
+fn main() -> i64 {
+    print(directory.list(".", visit))
+    return 0
+}
+"#;
+        let generated = compile_to_c(source).expect("directory.list should compile");
+        assert!(generated.contains("flux__fs_list_directory"));
+        assert!(generated.contains("flux__fs_valid_utf8_name"));
+        assert!(generated.contains("directory entry name is not valid UTF-8"));
+    }
+}
