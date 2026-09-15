@@ -32200,11 +32200,29 @@ fn emit_expr(
             code: c_string(value),
             ty: Type::Str,
         },
-        ExprKind::InterpolatedString(_) => {
-            return Err(diag(
-                expr.span,
-                "string interpolation reached code generation without compile-time folding",
-            ));
+        ExprKind::InterpolatedString(parts) => {
+            let [InterpolatedStringPart::Binding { name, .. }] = parts.as_slice() else {
+                return Err(diag(
+                    expr.span,
+                    "string interpolation reached code generation without compile-time folding",
+                ));
+            };
+            let Some(ty) = env.get(name) else {
+                return Err(diag(
+                    expr.span,
+                    "runtime string interpolation binding is not a local str",
+                ));
+            };
+            if *ty != Type::Str {
+                return Err(diag(
+                    expr.span,
+                    "runtime string interpolation binding is not a local str",
+                ));
+            }
+            EmittedExpr {
+                code: local_c_name(name),
+                ty: Type::Str,
+            }
         }
         ExprKind::Nil => EmittedExpr {
             code: "NULL".to_string(),
@@ -37822,6 +37840,11 @@ fn fold_primitive_expr(
         ExprKind::Bool(value) => Some(ConstantValue::Bool(*value)),
         ExprKind::Str(value) => Some(ConstantValue::Str(value.clone())),
         ExprKind::InterpolatedString(parts) => {
+            if let [InterpolatedStringPart::Binding { name, .. }] = parts.as_slice()
+                && env.contains_key(name)
+            {
+                return Ok(None);
+            }
             let mut value = String::new();
             for part in parts {
                 match part {

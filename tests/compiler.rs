@@ -16121,6 +16121,35 @@ fn main() -> i64 {
 }
 
 #[test]
+fn accepts_identity_string_interpolation_for_local_str_without_allocation() {
+    let source = r#"
+fn main() -> i64 {
+    let value: str = "hello"
+    print("${value}")
+    return 0
+}
+"#;
+    check_source(source).expect("identity interpolation of a local str should typecheck");
+    let generated = compile_to_c(source).expect("identity interpolation should lower natively");
+    assert!(generated.contains("flux__local_value"));
+}
+
+#[test]
+fn rejects_identity_string_interpolation_for_non_string_locals() {
+    let source = r#"
+fn main() -> i64 {
+    let value: i64 = 1
+    print("${value}")
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err("non-string interpolation must be rejected");
+    assert!(error
+        .message
+        .contains("string interpolation binding must be str"));
+}
+
+#[test]
 fn json_streaming_parse_and_string_encoding_are_native_and_tree_shaken() {
     let source = r#"
 fn token(_kind: str, _value: str) -> void {

@@ -5720,6 +5720,17 @@ pub fn type_of_expr(
         ExprKind::Bool(_) => Ok(Type::Bool),
         ExprKind::Str(_) => Ok(Type::Str),
         ExprKind::InterpolatedString(parts) => {
+            if let [InterpolatedStringPart::Binding { name, .. }] = parts.as_slice()
+                && let Some(ty) = env.get(name)
+            {
+                if *ty == Type::Str {
+                    return Ok(Type::Str);
+                }
+                return Err(diag(
+                    expr.span,
+                    &format!("string interpolation binding must be str, got {}", ty.name()),
+                ));
+            }
             for part in parts {
                 let InterpolatedStringPart::Binding { name, span } = part else {
                     continue;
