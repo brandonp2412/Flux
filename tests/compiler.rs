@@ -51526,6 +51526,41 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_close_unregisters_the_underlying_socket_resource() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, failure) = net.connect("127.0.0.1", 1)
+    if failure != nil:
+        return 1
+    print(websocket.close(socket))
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket cleanup fixture should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket cleanup fixture should lower");
+    assert!(
+        generated.contains(
+            "int result = close((int)session); flux__net_unregister_socket((int)session);"
+        )
+    );
+    assert!(generated.contains("int result = close((int)session); flux__net_unregister_socket((int)session); return result == 0"));
+    let c_path =
+        std::env::temp_dir().join(format!("flux-websocket-cleanup-{}.c", std::process::id()));
+    fs::write(&c_path, &generated).expect("WebSocket cleanup C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c17", "-fsyntax-only"])
+        .arg(&c_path)
+        .output()
+        .expect("clang should validate WebSocket cleanup C");
+    assert!(
+        compile.status.success(),
+        "WebSocket cleanup C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let _ = fs::remove_file(c_path);
+}
+
+#[test]
 fn binary_socket_reads_preserve_nul_bytes_in_borrowed_byte_views() {
     let source = r#"
 fn consume(_socket: i64, bytes: i64[]) -> void {
