@@ -14466,6 +14466,32 @@ fn main() -> i64 {
 "#;
     check_source(map_value).expect("drop should consume a non-copy map");
 
+    let optional_map = r#"
+fn main() -> i64 {
+    let values: map<i64, i64>? = map{1: 2}
+    drop(values)
+    return 0
+}
+"#;
+    check_source(optional_map).expect("drop should consume an optional non-copy map");
+    compile_to_c(optional_map).expect("an optional-map drop should lower natively");
+
+    let optional_map_use_after_drop = r#"
+fn main() -> i64 {
+    let values: map<i64, i64>? = map{1: 2}
+    drop(values)
+    let destination: map<i64, i64>? = values
+    return 0
+}
+"#;
+    let errors = check_source_all(optional_map_use_after_drop)
+        .expect_err("an optional map must not be reusable after drop");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("use of moved non-copy binding 'values'")
+    }));
+
     let copy_value = r#"
 fn main() -> i64 {
     let value: i64 = 1
