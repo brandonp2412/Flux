@@ -28272,7 +28272,7 @@ fn cfg_constant_values(
     // effect regions are consumed here. Keep the span collision guard:
     // a source span can occur in more than one CFG path, and differing values
     // must continue through the ordinary AST emitter.
-    for value in cfg.values().iter().filter_map(|value| {
+    for (value, constant) in cfg.values().iter().filter_map(|value| {
         cfg.proven_scalar_constant(value.id)
             .map(|constant| (value, constant))
     }) {
