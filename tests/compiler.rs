@@ -28937,6 +28937,50 @@ fn project_codegen_cache_separates_native_targets() {
 }
 
 #[test]
+fn project_codegen_cache_invalidates_when_package_constants_change() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-codegen-package-constants-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).expect("package cache fixture should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"cache-constants\"\nentry = \"src/main.flux\"\n\n[constants]\nlimit = 10\n",
+    )
+    .expect("package manifest should be writable");
+    fs::write(
+        root.join("src/main.flux"),
+        "const LIMIT: i64 = package.limit\nfn main() -> i64 {\n    return LIMIT\n}\n",
+    )
+    .expect("package entry should be writable");
+
+    let first = fluxc::project::analyze(&root)
+        .expect("initial package analysis should succeed")
+        .emit_c_cached(&root)
+        .expect("initial package codegen should succeed");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"cache-constants\"\nentry = \"src/main.flux\"\n\n[constants]\nlimit = 20\n",
+    )
+    .expect("updated package manifest should be writable");
+    let second = fluxc::project::analyze(&root)
+        .expect("updated package analysis should succeed")
+        .emit_c_cached(&root)
+        .expect("updated package codegen should succeed");
+
+    assert_ne!(first, second, "manifest constants must affect generated C");
+    assert_eq!(
+        fs::read_dir(root.join(".flux/cache"))
+            .expect("package codegen cache should remain readable")
+            .count(),
+        2,
+        "changed package constants must not reuse the prior artifact"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-typecheck-{}",

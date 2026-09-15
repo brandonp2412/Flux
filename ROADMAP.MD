@@ -696,7 +696,7 @@ Flux hot reload should feel closer to React development than Flutter's manual re
 - [ ] Incremental compiler cache.
   - [x] `fluxc run` owns a persistent `ProjectAnalysisCache`, avoiding the former separate check + compile analysis on successful rebuilds and reusing unchanged module ASTs across changed graphs. Watcher invalidations whose reloaded source graph is byte-identical now reuse the prior semantic analysis without repeating whole-program type checking.
   - [ ] Incremental semantic/type/codegen reuse for changed graphs, plus durable on-disk cache artifacts where they materially improve cold-start development builds.
-    - [x] Normal native `flux build`, package creation, and Android artifact builds now use the same target-aware durable generated-C cache as `flux run`, so repeated Linux/Android/Windows-target builds reuse validated codegen artifacts while source, target, translation, and compiler-cache-version changes still invalidate them. Full changed-graph semantic reuse and per-module codegen remain pending.
+    - [x] Normal native `flux build`, package creation, and Android artifact builds now use the same target-aware durable generated-C cache as `flux run`, so repeated Linux/Android/Windows-target builds reuse validated codegen artifacts while source, package-constant, target, translation, and compiler-cache-version changes still invalidate them. Full changed-graph semantic reuse and per-module codegen remain pending.
 - [ ] Target: save-to-visible-update latency competitive with modern React Fast Refresh for ordinary UI edits.
 
 # Milestone 12 — Input and interaction

@@ -149,6 +149,10 @@ fn codegen_cache_fingerprint(
         add(source.module_name.as_bytes());
         add(source.text.as_bytes());
     }
+    add(analysis
+        .signatures
+        .package_constants_fingerprint()
+        .as_bytes());
     for (locale, entries) in &analysis.translations {
         add(locale.as_bytes());
         for (key, value) in entries {

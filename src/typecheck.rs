@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 
 use crate::ast::{
     BinOp, ConstantDef, Expr, ExprKind, Function, InterpolatedStringPart, ListMatchPattern,
@@ -184,6 +185,28 @@ impl Signatures {
         self.package_constants
             .get(&source_id)
             .and_then(|constants| constants.get(name))
+    }
+
+    /// Return a deterministic representation of manifest-provided constants.
+    ///
+    /// Package constants are not part of a Flux source file, but they are
+    /// folded into generated code. Codegen caches therefore need an identity
+    /// for them that does not depend on `HashMap` iteration order.
+    pub fn package_constants_fingerprint(&self) -> String {
+        let mut packages = self.package_constants.iter().collect::<Vec<_>>();
+        packages.sort_by_key(|(source_id, _)| source_id.value());
+        let mut fingerprint = String::new();
+        for (source_id, constants) in packages {
+            let _ = write!(fingerprint, "source:{};", source_id.value());
+            for (name, constant) in constants {
+                let _ = write!(
+                    fingerprint,
+                    "{name}:{:?}:{:?};",
+                    constant.ty, constant.value
+                );
+            }
+        }
+        fingerprint
     }
 
     pub fn canonical_type(&self, ty: &Type) -> Type {
