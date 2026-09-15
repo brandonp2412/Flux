@@ -55,12 +55,19 @@ impl ProjectAnalysis {
         let fingerprint = codegen_cache_fingerprint(self, native_target);
         let path = codegen_cache_path(target, fingerprint);
         let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
-        if let Ok(cached) = fs::read_to_string(&path)
-            && let Some((header, generated)) = cached.split_once('\n')
-            && let Some(checksum) = header.strip_prefix(&header_prefix)
-            && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
-        {
-            return Ok(generated.to_string());
+        if let Ok(cached) = fs::read_to_string(&path) {
+            if let Some((header, generated)) = cached.split_once('\n')
+                && let Some(checksum) = header.strip_prefix(&header_prefix)
+                && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
+            {
+                return Ok(generated.to_string());
+            }
+            // A corrupt or stale artifact is not usable, but leaving it in
+            // place makes every subsequent build pay the same failed parse
+            // and checksum cost. Remove only this exact cache entry; a
+            // concurrent writer may have replaced it, in which case the
+            // normal atomic-rename/cache-miss path remains safe.
+            let _ = fs::remove_file(&path);
         }
 
         let generated = self.emit_c_for_target(native_target)?;
