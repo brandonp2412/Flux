@@ -38469,6 +38469,18 @@ fn substitute_nested_ir_constant_arguments(
                         | ExprKind::Conditional { .. }
                         | ExprKind::Binary { .. }
                         | ExprKind::Unary { .. }
+                        | ExprKind::List(_)
+                        | ExprKind::Set(_)
+                        | ExprKind::Map(_)
+                        | ExprKind::ListIf { .. }
+                        | ExprKind::Index { .. }
+                        | ExprKind::Slice { .. }
+                        | ExprKind::ListComprehension { .. }
+                        | ExprKind::RecordLiteral { .. }
+                        | ExprKind::StructLiteral { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::Match { .. }
+                        | ExprKind::ListMatch { .. }
                 ) {
                     *value = rewrite(value);
                 }
@@ -38482,6 +38494,18 @@ fn substitute_nested_ir_constant_arguments(
                         | ExprKind::Conditional { .. }
                         | ExprKind::Binary { .. }
                         | ExprKind::Unary { .. }
+                        | ExprKind::List(_)
+                        | ExprKind::Set(_)
+                        | ExprKind::Map(_)
+                        | ExprKind::ListIf { .. }
+                        | ExprKind::Index { .. }
+                        | ExprKind::Slice { .. }
+                        | ExprKind::ListComprehension { .. }
+                        | ExprKind::RecordLiteral { .. }
+                        | ExprKind::StructLiteral { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::Match { .. }
+                        | ExprKind::ListMatch { .. }
                 ) {
                     argument.value = rewrite(&argument.value);
                 }
@@ -38497,6 +38521,18 @@ fn substitute_nested_ir_constant_arguments(
                         | ExprKind::Conditional { .. }
                         | ExprKind::Binary { .. }
                         | ExprKind::Unary { .. }
+                        | ExprKind::List(_)
+                        | ExprKind::Set(_)
+                        | ExprKind::Map(_)
+                        | ExprKind::ListIf { .. }
+                        | ExprKind::Index { .. }
+                        | ExprKind::Slice { .. }
+                        | ExprKind::ListComprehension { .. }
+                        | ExprKind::RecordLiteral { .. }
+                        | ExprKind::StructLiteral { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::Match { .. }
+                        | ExprKind::ListMatch { .. }
                 ) {
                     *value = rewrite(value);
                 }

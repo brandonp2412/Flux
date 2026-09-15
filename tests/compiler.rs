@@ -24246,6 +24246,30 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_inside_compound_call_arguments() {
+    let source = r#"
+fn first(values: i64[]) -> i64 {
+    return values[0]
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    let result: i64 = first([input + 2])
+    print(result)
+    return result
+}
+"#;
+
+    check_source(source).expect("compound propagated argument should typecheck");
+    let generated = compile_to_c(source).expect("compound propagated argument should compile");
+    assert!(generated.contains("INT64_C(7)"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
+        "typed IR constants should be substituted inside compound arguments"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {
