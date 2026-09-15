@@ -28276,7 +28276,7 @@ fn cfg_constant_values(
         .values()
         .iter()
         .filter(|value| cfg.is_value_reachable(value.id))
-        .filter(|value| matches!(value.ty, Type::I64 | Type::Bool))
+        .filter(|value| matches!(value.ty, Type::I64 | Type::Bool | Type::Str))
         .filter(|value| ir_constant_is_pure(cfg, value.id, &mut HashSet::new()))
     {
         let Some(constant) = value.constant.clone() else {

@@ -23841,6 +23841,26 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_propagated_string_values() {
+    let source = r#"
+fn main() -> i64 {
+    let original: str = "typed-ir"
+    let propagated: str = original
+    print(propagated)
+    return 0
+}
+"#;
+
+    check_source(source).expect("propagated string should typecheck");
+    let generated = compile_to_c(source).expect("propagated string should compile");
+    assert!(generated.contains("flux__local_propagated = \"typed-ir\";"));
+    assert!(
+        !generated.contains("flux__local_propagated = flux__local_original;"),
+        "static string values should be consumed from typed IR"
+    );
+}
+
+#[test]
 fn eliminates_cfg_unreachable_statements_before_native_codegen() {
     let source = r#"
 fn main() -> i64 {
