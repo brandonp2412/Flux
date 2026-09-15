@@ -5924,9 +5924,32 @@ pub fn type_of_expr(
                     item.kind,
                     ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Var(_)
                 ) {
+                    if let ExprKind::List(values) = &item.kind {
+                        if values.is_empty() {
+                            return Err(diag(
+                                item.span,
+                                "empty map value lists cannot infer an element type yet",
+                            ));
+                        }
+                        let list_ty = type_of_expr(item, env, signatures)?;
+                        let Type::List(element) = list_ty else {
+                            return Err(diag(item.span, "map literal values must be scalar lists"));
+                        };
+                        if !matches!(*element, Type::I64 | Type::Bool | Type::Str)
+                            || values
+                                .iter()
+                                .any(|value| constant_primitive_value(value, signatures).is_none())
+                        {
+                            return Err(diag(
+                                item.span,
+                                "map literal lists must contain compile-time scalar values",
+                            ));
+                        }
+                        return Ok(Type::List(element));
+                    }
                     return Err(diag(
                         item.span,
-                        "map literals currently accept only scalar expressions",
+                        "map literals currently accept only scalar expressions or scalar lists",
                     ));
                 }
                 if constant_primitive_value(item, signatures).is_none() {
@@ -5945,6 +5968,9 @@ pub fn type_of_expr(
                 Ok(ty)
             };
             let key_ty = primitive(&items[0])?;
+            if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
+                return Err(diag(items[0].span, "map keys must be i64, bool, or str"));
+            }
             let value_ty = primitive(&items[1])?;
             let mut seen_keys = HashSet::new();
             seen_keys.insert(format!(
@@ -10722,10 +10748,14 @@ fn check_qualified_call(
                     }
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
-                            && matches!(
-                                signatures.canonical_type(element),
-                                Type::I64 | Type::Bool | Type::Str
-                            )
+                            && match signatures.canonical_type(element) {
+                                Type::I64 | Type::Bool | Type::Str => true,
+                                Type::List(inner) => matches!(
+                                    signatures.canonical_type(&inner),
+                                    Type::I64 | Type::Bool | Type::Str
+                                ),
+                                _ => false,
+                            }
                     }
                     _ => false,
                 };
@@ -10807,15 +10837,18 @@ fn check_qualified_call(
                         "json.encodeObject values must be map<str, i64|bool|str>",
                     ));
                 };
-                if signatures.canonical_type(&key) != Type::Str
-                    || !matches!(
-                        signatures.canonical_type(&value),
+                let valid_value = match signatures.canonical_type(&value) {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::List(inner) => matches!(
+                        signatures.canonical_type(&inner),
                         Type::I64 | Type::Bool | Type::Str
-                    )
-                {
+                    ),
+                    _ => false,
+                };
+                if signatures.canonical_type(&key) != Type::Str || !valid_value {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeObject values must be map<str, i64|bool|str>",
+                        "json.encodeObject values must be map<str, i64|bool|str|scalar[]>",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);

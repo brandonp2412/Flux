@@ -17316,6 +17316,63 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_nested_scalar_object_encoding_is_typed_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let numbers: map<str, i64[]> = {"first": [1, -2]}
+    let flags: map<str, bool[]> = {"flags": [true, false]}
+    let words: map<str, str[]> = {"words": ["a", "b\"c"]}
+    let numberError: error = json.encodeObject(numbers, encoded)
+    let flagError: error = json.encode(flags, encoded)
+    let wordError: error = json.encodeObject(words, encoded)
+    print(numberError)
+    print(flagError)
+    print(wordError)
+    return 0
+}
+"#;
+    check_source(source).expect("nested JSON scalar objects should typecheck");
+    let generated = compile_to_c(source).expect("nested JSON scalar objects should lower");
+    assert!(generated.contains("flux__json_encode_nested_object("));
+    let root = std::env::temp_dir().join(format!("flux-json-object-nested-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested JSON object directory should be writable");
+    let c_path = root.join("json-object-nested.c");
+    let exe_path = root.join("json-object-nested");
+    fs::write(&c_path, generated).expect("generated nested JSON object C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested JSON object native code");
+    assert!(
+        compile.status.success(),
+        "nested JSON object C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested JSON object program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"first\":[1,-2]}
+{\"flags\":[true,false]}
+{\"words\":[\"a\",\"b\\\"c\"]}
+nil
+nil
+nil
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(
