@@ -14403,9 +14403,9 @@ fn main() -> i64 {
     let values: i64[] = [10, 20]
     let optional: i64[]? = borrow values
     if let present = optional:
-        print(present[0])
         let destination: i64[] = values
         print(destination[0])
+        print(present[0])
     return 0
 }
 "#;
@@ -14415,7 +14415,7 @@ fn main() -> i64 {
         error.message.contains(
             "cannot move non-copy binding 'values' while borrowed view 'present' is still live",
         )
-    }));
+    }), "optional binding errors: {errors:?}");
 
     let moved = r#"
 fn main() -> i64 {

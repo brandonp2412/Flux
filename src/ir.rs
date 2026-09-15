@@ -1695,6 +1695,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 ..
             } => {
                 let node = self.node(ControlFlowNodeKind::Conditional, stmt.span);
+                let mut optional_binding_node = None;
                 let then_entry = self.build_block(body, successor, loop_targets);
                 let then_entry = if let Some(binding) = binding {
                     let binding_node = self.linear_node(
@@ -1711,6 +1712,7 @@ impl<'a> ControlFlowBuilder<'a> {
                             vec![self.definition(&binding.name, &inner, binding.span)],
                         );
                     }
+                    optional_binding_node = Some(binding_node);
                     binding_node
                 } else {
                     then_entry
@@ -1733,7 +1735,24 @@ impl<'a> ControlFlowBuilder<'a> {
                         }
                     }
                 }
-                self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node)
+                let condition_node =
+                    self.evaluation_node(ControlFlowEvaluationKind::Condition, cond, node);
+                if let Some(binding_node) = optional_binding_node
+                    && let Some(binding) = binding
+                    && binding.name != "_"
+                    && let Some(Type::Optional(inner)) = self.scalar_expression_type(cond)
+                    && matches!(inner.as_ref(), Type::List(_))
+                    && let Some(source) = self.nodes[condition_node.0].values.first().copied()
+                {
+                    self.scoped_borrow_sources.insert(
+                        ControlFlowDefinitionId::Node {
+                            node: binding_node,
+                            index: 0,
+                        },
+                        source,
+                    );
+                }
+                condition_node
             }
             StmtKind::ForRange {
                 name,
