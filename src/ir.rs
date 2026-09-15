@@ -3038,7 +3038,7 @@ fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
     for node in &mut graph.nodes {
         let mut moves = std::mem::take(&mut node.ownership.moves);
         for movement in &mut moves {
-            movement.value = graph
+            let value = graph
                 .values
                 .iter()
                 .filter(|value| {
@@ -3054,13 +3054,20 @@ fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
                         value.span.column,
                         value.id.0,
                     )
+                });
+            movement.value = value.map(|value| value.id);
+            movement.source_definitions = value
+                .and_then(|value| match &value.kind {
+                    ControlFlowValueKind::NameRead { definitions, .. } => Some(definitions.clone()),
+                    _ => None,
                 })
-                .map(|value| value.id);
-            movement.source_definitions = reaching_definitions_before
-                .get(node.id.0)
-                .and_then(Option::as_ref)
-                .and_then(|reaching| reaching.get(&movement.source))
-                .map(|definitions| definitions.iter().copied().collect())
+                .or_else(|| {
+                    reaching_definitions_before
+                        .get(node.id.0)
+                        .and_then(Option::as_ref)
+                        .and_then(|reaching| reaching.get(&movement.source))
+                        .map(|definitions| definitions.iter().copied().collect())
+                })
                 .unwrap_or_default();
         }
         node.ownership.moves = moves;
