@@ -17268,6 +17268,54 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_nested_scalar_array_encoding_is_typed_bounded_and_native() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let numbers: i64[][] = [[1, 2], [-3]]
+    let words: str[][] = [["a", "b\"c", "d\\e"], ["line\n"]]
+    let numberError: error = json.encodeArray(numbers, encoded)
+    let wordError: error = json.encode(words, encoded)
+    print(numberError)
+    print(wordError)
+    return 0
+}
+"#;
+    check_source(source).expect("nested JSON scalar arrays should typecheck");
+    let generated = compile_to_c(source).expect("nested JSON scalar arrays should lower");
+    assert!(generated.contains("flux__json_encode_nested_array("));
+    let root = std::env::temp_dir().join(format!("flux-json-nested-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested JSON directory should be writable");
+    let c_path = root.join("json-nested.c");
+    let exe_path = root.join("json-nested");
+    fs::write(&c_path, generated).expect("generated nested JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested JSON native code");
+    assert!(
+        compile.status.success(),
+        "nested JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[[1,2],[-3]]\n[[\"a\",\"b\\\"c\",\"d\\\\e\"],[\"line\\n\"]]\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
     let escaped_controls = "\\n".repeat(65536);
     let source = format!(

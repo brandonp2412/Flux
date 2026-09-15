@@ -10711,10 +10711,15 @@ fn check_qualified_call(
                 let value = signatures.canonical_type(&value);
                 let valid = match &value {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::List(element) => matches!(
-                        signatures.canonical_type(element),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::List(element) => {
+                        matches!(
+                            signatures.canonical_type(element),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || matches!(
+                            signatures.canonical_type(element),
+                            Type::List(inner) if matches!(signatures.canonical_type(&inner), Type::I64 | Type::Bool | Type::Str)
+                        )
+                    }
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
                             && matches!(
@@ -10730,7 +10735,7 @@ fn check_qualified_call(
                 if !valid {
                     return Err(diag(
                         args[0].span,
-                        "json.encode value must be an i64, bool, str, scalar list, or scalar map",
+                        "json.encode value must be an i64, bool, str, scalar/nested list, or scalar map",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
@@ -10761,10 +10766,18 @@ fn check_qualified_call(
                     ));
                 };
                 let element = signatures.canonical_type(&element);
-                if !matches!(element, Type::I64 | Type::Bool | Type::Str) {
+                let valid_element = match &element {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::List(inner) => matches!(
+                        signatures.canonical_type(inner),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
+                    _ => false,
+                };
+                if !valid_element {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeArray values must be a list of i64, bool, or str",
+                        "json.encodeArray values must be a list of scalar values or scalar lists",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);

@@ -1612,7 +1612,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encode",
             3,
-            "fn json.encode(value: i64 | bool | str | i64[] | bool[] | str[] | map<str, i64|bool|str>, callback: fn(str) -> void) -> error",
+            "fn json.encode(value: i64 | bool | str | scalar[] | scalar[][] | map<str, i64|bool|str>, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -1633,7 +1633,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encodeArray",
             3,
-            "fn json.encodeArray(values: i64[] | bool[] | str[], callback: fn(str) -> void) -> error",
+            "fn json.encodeArray(values: scalar[] | scalar[][], callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -3848,7 +3848,7 @@ fn signature_help_for_document_cached(
                 "encode" => Some(signature_help_for_builtin(
                     "json.encode",
                     &[
-                        "value: i64 | bool | str | i64[] | bool[] | str[] | map<str, i64|bool|str>",
+                        "value: i64 | bool | str | scalar[] | scalar[][] | map<str, i64|bool|str>",
                         "callback: fn(str) -> void",
                     ],
                     "error",
@@ -3862,10 +3862,7 @@ fn signature_help_for_document_cached(
                 )),
                 "encodeArray" => Some(signature_help_for_builtin(
                     "json.encodeArray",
-                    &[
-                        "values: i64[] | bool[] | str[]",
-                        "callback: fn(str) -> void",
-                    ],
+                    &["values: scalar[] | scalar[][]", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),
