@@ -1274,6 +1274,10 @@ fn add_qualified_namespace_completions(
                 "fn tls.read(session: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
             ("write", "fn tls.write(session: i64, text: str) -> error"),
+            (
+                "writeTimeout",
+                "fn tls.writeTimeout(session: i64, text: str, timeoutMillis: i64) -> (i64, bool, error)",
+            ),
             ("close", "fn tls.close(session: i64) -> error"),
         ] {
             push_completion_item(items, seen, label, 3, detail);
@@ -4210,6 +4214,11 @@ fn signature_help_for_document_cached(
                     "(i64, error)",
                 ),
                 "write" => ("tls.write", vec!["session: i64", "value: str"], "error"),
+                "writeTimeout" => (
+                    "tls.writeTimeout",
+                    vec!["session: i64", "value: str", "timeoutMillis: i64"],
+                    "(i64, bool, error)",
+                ),
                 "close" => ("tls.close", vec!["session: i64"], "error"),
                 _ => return None,
             };

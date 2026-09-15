@@ -8111,6 +8111,46 @@ fn check_qualified_call(
                 require_type(args[1].span, &Type::Str, &value, "tls.write value")?;
                 return Ok(vec![Type::Error]);
             }
+            "writeTimeout" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("tls.writeTimeout expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let socket = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &socket,
+                    "tls.writeTimeout session",
+                )?;
+                let value = type_of_expr(&args[1], env, signatures)?;
+                require_type(
+                    args[1].span,
+                    &Type::Str,
+                    &value,
+                    "tls.writeTimeout value",
+                )?;
+                let timeout = type_of_expr(&args[2], env, signatures)?;
+                require_type(
+                    args[2].span,
+                    &Type::I64,
+                    &timeout,
+                    "tls.writeTimeout timeoutMillis",
+                )?;
+                if matches!(
+                    constant_primitive_value(&args[2], signatures),
+                    Some(ConstantValue::I64(value))
+                        if !(-1..=i64::from(i32::MAX)).contains(&value)
+                ) {
+                    return Err(diag(
+                        args[2].span,
+                        "tls.writeTimeout timeoutMillis must be -1 or between 0 and 2147483647",
+                    ));
+                }
+                return Ok(vec![Type::I64, Type::Bool, Type::Error]);
+            }
             "close" => {
                 if args.len() != 1 {
                     return Err(diag(

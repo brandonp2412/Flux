@@ -19429,6 +19429,7 @@ fn main() -> i64 {
     let (session, tls_error) = tls.wrap(socket, "example.com", "")
     let (server_session, server_error) = tls.listen(socket, "server.crt", "server.key")
     let write_error: error = tls.write(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    let (timed_written, timed_complete, timed_write_error) = tls.writeTimeout(session, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n", 0)
     let (received, read_error) = tls.read(session, 1024, show)
     let (timed_received, timed_ready, timed_error) = tls.readTimeout(session, 1024, 0, show)
     let close_error: error = tls.close(session)
@@ -19436,6 +19437,9 @@ fn main() -> i64 {
     print(connect_error)
     print(tls_error)
     print(write_error)
+    print(timed_written)
+    print(timed_complete)
+    print(timed_write_error)
     print(received)
     print(read_error)
     print(timed_received)
@@ -19456,10 +19460,13 @@ fn main() -> i64 {
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
     assert!(generated.contains("flux__tls_read("));
     assert!(generated.contains("flux__tls_read_timeout("));
+    assert!(generated.contains("flux__tls_write_timeout("));
     assert!(generated.contains("SSL_pending(slot->session)"));
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
     assert!(generated.contains("TLS readTimeout cancelled by worker scope"));
+    assert!(generated.contains("TLS writeTimeout cancelled by worker scope"));
+    assert!(generated.contains("TLS writeTimeout timeoutMillis must be -1 or between 0 and 2147483647"));
     assert!(
         generated.contains("TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647")
     );
