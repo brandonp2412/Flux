@@ -1284,6 +1284,8 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified HTTP text-output bounds follow-up: native HTTP text request/response senders now scan borrowed body strings through the shared 65536-byte bounded helper before socket inspection or transmission, returning explicit size errors instead of relying on an unbounded `strlen` read. Generated-C coverage pins the request helper and the HTTP regression suite remains green; owned byte buffers, queued backpressure, and task-integrated event-loop I/O remain open.
 
+# Verified HTTP text-body UTF-8 follow-up: cancellation-aware fixed-length, chunked, and close-delimited HTTP request/response readers validate the complete bounded body as UTF-8 before lending it to Flux's callback-scoped `str`, while preserving NUL rejection, framing boundaries, partial-progress accounting, and binary-body separation. Native generated-code coverage pins the explicit request/response errors; owned byte buffers and binary HTTP bodies remain pending.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

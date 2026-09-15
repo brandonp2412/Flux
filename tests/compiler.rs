@@ -4155,6 +4155,7 @@ fn main() -> i64 {
     assert!(generated.contains("unsupported HTTP Transfer-Encoding"));
     assert!(generated.contains("Content-Length with Transfer-Encoding is not supported"));
     assert!(generated.contains("HTTP request body exceeds maxBodyBytes"));
+    assert!(generated.contains("HTTP request body contains invalid UTF-8"));
 
     let invalid_limit = check_source(
         "fn request(socket: i64, method: str, target: str, version: str) -> void {\n    print(socket)\n    print(method)\n    print(target)\n    print(version)\n}\nfn header(socket: i64, name: str, value: str) -> void {\n    print(socket)\n    print(name)\n    print(value)\n}\nfn body(socket: i64, value: str) -> void {\n    print(socket)\n    print(value)\n}\nfn main() -> i64 {\n    let (_, failure) = http.receiveRequestWithTextBody(1, 4096, 65537, request, header, body)\n    print(failure)\n    return 0\n}\n",
@@ -5856,6 +5857,7 @@ fn main() -> i64 {
     check_source(source).expect("HTTP text response body should typecheck");
     let generated = compile_to_c(source).expect("HTTP text response body should lower on Linux");
     assert!(generated.contains("flux__net_http_receive_response_with_text_body_v2("));
+    assert!(generated.contains("HTTP response body contains invalid UTF-8"));
     assert!(generated.contains("unsupported HTTP Transfer-Encoding"));
     assert!(generated.contains("Content-Length with Transfer-Encoding is not supported"));
 
