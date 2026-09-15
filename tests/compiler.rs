@@ -14541,6 +14541,7 @@ fn main() -> i64 {
     assert!(call.borrowed_argument_definitions[0].is_empty());
     assert_eq!(node.ownership.moves.len(), 1);
     assert_eq!(node.ownership.moves[0].source, "values");
+    assert!(node.ownership.moves[0].value.is_some());
     assert_eq!(node.ownership.moves[0].source_definitions.len(), 1);
     assert_eq!(
         graph.definition_name(node.ownership.moves[0].source_definitions[0]),
@@ -14563,6 +14564,45 @@ fn main() -> i64 {
             .is_some_and(|drops| drops.is_empty()),
         "an explicit consuming drop must not also create an implicit drop"
     );
+}
+
+#[test]
+fn ownership_ir_links_non_copy_transfers_to_their_name_read_value() {
+    let source = r#"
+fn main() -> i64 {
+    let source: i64[] = [1, 2]
+    let destination: i64[] = source
+    print(destination.first)
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1425))
+        .expect("transfer source should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let (node, movement) = graph
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            node.ownership
+                .moves
+                .iter()
+                .find(|movement| movement.destination == "destination")
+                .map(|movement| (node, movement))
+        })
+        .expect("non-copy transfer should be represented");
+    let value = movement.value.expect("move should link to a typed value");
+    let ir_value = graph
+        .values()
+        .get(value.0)
+        .expect("move value should be present in the graph");
+    assert!(graph.is_reachable(ir_value.producer));
+    assert_ne!(ir_value.producer, node.id);
+    assert!(matches!(
+        ir_value.kind,
+        fluxc::ir::ControlFlowValueKind::NameRead { ref name, .. } if name == "source"
+    ));
 }
 
 #[test]

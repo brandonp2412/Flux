@@ -279,6 +279,11 @@ pub enum ControlFlowNodeKind {
 pub struct OwnershipMove {
     pub source: String,
     pub destination: String,
+    /// The exact typed value consumed by this move boundary when the source
+    /// is represented in the normalized value graph.  Keeping this alongside
+    /// the source name and reaching definitions lets future partial-move and
+    /// owned-value analysis follow projections without rebuilding an AST walk.
+    pub value: Option<ControlFlowValueId>,
     /// Exact source definitions reaching this move boundary.  The source
     /// name is retained for diagnostics, but ownership consumers must use
     /// these identities so shadowed/re-executed bindings cannot be conflated.
@@ -2971,6 +2976,7 @@ impl<'a> ControlFlowBuilder<'a> {
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: "<drop>".to_string(),
+                value: None,
                 source_definitions: Vec::new(),
                 span: expr.span,
             }]
@@ -2994,6 +3000,7 @@ impl<'a> ControlFlowBuilder<'a> {
             vec![OwnershipMove {
                 source: source.clone(),
                 destination: name.to_string(),
+                value: None,
                 source_definitions: Vec::new(),
                 span: expr.span,
             }]
@@ -3031,6 +3038,24 @@ fn populate_move_source_definitions(graph: &mut ControlFlowGraph) {
     for node in &mut graph.nodes {
         let mut moves = std::mem::take(&mut node.ownership.moves);
         for movement in &mut moves {
+            movement.value = graph
+                .values
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        &value.kind,
+                        ControlFlowValueKind::NameRead { name, .. } if name == &movement.source
+                    )
+                })
+                .min_by_key(|value| {
+                    (
+                        if value.span == movement.span { 0 } else { 1 },
+                        if value.producer == node.id { 0 } else { 1 },
+                        value.span.column,
+                        value.id.0,
+                    )
+                })
+                .map(|value| value.id);
             movement.source_definitions = reaching_definitions_before
                 .get(node.id.0)
                 .and_then(Option::as_ref)
