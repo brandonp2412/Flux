@@ -10700,15 +10700,39 @@ fn check_qualified_call(
                 require_type(args[1].span, &expected, &callback, "json.parse callback")?;
                 return Ok(vec![Type::Error]);
             }
-            "encodeString" => {
+            "encode" | "encodeString" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
-                        &format!("json.encodeString expects 2 arguments, got {}", args.len()),
+                        &format!("json.{name} expects 2 arguments, got {}", args.len()),
                     ));
                 }
                 let value = type_of_expr(&args[0], env, signatures)?;
-                require_type(args[0].span, &Type::Str, &value, "json.encodeString value")?;
+                let value = signatures.canonical_type(&value);
+                let valid = match &value {
+                    Type::I64 | Type::Bool | Type::Str => true,
+                    Type::List(element) => matches!(
+                        signatures.canonical_type(element),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
+                    Type::Map(key, element) => {
+                        signatures.canonical_type(key) == Type::Str
+                            && matches!(
+                                signatures.canonical_type(element),
+                                Type::I64 | Type::Bool | Type::Str
+                            )
+                    }
+                    _ => false,
+                };
+                if name == "encodeString" && value != Type::Str {
+                    return Err(diag(args[0].span, "json.encodeString value must be a str"));
+                }
+                if !valid {
+                    return Err(diag(
+                        args[0].span,
+                        "json.encode value must be an i64, bool, str, scalar list, or scalar map",
+                    ));
+                }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
                 let expected = Type::Function {
                     params: vec![Type::Str],

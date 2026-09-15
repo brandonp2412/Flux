@@ -35459,18 +35459,40 @@ fn emit_qualified_call(
             Some(emit_expr(&args[0], env, signatures)?)
         };
         let callback = emit_expr(&args[callback_index], env, signatures)?;
-        if name == "encodeArray" || name == "encodeObject" {
+        if name == "encode" || name == "encodeArray" || name == "encodeObject" {
             let value = value.expect("JSON array value");
-            let kind = if name == "encodeArray" {
+            if name == "encode"
+                && matches!(
+                    signatures.canonical_type(&value.ty),
+                    Type::I64 | Type::Bool | Type::Str
+                )
+            {
+                let helper = match signatures.canonical_type(&value.ty) {
+                    Type::I64 => "flux__json_encode_int",
+                    Type::Bool => "flux__json_encode_bool",
+                    Type::Str => "flux__json_encode_string",
+                    _ => unreachable!(),
+                };
+                return Ok((
+                    format!("{}({}, {})", helper, value.code, callback.code),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            let (helper, kind) = if name == "encodeArray"
+                || (name == "encode"
+                    && matches!(signatures.canonical_type(&value.ty), Type::List(_)))
+            {
                 let Type::List(element) = signatures.canonical_type(&value.ty) else {
                     return Err(diag(span, "json.encodeArray requires a scalar list"));
                 };
-                match signatures.canonical_type(&element) {
+                let kind = match signatures.canonical_type(&element) {
                     Type::I64 => 0,
                     Type::Bool => 1,
                     Type::Str => 2,
                     _ => return Err(diag(span, "json.encodeArray requires a scalar list")),
-                }
+                };
+                ("flux__json_encode_array", kind)
             } else {
                 let Type::Map(key, element) = signatures.canonical_type(&value.ty) else {
                     return Err(diag(span, "json.encodeObject requires a scalar map"));
@@ -35481,17 +35503,13 @@ fn emit_qualified_call(
                         "json.encodeObject requires a string-keyed scalar map",
                     ));
                 }
-                match signatures.canonical_type(&element) {
+                let kind = match signatures.canonical_type(&element) {
                     Type::I64 => 0,
                     Type::Bool => 1,
                     Type::Str => 2,
                     _ => return Err(diag(span, "json.encodeObject requires a scalar map")),
-                }
-            };
-            let helper = if name == "encodeArray" {
-                "flux__json_encode_array"
-            } else {
-                "flux__json_encode_object"
+                };
+                ("flux__json_encode_object", kind)
             };
             return Ok((
                 format!("{helper}({}, {}, {})", value.code, kind, callback.code),

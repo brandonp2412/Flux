@@ -1610,6 +1610,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "encode",
+            3,
+            "fn json.encode(value: i64 | bool | str | i64[] | bool[] | str[] | map<str, i64|bool|str>, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "encodeString",
             3,
             "fn json.encodeString(value: str, callback: fn(str) -> void) -> error",
@@ -3835,6 +3842,15 @@ fn signature_help_for_document_cached(
                 "parse" => Some(signature_help_for_builtin(
                     "json.parse",
                     &["value: str", "callback: fn(str, str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "encode" => Some(signature_help_for_builtin(
+                    "json.encode",
+                    &[
+                        "value: i64 | bool | str | i64[] | bool[] | str[] | map<str, i64|bool|str>",
+                        "callback: fn(str) -> void",
+                    ],
                     "error",
                     active_parameter,
                 )),

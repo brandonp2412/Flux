@@ -17218,10 +17218,20 @@ fn main() -> i64 {
     let flagError: error = json.encodeArray(flags, encoded)
     let wordError: error = json.encodeArray(words, encoded)
     let objectError: error = json.encodeObject(object, encoded)
+    let genericIntError: error = json.encode(7, encoded)
+    let genericFlagError: error = json.encode(false, encoded)
+    let genericWordError: error = json.encode("generic", encoded)
+    let genericArrayError: error = json.encode(ints, encoded)
+    let genericObjectError: error = json.encode(object, encoded)
     print(intError)
     print(flagError)
     print(wordError)
     print(objectError)
+    print(genericIntError)
+    print(genericFlagError)
+    print(genericWordError)
+    print(genericArrayError)
+    print(genericObjectError)
     return 0
 }
 "#;
@@ -17252,7 +17262,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "[1,-2,3]\n[true,false]\n[\"a\\n\",\"b\\\"c\"]\n{\"x\":1,\"y\":2}\nnil\nnil\nnil\nnil\n"
+        "[1,-2,3]\n[true,false]\n[\"a\\n\",\"b\\\"c\"]\n{\"x\":1,\"y\":2}\n7\nfalse\n\"generic\"\n[1,-2,3]\n{\"x\":1,\"y\":2}\nnil\nnil\nnil\nnil\nnil\nnil\nnil\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
