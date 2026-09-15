@@ -34,6 +34,52 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn calendar_value_is_typed_native_and_field_addressable() {
+    let source = r#"
+fn main() -> i64 {
+    let value: (year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64) = time.calendar(time.utc(2024, 2, 29, 12, 34, 56, 789))
+    print(value.year)
+    print(value.month)
+    print(value.day)
+    print(value.millis)
+    print(value.weekday)
+    print(value.dayOfYear)
+    return 0
+}
+"#;
+    check_source(source).expect("calendar values should typecheck");
+    let generated = compile_to_c(source).expect("calendar values should lower natively");
+    assert!(generated.contains("flux__time_calendar("));
+    assert!(generated.contains("struct flux__record__n4_year_i64"));
+
+    let root = std::env::temp_dir().join(format!("flux-calendar-value-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("calendar value fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("calendar value source should be writable");
+    let binary = root.join("calendar-value");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("calendar value binary should build");
+    assert!(
+        build.status.success(),
+        "calendar value build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("calendar value binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "2024\n2\n29\n789\n4\n60\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn named_time_zone_formatting_is_bounded_and_native() {
     let source = r#"
 fn emit(value: str) -> void {
@@ -9725,6 +9771,7 @@ fn main() -> i64 {
     print(time.local(1970, 1, 1, 0, 0, 0, 0))
     return 0
 }
+
 "#;
     check_source(source).expect("calendar helpers should typecheck");
     let generated = compile_to_c(source).expect("calendar helpers should lower natively");

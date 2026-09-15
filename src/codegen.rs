@@ -1484,6 +1484,9 @@ pub fn emit_c_for_target_with_source_metadata(
         out.push('\n');
     }
     emit_record_type_definitions(&mut out, program, signatures, &function_ir);
+    if runtime_usage.contains("flux__time_calendar(") {
+        out.push_str("static inline struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64 flux__time_calendar(int64_t unix_ms) { return (struct flux__record__n4_year_i64__n5_month_i64__n3_day_i64__n4_hour_i64__n6_minute_i64__n6_second_i64__n6_millis_i64__n7_weekday_i64__n9_dayOfYear_i64){ .flux__field_year = flux__time_utc_part(unix_ms, 0), .flux__field_month = flux__time_utc_part(unix_ms, 1), .flux__field_day = flux__time_utc_part(unix_ms, 2), .flux__field_hour = flux__time_utc_part(unix_ms, 3), .flux__field_minute = flux__time_utc_part(unix_ms, 4), .flux__field_second = flux__time_utc_part(unix_ms, 5), .flux__field_millis = flux__time_utc_part(unix_ms, 6), .flux__field_weekday = flux__time_utc_part(unix_ms, 7), .flux__field_dayOfYear = flux__time_utc_part(unix_ms, 8) }; }\n");
+    }
     emit_function_type_typedefs(
         &mut out,
         program,
@@ -6454,7 +6457,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
             out.push_str("static inline void flux__time_sleep_until_monotonic(int64_t deadline_ms) { if (flux__time_test_clock_enabled()) { int64_t now = flux__time_test_clock_read(); if (deadline_ms > now) flux__time_test_clock_advance(deadline_ms - now); return; } for (;;) { int64_t now = flux__time_clock_millis(CLOCK_MONOTONIC); if (now >= deadline_ms) return; flux__time_sleep_millis(deadline_ms - now); } }\n");
         }
     }
-    if runtime_usage.contains("flux__time_utc_part(") {
+    if runtime_usage.contains("flux__time_utc_part(")
+        || runtime_usage.contains("flux__time_calendar(")
+    {
         out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
     }
     if runtime_usage.contains("flux__time_local_part(") {
@@ -35384,6 +35389,39 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid time call reached code generation"));
         }
         match name {
+            "calendar" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid time.calendar call reached code generation",
+                    ));
+                }
+                let unix_millis = emit_expr(&args[0], env, signatures)?;
+                let calendar_type = Type::Record(
+                    [
+                        ("year", Type::I64),
+                        ("month", Type::I64),
+                        ("day", Type::I64),
+                        ("hour", Type::I64),
+                        ("minute", Type::I64),
+                        ("second", Type::I64),
+                        ("millis", Type::I64),
+                        ("weekday", Type::I64),
+                        ("dayOfYear", Type::I64),
+                    ]
+                    .into_iter()
+                    .map(|(name, ty)| crate::ast::RecordTypeField {
+                        name: Some(name.to_string()),
+                        ty,
+                    })
+                    .collect(),
+                );
+                return Ok((
+                    format!("flux__time_calendar({})", unix_millis.code),
+                    vec![calendar_type],
+                    None,
+                ));
+            }
             "unixMillis" | "monotonicMillis" => {
                 if !args.is_empty() {
                     return Err(diag(span, "invalid time call reached code generation"));

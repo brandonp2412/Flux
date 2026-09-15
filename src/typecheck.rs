@@ -11105,6 +11105,40 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "calendar" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("time.calendar expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &actual,
+                    "time.calendar unixMillis",
+                )?;
+                return Ok(vec![Type::Record(
+                    [
+                        ("year", Type::I64),
+                        ("month", Type::I64),
+                        ("day", Type::I64),
+                        ("hour", Type::I64),
+                        ("minute", Type::I64),
+                        ("second", Type::I64),
+                        ("millis", Type::I64),
+                        ("weekday", Type::I64),
+                        ("dayOfYear", Type::I64),
+                    ]
+                    .into_iter()
+                    .map(|(name, ty)| crate::ast::RecordTypeField {
+                        name: Some(name.to_string()),
+                        ty,
+                    })
+                    .collect(),
+                )]);
+            }
             "unixMillis" | "monotonicMillis" => {
                 if !args.is_empty() {
                     return Err(diag(
