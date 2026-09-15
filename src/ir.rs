@@ -771,6 +771,59 @@ impl ControlFlowGraph {
         self.values.get(id.0)
     }
 
+    /// Return whether a reachable typed value is a pure scalar expression.
+    ///
+    /// This is deliberately a graph query rather than a codegen-side AST
+    /// walk.  Backend consumers can therefore use the same value/dependency
+    /// facts that drove reachability and constant propagation, including
+    /// definition-scoped name reads and conditional expressions.
+    pub fn is_pure_scalar_value(&self, id: ControlFlowValueId) -> bool {
+        if !self.is_value_reachable(id) {
+            return false;
+        }
+        fn visit(
+            graph: &ControlFlowGraph,
+            id: ControlFlowValueId,
+            visiting: &mut BTreeSet<ControlFlowValueId>,
+        ) -> bool {
+            if !visiting.insert(id) {
+                return false;
+            }
+            let Some(value) = graph.value(id) else {
+                return false;
+            };
+            let pure = match &value.kind {
+                ControlFlowValueKind::Literal => true,
+                ControlFlowValueKind::NameRead { definitions, .. } => {
+                    !definitions.is_empty()
+                        && definitions.iter().all(|definition| {
+                            graph
+                                .definition_value(*definition)
+                                .is_some_and(|value| visit(graph, value, visiting))
+                        })
+                }
+                ControlFlowValueKind::Unary { operand, .. } => visit(graph, *operand, visiting),
+                ControlFlowValueKind::Binary { left, right, .. } => {
+                    visit(graph, *left, visiting) && visit(graph, *right, visiting)
+                }
+                ControlFlowValueKind::Conditional {
+                    condition,
+                    then_value,
+                    else_value,
+                } => {
+                    visit(graph, *condition, visiting)
+                        && visit(graph, *then_value, visiting)
+                        && visit(graph, *else_value, visiting)
+                }
+                _ => false,
+            };
+            visiting.remove(&id);
+            pure
+        }
+
+        visit(self, id, &mut BTreeSet::new())
+    }
+
     pub fn value_uses(&self) -> &[ControlFlowValueUse] {
         &self.value_uses
     }

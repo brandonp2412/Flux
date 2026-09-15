@@ -68,6 +68,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_owns_scalar_purity_proof_queries() {
+    let source = r#"
+fn constant() -> i64 {
+    return 7
+}
+
+fn main() -> i64 {
+    let seed: i64 = 4
+    let result: i64 = seed + 3
+    let dynamic: i64 = constant()
+    print(result)
+    print(dynamic)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("typed IR purity fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let pure_result = graph.values().iter().find(|value| {
+        value.constant == Some(fluxc::typecheck::ConstantValue::I64(7))
+            && matches!(value.kind, ControlFlowValueKind::Binary { .. })
+    });
+    assert!(pure_result.is_some_and(|value| graph.is_pure_scalar_value(value.id)));
+    let call = graph
+        .values()
+        .iter()
+        .find(|value| matches!(value.kind, ControlFlowValueKind::Call { .. }))
+        .expect("call value should be present");
+    assert!(!graph.is_pure_scalar_value(call.id));
+}
+
+#[test]
 fn ownership_ir_does_not_drop_moved_definitions() {
     let source = r#"
 fn main() -> i64 {
