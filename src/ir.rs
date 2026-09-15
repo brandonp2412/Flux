@@ -2757,17 +2757,39 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph) {
             call.argument_definitions = call
                 .arguments
                 .iter()
-                .map(
-                    |argument| match values.get(argument.0).map(|value| &value.kind) {
-                        Some(ControlFlowValueKind::NameRead { definitions, .. }) => {
-                            definitions.clone()
-                        }
-                        _ => Vec::new(),
-                    },
-                )
+                .map(|argument| call_argument_definitions(*argument, &values))
                 .collect();
         }
     }
+}
+
+/// Resolve the reaching source definitions for a call argument without
+/// re-walking the checked AST.  A projection still borrows its root value, so
+/// fields, indexes, slices, and optional list projections must retain the
+/// concrete definition identity of their source owner at the call boundary.
+/// Keeping this provenance on the typed value graph is important when a
+/// future consuming-call contract is added: it must reject a move of the
+/// owner while a projected argument is still live rather than treating the
+/// projection as an unrelated expression.
+fn call_argument_definitions(
+    argument: ControlFlowValueId,
+    values: &[ControlFlowValue],
+) -> Vec<ControlFlowDefinitionId> {
+    let Some(value) = values.get(argument.0) else {
+        return Vec::new();
+    };
+    let mut definitions = match &value.kind {
+        ControlFlowValueKind::NameRead { definitions, .. } => definitions.clone(),
+        ControlFlowValueKind::Field { base, .. }
+        | ControlFlowValueKind::ListOptional { value: base }
+        | ControlFlowValueKind::ListSpread { value: base }
+        | ControlFlowValueKind::Index { base, .. }
+        | ControlFlowValueKind::Slice { base, .. } => call_argument_definitions(*base, values),
+        _ => Vec::new(),
+    };
+    definitions.sort();
+    definitions.dedup();
+    definitions
 }
 
 fn collect_evaluation_types(

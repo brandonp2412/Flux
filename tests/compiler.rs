@@ -15060,6 +15060,39 @@ fn main() -> i64 {
 }
 
 #[test]
+fn semantic_cfg_preserves_call_argument_projection_source_identity() {
+    let source = r#"
+fn inspect(values: i64[]) -> bool {
+    return contains(values[0:1], 1)
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1]
+    if inspect(values):
+        return 0
+    return 1
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1217))
+        .expect("projected call argument ownership facts should analyze");
+    let graph = database
+        .control_flow_graph("inspect")
+        .expect("inspect should expose ownership facts");
+    let call = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.calls.iter())
+        .find(|call| call.callee == "contains")
+        .expect("contains call should be recorded");
+    assert_eq!(call.argument_definitions.len(), 2);
+    assert_eq!(call.argument_definitions[0].len(), 1);
+    assert!(matches!(
+        call.argument_definitions[0][0],
+        ControlFlowDefinitionId::Parameter(0)
+    ));
+}
+
+#[test]
 fn branch_moves_are_conservative_and_loop_moves_are_rejected() {
     let branch = r#"
 fn main() -> i64 {
