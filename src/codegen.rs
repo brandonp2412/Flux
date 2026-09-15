@@ -4359,6 +4359,7 @@ fn emit_runtime_prelude(
     if runtime_usage.contains("flux__json_parse(")
         || runtime_usage.contains("flux__json_encode_string(")
         || runtime_usage.contains("flux__json_encode_array(")
+        || runtime_usage.contains("flux__json_encode_object(")
         || runtime_usage.contains("flux__json_encode_int(")
         || runtime_usage.contains("flux__json_encode_bool(")
         || runtime_usage.contains("flux__json_encode_null(")
@@ -4367,9 +4368,14 @@ fn emit_runtime_prelude(
 #define FLUX_LIST_DEFINED
 struct flux__list { void *data; size_t len; ptrdiff_t stride; };
 #endif
+#ifndef FLUX_MAP_DEFINED
+#define FLUX_MAP_DEFINED
+struct flux__map { struct flux__list keys; struct flux__list values; };
+#endif
 static inline const char *flux__json_parse(const char *value, void (*callback)(const char *, const char *));
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
 static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
 static inline const char *flux__json_encode_bool(bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_null(void (*callback)(const char *));
@@ -4562,6 +4568,26 @@ static inline const char *flux__json_encode_array(struct flux__list values, int 
         }
     }
     if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ']'; encoded[output] = '\0'; callback(encoded); return NULL;
+}
+static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeObject callback";
+    if (kind < 0 || kind > 2) return "invalid json.encodeObject value kind";
+    if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
+    char encoded[393217]; size_t output = 0; encoded[output++] = '{';
+    ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
+    ptrdiff_t value_stride = values.values.stride == 0 ? (kind == 0 ? (ptrdiff_t)sizeof(int64_t) : kind == 1 ? (ptrdiff_t)sizeof(bool) : (ptrdiff_t)sizeof(const char *)) : values.values.stride;
+    for (size_t index = 0; index < values.keys.len; index += 1) {
+        const char *key = *((const char **)((char *)values.keys.data + (ptrdiff_t)index * key_stride)); if (key == NULL) return "JSON object contains a null key";
+        size_t key_length = 0; while (key_length <= 65536 && key[key_length] != '\0') key_length += 1; if (key_length > 65536) return "JSON object key exceeds 65536 bytes";
+        if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = ','; }
+        if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '"';
+        for (size_t position = 0; position < key_length; position += 1) { unsigned char byte = (unsigned char)key[position]; const char *escape = byte == '"' ? "\\\"" : byte == '\\' ? "\\\\" : byte == '\b' ? "\\b" : byte == '\f' ? "\\f" : byte == '\n' ? "\\n" : byte == '\r' ? "\\r" : byte == '\t' ? "\\t" : NULL; if (escape != NULL) { size_t count = strlen(escape); if (output > sizeof(encoded) - 1 - count) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, escape, count); output += count; } else if (byte < 0x20) { if (output > sizeof(encoded) - 1 - 6) return "encoded JSON object exceeds 393216 bytes"; int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; } else { size_t width = flux__json_utf8_width((const unsigned char *)key + position, (const unsigned char *)key + key_length); if (width == 0) return "JSON object key contains invalid UTF-8"; if (output > sizeof(encoded) - 1 - width) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, key + position, width); output += width; position += width - 1; } }
+        if (output > sizeof(encoded) - 1 - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '"'; encoded[output++] = ':';
+        if (kind == 0) { int written = snprintf(encoded + output, sizeof(encoded) - output, "%lld", (long long)*((int64_t *)((char *)values.values.data + (ptrdiff_t)index * value_stride))); if (written < 0 || (size_t)written >= sizeof(encoded) - output) return "encoded JSON object exceeds 393216 bytes"; output += (size_t)written; }
+        else if (kind == 1) { const char *literal = *((bool *)((char *)values.values.data + (ptrdiff_t)index * value_stride)) ? "true" : "false"; size_t length = strlen(literal); if (output > sizeof(encoded) - 1 - length) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, literal, length); output += length; }
+        else { const char *value = *((const char **)((char *)values.values.data + (ptrdiff_t)index * value_stride)); if (value == NULL) return "JSON object contains a null string"; size_t length = 0; while (length <= 65536 && value[length] != '\0') length += 1; if (length > 65536) return "JSON string exceeds 65536 bytes"; if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '"'; for (size_t position = 0; position < length; position += 1) { unsigned char byte = (unsigned char)value[position]; const char *escape = byte == '"' ? "\\\"" : byte == '\\' ? "\\\\" : byte == '\b' ? "\\b" : byte == '\f' ? "\\f" : byte == '\n' ? "\\n" : byte == '\r' ? "\\r" : byte == '\t' ? "\\t" : NULL; if (escape != NULL) { size_t count = strlen(escape); if (output > sizeof(encoded) - 1 - count) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, escape, count); output += count; } else if (byte < 0x20) { if (output > sizeof(encoded) - 1 - 6) return "encoded JSON object exceeds 393216 bytes"; int written = snprintf(encoded + output, 7, "\\u%04x", byte); if (written != 6) return "JSON string encoding failed"; output += 6; } else { size_t width = flux__json_utf8_width((const unsigned char *)value + position, (const unsigned char *)value + length); if (width == 0) return "JSON string contains invalid UTF-8"; if (output > sizeof(encoded) - 1 - width) return "encoded JSON object exceeds 393216 bytes"; memcpy(encoded + output, value + position, width); output += width; position += width - 1; } } if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '"'; }
+    }
+    if (output >= sizeof(encoded) - 1) return "encoded JSON object exceeds 393216 bytes"; encoded[output++] = '}'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeInt callback";
@@ -7796,7 +7822,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
 "#);
     }
     if uses_map {
-        out.push_str("struct flux__map { struct flux__list keys; struct flux__list values; };\n");
+        out.push_str("#ifndef FLUX_MAP_DEFINED\n#define FLUX_MAP_DEFINED\nstruct flux__map { struct flux__list keys; struct flux__list values; };\n#endif\n");
     }
     if uses_worker_wait_any {
         out.push_str("static struct flux__worker_i64_error flux__worker_wait_any(struct flux__list handles) { struct flux__worker_i64_error result = { .v0 = 0, .v1 = NULL }; if (handles.len == 0) { result.v1 = \"worker.waitAny requires at least one handle\"; return result; } ptrdiff_t stride = handles.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : handles.stride; pthread_mutex_lock(&flux__worker_mutex); for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = handle > 0 ? flux__worker_find_locked(handle) : NULL; if (handle <= 0) { result.v1 = \"worker.waitAny received an invalid handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state == NULL) { result.v1 = \"worker.waitAny received an unknown or already joined handle\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->parent_id != flux__worker_current_id) { result.v1 = \"worker.waitAny handle is outside the current worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->joining) { result.v1 = \"worker.waitAny cannot observe a handle already being joined\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } } for (;;) { for (size_t index = 0; index < handles.len; ++index) { int64_t handle = *((int64_t *)((char *)handles.data + (ptrdiff_t)index * stride)); struct flux__worker_state *state = flux__worker_find_locked(handle); if (state == NULL) { result.v1 = \"worker.waitAny handle disappeared before completion\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } if (state->done) { result.v0 = handle; pthread_mutex_unlock(&flux__worker_mutex); return result; } } struct flux__worker_state *current = flux__worker_find_locked(flux__worker_current_id); if (current != NULL && current->cancel_requested) { result.v1 = \"worker.waitAny cancelled by worker scope\"; pthread_mutex_unlock(&flux__worker_mutex); return result; } pthread_cond_wait(&flux__worker_changed, &flux__worker_mutex); } }\n");
@@ -35433,22 +35459,42 @@ fn emit_qualified_call(
             Some(emit_expr(&args[0], env, signatures)?)
         };
         let callback = emit_expr(&args[callback_index], env, signatures)?;
-        if name == "encodeArray" {
+        if name == "encodeArray" || name == "encodeObject" {
             let value = value.expect("JSON array value");
-            let Type::List(element) = signatures.canonical_type(&value.ty) else {
-                return Err(diag(span, "json.encodeArray requires a scalar list"));
+            let kind = if name == "encodeArray" {
+                let Type::List(element) = signatures.canonical_type(&value.ty) else {
+                    return Err(diag(span, "json.encodeArray requires a scalar list"));
+                };
+                match signatures.canonical_type(&element) {
+                    Type::I64 => 0,
+                    Type::Bool => 1,
+                    Type::Str => 2,
+                    _ => return Err(diag(span, "json.encodeArray requires a scalar list")),
+                }
+            } else {
+                let Type::Map(key, element) = signatures.canonical_type(&value.ty) else {
+                    return Err(diag(span, "json.encodeObject requires a scalar map"));
+                };
+                if signatures.canonical_type(&key) != Type::Str {
+                    return Err(diag(
+                        span,
+                        "json.encodeObject requires a string-keyed scalar map",
+                    ));
+                }
+                match signatures.canonical_type(&element) {
+                    Type::I64 => 0,
+                    Type::Bool => 1,
+                    Type::Str => 2,
+                    _ => return Err(diag(span, "json.encodeObject requires a scalar map")),
+                }
             };
-            let kind = match signatures.canonical_type(&element) {
-                Type::I64 => 0,
-                Type::Bool => 1,
-                Type::Str => 2,
-                _ => return Err(diag(span, "json.encodeArray requires a scalar list")),
+            let helper = if name == "encodeArray" {
+                "flux__json_encode_array"
+            } else {
+                "flux__json_encode_object"
             };
             return Ok((
-                format!(
-                    "flux__json_encode_array({}, {}, {})",
-                    value.code, kind, callback.code
-                ),
+                format!("{helper}({}, {}, {})", value.code, kind, callback.code),
                 vec![Type::Error],
                 None,
             ));

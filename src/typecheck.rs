@@ -10756,6 +10756,44 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
+            "encodeObject" => {
+                if args.len() != 2 {
+                    return Err(diag(
+                        span,
+                        &format!("json.encodeObject expects 2 arguments, got {}", args.len()),
+                    ));
+                }
+                let value = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
+                let Type::Map(key, value) = value else {
+                    return Err(diag(
+                        args[0].span,
+                        "json.encodeObject values must be map<str, i64|bool|str>",
+                    ));
+                };
+                if signatures.canonical_type(&key) != Type::Str
+                    || !matches!(
+                        signatures.canonical_type(&value),
+                        Type::I64 | Type::Bool | Type::Str
+                    )
+                {
+                    return Err(diag(
+                        args[0].span,
+                        "json.encodeObject values must be map<str, i64|bool|str>",
+                    ));
+                }
+                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[1].span,
+                    &expected,
+                    &callback,
+                    "json.encodeObject callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "encodeInt" | "encodeBool" | "encodeNull" => {
                 let expected_value = match name.as_str() {
                     "encodeInt" => Type::I64,

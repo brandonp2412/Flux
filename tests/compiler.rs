@@ -17213,12 +17213,15 @@ fn main() -> i64 {
     let ints: i64[] = [1, -2, 3]
     let flags: bool[] = [true, false]
     let words: str[] = ["a\n", "b\"c"]
+    let object: map<str, i64> = {"x": 1, "y": 2}
     let intError: error = json.encodeArray(ints, encoded)
     let flagError: error = json.encodeArray(flags, encoded)
     let wordError: error = json.encodeArray(words, encoded)
+    let objectError: error = json.encodeObject(object, encoded)
     print(intError)
     print(flagError)
     print(wordError)
+    print(objectError)
     return 0
 }
 "#;
@@ -17249,7 +17252,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "[1,-2,3]\n[true,false]\n[\"a\\n\",\"b\\\"c\"]\nnil\nnil\nnil\n"
+        "[1,-2,3]\n[true,false]\n[\"a\\n\",\"b\\\"c\"]\n{\"x\":1,\"y\":2}\nnil\nnil\nnil\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
