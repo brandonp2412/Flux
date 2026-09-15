@@ -9568,6 +9568,35 @@ fn main() -> i64 {
 }
 
 #[test]
+fn utc_time_format_zero_pads_negative_years() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let timestamp: i64 = time.utc(-1, 1, 2, 3, 4, 5, 6)
+    let formatError: error = time.format(timestamp, emit)
+    if formatError != nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("negative UTC years should typecheck");
+    let root = std::env::temp_dir().join(format!("flux-time-negative-year-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("negative-year fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("negative-year source should be writable");
+    let binary = root.join("negative-year");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux")).arg("build").arg(&source_path).arg("-o").arg(&binary).output().expect("negative-year binary should build");
+    assert!(built.status.success(), "negative-year build failed: {}", String::from_utf8_lossy(&built.stderr));
+    let run = Command::new(&binary).output().expect("negative-year binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "-0001-01-02T03:04:05.006Z");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn duration_unit_constructors_are_checked_and_native() {
     let source = r#"
 fn convert(value: i64) -> i64 {
