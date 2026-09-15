@@ -23861,6 +23861,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_propagated_loop_values() {
+    let source = r#"
+fn main() -> i64 {
+    let first: i64 = 1
+    let limit: i64 = 3
+    for value in first..limit:
+        print(value)
+    return 0
+}
+"#;
+
+    check_source(source).expect("propagated loop bounds should typecheck");
+    let generated = compile_to_c(source).expect("propagated loop bounds should compile");
+    assert!(generated.contains("= INT64_C(1), flux__end_"));
+    assert!(generated.contains("flux__end_") && generated.contains("= INT64_C(3);"));
+    assert!(
+        !generated.contains("flux__local_first, flux__end_")
+            && !generated.contains("flux__local_limit;"),
+        "loop bounds should be consumed from typed IR rather than reloading locals"
+    );
+}
+
+#[test]
 fn eliminates_cfg_unreachable_statements_before_native_codegen() {
     let source = r#"
 fn main() -> i64 {

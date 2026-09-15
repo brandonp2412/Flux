@@ -30189,7 +30189,18 @@ fn emit_block(
                 let (_, record_destructure) =
                     typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
                 if record_destructure {
-                    let value = emit_expr(expr, env, signatures)?;
+                    let expr_type = type_of_expr(expr, env, signatures)?;
+                    let value = EmittedExpr {
+                        code: emit_expr_for_expected_with_cfg_proofs(
+                            expr,
+                            &expr_type,
+                            env,
+                            signatures,
+                            context.checked_i64_cfg_proofs,
+                            context.cfg_constant_values,
+                        )?,
+                        ty: expr_type,
+                    };
                     let Type::Record(fields) = signatures.canonical_type(&value.ty) else {
                         return Err(diag(
                             stmt.span,
@@ -30245,7 +30256,18 @@ fn emit_block(
                 rest,
                 expr,
             } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expr_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: expr_type,
+                };
                 let Type::List(element) = &value.ty else {
                     return Err(diag(
                         stmt.span,
@@ -30551,7 +30573,18 @@ fn emit_block(
                 }
             }
             StmtKind::LetStructDestructure { fields, expr, .. } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expr_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: expr_type,
+                };
                 let Type::Named(struct_name) = &value.ty else {
                     return Err(diag(
                         stmt.span,
@@ -30747,12 +30780,30 @@ fn emit_block(
                 redirect,
                 background,
             } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expr_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: expr_type,
+                };
                 let emit_command = |out: &mut String,
                                     command_pad: &str|
                  -> Result<(), Diagnostic> {
                     if let Some(redirect) = redirect {
-                        let path = emit_expr(&redirect.path, env, signatures)?;
+                        let path = emit_expr_for_expected_with_cfg_proofs(
+                            &redirect.path,
+                            &Type::Str,
+                            env,
+                            signatures,
+                            context.checked_i64_cfg_proofs,
+                            context.cfg_constant_values,
+                        )?;
                         let helper = match value.ty {
                             Type::I64 => "flux_redirect_i64",
                             Type::Bool => "flux_redirect_bool",
@@ -30768,7 +30819,7 @@ fn emit_block(
                         let append = matches!(redirect.mode, ShellRedirectMode::Append);
                         out.push_str(&format!(
                             "{command_pad}{helper}({}, {}, {});\n",
-                            path.code,
+                            path,
                             if append { "true" } else { "false" },
                             value.code
                         ));
@@ -30809,7 +30860,18 @@ fn emit_block(
                 ..
             } => {
                 if let Some(binding) = binding {
-                    let optional = emit_expr(cond, env, signatures)?;
+                    let optional_type = type_of_expr(cond, env, signatures)?;
+                    let optional = EmittedExpr {
+                        code: emit_expr_for_expected_with_cfg_proofs(
+                            cond,
+                            &optional_type,
+                            env,
+                            signatures,
+                            context.checked_i64_cfg_proofs,
+                            context.cfg_constant_values,
+                        )?,
+                        ty: optional_type,
+                    };
                     let optional_ty = signatures.canonical_type(&optional.ty);
                     let Type::Optional(inner) = optional_ty else {
                         return Err(diag(
@@ -31035,8 +31097,28 @@ fn emit_block(
                 {
                     continue;
                 }
-                let start = emit_expr(start, env, signatures)?;
-                let end = emit_expr(end, env, signatures)?;
+                let start = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        start,
+                        &Type::I64,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: Type::I64,
+                };
+                let end = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        end,
+                        &Type::I64,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: Type::I64,
+                };
                 let temp = format!("flux__end_{}", *temp_counter);
                 *temp_counter += 1;
                 let name_is_live = !dead_definitions.is_some_and(|dead| dead.contains(name));
@@ -31084,7 +31166,18 @@ fn emit_block(
                 body,
                 ..
             } => {
-                let source = emit_expr(iterable, env, signatures)?;
+                let iterable_type = type_of_expr(iterable, env, signatures)?;
+                let source = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        iterable,
+                        &iterable_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: iterable_type,
+                };
                 let source_ty = signatures.canonical_type(&source.ty);
                 let (map_key, element) = match source_ty {
                     Type::List(element) | Type::Set(element) => (None, element),
