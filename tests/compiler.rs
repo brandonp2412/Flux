@@ -19456,6 +19456,10 @@ fn main() -> i64 {
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));
     assert!(generated.contains("flux__tls_read("));
     assert!(generated.contains("flux__tls_read_timeout("));
+    assert!(generated.contains("SSL_pending(slot->session)"));
+    assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
+    assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
+    assert!(generated.contains("TLS readTimeout cancelled by worker scope"));
     assert!(
         generated.contains("TLS readTimeout timeoutMillis must be -1 or between 0 and 2147483647")
     );
