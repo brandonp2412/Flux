@@ -5215,4 +5215,36 @@ mod tests {
             "source-only line shifts must not invalidate the semantic surface"
         );
     }
+
+    #[test]
+    fn changed_imported_constant_forces_fresh_semantic_analysis() {
+        let root = test_path("constant-invalidation");
+        fs::create_dir_all(&root).expect("temporary cache project should be writable");
+        let dependency = root.join("constants.flux");
+        let entry = root.join("main.flux");
+        fs::write(&dependency, "pub const LIMIT: i64 = 3\n")
+            .expect("constant dependency should be writable");
+        fs::write(
+            &entry,
+            "import \"constants.flux\"\nfn main() -> i64 {\n    return LIMIT\n}\n",
+        )
+        .expect("cache entry should be writable");
+
+        let mut cache = super::ProjectAnalysisCache::default();
+        let overlays = std::collections::HashMap::new();
+        cache
+            .analyze_with_overlays(&entry, &overlays)
+            .expect("initial project should analyze");
+        fs::write(&dependency, "pub const LIMIT: i64 = 4\n")
+            .expect("changed constant dependency should be writable");
+        cache
+            .invalidate_path(&fs::canonicalize(&dependency).expect("constant path should resolve"));
+        cache
+            .analyze_with_overlays(&entry, &overlays)
+            .expect("changed constant project should analyze");
+
+        assert_eq!(cache.incremental_typecheck_stats().full_runs, 2);
+        assert_eq!(cache.incremental_typecheck_stats().runs, 0);
+        let _ = fs::remove_dir_all(root);
+    }
 }
