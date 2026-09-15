@@ -5516,13 +5516,16 @@ fn terminal_width() -> usize {
 }
 
 fn terminal_color_enabled() -> bool {
-    if env::var_os("NO_COLOR").is_some() || env::var("TERM").is_ok_and(|term| term == "dumb") {
+    if env::var_os("NO_COLOR").is_some() {
         return false;
     }
     if env::var("FORCE_COLOR").is_ok_and(|value| value != "0" && !value.is_empty())
         || env::var("CLICOLOR_FORCE").is_ok_and(|value| value != "0" && !value.is_empty())
     {
         return true;
+    }
+    if env::var("TERM").is_ok_and(|term| term == "dumb") {
+        return false;
     }
     io::stderr().is_terminal()
 }
