@@ -5223,11 +5223,35 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
                         && lifetime.borrower != ownership_move.source
                         && lifetime.borrower != ownership_move.destination
                 })
-                .map(|lifetime| (lifetime.borrower.clone(), lifetime.origin))
+                .map(|lifetime| {
+                    (
+                        lifetime.borrower.clone(),
+                        lifetime.definition,
+                        lifetime.origin,
+                    )
+                })
                 .collect::<Vec<_>>();
-            aliases.sort_by(|left, right| left.0.cmp(&right.0));
-            aliases.dedup_by(|left, right| left.0 == right.0);
-            for (alias, borrow_span) in aliases {
+            aliases.sort_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| {
+                        (
+                            left.2.source_id.value(),
+                            left.2.line,
+                            left.2.column,
+                            left.2.length,
+                        )
+                            .cmp(&(
+                                right.2.source_id.value(),
+                                right.2.line,
+                                right.2.column,
+                                right.2.length,
+                            ))
+                    })
+            });
+            aliases.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+            for (alias, _alias_definition, borrow_span) in aliases {
                 diagnostics.push(
                     diag(
                         ownership_move.span,

@@ -14994,6 +14994,45 @@ fn main() -> i64 {
 }
 
 #[test]
+fn same_named_borrowers_keep_definition_identity_in_lifetime_records() {
+    let source = r#"
+fn choose() -> bool {
+    return true
+}
+
+fn check(flag: bool) -> i64 {
+    let values: i64[] = [10, 20]
+    if flag:
+        let view: i64[] = borrow values
+        print(view[0])
+    else:
+        let view: i64[] = borrow values
+        print(view[1])
+    let destination: i64[] = values
+    print(destination[0])
+    return 0
+}
+
+fn main() -> i64 {
+    return check(choose())
+}
+"#;
+    check_source(source).expect("same-named branch-local borrowers should remain valid");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1214))
+        .expect("same-named branch-local borrowers should analyze");
+    let graph = database
+        .control_flow_graph("check")
+        .expect("check should expose a CFG");
+    let lifetimes = graph
+        .borrow_lifetimes()
+        .iter()
+        .filter(|lifetime| lifetime.borrower == "view" && lifetime.source == "values")
+        .collect::<Vec<_>>();
+    assert_eq!(lifetimes.len(), 2, "both branch-local definitions must retain lifetimes");
+    assert_ne!(lifetimes[0].definition, lifetimes[1].definition);
+}
+
+#[test]
 fn explicit_borrow_rejects_temporaries_copy_values_and_moved_owners() {
     let temporary = r#"
 fn main() -> i64 {
