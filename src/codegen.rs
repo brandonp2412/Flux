@@ -1789,13 +1789,19 @@ fn emit_runtime_prelude(
     {
         out.push_str("#include <pthread.h>\n");
     }
-    if runtime_usage.contains("struct flux__optional_i64") {
+    if runtime_usage.contains("struct flux__optional_i64")
+        || runtime_usage.contains("flux__json_")
+    {
         out.push_str("struct flux__optional_i64 { bool has_value; int64_t value; };\n");
     }
-    if runtime_usage.contains("struct flux__optional_bool") {
+    if runtime_usage.contains("struct flux__optional_bool")
+        || runtime_usage.contains("flux__json_")
+    {
         out.push_str("struct flux__optional_bool { bool has_value; bool value; };\n");
     }
-    if runtime_usage.contains("struct flux__optional_str") {
+    if runtime_usage.contains("struct flux__optional_str")
+        || runtime_usage.contains("flux__json_")
+    {
         out.push_str("struct flux__optional_str { bool has_value; const char *value; };\n");
     }
     if runtime_usage.contains("struct flux__optional_error") {
