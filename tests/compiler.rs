@@ -46202,6 +46202,9 @@ fn main() -> i64 {
     assert!(generated.contains("failed to send WebSocket pong"));
     assert!(generated.contains("failed to acknowledge WebSocket close"));
     assert!(generated.contains("invalid WebSocket close payload"));
+    assert!(generated.contains("code < 1000 || code >= 5000"));
+    assert!(generated.contains("WebSocket text frame exceeds 65535 bytes"));
+    assert!(generated.contains("WebSocket binary frame exceeds 65535 bytes"));
     assert!(generated.contains("flux__websocket_write_text("));
     assert!(generated.contains("flux__websocket_close("));
 
