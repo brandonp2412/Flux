@@ -5754,10 +5754,11 @@ fn compute_move_states(
     edges: &[ControlFlowEdge],
     entry: ControlFlowNodeId,
 ) -> Vec<ControlFlowMoveState> {
-    let mut states = vec![
-        None::<BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>>;
-        nodes.len()
-    ];
+    let mut states =
+        vec![
+            None::<BTreeMap<ControlFlowDefinitionId, (String, Vec<Vec<String>>, SourceSpan)>>;
+            nodes.len()
+        ];
     states[entry.0] = Some(BTreeMap::new());
     let mut queue = VecDeque::from([entry]);
 
@@ -5778,34 +5779,15 @@ fn compute_move_states(
             for definition in &movement.source_definitions {
                 outgoing_state
                     .entry(*definition)
-                    .and_modify(|(_, existing_projection, origin)| {
-                        // A whole-value move subsumes any prior projection.
-                        // The compact per-definition state below keeps a
-                        // single path, so disjoint projections conservatively
-                        // collapse to a whole-value fact.
-                        if movement.projection.is_empty() {
-                            existing_projection.clear();
-                        } else if !existing_projection.is_empty()
-                            && (existing_projection.starts_with(&movement.projection)
-                                || movement.projection.starts_with(existing_projection))
-                        {
-                            if movement.projection.len() < existing_projection.len() {
-                                *existing_projection = movement.projection.clone();
-                            }
-                        } else if !existing_projection.is_empty() {
-                            // This compact state represents one definition;
-                            // disjoint path facts are conservatively joined
-                            // as a whole-value move until the full set of
-                            // partial paths is needed by owned aggregates.
-                            existing_projection.clear();
-                        }
+                    .and_modify(|(_, projections, origin)| {
+                        insert_move_projection(projections, &movement.projection);
                         if span_key(movement.span) < span_key(*origin) {
                             *origin = movement.span;
                         }
                     })
                     .or_insert((
                         movement.source.clone(),
-                        movement.projection.clone(),
+                        vec![movement.projection.clone()],
                         movement.span,
                     ));
             }
@@ -5827,7 +5809,7 @@ fn compute_move_states(
                 for definition in call.argument_definitions_at(index) {
                     outgoing_state.entry(*definition).or_insert((
                         call.callee.clone(),
-                        Vec::new(),
+                        vec![Vec::new()],
                         call.span,
                     ));
                 }
@@ -5856,14 +5838,16 @@ fn compute_move_states(
                 reachable: true,
                 moved: moved
                     .into_iter()
-                    .map(
-                        |(definition, (name, projection, origin))| OwnershipMovedBinding {
-                            definition,
-                            name,
-                            projection,
-                            origin,
-                        },
-                    )
+                    .flat_map(|(definition, (name, projections, origin))| {
+                        projections
+                            .into_iter()
+                            .map(move |projection| OwnershipMovedBinding {
+                                definition,
+                                name: name.clone(),
+                                projection,
+                                origin,
+                            })
+                    })
                     .collect(),
             },
             None => ControlFlowMoveState::default(),
@@ -5872,46 +5856,55 @@ fn compute_move_states(
 }
 
 fn merge_move_state(
-    target: &mut BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>,
-    incoming: &BTreeMap<ControlFlowDefinitionId, (String, Vec<String>, SourceSpan)>,
+    target: &mut BTreeMap<ControlFlowDefinitionId, (String, Vec<Vec<String>>, SourceSpan)>,
+    incoming: &BTreeMap<ControlFlowDefinitionId, (String, Vec<Vec<String>>, SourceSpan)>,
 ) -> bool {
     let mut changed = false;
-    for (definition, (name, projection, origin)) in incoming {
+    for (definition, (name, projections, origin)) in incoming {
         match target.get_mut(definition) {
-            Some((_, existing_projection, existing)) => {
-                let mut projection_changed = false;
-                if existing_projection.is_empty() {
-                    // Existing whole-value consumption already subsumes the
-                    // incoming projection.
-                } else if projection.is_empty() {
-                    existing_projection.clear();
-                    projection_changed = true;
-                } else if existing_projection.starts_with(projection)
-                    || projection.starts_with(existing_projection)
-                {
-                    if projection.len() < existing_projection.len() {
-                        *existing_projection = projection.clone();
-                        projection_changed = true;
-                    }
-                } else {
-                    // Keep the conservative whole-value marker for joins
-                    // where distinct partial moves occur on different paths.
-                    existing_projection.clear();
-                    projection_changed = true;
+            Some((_, existing_projections, existing)) => {
+                for projection in projections {
+                    changed |= insert_move_projection(existing_projections, projection);
                 }
                 if span_key(*origin) < span_key(*existing) {
                     *existing = *origin;
                     changed = true;
                 }
-                changed |= projection_changed;
             }
             None => {
-                target.insert(*definition, (name.clone(), projection.clone(), *origin));
+                target.insert(*definition, (name.clone(), projections.clone(), *origin));
                 changed = true;
             }
         }
     }
     changed
+}
+
+/// Insert one consumed projection while retaining the minimal prefix set.
+/// An empty path denotes the whole value and therefore subsumes every other
+/// path. A shorter path subsumes an existing longer projection; disjoint
+/// projections remain independently queryable.
+fn insert_move_projection(projections: &mut Vec<Vec<String>>, incoming: &[String]) -> bool {
+    if projections.iter().any(Vec::is_empty) {
+        return false;
+    }
+    if incoming.is_empty() {
+        let changed = !projections.iter().any(Vec::is_empty);
+        projections.clear();
+        projections.push(Vec::new());
+        return changed;
+    }
+    if projections
+        .iter()
+        .any(|existing| incoming.starts_with(existing))
+    {
+        return false;
+    }
+    projections.retain(|existing| !existing.starts_with(incoming));
+    projections.push(incoming.to_vec());
+    projections.sort();
+    projections.dedup();
+    true
 }
 
 fn span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
