@@ -6309,7 +6309,24 @@ fn symbol_for_position<'a>(
     character: usize,
     encoding: PositionEncoding,
 ) -> Option<&'a crate::semantic::SemanticSymbol> {
-    let source_id = source_id_for_uri(uri);
+    symbol_for_position_with_source_id(
+        database,
+        source,
+        source_id_for_uri(uri),
+        line_index,
+        character,
+        encoding,
+    )
+}
+
+fn symbol_for_position_with_source_id<'a>(
+    database: &'a crate::semantic::SemanticDatabase,
+    source: &str,
+    source_id: SourceId,
+    line_index: usize,
+    character: usize,
+    encoding: PositionEncoding,
+) -> Option<&'a crate::semantic::SemanticSymbol> {
     let line = source.lines().nth(line_index).unwrap_or("");
     let byte = byte_offset_for_encoded_column(line, character, encoding);
     database
@@ -6464,7 +6481,19 @@ fn definition_for_document_cached(
                 ("range", lsp_range(field.name_span, &target.text, encoding)),
             ]));
         }
-        let symbol = symbol_for_position(&database, uri, source, line_index, character, encoding)?;
+        let source_id = sources
+            .iter()
+            .find(|candidate| candidate.text == source)
+            .map(|candidate| candidate.source_id)
+            .unwrap_or_else(|| source_id_for_uri(uri));
+        let symbol = symbol_for_position_with_source_id(
+            &database,
+            source,
+            source_id,
+            line_index,
+            character,
+            encoding,
+        )?;
         let target = sources
             .iter()
             .find(|candidate| candidate.source_id == symbol.span.source_id)?;
@@ -12187,6 +12216,33 @@ mod tests {
         .expect("view state usage should resolve");
         assert!(definition.to_json().contains("\"line\":3"));
         assert!(definition.to_json().contains("\"character\":10"));
+    }
+
+    #[test]
+    fn project_view_state_definition_uses_analyzed_source_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-lsp-view-state-{}-{}",
+            std::process::id(),
+            1
+        ));
+        std::fs::create_dir_all(&root).expect("temporary LSP project directory should exist");
+        let path = root.join("main.flux");
+        let source = "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n    state clicked: bool = false\n\n    Text title at 1,1\n        text: \"Hello\"\n        visible: clicked\n}\n\napp Demo\n";
+        std::fs::write(&path, source).expect("temporary LSP project source should be writable");
+        let uri = file_uri_from_path(&path);
+        let documents = HashMap::from([(uri.clone(), source.to_string())]);
+        let definition = definition_for_document(
+            &uri,
+            source,
+            &documents,
+            7,
+            source.lines().nth(7).unwrap().find("clicked").unwrap(),
+            PositionEncoding::Utf8,
+        )
+        .expect("project view state usage should resolve");
+        assert!(definition.to_json().contains("\"line\":3"));
+        assert!(definition.to_json().contains("\"character\":10"));
+        std::fs::remove_dir_all(root).expect("temporary LSP project should be removable");
     }
 
     #[test]
