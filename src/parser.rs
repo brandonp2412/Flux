@@ -6671,6 +6671,15 @@ impl ExprParser<'_> {
             TokenKind::LBracket => self.parse_list_literal(token_span),
             TokenKind::LBrace => self.parse_set_literal(token_span),
             TokenKind::Ident(name) => {
+                if name == "map"
+                    && matches!(
+                        self.tokens.get(self.index).map(|token| &token.kind),
+                        Some(TokenKind::LBrace)
+                    )
+                {
+                    self.index += 1;
+                    return self.parse_map_literal(token_span);
+                }
                 if matches!(
                     self.tokens.get(self.index).map(|token| &token.kind),
                     Some(TokenKind::LBrace)
@@ -7295,6 +7304,63 @@ impl ExprParser<'_> {
                 close.span.column + close.span.length - open_span.column,
             ),
             kind: ExprKind::Set(items),
+        })
+    }
+
+    fn parse_map_literal(&mut self, map_span: SourceSpan) -> Result<Expr, Diagnostic> {
+        let mut items = Vec::new();
+        if !matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::RBrace)
+        ) {
+            loop {
+                let key = self.parse_conditional()?;
+                if !matches!(
+                    self.tokens.get(self.index).map(|token| &token.kind),
+                    Some(TokenKind::Colon)
+                ) {
+                    return Err(diag(self.line, "expected ':' in map literal"));
+                }
+                self.index += 1;
+                let value = self.parse_conditional()?;
+                items.push(key);
+                items.push(value);
+                match self.tokens.get(self.index).map(|token| &token.kind) {
+                    Some(TokenKind::Comma) => {
+                        self.index += 1;
+                        if matches!(
+                            self.tokens.get(self.index).map(|token| &token.kind),
+                            Some(TokenKind::RBrace)
+                        ) {
+                            break;
+                        }
+                    }
+                    Some(TokenKind::RBrace) => break,
+                    _ => return Err(diag(self.line, "expected ',' or '}' in map literal")),
+                }
+            }
+        }
+        let close = self
+            .tokens
+            .get(self.index)
+            .cloned()
+            .ok_or_else(|| diag(self.line, "expected '}' after map literal"))?;
+        if !matches!(close.kind, TokenKind::RBrace) {
+            return Err(Diagnostic::new(
+                DiagnosticStage::Parse,
+                close.span,
+                "expected '}' after map literal",
+            ));
+        }
+        self.index += 1;
+        Ok(Expr {
+            line: self.line,
+            span: SourceSpan::new(
+                self.line,
+                map_span.column,
+                close.span.column + close.span.length - map_span.column,
+            ),
+            kind: ExprKind::Map(items),
         })
     }
 

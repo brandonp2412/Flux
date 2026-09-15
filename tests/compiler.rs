@@ -115,6 +115,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicitly_typed_empty_map_uses_an_unambiguous_literal() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let values: map<str, i64> = map{}
+    json.encode(values, emit)
+    return 0
+}
+"#;
+    check_source(source).expect("explicitly typed empty maps should typecheck");
+    let formatted = fluxc::formatter::format_source(source).expect("empty map should format");
+    assert!(formatted.contains("map{}"));
+    let reformatted =
+        fluxc::formatter::format_source(&formatted).expect("formatted map should parse");
+    assert_eq!(formatted, reformatted);
+    let generated = compile_to_c(source).expect("empty maps should lower");
+    assert!(generated.contains(".len = 0"));
+}
+
+#[test]
 fn calendar_value_is_typed_native_and_field_addressable() {
     let source = r#"
 fn main() -> i64 {

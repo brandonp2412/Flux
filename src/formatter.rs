@@ -1142,7 +1142,8 @@ fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
                 .join(", ")
         ),
         ExprKind::Map(items) => format!(
-            "{{{}}}",
+            "{}{{{}}}",
+            if items.is_empty() { "map" } else { "" },
             items
                 .chunks(2)
                 .map(|entry| format!(
