@@ -8013,6 +8013,13 @@ fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<String>> {
 }
 
 fn write_message<W: Write>(writer: &mut W, payload: &str) -> io::Result<()> {
+    const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+    if payload.len() > MAX_LSP_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LSP response exceeds the 16 MiB limit",
+        ));
+    }
     write!(writer, "Content-Length: {}\r\n\r\n{payload}", payload.len())?;
     writer.flush()
 }
@@ -8344,6 +8351,20 @@ mod tests {
         let error = read_message(&mut reader).expect_err("oversized LSP message must be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "LSP message exceeds the 16 MiB limit");
+    }
+
+    #[test]
+    fn lsp_message_writer_rejects_oversized_response_before_writing() {
+        let payload = "x".repeat(16 * 1024 * 1024 + 1);
+        let mut output = Vec::new();
+        let error = write_message(&mut output, &payload)
+            .expect_err("oversized LSP response must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "LSP response exceeds the 16 MiB limit");
+        assert!(
+            output.is_empty(),
+            "rejected responses must not write a partial frame"
+        );
     }
 
     #[test]
