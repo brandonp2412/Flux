@@ -1527,6 +1527,10 @@ fn add_qualified_namespace_completions(
                 "fn net.writePartsTo(socket: i64, host: str, port: i64, parts: str[]) -> error",
             ),
             (
+                "writeBytesTo",
+                "fn net.writeBytesTo(socket: i64, host: str, port: i64, bytes: i64[]) -> (i64, error)",
+            ),
+            (
                 "read",
                 "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),

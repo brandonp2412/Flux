@@ -6450,6 +6450,28 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_send_text_to(") {
         out.push_str("static inline const char *flux__net_send_text_to(int64_t socket_handle, const char *host, int64_t port, const char *text) { if (socket_handle < 0 || socket_handle > INT_MAX) return \"invalid socket handle\"; if (port < 1 || port > 65535) return \"sendTextTo port must be between 1 and 65535\"; int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return \"failed to inspect socket type\"; if (socket_type != SOCK_DGRAM) return \"sendTextTo requires a UDP socket\"; struct sockaddr_storage local; socklen_t local_length = sizeof(local); if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return \"failed to read UDP socket address\"; char service[6]; snprintf(service, sizeof(service), \"%lld\", (long long)port); struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = local.ss_family; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP; struct addrinfo *addresses = NULL; if (getaddrinfo(host, service, &hints, &addresses) != 0) return \"failed to resolve UDP peer\"; size_t length = strlen(text); if (length > (size_t)SSIZE_MAX) { freeaddrinfo(addresses); return \"text is too large to send\"; } const char *failure = \"failed to send UDP text\"; for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { ssize_t sent; do { sent = sendto((int)socket_handle, text, length, 0, address->ai_addr, address->ai_addrlen); } while (sent < 0 && errno == EINTR); if (sent == (ssize_t)length) { failure = NULL; break; } } freeaddrinfo(addresses); return failure; }\n");
     }
+    if runtime_usage.contains("flux__net_send_bytes_to(") {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes_to(int64_t socket_handle, const char *host, int64_t port, struct flux__list bytes) {
+    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (port < 1 || port > 65535) return flux__net_result(-1, "sendBytesTo port must be between 1 and 65535");
+    if (bytes.len > 65507) return flux__net_result(-1, "UDP binary datagram exceeds 65507 bytes");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_DGRAM) return flux__net_result(-1, "sendBytesTo requires a UDP socket");
+    struct sockaddr_storage local; socklen_t local_length = sizeof(local);
+    if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return flux__net_result(-1, "failed to read UDP socket address");
+    char service[6]; snprintf(service, sizeof(service), "%lld", (long long)port);
+    struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = local.ss_family; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP;
+    struct addrinfo *addresses = NULL; if (getaddrinfo(host, service, &hints, &addresses) != 0) return flux__net_result(-1, "failed to resolve UDP peer");
+    unsigned char payload[65507]; ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    for (size_t index = 0; index < bytes.len; index += 1) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesTo byte values must be between 0 and 255"); } payload[index] = (unsigned char)value; }
+    struct flux__net_i64_error result = flux__net_result(-1, "failed to send UDP bytes");
+    for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { ssize_t sent; do { sent = sendto((int)socket_handle, payload, bytes.len, 0, address->ai_addr, address->ai_addrlen); } while (sent < 0 && errno == EINTR); if (sent == (ssize_t)bytes.len) { result = flux__net_result((int64_t)sent, NULL); break; } }
+    freeaddrinfo(addresses); return result;
+}
+"#);
+    }
     if runtime_usage.contains("flux__net_receive_text(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_text(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveText maxBytes must be between 1 and 65536\"); char buffer[65537]; ssize_t received; do { received = recv((int)socket_handle, buffer, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive text\"); if (memchr(buffer, '\\0', (size_t)received) != NULL) return flux__net_result(-1, \"received text contains a NUL byte\"); buffer[received] = '\\0'; callback(socket_handle, buffer); return flux__net_result((int64_t)received, NULL); }\n");
     }
@@ -35957,6 +35979,23 @@ fn emit_qualified_call(
                     ),
                     vec![Type::Error],
                     None,
+                ));
+            }
+            "sendBytesTo" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let host = emit_expr(&args[1], env, signatures)?;
+                let port = emit_expr(&args[2], env, signatures)?;
+                let bytes = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_send_bytes_to({}, {}, {}, {})",
+                        socket_handle.code, host.code, port.code, bytes.code
+                    ),
+                    vec![Type::I64, Type::Error],
+                    Some("flux__net_i64_error".to_string()),
                 ));
             }
             "receiveTextWithTimeout" => {
