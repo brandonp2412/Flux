@@ -11139,6 +11139,35 @@ fn check_qualified_call(
                     .collect(),
                 )]);
             }
+            "calendarZone" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("time.calendarZone expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                let unix_millis = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &unix_millis,
+                    "time.calendarZone unixMillis",
+                )?;
+                let zone = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &zone, "time.calendarZone zone")?;
+                let callback = signatures.canonical_type(&type_of_expr(&args[2], env, signatures)?);
+                let expected = Type::Function {
+                    params: vec![Type::I64; 10],
+                    returns: Vec::new(),
+                };
+                require_type(
+                    args[2].span,
+                    &expected,
+                    &callback,
+                    "time.calendarZone callback",
+                )?;
+                return Ok(vec![Type::Error]);
+            }
             "unixMillis" | "monotonicMillis" => {
                 if !args.is_empty() {
                     return Err(diag(

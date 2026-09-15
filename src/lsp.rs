@@ -1886,6 +1886,10 @@ fn add_qualified_namespace_completions(
                 "calendar",
                 "fn time.calendar(unixMillis: i64) -> (year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64)",
             ),
+            (
+                "calendarZone",
+                "fn time.calendarZone(unixMillis: i64, zone: str, callback: fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> void) -> error",
+            ),
             ("milliseconds", "fn time.milliseconds(value: i64) -> i64"),
             ("seconds", "fn time.seconds(value: i64) -> i64"),
             ("minutes", "fn time.minutes(value: i64) -> i64"),

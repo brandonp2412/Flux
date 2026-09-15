@@ -6465,6 +6465,7 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__time_utc_part(")
         || runtime_usage.contains("flux__time_calendar(")
+        || runtime_usage.contains("flux__time_calendar_zone(")
     {
         out.push_str("static inline int64_t flux__time_utc_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: UTC timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (gmtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: UTC calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid UTC calendar part\\n\", stderr); abort(); } }\n");
     }
@@ -6597,6 +6598,7 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     }
     if runtime_usage.contains("flux__time_format_zone(")
         || runtime_usage.contains("flux__time_zone_offset(")
+        || runtime_usage.contains("flux__time_calendar_zone(")
     {
         out.push_str(
             "#if defined(__GLIBC__)\nstatic volatile int flux_time_zone_transaction_lock = 0;\n#endif\n",
@@ -6668,7 +6670,9 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
 }
 "#);
     }
-    if runtime_usage.contains("flux__time_zone_offset(") {
+    if runtime_usage.contains("flux__time_zone_offset(")
+        || runtime_usage.contains("flux__time_calendar_zone(")
+    {
         out.push_str(r#"struct flux__time_i64_error { int64_t v0; const char *v1; };
 static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms, const char *zone) {
 #if defined(__GLIBC__)
@@ -6713,6 +6717,17 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
     (void)unix_ms; (void)zone;
     return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset is unavailable on this native target" };
 #endif
+}
+"#);
+    }
+    if runtime_usage.contains("flux__time_calendar_zone(") {
+        out.push_str(r#"static inline const char *flux__time_calendar_zone(int64_t unix_ms, const char *zone, void (*callback)(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t)) {
+    struct flux__time_i64_error offset = flux__time_zone_offset(unix_ms, zone);
+    if (offset.v1 != NULL) return offset.v1;
+    int64_t local_ms;
+    if (__builtin_mul_overflow(offset.v0, INT64_C(60000), &local_ms) || __builtin_add_overflow(unix_ms, local_ms, &local_ms)) return "time.calendarZone timestamp exceeds i64 range";
+    callback(flux__time_utc_part(local_ms, 0), flux__time_utc_part(local_ms, 1), flux__time_utc_part(local_ms, 2), flux__time_utc_part(local_ms, 3), flux__time_utc_part(local_ms, 4), flux__time_utc_part(local_ms, 5), flux__time_utc_part(local_ms, 6), flux__time_utc_part(local_ms, 7), flux__time_utc_part(local_ms, 8), offset.v0);
+    return NULL;
 }
 "#);
     }
@@ -35423,6 +35438,25 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid time call reached code generation"));
         }
         match name {
+            "calendarZone" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        "invalid time.calendarZone call reached code generation",
+                    ));
+                }
+                let unix_millis = emit_expr(&args[0], env, signatures)?;
+                let zone = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__time_calendar_zone({}, {}, {})",
+                        unix_millis.code, zone.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
             "calendar" => {
                 if args.len() != 1 {
                     return Err(diag(

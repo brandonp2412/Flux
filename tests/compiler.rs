@@ -80,6 +80,60 @@ fn main() -> i64 {
 }
 
 #[test]
+fn named_time_zone_calendar_callback_is_dst_aware_and_borrowed() {
+    let source = r#"
+fn emit(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64, offset: i64) -> void {
+    print(year)
+    print(month)
+    print(day)
+    print(hour)
+    print(minute)
+    print(second)
+    print(millis)
+    print(weekday)
+    print(dayOfYear)
+    print(offset)
+}
+fn main() -> i64 {
+    let result: error = time.calendarZone(946782245006, "America/New_York", emit)
+    if result != nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("named-zone calendar should typecheck");
+    let generated = compile_to_c(source).expect("named-zone calendar should lower");
+    assert!(generated.contains("flux__time_calendar_zone("));
+    let root = std::env::temp_dir().join(format!("flux-zone-calendar-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("zone calendar fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("zone calendar source should be writable");
+    let binary = root.join("zone-calendar");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("zone calendar binary should build");
+    assert!(
+        build.status.success(),
+        "zone calendar build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("zone calendar binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "2000\n1\n1\n22\n4\n5\n6\n6\n1\n-300\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn named_time_zone_formatting_is_bounded_and_native() {
     let source = r#"
 fn emit(value: str) -> void {
