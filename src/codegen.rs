@@ -1826,9 +1826,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
     {
-        out.push_str(
-            "#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE\n#endif\n#include <time.h>\n",
-        );
+        out.push_str("#ifndef _GNU_SOURCE\n#define _GNU_SOURCE\n#endif\n#include <time.h>\n");
     }
     if runtime_usage.contains("flux__locale_format_") && !uses_android {
         out.push_str("#include <locale.h>\n#include <monetary.h>\n");
@@ -6581,6 +6579,73 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if (suffix < 0 || (size_t)written + (size_t)suffix >= sizeof(buffer)) return "time.formatOffset result exceeds buffer";
     callback(buffer);
     return NULL;
+}
+"#);
+    }
+    if runtime_usage.contains("flux__time_format_zone(") {
+        out.push_str(r#"static inline const char *flux__time_format_zone(int64_t unix_ms, const char *zone, void (*callback)(const char *)) {
+#if defined(__GLIBC__)
+    static volatile int flux_time_zone_lock = 0;
+    if (zone == NULL || zone[0] == '\0') return "time.formatZone zone must not be empty";
+    size_t zone_length = strlen(zone);
+    if (zone_length > 128) return "time.formatZone zone is too long";
+    for (size_t index = 0; index < zone_length; index += 1) {
+        unsigned char byte = (unsigned char)zone[index];
+        if (byte < 0x20 || byte == 0x7f) return "time.formatZone zone contains a control character";
+    }
+    if (zone[0] == '/' || strstr(zone, "..") != NULL) return "time.formatZone zone is not a valid IANA name";
+    char zone_path[160];
+    int zone_path_length = snprintf(zone_path, sizeof(zone_path), "/usr/share/zoneinfo/%s", zone);
+    if (zone_path_length < 0 || (size_t)zone_path_length >= sizeof(zone_path)) return "time.formatZone zone is too long";
+    FILE *zone_file = fopen(zone_path, "rb");
+    if (zone_file == NULL) return "time.formatZone zone could not be loaded";
+    fclose(zone_file);
+    int64_t seconds = unix_ms / INT64_C(1000);
+    int64_t millis = unix_ms % INT64_C(1000);
+    if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); }
+    time_t native_seconds = (time_t)seconds;
+    if ((int64_t)native_seconds != seconds) return "time.formatZone timestamp exceeds platform range";
+    while (__sync_lock_test_and_set(&flux_time_zone_lock, 1) != 0) { }
+    const char *previous_zone = getenv("TZ");
+    char previous_zone_copy[129];
+    bool had_previous_zone = previous_zone != NULL;
+    if (had_previous_zone) {
+        size_t previous_length = strlen(previous_zone);
+        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_lock); return "time.formatZone previous host zone is too long"; }
+        memcpy(previous_zone_copy, previous_zone, previous_length + 1);
+    }
+    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_lock); return "time.formatZone zone could not be selected"; }
+    tzset();
+    struct tm value;
+    if (localtime_r(&native_seconds, &value) == NULL) {
+        if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
+        tzset();
+        __sync_lock_release(&flux_time_zone_lock);
+        return "time.formatZone calendar conversion failed";
+    }
+    int64_t year = (int64_t)value.tm_year + INT64_C(1900);
+    if (year < -9999 || year > 9999) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone year does not fit ISO-8601 form"; }
+    long offset_seconds = value.__tm_gmtoff;
+    char buffer[40];
+    const char *year_format = year < 0 ? "%05lld" : "%04lld";
+    int written = snprintf(buffer, sizeof(buffer), year_format, (long long)year);
+    if (written < 0 || (size_t)written >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone result exceeds buffer"; }
+    long absolute_offset = labs(offset_seconds);
+    int suffix = snprintf(buffer + written, sizeof(buffer) - (size_t)written,
+        "-%02d-%02dT%02d:%02d:%02d.%03lld%c%02ld:%02ld", value.tm_mon + 1,
+        value.tm_mday, value.tm_hour, value.tm_min, value.tm_sec, (long long)millis,
+        offset_seconds < 0 ? '-' : '+', absolute_offset / 3600,
+        (absolute_offset % 3600) / 60);
+    if (suffix < 0 || (size_t)written + (size_t)suffix >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone result exceeds buffer"; }
+    if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
+    tzset();
+    __sync_lock_release(&flux_time_zone_lock);
+    callback(buffer);
+    return NULL;
+#else
+    (void)unix_ms; (void)zone; (void)callback;
+    return "time.formatZone is unavailable on this native target";
+#endif
 }
 "#);
     }
@@ -35411,8 +35476,12 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "formatUtc" | "formatLocal" | "formatOffset" => {
-                let expected_args = if name == "formatOffset" { 3 } else { 2 };
+            "formatUtc" | "formatLocal" | "formatOffset" | "formatZone" => {
+                let expected_args = if matches!(name, "formatOffset" | "formatZone") {
+                    3
+                } else {
+                    2
+                };
                 if args.len() != expected_args {
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
@@ -35424,6 +35493,18 @@ fn emit_qualified_call(
                         format!(
                             "flux__time_format_offset({}, {}, {})",
                             timestamp.code, offset.code, callback.code
+                        ),
+                        vec![Type::Error],
+                        None,
+                    ));
+                }
+                if name == "formatZone" {
+                    let zone = emit_expr(&args[1], env, signatures)?;
+                    let callback = emit_expr(&args[2], env, signatures)?;
+                    return Ok((
+                        format!(
+                            "flux__time_format_zone({}, {}, {})",
+                            timestamp.code, zone.code, callback.code
                         ),
                         vec![Type::Error],
                         None,

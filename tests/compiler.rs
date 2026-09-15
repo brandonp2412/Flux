@@ -34,6 +34,68 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn named_time_zone_formatting_is_bounded_and_native() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let result: error = time.formatZone(946782245006, "America/New_York", emit)
+    if result != nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("named-zone formatting should typecheck");
+    let generated = compile_to_c(source).expect("named-zone formatting should lower");
+    assert!(generated.contains("flux__time_format_zone("));
+    let root = std::env::temp_dir().join(format!("flux-zone-format-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("zone formatter fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("zone formatter source should be writable");
+    let binary = root.join("zone-format");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("zone formatter binary should build");
+    assert!(
+        build.status.success(),
+        "zone formatter build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("zone formatter binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "2000-01-01T22:04:05.006-05:00"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn named_time_zone_formatting_rejects_unknown_zones() {
+    let source = r#"
+fn emit(_value: str) -> void {
+}
+fn main() -> i64 {
+    let result: error = time.formatZone(0, "Not/AZone", emit)
+    if result == nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("unknown-zone handling should typecheck");
+    let generated = compile_to_c(source).expect("unknown-zone handling should lower");
+    assert!(generated.contains("zone could not be loaded"));
+}
+
+#[test]
 fn ui_targets_integrate_callbacks_with_native_event_loops() {
     let source = r#"
 view Screen {

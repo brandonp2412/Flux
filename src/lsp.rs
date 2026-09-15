@@ -1955,6 +1955,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "formatZone",
+            3,
+            "fn time.formatZone(unixMillis: i64, zone: str, callback: fn(str) -> void) -> error",
+        );
         for member in [
             "year",
             "month",
@@ -4410,6 +4417,14 @@ fn signature_help_for_document_cached(
                             "offsetMinutes: i64",
                             "callback: fn(str) -> void",
                         ],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "formatZone" => {
+                    return Some(signature_help_for_builtin(
+                        "time.formatZone",
+                        &["unixMillis: i64", "zone: str", "callback: fn(str) -> void"],
                         "error",
                         active_parameter,
                     ));
@@ -8303,6 +8318,9 @@ mod tests {
         assert!(time_items.contains("fn time.localDayOfYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.localOffset(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error"));
+        assert!(time_items.contains(
+            "fn time.formatZone(unixMillis: i64, zone: str, callback: fn(str) -> void) -> error"
+        ));
         assert!(time_items.contains("fn time.seconds(value: i64) -> i64"));
         assert!(time_items.contains("fn time.minutes(value: i64) -> i64"));
 
@@ -10349,7 +10367,7 @@ mod tests {
     #[test]
     fn signature_help_supports_time_capabilities() {
         let uri = "file:///tmp/time-signatures.flux";
-        let source = "fn callback() -> void {\n}\nfn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    let (_after, _afterError) = time.after(10, callback)\n    let (_every, _everyError) = time.every(10, callback)\n    time.sleepUntilMonotonic(time.monotonicMillis())\n    print(time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6))\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    return 0\n}\n";
+        let source = "fn callback() -> void {\n}\nfn emit(value: str) -> void {\n}\nfn main() -> i64 {\n    print(time.unixMillis())\n    print(time.monotonicMillis())\n    time.sleepMillis(10)\n    let (_after, _afterError) = time.after(10, callback)\n    let (_every, _everyError) = time.every(10, callback)\n    time.sleepUntilMonotonic(time.monotonicMillis())\n    print(time.utcUnixMillis(2000, 1, 2, 3, 4, 5, 6))\n    print(time.utcYear(0))\n    print(time.utcWeekday(0))\n    let _zoneError: error = time.formatZone(0, \"UTC\", emit)\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("time.unixMillis(", "fn time.now() -> i64"),
@@ -10375,6 +10393,10 @@ mod tests {
                 "fn time.utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
             ),
             ("time.utcYear(", "fn time.year(unixMillis: i64) -> i64"),
+            (
+                "time.formatZone(",
+                "fn time.formatZone(unixMillis: i64, zone: str, callback: fn(str) -> void) -> error",
+            ),
             (
                 "time.utcWeekday(",
                 "fn time.weekday(unixMillis: i64) -> i64",

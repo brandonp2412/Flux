@@ -11376,8 +11376,11 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
-            "formatUtc" | "formatLocal" | "formatOffset" => {
-                let expected_args = if name == "formatOffset" { 3 } else { 2 };
+            "formatUtc" | "formatLocal" | "formatOffset" | "formatZone" => {
+                let expected_args = match name.as_str() {
+                    "formatOffset" | "formatZone" => 3,
+                    _ => 2,
+                };
                 if args.len() != expected_args {
                     return Err(diag(
                         span,
@@ -11412,7 +11415,11 @@ fn check_qualified_call(
                         ));
                     }
                 }
-                let callback_arg = if name == "formatOffset" {
+                if name == "formatZone" {
+                    let zone = type_of_expr(&args[1], env, signatures)?;
+                    require_type(args[1].span, &Type::Str, &zone, "time.formatZone zone")?;
+                }
+                let callback_arg = if matches!(name.as_str(), "formatOffset" | "formatZone") {
                     &args[2]
                 } else {
                     &args[1]
