@@ -6594,6 +6594,12 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__time_days_in_month(") {
         out.push_str("static inline int64_t flux__time_days_in_month(int64_t year, int64_t month) { if (month < 1 || month > 12) { fputs(\"Flux runtime error: time.daysInMonth month must be between 1 and 12\\n\", stderr); abort(); } bool leap = year % INT64_C(4) == 0 && (year % INT64_C(100) != 0 || year % INT64_C(400) == 0); if (month == 2) return leap ? INT64_C(29) : INT64_C(28); return (month == 4 || month == 6 || month == 9 || month == 11) ? INT64_C(30) : INT64_C(31); }\n");
     }
+    if runtime_usage.contains("flux__time_days_in_year(") {
+        out.push_str("static inline int64_t flux__time_days_in_year(int64_t year) { return (year % INT64_C(4) == 0 && (year % INT64_C(100) != 0 || year % INT64_C(400) == 0)) ? INT64_C(366) : INT64_C(365); }\n");
+    }
+    if runtime_usage.contains("flux__time_local_unix_millis(") {
+        out.push_str("static inline int64_t flux__time_local_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid local calendar component\\n\", stderr); abort(); } bool leap = year % INT64_C(4) == 0 && (year % INT64_C(100) != 0 || year % INT64_C(400) == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid local calendar day\\n\", stderr); abort(); } int64_t tm_year; if (__builtin_sub_overflow(year, INT64_C(1900), &tm_year) || (int64_t)(int)tm_year != tm_year) { fputs(\"Flux runtime error: local calendar year exceeds platform range\\n\", stderr); abort(); } struct tm value = { .tm_year = (int)tm_year, .tm_mon = (int)month - 1, .tm_mday = (int)day, .tm_hour = (int)hour, .tm_min = (int)minute, .tm_sec = (int)second, .tm_isdst = -1 }; time_t native_seconds = mktime(&value); if (native_seconds == (time_t)-1 || (int64_t)native_seconds != (int64_t)(time_t)native_seconds) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } int64_t result; if (__builtin_mul_overflow((int64_t)native_seconds, INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: local calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
+    }
 
     if runtime_usage.contains("flux__preferences_") {
         out.push_str(
@@ -35308,6 +35314,37 @@ fn emit_qualified_call(
                 let month = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!("flux__time_days_in_month({}, {})", year.code, month.code),
+                    vec![Type::I64],
+                    None,
+                ));
+            }
+            "local" => {
+                if args.len() != 7 {
+                    return Err(diag(
+                        span,
+                        "invalid time.local call reached code generation",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((
+                    format!("flux__time_local_unix_millis({})", values.join(", ")),
+                    vec![Type::I64],
+                    None,
+                ));
+            }
+            "daysInYear" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid time.daysInYear call reached code generation",
+                    ));
+                }
+                let year = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__time_days_in_year({})", year.code),
                     vec![Type::I64],
                     None,
                 ));

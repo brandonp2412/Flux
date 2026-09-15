@@ -11127,6 +11127,102 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
+            "daysInYear" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("time.daysInYear expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &actual, "time.daysInYear year")?;
+                return Ok(vec![Type::I64]);
+            }
+            "local" => {
+                if args.len() != 7 {
+                    return Err(diag(
+                        span,
+                        &format!("time.local expects 7 arguments, got {}", args.len()),
+                    ));
+                }
+                for (arg, label) in args.iter().zip([
+                    "year",
+                    "month",
+                    "day",
+                    "hour",
+                    "minute",
+                    "second",
+                    "millisecond",
+                ]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    require_type(
+                        arg.span,
+                        &Type::I64,
+                        &actual,
+                        &format!("time.local {label}"),
+                    )?;
+                }
+                for (index, (arg, range)) in args
+                    .iter()
+                    .zip([
+                        (i64::MIN, i64::MAX),
+                        (1, 12),
+                        (1, 31),
+                        (0, 23),
+                        (0, 59),
+                        (0, 59),
+                        (0, 999),
+                    ])
+                    .enumerate()
+                    .skip(1)
+                {
+                    if matches!(constant_primitive_value(arg, signatures), Some(ConstantValue::I64(value)) if value < range.0 || value > range.1)
+                    {
+                        return Err(diag(
+                            arg.span,
+                            &format!(
+                                "time.local {} is out of range",
+                                [
+                                    "year",
+                                    "month",
+                                    "day",
+                                    "hour",
+                                    "minute",
+                                    "second",
+                                    "millisecond"
+                                ][index]
+                            ),
+                        ));
+                    }
+                }
+                if let (
+                    Some(ConstantValue::I64(year)),
+                    Some(ConstantValue::I64(month)),
+                    Some(ConstantValue::I64(day)),
+                ) = (
+                    constant_primitive_value(&args[0], signatures),
+                    constant_primitive_value(&args[1], signatures),
+                    constant_primitive_value(&args[2], signatures),
+                ) {
+                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                    let max_day = if month == 2 {
+                        if leap { 29 } else { 28 }
+                    } else if matches!(month, 4 | 6 | 9 | 11) {
+                        30
+                    } else {
+                        31
+                    };
+                    if day > max_day {
+                        return Err(diag(
+                            args[2].span,
+                            &format!(
+                                "time.local day {day} is invalid for year {year}, month {month}"
+                            ),
+                        ));
+                    }
+                }
+                return Ok(vec![Type::I64]);
+            }
             "sleep" | "sleepMillis" => {
                 if args.len() != 1 {
                     return Err(diag(

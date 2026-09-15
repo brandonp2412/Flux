@@ -9618,6 +9618,9 @@ fn main() -> i64 {
     print(time.daysInMonth(2024, 2))
     print(time.daysInMonth(2023, 2))
     print(time.daysInMonth(2023, 11))
+    print(time.daysInYear(2000))
+    print(time.daysInYear(1900))
+    print(time.local(1970, 1, 1, 0, 0, 0, 0))
     return 0
 }
 "#;
@@ -9643,12 +9646,13 @@ fn main() -> i64 {
         String::from_utf8_lossy(&build.stderr)
     );
     let run = Command::new(&binary)
+        .env("TZ", "UTC")
         .output()
         .expect("calendar helper binary should run");
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "true\nfalse\n29\n28\n30\n"
+        "true\nfalse\n29\n28\n30\n366\n365\n0\n"
     );
     let invalid = "fn main() -> i64 {\n    return time.daysInMonth(2023, 13)\n}\n";
     let error = check_source(invalid).expect_err("constant invalid month should fail");
@@ -9657,6 +9661,9 @@ fn main() -> i64 {
             .message
             .contains("time.daysInMonth month must be between 1 and 12")
     );
+    let invalid_local = "fn main() -> i64 {\n    return time.local(2023, 2, 30, 0, 0, 0, 0)\n}\n";
+    let error = check_source(invalid_local).expect_err("constant invalid local day should fail");
+    assert!(error.message.contains("time.local day 30 is invalid"));
     let _ = fs::remove_dir_all(root);
 }
 

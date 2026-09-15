@@ -1889,6 +1889,11 @@ fn add_qualified_namespace_completions(
                 "daysInMonth",
                 "fn time.daysInMonth(year: i64, month: i64) -> i64",
             ),
+            ("daysInYear", "fn time.daysInYear(year: i64) -> i64"),
+            (
+                "local",
+                "fn time.local(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64) -> i64",
+            ),
         ] {
             push_completion_item(items, seen, label, 3, detail);
         }
@@ -4321,6 +4326,30 @@ fn signature_help_for_document_cached(
                     return Some(signature_help_for_builtin(
                         "time.daysInMonth",
                         &["year: i64", "month: i64"],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "daysInYear" => {
+                    return Some(signature_help_for_builtin(
+                        "time.daysInYear",
+                        &["year: i64"],
+                        "i64",
+                        active_parameter,
+                    ));
+                }
+                "local" => {
+                    return Some(signature_help_for_builtin(
+                        "time.local",
+                        &[
+                            "year: i64",
+                            "month: i64",
+                            "day: i64",
+                            "hour: i64",
+                            "minute: i64",
+                            "second: i64",
+                            "millisecond: i64",
+                        ],
                         "i64",
                         active_parameter,
                     ));
