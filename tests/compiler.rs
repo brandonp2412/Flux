@@ -46848,6 +46848,31 @@ fn main() -> i64 {
 }
 
 #[test]
+fn binary_socket_writes_reject_statically_invalid_literal_bytes() {
+    for source in [
+        r#"fn main() -> i64 {
+    let (_written, _failure) = net.writeBytes(1, [65, 256])
+    return 0
+}
+"#,
+        r#"fn main() -> i64 {
+    let _failure: error = websocket.writeBytes(1, [-1])
+    return 0
+}
+"#,
+    ] {
+        let errors =
+            check_source_all(source).expect_err("invalid literal bytes should fail statically");
+        assert!(
+            errors.iter().any(|error| error
+                .message
+                .contains("byte values must be between 0 and 255")),
+            "expected byte-range diagnostic, got {errors:?}"
+        );
+    }
+}
+
+#[test]
 fn binary_socket_write_delivers_nul_and_high_bytes_without_text_conversion() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("binary-write listener should bind");
     let port = listener.local_addr().unwrap().port();

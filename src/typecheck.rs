@@ -7977,6 +7977,7 @@ fn check_qualified_call(
                     &bytes,
                     "websocket.writeBytes bytes",
                 )?;
+                validate_literal_byte_list(&args[1], signatures, "websocket.writeBytes")?;
                 return Ok(vec![Type::Error]);
             }
             "ping" | "pong" => {
@@ -8811,6 +8812,7 @@ fn check_qualified_call(
                     &bytes,
                     "net.writeBytes bytes",
                 )?;
+                validate_literal_byte_list(&args[1], signatures, "net.writeBytes")?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "sendBytesProgress" => {
@@ -8834,6 +8836,7 @@ fn check_qualified_call(
                     &bytes,
                     "net.writeBytesFrom bytes",
                 )?;
+                validate_literal_byte_list(&args[1], signatures, "net.writeBytesFrom")?;
                 let offset = type_of_expr(&args[2], env, signatures)?;
                 require_type(
                     args[2].span,
@@ -8874,6 +8877,7 @@ fn check_qualified_call(
                     &bytes,
                     "net.writeBytesTimeout bytes",
                 )?;
+                validate_literal_byte_list(&args[1], signatures, "net.writeBytesTimeout")?;
                 let timeout = type_of_expr(&args[2], env, signatures)?;
                 require_type(
                     args[2].span,
@@ -8916,6 +8920,7 @@ fn check_qualified_call(
                     &bytes,
                     "net.writeBytesFromTimeout bytes",
                 )?;
+                validate_literal_byte_list(&args[1], signatures, "net.writeBytesFromTimeout")?;
                 let offset = type_of_expr(&args[2], env, signatures)?;
                 require_type(
                     args[2].span,
@@ -12809,6 +12814,27 @@ pub(crate) fn constant_primitive_value(
     signatures: &Signatures,
 ) -> Option<ConstantValue> {
     evaluate_default_expr(expr, signatures).ok()
+}
+
+fn validate_literal_byte_list(
+    expr: &Expr,
+    signatures: &Signatures,
+    operation: &str,
+) -> Result<(), Diagnostic> {
+    let ExprKind::List(items) = &expr.kind else {
+        return Ok(());
+    };
+    for item in items {
+        if let Some(ConstantValue::I64(value)) = constant_primitive_value(item, signatures) {
+            if !(0..=255).contains(&value) {
+                return Err(diag(
+                    item.span,
+                    &format!("{operation} byte values must be between 0 and 255"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn evaluate_default_expr(
