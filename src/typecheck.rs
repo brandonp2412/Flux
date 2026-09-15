@@ -5762,7 +5762,7 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
 fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
     match signatures.canonical_type(ty) {
         Type::I64 | Type::Bool | Type::Str => true,
-        Type::List(inner) => json_array_type_is_supported(&inner, signatures),
+        Type::List(inner) | Type::Set(inner) => json_array_type_is_supported(&inner, signatures),
         _ => false,
     }
 }
@@ -10862,6 +10862,10 @@ fn check_qualified_call(
                         &signatures.canonical_type(element),
                         signatures,
                     ),
+                    Type::Set(element) => json_array_type_is_supported(
+                        &signatures.canonical_type(element),
+                        signatures,
+                    ),
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
                             && json_map_value_type_is_supported(&signatures.canonical_type(element))
@@ -10903,10 +10907,10 @@ fn check_qualified_call(
                     ));
                 }
                 let value = signatures.canonical_type(&type_of_expr(&args[0], env, signatures)?);
-                let Type::List(element) = value else {
+                let (Type::List(element) | Type::Set(element)) = value else {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeArray values must be a list of i64, bool, or str",
+                        "json.encodeArray values must be a list or set of i64, bool, or str",
                     ));
                 };
                 let element = signatures.canonical_type(&element);

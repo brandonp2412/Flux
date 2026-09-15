@@ -33005,7 +33005,7 @@ fn json_array_encoding_shape(
                     depth,
                 ));
             }
-            Type::List(inner) => {
+            Type::List(inner) | Type::Set(inner) => {
                 depth += 1;
                 if depth > 128 {
                     return Err("json.encodeArray nesting exceeds 128 levels");
@@ -35787,10 +35787,13 @@ fn emit_qualified_call(
             }
             let (helper, kind, depth) = if name == "encodeArray"
                 || (name == "encode"
-                    && matches!(signatures.canonical_type(&value.ty), Type::List(_)))
-            {
-                let Type::List(element) = signatures.canonical_type(&value.ty) else {
-                    return Err(diag(span, "json.encodeArray requires a scalar list"));
+                    && matches!(
+                        signatures.canonical_type(&value.ty),
+                        Type::List(_) | Type::Set(_)
+                    )) {
+                let element = match signatures.canonical_type(&value.ty) {
+                    Type::List(element) | Type::Set(element) => element,
+                    _ => return Err(diag(span, "json.encodeArray requires a scalar list or set")),
                 };
                 let (helper, kind, depth) = json_array_encoding_shape(&element, signatures)
                     .map_err(|message| diag(span, message))?;

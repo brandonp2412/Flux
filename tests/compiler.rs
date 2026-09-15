@@ -81,6 +81,51 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_encodes_ordered_sets_as_bounded_arrays() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: set<i64> = {3, 1, 3, 2}
+    print(json.encode(values, encoded))
+    print(json.encodeArray(values, encoded))
+    return 0
+}
+"#;
+    check_source(source).expect("set JSON values should typecheck");
+    let generated = compile_to_c(source).expect("set JSON values should lower");
+    assert!(generated.contains("flux__json_encode_array("));
+    let root = std::env::temp_dir().join(format!("flux-json-set-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON set directory should be writable");
+    let c_path = root.join("json-set.c");
+    let exe_path = root.join("json-set");
+    fs::write(&c_path, generated).expect("generated JSON set C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON set code");
+    assert!(
+        compile.status.success(),
+        "JSON set C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON set program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[3,1,2]\nnil\n[3,1,2]\nnil\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn duration_value_is_structural_and_accepted_by_sleep() {
     let source = r#"
 fn main() -> i64 {
