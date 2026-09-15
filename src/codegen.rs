@@ -35438,6 +35438,22 @@ fn emit_qualified_call(
             return Err(diag(span, "invalid time call reached code generation"));
         }
         match name {
+            "duration" => {
+                if args.len() != 1 {
+                    return Err(diag(span, "invalid time.duration call reached code generation"));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!(
+                        "({}){{ .{} = {} }}",
+                        c_type(&duration_type(), signatures),
+                        field_c_name("milliseconds"),
+                        value.code
+                    ),
+                    vec![duration_type()],
+                    None,
+                ));
+            }
             "calendarZone" => {
                 if args.len() != 3 {
                     return Err(diag(
@@ -35597,8 +35613,13 @@ fn emit_qualified_call(
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
                 let duration = emit_expr(&args[0], env, signatures)?;
+                let duration_code = if is_duration_type(&duration.ty, signatures) {
+                    format!("({}).{}", duration.code, field_c_name("milliseconds"))
+                } else {
+                    duration.code
+                };
                 return Ok((
-                    format!("flux__time_sleep_millis({})", duration.code),
+                    format!("flux__time_sleep_millis({})", duration_code),
                     Vec::new(),
                     None,
                 ));
@@ -35609,10 +35630,15 @@ fn emit_qualified_call(
                 }
                 let duration = emit_expr(&args[0], env, signatures)?;
                 let callback = emit_expr(&args[1], env, signatures)?;
+                let duration_code = if is_duration_type(&duration.ty, signatures) {
+                    format!("({}).{}", duration.code, field_c_name("milliseconds"))
+                } else {
+                    duration.code
+                };
                 return Ok((
                     format!(
                         "flux__time_start_timer({}, {}, {})",
-                        duration.code,
+                        duration_code,
                         callback.code,
                         if name == "every" { "true" } else { "false" }
                     ),
@@ -37169,6 +37195,17 @@ fn interface_multi_return_struct_name(interface_name: &str, member_name: &str) -
 
 fn record_c_name(ty: &Type, signatures: &Signatures) -> String {
     format!("flux__{}", type_mangle(ty, signatures))
+}
+
+fn duration_type() -> Type {
+    Type::Record(vec![crate::ast::RecordTypeField {
+        name: Some("milliseconds".to_string()),
+        ty: Type::I64,
+    }])
+}
+
+fn is_duration_type(ty: &Type, signatures: &Signatures) -> bool {
+    signatures.canonical_type(ty) == duration_type()
 }
 
 fn record_field_c_name(name: Option<&str>, index: usize) -> String {

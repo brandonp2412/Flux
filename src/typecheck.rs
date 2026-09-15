@@ -11105,6 +11105,17 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
+            "duration" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("time.duration expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &actual, "time.duration milliseconds")?;
+                return Ok(vec![duration_type()]);
+            }
             "calendar" => {
                 if args.len() != 1 {
                     return Err(diag(
@@ -11352,12 +11363,14 @@ fn check_qualified_call(
                     ));
                 }
                 let actual = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &actual,
-                    &format!("time.{name} durationMs"),
-                )?;
+                if actual != Type::I64 && actual != duration_type() {
+                    require_type(
+                        args[0].span,
+                        &Type::I64,
+                        &actual,
+                        &format!("time.{name} durationMs"),
+                    )?;
+                }
                 if matches!(
                     constant_primitive_value(&args[0], signatures),
                     Some(ConstantValue::I64(value)) if value < 0
@@ -11377,12 +11390,14 @@ fn check_qualified_call(
                     ));
                 }
                 let duration = type_of_expr(&args[0], env, signatures)?;
-                require_type(
-                    args[0].span,
-                    &Type::I64,
-                    &duration,
-                    &format!("time.{name} durationMs"),
-                )?;
+                if duration != Type::I64 && duration != duration_type() {
+                    require_type(
+                        args[0].span,
+                        &Type::I64,
+                        &duration,
+                        &format!("time.{name} durationMs"),
+                    )?;
+                }
                 if matches!(
                     constant_primitive_value(&args[0], signatures),
                     Some(ConstantValue::I64(value)) if value < 0 || (name == "every" && value == 0)
@@ -12831,6 +12846,13 @@ fn check_qualified_call(
         env,
         signatures,
     )
+}
+
+fn duration_type() -> Type {
+    Type::Record(vec![crate::ast::RecordTypeField {
+        name: Some("milliseconds".to_string()),
+        ty: Type::I64,
+    }])
 }
 
 fn check_await(

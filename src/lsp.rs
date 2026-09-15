@@ -1882,6 +1882,7 @@ fn add_qualified_namespace_completions(
     }
     if namespace == "time" {
         for (label, detail) in [
+            ("duration", "fn time.duration(milliseconds: i64) -> (milliseconds: i64)"),
             (
                 "calendar",
                 "fn time.calendar(unixMillis: i64) -> (year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64)",
@@ -4369,6 +4370,14 @@ fn signature_help_for_document_cached(
                         "time.calendar",
                         &["unixMillis: i64"],
                         "(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64)",
+                        active_parameter,
+                    ));
+                }
+                "duration" => {
+                    return Some(signature_help_for_builtin(
+                        "time.duration",
+                        &["milliseconds: i64"],
+                        "(milliseconds: i64)",
                         active_parameter,
                     ));
                 }

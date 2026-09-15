@@ -46,6 +46,7 @@ fn main() -> i64 {
     print(value.dayOfYear)
     return 0
 }
+
 "#;
     check_source(source).expect("calendar values should typecheck");
     let generated = compile_to_c(source).expect("calendar values should lower natively");
@@ -76,6 +77,42 @@ fn main() -> i64 {
         String::from_utf8_lossy(&run.stdout),
         "2024\n2\n29\n789\n4\n60\n"
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn duration_value_is_structural_and_accepted_by_sleep() {
+    let source = r#"
+fn main() -> i64 {
+    let pause: (milliseconds: i64) = time.duration(0)
+    time.sleep(pause)
+    print(pause.milliseconds)
+    return 0
+}
+"#;
+    check_source(source).expect("duration values should typecheck");
+    let generated = compile_to_c(source).expect("duration values should lower natively");
+    assert!(generated.contains("flux__field_milliseconds"));
+
+    let root = std::env::temp_dir().join(format!("flux-duration-value-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("duration fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("duration source should be writable");
+    let binary = root.join("duration-value");
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", source_path.to_str().unwrap(), "-o"])
+        .arg(&binary)
+        .output()
+        .expect("duration binary should build");
+    assert!(
+        build.status.success(),
+        "duration build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&binary).output().expect("duration binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "0\n");
     let _ = fs::remove_dir_all(root);
 }
 
