@@ -28277,7 +28277,6 @@ fn cfg_constant_values(
         .iter()
         .filter(|value| cfg.is_value_reachable(value.id))
         .filter(|value| matches!(value.ty, Type::I64 | Type::Bool))
-        // Keep boolean short-circuit lowering on its established AST path.
         .filter(|value| ir_constant_is_pure(cfg, value.id, &mut HashSet::new()))
     {
         let Some(constant) = value.constant.clone() else {
@@ -28322,9 +28321,8 @@ fn ir_constant_is_pure(
         crate::ir::ControlFlowValueKind::Unary { operand, .. } => {
             ir_constant_is_pure(cfg, *operand, visiting)
         }
-        crate::ir::ControlFlowValueKind::Binary { op, left, right } => {
-            !matches!(op, BinOp::And | BinOp::Or)
-                && ir_constant_is_pure(cfg, *left, visiting)
+        crate::ir::ControlFlowValueKind::Binary { left, right, .. } => {
+            ir_constant_is_pure(cfg, *left, visiting)
                 && ir_constant_is_pure(cfg, *right, visiting)
         }
         crate::ir::ControlFlowValueKind::Conditional {

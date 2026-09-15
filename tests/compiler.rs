@@ -23816,6 +23816,31 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_propagated_short_circuit_boolean_values() {
+    let source = r#"
+fn main() -> i64 {
+    let enabled: bool = true
+    let disabled: bool = false
+    let all: bool = enabled && disabled
+    let any: bool = enabled || disabled
+    print(all)
+    print(any)
+    return 0
+}
+"#;
+
+    check_source(source).expect("short-circuit constants should typecheck");
+    let generated = compile_to_c(source).expect("short-circuit constants should compile");
+    assert!(generated.contains("flux__local_all = false;"));
+    assert!(generated.contains("flux__local_any = true;"));
+    assert!(
+        !generated.contains("flux__local_enabled && flux__local_disabled")
+            && !generated.contains("flux__local_enabled || flux__local_disabled"),
+        "pure short-circuit results should be consumed from typed IR"
+    );
+}
+
+#[test]
 fn eliminates_cfg_unreachable_statements_before_native_codegen() {
     let source = r#"
 fn main() -> i64 {
