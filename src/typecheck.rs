@@ -4600,7 +4600,16 @@ fn check_block_all(
                                         && !matches!(
                                             signatures.canonical_type(&inner),
                                             Type::List(_)
-                                        ) {
+                                        ) || (matches!(
+                                            signatures.canonical_type(&inner),
+                                            Type::List(_)
+                                        ) && !matches!(
+                                            cond.kind,
+                                            ExprKind::Unary {
+                                                op: UnaryOp::Borrow,
+                                                ..
+                                            }
+                                        )) {
                                         diagnostics.push(diag(
                                             cond.span,
                                             "optional binding patterns currently require a Copy payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",

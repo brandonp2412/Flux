@@ -14389,8 +14389,7 @@ fn main() -> i64 {
     let optional = r#"
 fn main() -> i64 {
     let values: i64[]? = [10, 20]
-    let view: i64[]? = borrow values
-    if let present = view:
+    if let present = borrow values:
         print(present[0])
     return 0
 }
@@ -14402,7 +14401,7 @@ fn main() -> i64 {
 fn main() -> i64 {
     let values: i64[] = [10, 20]
     let optional: i64[]? = borrow values
-    if let present = optional:
+    if let present = borrow optional:
         let destination: i64[] = values
         print(destination[0])
         print(present[0])
