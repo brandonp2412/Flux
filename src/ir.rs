@@ -306,6 +306,20 @@ impl OwnershipMove {
     pub fn is_partial(&self) -> bool {
         !self.projection.is_empty()
     }
+
+    /// Whether this move consumes the same whole value or an overlapping
+    /// projection as `projection`.
+    ///
+    /// An empty path represents the complete value.  Keeping the prefix
+    /// relation on the normalized ownership fact gives later owned-aggregate
+    /// analyses one rule for whole and partial moves, including moves coming
+    /// from different CFG paths.
+    pub fn overlaps_projection(&self, projection: &[String]) -> bool {
+        self.projection.is_empty()
+            || projection.is_empty()
+            || self.projection.starts_with(projection)
+            || projection.starts_with(&self.projection)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,11 +533,23 @@ impl ControlFlowMoveState {
     ) -> bool {
         self.moved.iter().any(|binding| {
             binding.definition == definition
-                && (binding.projection.is_empty()
-                    || projection.is_empty()
-                    || binding.projection.starts_with(projection)
-                    || projection.starts_with(&binding.projection))
+                && moved_projection_overlaps(&binding.projection, projection)
         })
+    }
+
+    /// Return the exact consumed projections for one reaching definition.
+    ///
+    /// This is a borrowed view so ownership checking and later lowering can
+    /// inspect the fixed-point result without allocating a second
+    /// syntax-shaped representation.  The returned bindings retain their
+    /// definition identity and source span for diagnostics.
+    pub fn moved_projections_for_definition(
+        &self,
+        definition: ControlFlowDefinitionId,
+    ) -> impl Iterator<Item = &OwnershipMovedBinding> {
+        self.moved
+            .iter()
+            .filter(move |binding| binding.definition == definition)
     }
 
     pub fn origin_for_definition(&self, definition: ControlFlowDefinitionId) -> Option<SourceSpan> {
@@ -532,6 +558,10 @@ impl ControlFlowMoveState {
             .find(|binding| binding.definition == definition)
             .map(|binding| binding.origin)
     }
+}
+
+fn moved_projection_overlaps(left: &[String], right: &[String]) -> bool {
+    left.is_empty() || right.is_empty() || left.starts_with(right) || right.starts_with(left)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -5913,7 +5943,11 @@ fn span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::insert_move_projection;
+    use super::{
+        ControlFlowDefinitionId, ControlFlowMoveState, OwnershipMove, OwnershipMovedBinding,
+        insert_move_projection,
+    };
+    use crate::diagnostic::SourceSpan;
 
     fn path(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
@@ -5946,5 +5980,53 @@ mod tests {
         assert!(insert_move_projection(&mut projections, &[]));
         assert_eq!(projections, vec![Vec::<String>::new()]);
         assert!(!insert_move_projection(&mut projections, &path(&["right"])));
+    }
+
+    #[test]
+    fn normalized_move_queries_use_prefix_overlap_and_preserve_definition_identity() {
+        let definition = ControlFlowDefinitionId::Node {
+            node: super::ControlFlowNodeId(4),
+            index: 2,
+        };
+        let sibling = ControlFlowDefinitionId::Node {
+            node: super::ControlFlowNodeId(5),
+            index: 2,
+        };
+        let move_event = OwnershipMove {
+            source: "record".to_string(),
+            destination: "field_value".to_string(),
+            projection: path(&["payload", "bytes"]),
+            value: None,
+            source_definitions: vec![definition],
+            span: SourceSpan::new(3, 4, 1),
+        };
+        assert!(move_event.overlaps_projection(&path(&["payload"])));
+        assert!(move_event.overlaps_projection(&[]));
+        assert!(!move_event.overlaps_projection(&path(&["other"])));
+
+        let state = ControlFlowMoveState {
+            reachable: true,
+            moved: vec![
+                OwnershipMovedBinding {
+                    definition,
+                    name: "record".to_string(),
+                    projection: path(&["payload", "bytes"]),
+                    origin: SourceSpan::new(3, 4, 1),
+                },
+                OwnershipMovedBinding {
+                    definition: sibling,
+                    name: "record".to_string(),
+                    projection: path(&["other"]),
+                    origin: SourceSpan::new(8, 4, 1),
+                },
+            ],
+        };
+        let projections = state
+            .moved_projections_for_definition(definition)
+            .map(|binding| binding.projection.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(projections, vec![path(&["payload", "bytes"])]);
+        assert!(state.is_definition_projection_moved(definition, &path(&["payload"])));
+        assert!(!state.is_definition_projection_moved(definition, &path(&["other"])));
     }
 }
