@@ -4455,7 +4455,7 @@ static inline const char *flux__json_encode_nested_array(struct flux__list value
 static inline const char *flux__json_encode_recursive_array(struct flux__list values, int kind, int depth, void (*callback)(const char *));
 static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *));
-static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, int depth, void (*callback)(const char *));
 static inline const char *flux__json_encode_optional_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_optional_map(struct flux__optional_map value, int kind, void (*callback)(const char *));
 static _Thread_local const char *flux__json_capture_value;
@@ -4863,8 +4863,9 @@ static inline const char *flux__json_encode_recursive_array(struct flux__list va
     if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes";
     encoded[output++] = ']'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
-static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *)) {
+static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, int depth, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
+    if (depth > 128) return "JSON nesting exceeds 128 levels";
     if (kind < 0) return "invalid nested JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
@@ -4910,7 +4911,7 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
             } else if (kind >= 100003 && kind < 100006) {
                 error = flux__json_encode_nested_object(child, kind, flux__json_capture);
             } else {
-                error = flux__json_encode_map_map(child, kind - 6, flux__json_capture);
+                error = flux__json_encode_map_map(child, kind - 6, depth + 1, flux__json_capture);
             }
         }
         if (error != NULL) return error;
@@ -4926,12 +4927,12 @@ static inline const char *flux__json_encode_optional_map(struct flux__optional_m
     if (callback == NULL) return "invalid json.encodeObject callback";
     if (kind < 0) return "invalid optional JSON object value kind";
     if (!value.has_value) { callback("null"); return NULL; }
-    if (kind >= 200000) return flux__json_encode_map_map(value.value, kind, callback);
+    if (kind >= 200000) return flux__json_encode_map_map(value.value, kind, 0, callback);
     if (kind < 3) return flux__json_encode_object(value.value, kind, callback);
     if (kind < 6) return flux__json_encode_nested_object(value.value, kind - 3, callback);
     if (kind >= 100000 && kind < 100003) return flux__json_encode_optional_object(value.value, kind, callback);
     if (kind >= 100003 && kind < 100006) return flux__json_encode_nested_object(value.value, kind, callback);
-    return flux__json_encode_map_map(value.value, kind - 6, callback);
+    return flux__json_encode_map_map(value.value, kind - 6, 0, callback);
 }
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeInt callback";
@@ -36846,6 +36847,8 @@ fn emit_qualified_call(
                         "{helper}({}, {}, {}, {})",
                         value.code, kind, depth, callback.code
                     )
+                } else if helper == "flux__json_encode_map_map" {
+                    format!("{helper}({}, {}, 0, {})", value.code, kind, callback.code)
                 } else {
                     format!("{helper}({}, {}, {})", value.code, kind, callback.code)
                 },
@@ -39673,9 +39676,15 @@ fn emit_json_record_helpers(
                     } else {
                         ("flux__json_encode_map_map", kind)
                     };
-                    format!(
-                        "(value.has_value ? {helper}(value.value, {helper_kind}, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
-                    )
+                    if helper == "flux__json_encode_map_map" {
+                        format!(
+                            "(value.has_value ? {helper}(value.value, {helper_kind}, 0, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
+                        )
+                    } else {
+                        format!(
+                            "(value.has_value ? {helper}(value.value, {helper_kind}, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
+                        )
+                    }
                 }
             } else {
                 format!("{value_helper}(value, flux__json_capture)")
@@ -39695,7 +39704,11 @@ fn emit_json_record_helpers(
                 } else {
                     ("flux__json_encode_map_map", kind)
                 };
-                format!("{helper}(value, {helper_kind}, flux__json_capture)")
+                if helper == "flux__json_encode_map_map" {
+                    format!("{helper}(value, {helper_kind}, 0, flux__json_capture)")
+                } else {
+                    format!("{helper}(value, {helper_kind}, flux__json_capture)")
+                }
             }
         } else {
             format!("{value_helper}(value, flux__json_capture)")

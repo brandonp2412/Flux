@@ -20084,6 +20084,7 @@ fn main() -> i64 {
     check_source(source).expect("deeply nested JSON maps should typecheck");
     let generated = compile_to_c(source).expect("deeply nested JSON maps should lower");
     assert!(generated.contains("flux__json_encode_map_map("));
+    assert!(generated.contains("if (depth > 128) return \"JSON nesting exceeds 128 levels\";"));
     let root = std::env::temp_dir().join(format!("flux-json-deep-map-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary deep-map directory should be writable");
