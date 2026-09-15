@@ -13700,7 +13700,7 @@ fn emit_linux_gtk_application(
         match signatures.canonical_type(&state.ty) {
             Type::Bool => out.push_str(&format!(" unsigned char type = 'b'; unsigned char value = {state_name} ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&value, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
             Type::I64 => out.push_str(&format!(" unsigned char type = 'i'; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
-            Type::Str => out.push_str(&format!(" unsigned char type = 's'; const char *value = {state_name} == NULL ? \"\" : {state_name}; size_t length = strlen(value); if (fwrite(&type, 1, 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} }}")),
+            Type::Str => out.push_str(&format!(" unsigned char type = 's'; const char *value = {state_name} == NULL ? \"\" : {state_name}; size_t length = 0; if (!flux__ui_bounded_length(value, (size_t)16 * 1024 * 1024, &length)) {{ fclose(file); remove(temporary); return; }} if (fwrite(&type, 1, 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 || (length != 0 && fwrite(value, 1, length, file) != length)) {{ fclose(file); remove(temporary); return; }} }}")),
             _ => unreachable!("Linux state types are validated before lowering"),
         }
     }
