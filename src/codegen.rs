@@ -5433,7 +5433,10 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "sendTextWithTimeout requires a nonblocking TCP socket");
-    size_t length = strlen(text);
+    if (text == NULL) return flux__net_result(-1, "invalid text argument");
+    size_t length = 0;
+    while (length <= 65536 && text[length] != '\0') length += 1;
+    if (length > 65536) return flux__net_result(-1, "text exceeds 65536 bytes");
     size_t offset = 0;
     int64_t deadline = -1;
     if (timeout_millis >= 0) {
@@ -5537,7 +5540,10 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout requires a nonblocking TCP socket");
-    size_t length = strlen(text);
+    if (text == NULL) return flux__net_progress_result(offset, false, "invalid text argument");
+    size_t length = 0;
+    while (length <= 65536 && text[length] != '\0') length += 1;
+    if (length > 65536) return flux__net_progress_result(offset, false, "text exceeds 65536 bytes");
     if (length > (size_t)INT64_MAX) return flux__net_progress_result(offset, false, "text is too large to send");
     if ((uint64_t)offset > (uint64_t)length) return flux__net_progress_result(offset, false, "sendTextProgressWithTimeout offset exceeds text length");
     if ((size_t)offset == length) return flux__net_progress_result(offset, true, NULL);
@@ -5594,7 +5600,10 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextProgress requires a nonblocking TCP socket");
-    size_t length = strlen(text);
+    if (text == NULL) return flux__net_progress_result(offset, false, "invalid text argument");
+    size_t length = 0;
+    while (length <= 65536 && text[length] != '\0') length += 1;
+    if (length > 65536) return flux__net_progress_result(offset, false, "text exceeds 65536 bytes");
     if (length > (size_t)INT64_MAX) return flux__net_progress_result(offset, false, "text is too large to send");
     if ((uint64_t)offset > (uint64_t)length) return flux__net_progress_result(offset, false, "sendTextProgress offset exceeds text length");
     if ((size_t)offset == length) return flux__net_progress_result(offset, true, NULL);

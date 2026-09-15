@@ -1269,7 +1269,7 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified WebSocket server follow-up: the native reader accepts RFC 6455 fragmented text messages, validates continuation sequencing and reserved bits, handles masked ping/pong control frames while a message is in flight, preserves one bounded callback-scoped aggregate, and rejects message-size overflow without introducing escaping storage. Binary frame I/O, client handshake/frame support, and close/ping/pong controls are covered separately; task-integrated event-loop scheduling remains pending under Efficient I/O.
 
-# Verified Efficient I/O safety follow-up: `net.sendText` now rejects null or over-65536-byte borrowed payloads before socket inspection or native transmission, eliminating its prior unbounded `strlen` read. Generated-C coverage pins the guard alongside the existing native socket regression; broader binary-buffer, queued-backpressure, and task-integrated event-loop work remains open.
+# Verified Efficient I/O safety follow-up: `net.sendText`, `net.sendTextWithTimeout`, `net.sendTextProgress`, and `net.sendTextProgressWithTimeout` now reject null or over-65536-byte borrowed payloads before socket inspection or native transmission, eliminating their prior unbounded `strlen` reads. Generated-C and native coverage pin the guards alongside the existing socket regressions; broader binary-buffer, queued-backpressure, and task-integrated event-loop work remains open.
 
 # Milestone 29 — Flux 1.0 stability
 
