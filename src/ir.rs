@@ -1046,6 +1046,54 @@ impl ControlFlowGraph {
         self.value_effect(body)
     }
 
+    /// Return the direct named calls made by reachable typed values.
+    ///
+    /// This is intentionally a graph query rather than an AST walk. The
+    /// result is deterministic and excludes calls in unreachable constant
+    /// branches, which lets an effect checker build a call graph from the
+    /// same reachability facts used by optimization. Anonymous function
+    /// creation is not itself a call; its deferred body is represented by a
+    /// separate value and can be queried with deferred_body_effect.
+    pub fn direct_call_callees(&self) -> BTreeSet<String> {
+        self.values
+            .iter()
+            .filter(|value| self.is_value_reachable(value.id))
+            .flat_map(|value| match &value.kind {
+                ControlFlowValueKind::Call { callee, .. }
+                | ControlFlowValueKind::OptionalCascadeCall { callee, .. } => {
+                    std::iter::once(callee.clone()).collect::<BTreeSet<_>>()
+                }
+                ControlFlowValueKind::QualifiedCall {
+                    namespace, name, ..
+                } => std::iter::once(format!("{namespace}.{name}")).collect(),
+                ControlFlowValueKind::InterfaceDispatch {
+                    interface,
+                    capability,
+                    ..
+                } => std::iter::once(format!("{interface}.{capability}")).collect(),
+                _ => BTreeSet::new(),
+            })
+            .collect()
+    }
+
+    /// Whether reachable evaluation in this function contains an effect that
+    /// is intrinsic to the current value graph, independent of callees.
+    ///
+    /// Calls are reported through direct_call_callees so a future whole
+    /// program effect solver can distinguish a pure user function from an
+    /// effectful callee without treating every call as permanently opaque.
+    pub fn has_intrinsic_effect(&self) -> bool {
+        self.values.iter().any(|value| {
+            self.is_value_reachable(value.id)
+                && matches!(
+                    value.kind,
+                    ControlFlowValueKind::Await { .. }
+                        | ControlFlowValueKind::Opaque
+                        | ControlFlowValueKind::InterfaceDispatch { .. }
+                )
+        })
+    }
+
     /// Return the constant proven safe for direct native emission, if any.
     ///
     /// Keeping reachability, scalar-shape, purity, and constant propagation

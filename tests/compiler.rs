@@ -173,6 +173,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_exposes_reachable_direct_effect_boundaries() {
+    let source = r#"
+fn pure(value: i64) -> i64 {
+    return value + 1
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn dead(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+async fn delayed(value: i64) -> i64 {
+    return value
+}
+
+async fn main() -> i64 {
+    if false:
+        dead(0)
+    let result: i64 = pure(4)
+    let _delayed: i64 = await delayed(result)
+    return observe(result)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("effect boundary fixture should typecheck");
+    let main = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let callees = main.direct_call_callees();
+    assert!(callees.contains("pure"));
+    assert!(callees.contains("delayed"));
+    assert!(callees.contains("observe"));
+    assert!(!callees.contains("dead"));
+    assert!(!callees.contains("print"));
+    assert!(main.has_intrinsic_effect());
+
+    let pure = database
+        .control_flow_graph("pure")
+        .expect("pure CFG should be available");
+    assert!(pure.direct_call_callees().is_empty());
+    assert!(!pure.has_intrinsic_effect());
+}
+
+#[test]
 fn ownership_ir_does_not_drop_moved_definitions() {
     let source = r#"
 fn main() -> i64 {
