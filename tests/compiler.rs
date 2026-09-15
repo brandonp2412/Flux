@@ -23747,9 +23747,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__local_same = true;"));
     assert!(generated.contains("flux__local_shortCircuit = false;"));
     assert!(generated.contains("flux__local_propagated = INT64_C(5);"));
-    assert!(
-        generated.contains("flux__local_dynamic = flux_add_i64(flux__local_input, INT64_C(2));")
-    );
+    assert!(generated.contains("flux__local_dynamic = INT64_C(7);"));
+    assert!(!generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"));
     assert!(!generated.contains("flux_mul_i64(INT64_C(2), INT64_C(20))"));
 
     let static_failure = r#"
@@ -23763,6 +23762,27 @@ fn main() -> i64 {
     let error = compile_to_c(static_failure)
         .expect_err("static division by zero should fail before native execution");
     assert!(error.message.contains("constant integer division by zero"));
+}
+
+#[test]
+fn typed_ir_backend_consumes_propagated_expression_constants() {
+    let source = r#"
+fn main() -> i64 {
+    let input: i64 = 5
+    let propagated: i64 = input + 2
+    print(propagated)
+    return propagated
+}
+"#;
+
+    check_source(source).expect("propagated expression should typecheck");
+    let generated = compile_to_c(source).expect("propagated expression should compile");
+    assert!(generated.contains("flux_print_i64(flux__local_propagated)"));
+    assert!(generated.contains("flux__local_propagated = INT64_C(7);"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
+        "typed IR constant should be consumed before checked AST emission"
+    );
 }
 
 #[test]

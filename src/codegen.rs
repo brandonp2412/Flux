@@ -28265,10 +28265,21 @@ fn cfg_constant_values(
 ) -> HashMap<(u32, usize, usize, usize), ConstantValue> {
     let mut constants = HashMap::new();
     let mut ambiguous = HashSet::new();
-    for value in cfg.values().iter().filter(|value| {
-        cfg.is_value_reachable(value.id)
-            && matches!(value.kind, crate::ir::ControlFlowValueKind::NameRead { .. })
-    }) {
+    // Consume constants from the typed value graph, not only from name reads.
+    // A propagated integer value is safe to inline here because the IR constant
+    // pass records its complete expression under Flux's checked semantics.
+    // Boolean short-circuit results remain on the AST path until value-level
+    // effect regions are consumed here. Keep the span collision guard:
+    // a source span can occur in more than one CFG path, and differing values
+    // must continue through the ordinary AST emitter.
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_value_reachable(value.id))
+        .filter(|value| value.ty == Type::I64)
+        // Keep boolean short-circuit lowering on its established AST path.
+        .filter(|value| ir_constant_is_pure(cfg, value.id, &mut HashSet::new()))
+    {
         let Some(constant) = value.constant.clone() else {
             continue;
         };
@@ -28286,6 +28297,47 @@ fn cfg_constant_values(
         }
     }
     constants
+}
+
+fn ir_constant_is_pure(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+    visiting: &mut HashSet<crate::ir::ControlFlowValueId>,
+) -> bool {
+    if !visiting.insert(id) {
+        return false;
+    }
+    let Some(value) = cfg.value(id) else {
+        return false;
+    };
+    let pure = match &value.kind {
+        crate::ir::ControlFlowValueKind::Literal => true,
+        crate::ir::ControlFlowValueKind::NameRead { definitions, .. } => {
+            !definitions.is_empty()
+                && definitions.iter().all(|definition| {
+                    cfg.definition_value(*definition)
+                        .is_some_and(|value| ir_constant_is_pure(cfg, value, visiting))
+                })
+        }
+        crate::ir::ControlFlowValueKind::Unary { operand, .. } => {
+            ir_constant_is_pure(cfg, *operand, visiting)
+        }
+        crate::ir::ControlFlowValueKind::Binary { left, right, .. } => {
+            ir_constant_is_pure(cfg, *left, visiting) && ir_constant_is_pure(cfg, *right, visiting)
+        }
+        crate::ir::ControlFlowValueKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            ir_constant_is_pure(cfg, *condition, visiting)
+                && ir_constant_is_pure(cfg, *then_value, visiting)
+                && ir_constant_is_pure(cfg, *else_value, visiting)
+        }
+        _ => false,
+    };
+    visiting.remove(&id);
+    pure
 }
 
 fn emit_function(
