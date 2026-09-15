@@ -11372,8 +11372,8 @@ fn check_qualified_call(
                     )?;
                 }
                 if matches!(
-                    constant_primitive_value(&args[0], signatures),
-                    Some(ConstantValue::I64(value)) if value < 0
+                    constant_duration_millis(&args[0], signatures),
+                    Some(value) if value < 0
                 ) {
                     return Err(diag(
                         args[0].span,
@@ -11399,8 +11399,8 @@ fn check_qualified_call(
                     )?;
                 }
                 if matches!(
-                    constant_primitive_value(&args[0], signatures),
-                    Some(ConstantValue::I64(value)) if value < 0 || (name == "every" && value == 0)
+                    constant_duration_millis(&args[0], signatures),
+                    Some(value) if value < 0 || (name == "every" && value == 0)
                 ) {
                     return Err(diag(
                         args[0].span,
@@ -12853,6 +12853,26 @@ fn duration_type() -> Type {
         name: Some("milliseconds".to_string()),
         ty: Type::I64,
     }])
+}
+
+fn constant_duration_millis(expr: &Expr, signatures: &Signatures) -> Option<i64> {
+    if let Some(ConstantValue::I64(value)) = constant_primitive_value(expr, signatures) {
+        return Some(value);
+    }
+    match &expr.kind {
+        ExprKind::QualifiedCall {
+            namespace,
+            name,
+            args,
+            ..
+        } if namespace == "time" && name == "duration" && args.len() == 1 => {
+            constant_primitive_value(&args[0], signatures).and_then(|value| match value {
+                ConstantValue::I64(value) => Some(value),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn check_await(

@@ -117,6 +117,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn duration_value_rejects_constant_invalid_timer_values() {
+    for (call, expected) in [
+        (
+            "time.sleep(time.duration(-1))",
+            "time.sleep durationMs must be non-negative",
+        ),
+        (
+            "time.after(time.duration(-1), callback)",
+            "time.after durationMs must be non-negative",
+        ),
+        (
+            "time.every(time.duration(0), callback)",
+            "time.every durationMs must be positive",
+        ),
+    ] {
+        let source = format!(
+            "fn callback() -> void {{\n}}\nfn main() -> i64 {{\n    {call}\n    return 0\n}}\n"
+        );
+        let diagnostics =
+            check_source(&source).expect_err("invalid constant duration should fail");
+        assert!(
+            diagnostics.message.contains(expected),
+            "missing `{expected}` in {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
 fn named_time_zone_calendar_callback_is_dst_aware_and_borrowed() {
     let source = r#"
 fn emit(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millis: i64, weekday: i64, dayOfYear: i64, offset: i64) -> void {
