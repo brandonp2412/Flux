@@ -1938,6 +1938,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn time.formatLocal(unixMillis: i64, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "formatOffset",
+            3,
+            "fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error",
+        );
         for member in [
             "year",
             "month",
@@ -4332,8 +4339,20 @@ fn signature_help_for_document_cached(
                 }
                 "formatUtc" | "formatLocal" => {
                     return Some(signature_help_for_builtin(
-                        "time.formatUtc",
+                        &format!("time.{member}"),
                         &["unixMillis: i64", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ));
+                }
+                "formatOffset" => {
+                    return Some(signature_help_for_builtin(
+                        "time.formatOffset",
+                        &[
+                            "unixMillis: i64",
+                            "offsetMinutes: i64",
+                            "callback: fn(str) -> void",
+                        ],
                         "error",
                         active_parameter,
                     ));
@@ -8224,6 +8243,7 @@ mod tests {
         assert!(time_items.contains("fn time.dayOfYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.localYear(unixMillis: i64) -> i64"));
         assert!(time_items.contains("fn time.localDayOfYear(unixMillis: i64) -> i64"));
+        assert!(time_items.contains("fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error"));
         assert!(time_items.contains("fn time.seconds(value: i64) -> i64"));
         assert!(time_items.contains("fn time.minutes(value: i64) -> i64"));
 
@@ -10319,6 +10339,32 @@ mod tests {
             .to_json();
             assert!(help.contains(expected));
         }
+    }
+
+    #[test]
+    fn signature_help_supports_fixed_offset_time_formatting() {
+        let uri = "file:///tmp/time-format-offset-signatures.flux";
+        let source = "fn emit(value: str) -> void {\n}\nfn main() -> i64 {\n    time.formatOffset(0, 330, emit)\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("time.formatOffset("))
+            .expect("formatOffset call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let cursor = line.find("time.formatOffset(").unwrap() + "time.formatOffset(".len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("formatOffset should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn time.formatOffset(unixMillis: i64, offsetMinutes: i64, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]

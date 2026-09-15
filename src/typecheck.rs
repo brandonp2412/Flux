@@ -11244,11 +11244,12 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::I64]);
             }
-            "formatUtc" | "formatLocal" => {
-                if args.len() != 2 {
+            "formatUtc" | "formatLocal" | "formatOffset" => {
+                let expected_args = if name == "formatOffset" { 3 } else { 2 };
+                if args.len() != expected_args {
                     return Err(diag(
                         span,
-                        &format!("time.formatUtc expects 2 arguments, got {}", args.len()),
+                        &format!("time.{name} expects {expected_args} arguments, got {}", args.len()),
                     ));
                 }
                 let timestamp = type_of_expr(&args[0], env, signatures)?;
@@ -11256,18 +11257,37 @@ fn check_qualified_call(
                     args[0].span,
                     &Type::I64,
                     &timestamp,
-                    "time.formatUtc unixMillis",
+                    &format!("time.{name} unixMillis"),
                 )?;
-                let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
+                if name == "formatOffset" {
+                    let offset = type_of_expr(&args[1], env, signatures)?;
+                    require_type(
+                        args[1].span,
+                        &Type::I64,
+                        &offset,
+                        "time.formatOffset offsetMinutes",
+                    )?;
+                    if matches!(
+                        constant_primitive_value(&args[1], signatures),
+                        Some(ConstantValue::I64(value)) if !(-1_439..=1_439).contains(&value)
+                    ) {
+                        return Err(diag(
+                            args[1].span,
+                            "time.formatOffset offsetMinutes must be between -1439 and 1439",
+                        ));
+                    }
+                }
+                let callback_arg = if name == "formatOffset" { &args[2] } else { &args[1] };
+                let callback = signatures.canonical_type(&type_of_expr(callback_arg, env, signatures)?);
                 let expected = Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),
                 };
                 require_type(
-                    args[1].span,
+                    callback_arg.span,
                     &expected,
                     &callback,
-                    "time.formatUtc callback",
+                    &format!("time.{name} callback"),
                 )?;
                 return Ok(vec![Type::Error]);
             }

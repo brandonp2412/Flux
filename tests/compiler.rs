@@ -9701,6 +9701,66 @@ fn main() -> i64 {
 }
 
 #[test]
+fn fixed_offset_time_format_is_checked_borrowed_and_native() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let formatError: error = time.formatOffset(946782245006, 330, emit)
+    if formatError != nil:
+        return 1
+    let negativeError: error = time.formatOffset(-1, -60, emit)
+    if negativeError != nil:
+        return 2
+    return 0
+}
+"#;
+    check_source(source).expect("fixed offset formatter should typecheck");
+    let generated = compile_to_c(source).expect("fixed offset formatter should lower natively");
+    assert!(generated.contains("flux__time_format_offset("));
+    let root = std::env::temp_dir().join(format!("flux-time-format-offset-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("fixed offset fixture should be writable");
+    let source_path = root.join("main.flux");
+    fs::write(&source_path, source).expect("fixed offset source should be writable");
+    let binary = root.join("time-format-offset");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("fixed offset binary should build");
+    assert!(
+        built.status.success(),
+        "fixed offset build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("fixed offset binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(),
+        vec!["2000-01-02T08:34:05.006+05:30", "1969-12-31T22:59:59.999-01:00"]
+    );
+    let invalid = r#"
+fn emit(value: str) -> void {
+}
+fn main() -> i64 {
+    let result: error = time.formatOffset(0, 1440, emit)
+    return 0
+}
+"#;
+    let errors = check_source_all(invalid).expect_err("fixed offset bounds should be static");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("time.formatOffset offsetMinutes must be between -1439 and 1439")
+    }));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn utc_time_format_zero_pads_negative_years() {
     let source = r#"
 fn emit(value: str) -> void {

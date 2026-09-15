@@ -6506,6 +6506,36 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
 }
 "#);
     }
+    if runtime_usage.contains("flux__time_format_offset(") {
+        out.push_str(r#"static inline const char *flux__time_format_offset(int64_t unix_ms, int64_t offset_minutes, void (*callback)(const char *)) {
+    if (offset_minutes < INT64_C(-1439) || offset_minutes > INT64_C(1439)) return "time.formatOffset offsetMinutes must be between -1439 and 1439";
+    int64_t offset_ms;
+    if (__builtin_mul_overflow(offset_minutes, INT64_C(60000), &offset_ms)) return "time.formatOffset offset exceeds i64 range";
+    if (__builtin_add_overflow(unix_ms, offset_ms, &unix_ms)) return "time.formatOffset timestamp exceeds i64 range";
+    int64_t seconds = unix_ms / INT64_C(1000);
+    int64_t millis = unix_ms % INT64_C(1000);
+    if (millis < 0) { millis += INT64_C(1000); seconds -= 1; }
+    time_t native_seconds = (time_t)seconds;
+    if ((int64_t)native_seconds != seconds) return "time.formatOffset timestamp exceeds platform range";
+    struct tm value;
+    if (gmtime_r(&native_seconds, &value) == NULL) return "time.formatOffset calendar conversion failed";
+    int64_t year = (int64_t)value.tm_year + INT64_C(1900);
+    if (year < -9999 || year > 9999) return "time.formatOffset year does not fit ISO-8601 form";
+    char buffer[40];
+    const char *year_format = year < 0 ? "%05lld" : "%04lld";
+    int written = snprintf(buffer, sizeof(buffer), year_format, (long long)year);
+    if (written < 0 || (size_t)written >= sizeof(buffer)) return "time.formatOffset result exceeds buffer";
+    int suffix = snprintf(buffer + written, sizeof(buffer) - (size_t)written,
+        "-%02d-%02dT%02d:%02d:%02d.%03lld%c%02lld:%02lld", value.tm_mon + 1,
+        value.tm_mday, value.tm_hour, value.tm_min, value.tm_sec, (long long)millis,
+        offset_minutes < 0 ? '-' : '+', (long long)(llabs(offset_minutes) / 60),
+        (long long)(llabs(offset_minutes) % 60));
+    if (suffix < 0 || (size_t)written + (size_t)suffix >= sizeof(buffer)) return "time.formatOffset result exceeds buffer";
+    callback(buffer);
+    return NULL;
+}
+"#);
+    }
     if runtime_usage.contains("flux__time_utc_unix_millis(") {
         out.push_str("static inline int64_t flux__time_utc_unix_millis(int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second, int64_t millisecond) { if (month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || millisecond < 0 || millisecond > 999) { fputs(\"Flux runtime error: invalid UTC calendar component\\n\", stderr); abort(); } bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0); int64_t max_day = month == 2 ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31); if (day > max_day) { fputs(\"Flux runtime error: invalid UTC calendar day\\n\", stderr); abort(); } if (year < INT64_C(-292278994) || year > INT64_C(292278994)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } int64_t adjusted_year = year - (month <= 2 ? 1 : 0); int64_t era = adjusted_year >= 0 ? adjusted_year / 400 : (adjusted_year - 399) / 400; int64_t year_of_era = adjusted_year - era * 400; int64_t month_prime = month + (month > 2 ? -3 : 9); int64_t day_of_year = (153 * month_prime + 2) / 5 + day - 1; int64_t day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; int64_t days = era * INT64_C(146097) + day_of_era - INT64_C(719468); int64_t result; if (__builtin_mul_overflow(days, INT64_C(86400000), &result) || __builtin_add_overflow(result, hour * INT64_C(3600000), &result) || __builtin_add_overflow(result, minute * INT64_C(60000), &result) || __builtin_add_overflow(result, second * INT64_C(1000), &result) || __builtin_add_overflow(result, millisecond, &result)) { fputs(\"Flux runtime error: UTC calendar value exceeds i64 milliseconds\\n\", stderr); abort(); } return result; }\n");
     }
@@ -35256,11 +35286,24 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "formatUtc" | "formatLocal" => {
-                if args.len() != 2 {
+            "formatUtc" | "formatLocal" | "formatOffset" => {
+                let expected_args = if name == "formatOffset" { 3 } else { 2 };
+                if args.len() != expected_args {
                     return Err(diag(span, "invalid time call reached code generation"));
                 }
                 let timestamp = emit_expr(&args[0], env, signatures)?;
+                if name == "formatOffset" {
+                    let offset = emit_expr(&args[1], env, signatures)?;
+                    let callback = emit_expr(&args[2], env, signatures)?;
+                    return Ok((
+                        format!(
+                            "flux__time_format_offset({}, {}, {})",
+                            timestamp.code, offset.code, callback.code
+                        ),
+                        vec![Type::Error],
+                        None,
+                    ));
+                }
                 let callback = emit_expr(&args[1], env, signatures)?;
                 return Ok((
                     format!(
