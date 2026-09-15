@@ -4681,7 +4681,7 @@ static inline void flux__json_capture(const char *value) {
 }
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
-    if (kind < 0 || kind > 5) return "invalid nested JSON object value kind";
+    if (kind < 0) return "invalid nested JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
     char encoded[393217]; size_t output = 0; encoded[output++] = '{';
     ptrdiff_t key_stride = values.keys.stride == 0 ? (ptrdiff_t)sizeof(const char *) : values.keys.stride;
@@ -4700,7 +4700,9 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         struct flux__map child = *((struct flux__map *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
         const char *error = kind < 3
             ? flux__json_encode_object(child, kind, flux__json_capture)
-            : flux__json_encode_nested_object(child, kind - 3, flux__json_capture);
+            : kind < 6
+                ? flux__json_encode_nested_object(child, kind - 3, flux__json_capture)
+                : flux__json_encode_map_map(child, kind - 6, flux__json_capture);
         if (error != NULL) return error;
         if (flux__json_capture_value == NULL) return "JSON object encoding failed";
         size_t child_length = strlen(flux__json_capture_value);
@@ -32882,6 +32884,27 @@ fn pipe_input_expr(input: &Expr, env: &HashMap<String, Type>, signatures: &Signa
     }
 }
 
+fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'static str> {
+    match signatures.canonical_type(ty) {
+        Type::I64 => Ok(0),
+        Type::Bool => Ok(1),
+        Type::Str => Ok(2),
+        Type::List(inner) => match signatures.canonical_type(&inner) {
+            Type::I64 => Ok(3),
+            Type::Bool => Ok(4),
+            Type::Str => Ok(5),
+            _ => Err("json.encodeObject requires scalar-list values"),
+        },
+        Type::Map(key, inner) => {
+            if signatures.canonical_type(&key) != Type::Str {
+                return Err("json.encodeObject requires string-keyed map values");
+            }
+            Ok(6 + json_map_value_kind(&inner, signatures)?)
+        }
+        _ => Err("json.encodeObject requires a scalar map"),
+    }
+}
+
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -35643,53 +35666,8 @@ fn emit_qualified_call(
                         "json.encodeObject requires a string-keyed scalar map",
                     ));
                 }
-                let kind = match signatures.canonical_type(&element) {
-                    Type::I64 => 0,
-                    Type::Bool => 1,
-                    Type::Str => 2,
-                    Type::List(inner) => match signatures.canonical_type(&inner) {
-                        Type::I64 => 3,
-                        Type::Bool => 4,
-                        Type::Str => 5,
-                        _ => {
-                            return Err(diag(
-                                span,
-                                "json.encodeObject requires scalar-list values",
-                            ));
-                        }
-                    },
-                    Type::Map(inner_key, inner_value) => {
-                        if signatures.canonical_type(&inner_key) != Type::Str {
-                            return Err(diag(
-                                span,
-                                "json.encodeObject requires string-keyed map values",
-                            ));
-                        }
-                        match signatures.canonical_type(&inner_value) {
-                            Type::I64 => 6,
-                            Type::Bool => 7,
-                            Type::Str => 8,
-                            Type::List(inner) => match signatures.canonical_type(&inner) {
-                                Type::I64 => 9,
-                                Type::Bool => 10,
-                                Type::Str => 11,
-                                _ => {
-                                    return Err(diag(
-                                        span,
-                                        "json.encodeObject requires scalar-map values",
-                                    ));
-                                }
-                            },
-                            _ => {
-                                return Err(diag(
-                                    span,
-                                    "json.encodeObject requires scalar-map values",
-                                ));
-                            }
-                        }
-                    }
-                    _ => return Err(diag(span, "json.encodeObject requires a scalar map")),
-                };
+                let kind = json_map_value_kind(&element, signatures)
+                    .map_err(|message| diag(span, message))?;
                 if kind >= 6 {
                     ("flux__json_encode_map_map", kind - 6)
                 } else if kind >= 3 {

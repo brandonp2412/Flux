@@ -5748,6 +5748,17 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
     }
 }
 
+fn json_map_value_type_is_supported(ty: &Type) -> bool {
+    match ty {
+        Type::I64 | Type::Bool | Type::Str => true,
+        Type::List(inner) => matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str),
+        Type::Map(key, value) => {
+            matches!(key.as_ref(), Type::Str) && json_map_value_type_is_supported(value)
+        }
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -5952,8 +5963,7 @@ pub fn type_of_expr(
                         let Type::Map(key, value) = map_ty else {
                             unreachable!("nested map literal must have map type");
                         };
-                        let scalar_map_value = matches!(*value, Type::I64 | Type::Bool | Type::Str)
-                            || matches!(*value, Type::List(ref inner) if matches!(**inner, Type::I64 | Type::Bool | Type::Str));
+                        let scalar_map_value = json_map_value_type_is_supported(&value);
                         if *key != Type::Str || !scalar_map_value {
                             return Err(diag(
                                 item.span,
@@ -10763,25 +10773,7 @@ fn check_qualified_call(
                     }
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
-                            && match signatures.canonical_type(element) {
-                                Type::I64 | Type::Bool | Type::Str => true,
-                                Type::List(inner) => matches!(
-                                    signatures.canonical_type(&inner),
-                                    Type::I64 | Type::Bool | Type::Str
-                                ),
-                                Type::Map(inner_key, inner_value) => {
-                                    signatures.canonical_type(&inner_key) == Type::Str
-                                        && match signatures.canonical_type(&inner_value) {
-                                            Type::I64 | Type::Bool | Type::Str => true,
-                                            Type::List(inner) => matches!(
-                                                signatures.canonical_type(&inner),
-                                                Type::I64 | Type::Bool | Type::Str
-                                            ),
-                                            _ => false,
-                                        }
-                                }
-                                _ => false,
-                            }
+                            && json_map_value_type_is_supported(&signatures.canonical_type(element))
                     }
                     _ => false,
                 };
@@ -10863,25 +10855,7 @@ fn check_qualified_call(
                         "json.encodeObject values must be map<str, i64|bool|str>",
                     ));
                 };
-                let valid_value = match signatures.canonical_type(&value) {
-                    Type::I64 | Type::Bool | Type::Str => true,
-                    Type::List(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
-                    Type::Map(inner_key, inner_value) => {
-                        signatures.canonical_type(&inner_key) == Type::Str
-                            && match signatures.canonical_type(&inner_value) {
-                                Type::I64 | Type::Bool | Type::Str => true,
-                                Type::List(inner) => matches!(
-                                    signatures.canonical_type(&inner),
-                                    Type::I64 | Type::Bool | Type::Str
-                                ),
-                                _ => false,
-                            }
-                    }
-                    _ => false,
-                };
+                let valid_value = json_map_value_type_is_supported(&value);
                 if signatures.canonical_type(&key) != Type::Str || !valid_value {
                     return Err(diag(
                         args[0].span,

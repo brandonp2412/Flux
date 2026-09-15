@@ -17503,6 +17503,51 @@ fn json_string_encoding_handles_maximum_control_expansion_without_overflow() {
 }
 
 #[test]
+fn json_deeply_nested_maps_encode_recursively_without_heap_storage() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: map<str, map<str, map<str, i64>>> = {"outer": {"middle": {"inner": 42}}}
+    let encodingError: error = json.encode(values, encoded)
+    print(encodingError)
+    return 0
+}
+"#;
+    check_source(source).expect("deeply nested JSON maps should typecheck");
+    let generated = compile_to_c(source).expect("deeply nested JSON maps should lower");
+    assert!(generated.contains("flux__json_encode_map_map("));
+    let root = std::env::temp_dir().join(format!("flux-json-deep-map-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary deep-map directory should be writable");
+    let c_path = root.join("json-deep-map.c");
+    let exe_path = root.join("json-deep-map");
+    fs::write(&c_path, generated).expect("generated deep-map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile deep-map JSON code");
+    assert!(
+        compile.status.success(),
+        "deep-map JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("deep-map JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"outer\":{\"middle\":{\"inner\":42}}}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_bounded_inputs_reject_oversized_values_before_unbounded_reads() {
     let oversized = "a".repeat(65537);
     let source = format!(
