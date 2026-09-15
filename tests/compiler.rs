@@ -15557,6 +15557,42 @@ fn main() -> i64 {
 }
 
 #[test]
+fn semantic_cfg_records_borrowed_call_arguments_through_list_aliases() {
+    let source = r#"
+type Values = i64[]
+
+fn inspect(values: Values) -> bool {
+    return contains(values, 2)
+}
+
+fn main() -> i64 {
+    if inspect([1, 2]):
+        return 0
+    return 1
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1218))
+        .expect("aliased list call ownership facts should analyze");
+    let graph = database
+        .control_flow_graph("inspect")
+        .expect("inspect should expose aliased ownership facts");
+    let call = graph
+        .nodes()
+        .iter()
+        .flat_map(|node| node.ownership.calls.iter())
+        .find(|call| call.callee == "contains")
+        .expect("contains call should be recorded");
+    assert_eq!(
+        call.argument_definitions[0],
+        vec![ControlFlowDefinitionId::Parameter(0)]
+    );
+    assert_eq!(
+        call.borrowed_argument_definitions[0],
+        vec![ControlFlowDefinitionId::Parameter(0)]
+    );
+}
+
+#[test]
 fn semantic_cfg_preserves_call_argument_projection_source_identity() {
     let source = r#"
 fn inspect(values: i64[]) -> bool {

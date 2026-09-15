@@ -1313,7 +1313,7 @@ impl<'a> ControlFlowBuilder<'a> {
             borrow_ends: Vec::new(),
             borrow_lifetimes: Vec::new(),
         };
-        populate_call_argument_definitions(&mut graph);
+        populate_call_argument_definitions(&mut graph, self.signatures);
         graph.borrow_states_before = compute_borrow_states(&graph);
         graph.borrow_starts = compute_borrow_starts(&graph);
         graph.borrow_ends = compute_borrow_ends(&graph);
@@ -2757,7 +2757,7 @@ impl<'a> ControlFlowBuilder<'a> {
     }
 }
 
-fn populate_call_argument_definitions(graph: &mut ControlFlowGraph) {
+fn populate_call_argument_definitions(graph: &mut ControlFlowGraph, signatures: &Signatures) {
     let values = graph.values.clone();
     for node in &mut graph.nodes {
         for call in &mut node.ownership.calls {
@@ -2773,7 +2773,7 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph) {
                     let Some(value) = values.get(argument.0) else {
                         return Vec::new();
                     };
-                    let is_borrowed = match &value.ty {
+                    let is_borrowed = match signatures.canonical_type(&value.ty) {
                         Type::List(_) => true,
                         Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
                         _ => false,
