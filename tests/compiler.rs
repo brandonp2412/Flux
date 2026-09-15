@@ -20881,7 +20881,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__tls_write_timeout("));
     assert!(generated.contains("flux__tls_cleanup_registered"));
     assert!(generated.contains("atexit(flux__tls_cleanup)"));
-    assert!(generated.contains("SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false"));
+    assert!(generated.contains("SSL_free(slot->session); SSL_CTX_free(slot->context); flux__net_unregister_socket(slot->socket); close(slot->socket); slot->used = false"));
     assert!(generated.contains("SSL_pending(slot->session)"));
     assert!(generated.contains("flux__net_poll_cancellable(&descriptor, 1, wait_millis)"));
     assert!(generated.contains("SSL_ERROR_WANT_WRITE"));
