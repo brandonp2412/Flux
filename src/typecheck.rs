@@ -5759,6 +5759,14 @@ fn json_map_value_type_is_supported(ty: &Type) -> bool {
     }
 }
 
+fn json_array_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
+    match signatures.canonical_type(ty) {
+        Type::I64 | Type::Bool | Type::Str => true,
+        Type::List(inner) => json_array_type_is_supported(&inner, signatures),
+        _ => false,
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -10762,15 +10770,10 @@ fn check_qualified_call(
                 let value = signatures.canonical_type(&value);
                 let valid = match &value {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::List(element) => {
-                        matches!(
-                            signatures.canonical_type(element),
-                            Type::I64 | Type::Bool | Type::Str
-                        ) || matches!(
-                            signatures.canonical_type(element),
-                            Type::List(inner) if matches!(signatures.canonical_type(&inner), Type::I64 | Type::Bool | Type::Str)
-                        )
-                    }
+                    Type::List(element) => json_array_type_is_supported(
+                        &signatures.canonical_type(element),
+                        signatures,
+                    ),
                     Type::Map(key, element) => {
                         signatures.canonical_type(key) == Type::Str
                             && json_map_value_type_is_supported(&signatures.canonical_type(element))
@@ -10814,18 +10817,11 @@ fn check_qualified_call(
                     ));
                 };
                 let element = signatures.canonical_type(&element);
-                let valid_element = match &element {
-                    Type::I64 | Type::Bool | Type::Str => true,
-                    Type::List(inner) => matches!(
-                        signatures.canonical_type(inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
-                    _ => false,
-                };
+                let valid_element = json_array_type_is_supported(&element, signatures);
                 if !valid_element {
                     return Err(diag(
                         args[0].span,
-                        "json.encodeArray values must be a list of scalar values or scalar lists",
+                        "json.encodeArray values must be a list of scalar values or recursively nested scalar lists",
                     ));
                 }
                 let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);

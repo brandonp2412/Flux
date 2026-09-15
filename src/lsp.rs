@@ -1612,7 +1612,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encode",
             3,
-            "fn json.encode(value: i64 | bool | str | scalar[] | scalar[][] | map<str, i64|bool|str|scalar[]|map<str, scalar>>, callback: fn(str) -> void) -> error",
+            "fn json.encode(value: i64 | bool | str | scalar[] | recursively nested scalar[] | map<str, i64|bool|str|scalar[]|map<str, scalar>>, callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,
@@ -1633,7 +1633,7 @@ fn add_qualified_namespace_completions(
             seen,
             "encodeArray",
             3,
-            "fn json.encodeArray(values: scalar[] | scalar[][], callback: fn(str) -> void) -> error",
+            "fn json.encodeArray(values: recursively nested scalar[], callback: fn(str) -> void) -> error",
         );
         push_completion_item(
             items,

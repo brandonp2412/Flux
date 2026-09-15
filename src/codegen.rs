@@ -4360,6 +4360,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__json_encode_string(")
         || runtime_usage.contains("flux__json_encode_array(")
         || runtime_usage.contains("flux__json_encode_nested_array(")
+        || runtime_usage.contains("flux__json_encode_recursive_array(")
         || runtime_usage.contains("flux__json_encode_object(")
         || runtime_usage.contains("flux__json_encode_nested_object(")
         || runtime_usage.contains("flux__json_encode_map_map(")
@@ -4379,6 +4380,7 @@ static inline const char *flux__json_parse(const char *value, void (*callback)(c
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *));
 static inline const char *flux__json_encode_array(struct flux__list values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_nested_array(struct flux__list values, int kind, void (*callback)(const char *));
+static inline const char *flux__json_encode_recursive_array(struct flux__list values, int kind, int depth, void (*callback)(const char *));
 static inline const char *flux__json_encode_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_nested_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *));
@@ -4678,6 +4680,27 @@ static inline void flux__json_capture(const char *value) {
     if (length >= sizeof(flux__json_capture_buffer)) { flux__json_capture_value = NULL; return; }
     memcpy(flux__json_capture_buffer, value, length + 1);
     flux__json_capture_value = flux__json_capture_buffer;
+}
+static inline const char *flux__json_encode_recursive_array(struct flux__list values, int kind, int depth, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid json.encodeArray callback";
+    if (kind < 0 || kind > 2 || depth < 0 || depth > 128) return "invalid nested JSON array shape";
+    if (depth == 0) return flux__json_encode_array(values, kind, callback);
+    if (values.len > 65536) return "JSON array exceeds 65536 elements";
+    char encoded[393217]; size_t output = 0; encoded[output++] = '[';
+    ptrdiff_t stride = values.stride == 0 ? (ptrdiff_t)sizeof(struct flux__list) : values.stride;
+    for (size_t index = 0; index < values.len; index += 1) {
+        if (index != 0) { if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes"; encoded[output++] = ','; }
+        struct flux__list child = *((struct flux__list *)((char *)values.data + (ptrdiff_t)index * stride));
+        flux__json_capture_value = NULL;
+        const char *error = flux__json_encode_recursive_array(child, kind, depth - 1, flux__json_capture);
+        if (error != NULL) return error;
+        if (flux__json_capture_value == NULL) return "JSON array encoding failed";
+        size_t child_length = strlen(flux__json_capture_value);
+        if (output > sizeof(encoded) - 1 - child_length) return "encoded JSON array exceeds 393216 bytes";
+        memcpy(encoded + output, flux__json_capture_value, child_length); output += child_length;
+    }
+    if (output >= sizeof(encoded) - 1) return "encoded JSON array exceeds 393216 bytes";
+    encoded[output++] = ']'; encoded[output] = '\0'; callback(encoded); return NULL;
 }
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
@@ -32905,6 +32928,59 @@ fn json_map_value_kind(ty: &Type, signatures: &Signatures) -> Result<i32, &'stat
     }
 }
 
+fn json_array_encoding_shape(
+    ty: &Type,
+    signatures: &Signatures,
+) -> Result<(&'static str, i32, i32), &'static str> {
+    let mut depth = 0;
+    let mut current = signatures.canonical_type(ty);
+    loop {
+        match current {
+            Type::I64 => {
+                return Ok((
+                    if depth == 0 {
+                        "flux__json_encode_array"
+                    } else {
+                        "flux__json_encode_recursive_array"
+                    },
+                    0,
+                    depth,
+                ));
+            }
+            Type::Bool => {
+                return Ok((
+                    if depth == 0 {
+                        "flux__json_encode_array"
+                    } else {
+                        "flux__json_encode_recursive_array"
+                    },
+                    1,
+                    depth,
+                ));
+            }
+            Type::Str => {
+                return Ok((
+                    if depth == 0 {
+                        "flux__json_encode_array"
+                    } else {
+                        "flux__json_encode_recursive_array"
+                    },
+                    2,
+                    depth,
+                ));
+            }
+            Type::List(inner) => {
+                depth += 1;
+                if depth > 128 {
+                    return Err("json.encodeArray nesting exceeds 128 levels");
+                }
+                current = signatures.canonical_type(&inner);
+            }
+            _ => return Err("json.encodeArray requires recursively nested scalar lists"),
+        }
+    }
+}
+
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -35623,39 +35699,16 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            let (helper, kind) = if name == "encodeArray"
+            let (helper, kind, depth) = if name == "encodeArray"
                 || (name == "encode"
                     && matches!(signatures.canonical_type(&value.ty), Type::List(_)))
             {
                 let Type::List(element) = signatures.canonical_type(&value.ty) else {
                     return Err(diag(span, "json.encodeArray requires a scalar list"));
                 };
-                let (helper, kind) = match signatures.canonical_type(&element) {
-                    Type::I64 => ("flux__json_encode_array", 0),
-                    Type::Bool => ("flux__json_encode_array", 1),
-                    Type::Str => ("flux__json_encode_array", 2),
-                    Type::List(inner) => {
-                        let kind = match signatures.canonical_type(&inner) {
-                            Type::I64 => 0,
-                            Type::Bool => 1,
-                            Type::Str => 2,
-                            _ => {
-                                return Err(diag(
-                                    span,
-                                    "json.encodeArray requires scalar nested arrays",
-                                ));
-                            }
-                        };
-                        ("flux__json_encode_nested_array", kind)
-                    }
-                    _ => {
-                        return Err(diag(
-                            span,
-                            "json.encodeArray requires a scalar list or scalar nested arrays",
-                        ));
-                    }
-                };
-                (helper, kind)
+                let (helper, kind, depth) = json_array_encoding_shape(&element, signatures)
+                    .map_err(|message| diag(span, message))?;
+                (helper, kind, depth)
             } else {
                 let Type::Map(key, element) = signatures.canonical_type(&value.ty) else {
                     return Err(diag(span, "json.encodeObject requires a scalar map"));
@@ -35669,15 +35722,22 @@ fn emit_qualified_call(
                 let kind = json_map_value_kind(&element, signatures)
                     .map_err(|message| diag(span, message))?;
                 if kind >= 6 {
-                    ("flux__json_encode_map_map", kind - 6)
+                    ("flux__json_encode_map_map", kind - 6, 0)
                 } else if kind >= 3 {
-                    ("flux__json_encode_nested_object", kind - 3)
+                    ("flux__json_encode_nested_object", kind - 3, 0)
                 } else {
-                    ("flux__json_encode_object", kind)
+                    ("flux__json_encode_object", kind, 0)
                 }
             };
             return Ok((
-                format!("{helper}({}, {}, {})", value.code, kind, callback.code),
+                if helper == "flux__json_encode_recursive_array" {
+                    format!(
+                        "{helper}({}, {}, {}, {})",
+                        value.code, kind, depth, callback.code
+                    )
+                } else {
+                    format!("{helper}({}, {}, {})", value.code, kind, callback.code)
+                },
                 vec![Type::Error],
                 None,
             ));
