@@ -1826,7 +1826,7 @@ fn emit_runtime_prelude(
         || runtime_usage.contains("flux__fs_directory_set_modified_unix_millis(")
         || runtime_usage.contains("flux__fs_directory_set_accessed_unix_millis(")
     {
-        out.push_str("#include <time.h>\n");
+        out.push_str("#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE\n#endif\n#include <time.h>\n");
     }
     if runtime_usage.contains("flux__locale_format_") && !uses_android {
         out.push_str("#include <locale.h>\n#include <monetary.h>\n");
@@ -6458,7 +6458,50 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if runtime_usage.contains("flux__time_local_part(") {
         out.push_str("static inline int64_t flux__time_local_part(int64_t unix_ms, int part) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: local timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm value; if (localtime_r(&native_seconds, &value) == NULL) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } switch (part) { case 0: return (int64_t)value.tm_year + INT64_C(1900); case 1: return (int64_t)value.tm_mon + INT64_C(1); case 2: return (int64_t)value.tm_mday; case 3: return (int64_t)value.tm_hour; case 4: return (int64_t)value.tm_min; case 5: return (int64_t)value.tm_sec; case 6: return millis; case 7: return value.tm_wday == 0 ? INT64_C(7) : (int64_t)value.tm_wday; case 8: return (int64_t)value.tm_yday + INT64_C(1); default: fputs(\"Flux runtime error: invalid local calendar part\\n\", stderr); abort(); } }\n");
     }
-    if runtime_usage.contains("flux__time_local_offset(") {
+    if runtime_usage.contains("flux__time_local_offset_safe(") {
+        out.push_str(
+            r#"static inline int64_t flux__time_local_offset_safe(int64_t unix_ms) {
+    int64_t seconds = unix_ms / INT64_C(1000);
+    int64_t millis = unix_ms % INT64_C(1000);
+    if (millis < 0) seconds -= INT64_C(1);
+    time_t native_seconds = (time_t)seconds;
+    if ((int64_t)native_seconds != seconds) {
+        fputs("Flux runtime error: local timestamp exceeds platform time range\n", stderr);
+        abort();
+    }
+    struct tm local_value;
+    if (localtime_r(&native_seconds, &local_value) == NULL) {
+        fputs("Flux runtime error: local calendar conversion failed\n", stderr);
+        abort();
+    }
+#if defined(__GLIBC__)
+    return (int64_t)(local_value.__tm_gmtoff / 60);
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__ANDROID__)
+    return (int64_t)(local_value.tm_gmtoff / 60);
+#else
+    struct tm utc_value;
+    if (gmtime_r(&native_seconds, &utc_value) == NULL) {
+        fputs("Flux runtime error: local calendar conversion failed\n", stderr);
+        abort();
+    }
+    local_value.tm_isdst = -1;
+    utc_value.tm_isdst = -1;
+    time_t local_seconds = mktime(&local_value);
+    time_t utc_as_local_seconds = mktime(&utc_value);
+    if (local_seconds == (time_t)-1 || utc_as_local_seconds == (time_t)-1) {
+        fputs("Flux runtime error: local offset calculation failed\n", stderr);
+        abort();
+    }
+    double offset_seconds = difftime(local_seconds, utc_as_local_seconds);
+    if (offset_seconds < (double)INT64_MIN * 60.0 || offset_seconds > (double)INT64_MAX * 60.0) {
+        fputs("Flux runtime error: local offset exceeds i64 range\n", stderr);
+        abort();
+    }
+    return (int64_t)(offset_seconds / 60.0);
+#endif
+}
+"#,
+        );
         out.push_str("static inline int64_t flux__time_local_offset(int64_t unix_ms) { int64_t seconds = unix_ms / INT64_C(1000); int64_t millis = unix_ms % INT64_C(1000); if (millis < 0) { seconds -= INT64_C(1); } time_t native_seconds = (time_t)seconds; if ((int64_t)native_seconds != seconds) { fputs(\"Flux runtime error: local timestamp exceeds platform time range\\n\", stderr); abort(); } struct tm local_value; struct tm utc_value; if (localtime_r(&native_seconds, &local_value) == NULL || gmtime_r(&native_seconds, &utc_value) == NULL) { fputs(\"Flux runtime error: local calendar conversion failed\\n\", stderr); abort(); } local_value.tm_isdst = -1; utc_value.tm_isdst = -1; time_t local_seconds = mktime(&local_value); time_t utc_as_local_seconds = mktime(&utc_value); if (local_seconds == (time_t)-1 || utc_as_local_seconds == (time_t)-1) { fputs(\"Flux runtime error: local offset calculation failed\\n\", stderr); abort(); } double offset_seconds = difftime(local_seconds, utc_as_local_seconds); if (offset_seconds < (double)INT64_MIN * 60.0 || offset_seconds > (double)INT64_MAX * 60.0) { fputs(\"Flux runtime error: local offset exceeds i64 range\\n\", stderr); abort(); } return (int64_t)(offset_seconds / 60.0); }\n");
     }
     if runtime_usage.contains("flux__time_format_utc(") {
@@ -35363,7 +35406,7 @@ fn emit_qualified_call(
                 }
                 let unix_millis = emit_expr(&args[0], env, signatures)?;
                 return Ok((
-                    format!("flux__time_local_offset({})", unix_millis.code),
+                    format!("flux__time_local_offset_safe({})", unix_millis.code),
                     vec![Type::I64],
                     None,
                 ));

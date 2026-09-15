@@ -47504,14 +47504,17 @@ fn local_time_offset_is_typed_native_and_dst_aware() {
 fn main() -> i64 {
     print(time.localOffset(1577836800000))
     print(time.localOffset(1593561600000))
+    print(time.localOffset(-1))
     return 0
 }
 "#;
     check_source(source).expect("local offset should typecheck");
     let generated = compile_to_c(source).expect("local offset should lower natively");
-    assert!(generated.contains("flux__time_local_offset(int64_t unix_ms)"));
-    assert!(generated.contains("mktime(&local_value)"));
-    assert!(generated.contains("difftime(local_seconds, utc_as_local_seconds)"));
+    assert!(generated.contains("flux__time_local_offset_safe(int64_t unix_ms)"));
+    assert!(
+        generated.contains("local_value.__tm_gmtoff")
+            || generated.contains("local_value.tm_gmtoff")
+    );
 
     let root = std::env::temp_dir().join(format!("flux-local-offset-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -47543,6 +47546,6 @@ fn main() -> i64 {
                 .expect("local offset output should be i64")
         })
         .collect::<Vec<_>>();
-    assert_eq!(values, vec![-300, -240]);
+    assert_eq!(values, vec![-300, -240, -300]);
     let _ = fs::remove_dir_all(root);
 }
