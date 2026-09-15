@@ -5213,14 +5213,14 @@ fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<D
             continue;
         }
         for ownership_move in &node.ownership.moves {
-            let mut aliases = graph
-                .borrow_lifetimes_before(node.id)
+            let mut aliases = ownership_move
+                .source_definitions
+                .iter()
+                .flat_map(|source_definition| {
+                    graph.borrow_lifetimes_before_source_definition(node.id, *source_definition)
+                })
                 .filter(|lifetime| {
-                    lifetime.source == ownership_move.source
-                        && ownership_move
-                            .source_definitions
-                            .contains(&lifetime.source_definition)
-                        && lifetime.borrower != ownership_move.source
+                    lifetime.borrower != ownership_move.source
                         && lifetime.borrower != ownership_move.destination
                 })
                 .map(|lifetime| {

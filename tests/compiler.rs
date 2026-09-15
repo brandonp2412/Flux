@@ -15756,6 +15756,13 @@ fn main() -> i64 {
         "every sibling lifetime should expose its active CFG region and deterministic boundaries"
     );
     for lifetime in lifetimes {
+        let active_node = lifetime.active_before[0];
+        assert!(
+            graph
+                .borrow_lifetimes_before_source_definition(active_node, lifetime.source_definition,)
+                .any(|candidate| candidate.definition == lifetime.definition),
+            "the identity-based lifetime query must find only the matching source definition"
+        );
         assert!(lifetime.starts.iter().all(|start| {
             start.definition == lifetime.definition
                 && start.borrower == lifetime.borrower

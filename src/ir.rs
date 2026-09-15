@@ -865,6 +865,20 @@ impl ControlFlowGraph {
             .filter(move |lifetime| lifetime.active_before.contains(&id))
     }
 
+    /// Return live immutable-borrow lifetimes rooted at one exact source
+    /// definition before a CFG node.  Ownership consumers should prefer this
+    /// identity-based query over matching the diagnostic source name: lexical
+    /// shadowing and loop re-execution may give unrelated definitions the same
+    /// spelling.
+    pub fn borrow_lifetimes_before_source_definition(
+        &self,
+        id: ControlFlowNodeId,
+        source_definition: ControlFlowDefinitionId,
+    ) -> impl Iterator<Item = &OwnershipBorrowLifetime> {
+        self.borrow_lifetimes_before(id)
+            .filter(move |lifetime| lifetime.source_definition == source_definition)
+    }
+
     /// Returns the normalized drop facts attached to a CFG evaluation node.
     /// Facts are ordered by node and definition identity for deterministic IR
     /// consumers.
