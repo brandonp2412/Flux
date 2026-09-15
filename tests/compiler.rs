@@ -16818,6 +16818,61 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_encodes_copy_records_with_nested_optional_aggregate_fields() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let address: (city: str)? = (city: "Auckland")
+    let noAddress: (city: str)? = none
+    let marker: (number: i64)? = (number: 7)
+    let noMarker: (number: i64)? = none
+    let present: (address: (city: str)?, marker: (number: i64)?) = (address: address, marker: marker)
+    let absent: (address: (city: str)?, marker: (number: i64)?) = (address: noAddress, marker: noMarker)
+    print(json.encode(present, emit))
+    print(json.encode(absent, emit))
+    return 0
+}
+"#;
+    check_source(source)
+        .expect("nested optional aggregate fields should typecheck for JSON encoding");
+    let generated =
+        compile_to_c(source).expect("nested optional aggregate JSON should lower natively");
+    assert!(generated.contains("flux__json_encode_optional_aggregate_optional_record"));
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-record-nested-optional-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("nested optional JSON directory should be writable");
+    let c_path = root.join("record-nested-optional-json.c");
+    let exe_path = root.join("record-nested-optional-json");
+    fs::write(&c_path, generated).expect("nested optional JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile nested optional JSON");
+    assert!(
+        compile.status.success(),
+        "nested optional JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("nested optional JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"address\":{\"city\":\"Auckland\"},\"marker\":{\"number\":7}}\nnil\n{\"address\":null,\"marker\":null}\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn anonymous_records_support_positional_destructuring_for_let_var_and_assignment() {
     let source = r#"
 type PersonRecord = (name: str, age: i64)

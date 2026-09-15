@@ -37989,10 +37989,13 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::Optional(inner) => {
+                        matches!(
+                            signatures.canonical_type(&inner),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || json_record_supported(&inner, signatures)
+                            || json_enum_supported(&inner, signatures)
+                    }
                     Type::Record(_) => json_record_supported(&field.ty, signatures),
                     _ => false,
                 })
@@ -38003,10 +38006,13 @@ fn json_record_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::Optional(inner) => {
+                        matches!(
+                            signatures.canonical_type(&inner),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || json_record_supported(&inner, signatures)
+                            || json_enum_supported(&inner, signatures)
+                    }
                     Type::Record(_) | Type::Named(_) => {
                         json_record_supported(&field.ty, signatures)
                     }
@@ -38065,6 +38071,50 @@ fn emit_json_record_helpers(
         && !runtime_usage.contains("flux__json_encode_optional_aggregate_")
     {
         return;
+    }
+    // Aggregate encoders can be mutually recursive at the helper level: a
+    // record may contain an optional aggregate, while that aggregate delegates
+    // back to a record/enum encoder. Declare every reachable helper first so
+    // C does not depend on emission order for these by-value calls.
+    let mut declared_records = HashSet::new();
+    let mut declared_enums = HashSet::new();
+    let mut declared_optionals = HashSet::new();
+    for function in function_ir.values() {
+        for value in function.values() {
+            collect_json_record_types(&value.ty, signatures, &mut declared_records);
+            collect_json_enum_types(&value.ty, signatures, &mut declared_enums);
+            collect_json_optional_aggregate_types(&value.ty, signatures, &mut declared_optionals);
+        }
+    }
+    for ty in &declared_records {
+        out.push_str(&format!(
+            "static inline const char *{}({} value, void (*callback)(const char *));\n",
+            json_record_helper_name(ty, signatures),
+            c_type(ty, signatures)
+        ));
+    }
+    for ty in &declared_enums {
+        out.push_str(&format!(
+            "static inline const char *{}({} value, void (*callback)(const char *));\n",
+            json_enum_helper_name(ty, signatures),
+            c_type(ty, signatures)
+        ));
+    }
+    for ty in &declared_optionals {
+        let Type::Optional(inner) = signatures.canonical_type(ty) else {
+            continue;
+        };
+        if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures) {
+            out.push_str(&format!(
+                "static inline const char *{}({} value, void (*callback)(const char *));\n",
+                json_optional_aggregate_helper_name(ty, signatures),
+                c_type(ty, signatures)
+            ));
+        }
+    }
+    if !declared_records.is_empty() || !declared_enums.is_empty() || !declared_optionals.is_empty()
+    {
+        out.push('\n');
     }
     let mut records = HashSet::new();
     for function in function_ir.values() {
@@ -38129,6 +38179,16 @@ fn emit_json_record_helpers(
                     }
                     Type::Str => {
                         format!("flux__json_encode_optional_str({field_expr}, flux__json_capture)")
+                    }
+                    Type::Record(_) | Type::Named(_)
+                        if json_record_supported(&inner, signatures)
+                            || json_enum_supported(&inner, signatures) =>
+                    {
+                        format!(
+                            "{}({}, flux__json_capture)",
+                            json_optional_aggregate_helper_name(&field.ty, signatures),
+                            field_expr
+                        )
                     }
                     _ => continue,
                 },
@@ -38312,6 +38372,7 @@ fn emit_json_optional_aggregate_helpers(
 ) {
     if !runtime_usage.contains("flux__json_encode_optional_aggregate_")
         && !runtime_usage.contains("flux__json_encode_enum_")
+        && !runtime_usage.contains("flux__json_encode_record_")
     {
         return;
     }
@@ -38363,20 +38424,34 @@ fn collect_json_optional_aggregate_types(
     optionals: &mut HashSet<Type>,
 ) {
     let ty = signatures.canonical_type(ty);
-    let Type::Named(name) = ty else { return };
-    let Some(definition) = signatures.enum_type(&name) else {
-        return;
-    };
-    for variant in &definition.variants {
-        for payload in &variant.payloads {
-            let payload = signatures.canonical_type(payload);
-            if let Type::Optional(inner) = &payload
-                && (json_record_supported(inner, signatures)
-                    || json_enum_supported(inner, signatures))
+    match ty {
+        Type::Optional(inner) => {
+            if json_record_supported(&inner, signatures) || json_enum_supported(&inner, signatures)
             {
-                optionals.insert(payload.clone());
+                optionals.insert(Type::Optional(inner.clone()));
+            }
+            collect_json_optional_aggregate_types(&inner, signatures, optionals);
+        }
+        Type::Record(fields) => {
+            for field in fields {
+                collect_json_optional_aggregate_types(&field.ty, signatures, optionals);
             }
         }
+        Type::Named(name) => {
+            if let Some(structure) = signatures.struct_type(&name) {
+                for field in &structure.fields {
+                    collect_json_optional_aggregate_types(&field.ty, signatures, optionals);
+                }
+            }
+            if let Some(definition) = signatures.enum_type(&name) {
+                for variant in &definition.variants {
+                    for payload in &variant.payloads {
+                        collect_json_optional_aggregate_types(payload, signatures, optionals);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -38405,6 +38480,9 @@ fn collect_record_type(ty: &Type, signatures: &Signatures, records: &mut HashSet
 }
 
 fn record_type_depth(ty: &Type, signatures: &Signatures) -> usize {
+    if let Type::Optional(inner) = signatures.canonical_type(ty) {
+        return record_type_depth(&inner, signatures);
+    }
     let fields = match signatures.canonical_type(ty) {
         Type::Record(fields) => fields,
         Type::Named(name) => signatures
@@ -38504,8 +38582,6 @@ fn emit_record_type_definitions(
             ));
         }
         out.push_str("};\n");
-    }
-    for record in &records {
         emit_optional_value_definition(out, record, signatures);
     }
     if !records.is_empty() {

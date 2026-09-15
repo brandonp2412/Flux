@@ -254,10 +254,7 @@ impl Signatures {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| self.is_bootstrap_record_field_type(&field.ty)),
-            Type::Optional(inner) => matches!(
-                self.canonical_type(&inner),
-                Type::I64 | Type::Bool | Type::Str
-            ),
+            Type::Optional(inner) => self.is_bootstrap_record_field_type(&inner),
             Type::Void
             | Type::Named(_)
             | Type::List(_)
@@ -5777,10 +5774,13 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::Optional(inner) => {
+                        matches!(
+                            signatures.canonical_type(&inner),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || json_record_type_is_supported(&inner, signatures)
+                            || json_enum_type_is_supported(&inner, signatures)
+                    }
                     Type::Record(_) => json_record_type_is_supported(&field.ty, signatures),
                     _ => false,
                 })
@@ -5791,10 +5791,13 @@ fn json_record_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|field| match signatures.canonical_type(&field.ty) {
                     Type::I64 | Type::Bool | Type::Str => true,
-                    Type::Optional(inner) => matches!(
-                        signatures.canonical_type(&inner),
-                        Type::I64 | Type::Bool | Type::Str
-                    ),
+                    Type::Optional(inner) => {
+                        matches!(
+                            signatures.canonical_type(&inner),
+                            Type::I64 | Type::Bool | Type::Str
+                        ) || json_record_type_is_supported(&inner, signatures)
+                            || json_enum_type_is_supported(&inner, signatures)
+                    }
                     Type::Record(_) | Type::Named(_) => {
                         json_record_type_is_supported(&field.ty, signatures)
                     }
