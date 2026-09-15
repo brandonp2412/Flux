@@ -19455,6 +19455,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("TLS calls should lower natively");
     assert!(generated.contains("#include <openssl/ssl.h>"));
     assert!(generated.contains("SSL_CTX_set_verify"));
+    assert!(generated.contains("SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_CLIENT)"));
+    assert!(generated.contains("SSL_set_session(session, resumption->session)"));
+    assert!(generated.contains("SSL_get1_session(session)"));
+    assert!(generated.contains("flux__tls_resumption_slots"));
     assert!(generated.contains("SSL_get_verify_result"));
     assert!(generated.contains("TLS wrap string exceeds 65536 bytes"));
     assert!(generated.contains("TLS server path exceeds 65536 bytes"));

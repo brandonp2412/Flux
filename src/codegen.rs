@@ -7633,15 +7633,19 @@ static const char *flux__preferences_remove(const char *key) {
     }
     if runtime_usage.contains("flux__tls_") {
         out.push_str(r#"struct flux__tls_slot { SSL_CTX *context; SSL *session; int socket; bool used; };
+struct flux__tls_resumption_slot { SSL_SESSION *session; char *server_name; char *ca_file; bool used; };
 #ifndef FLUX_NET_I64_BOOL_ERROR_DEFINED
 #define FLUX_NET_I64_BOOL_ERROR_DEFINED
 struct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };
 #endif
 static struct flux__tls_slot flux__tls_slots[64];
+static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];
 static bool flux__tls_cleanup_registered = false;
 static inline struct flux__net_i64_error flux__tls_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }
 static inline struct flux__tls_slot *flux__tls_slot_for(int64_t handle) { if (handle < 1 || handle > 64 || !flux__tls_slots[handle - 1].used) return NULL; return &flux__tls_slots[handle - 1]; }
-static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1) { struct flux__tls_slot *slot = &flux__tls_slots[index]; if (!slot->used) continue; SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; } }
+static inline struct flux__tls_resumption_slot *flux__tls_resumption_for(const char *server_name, const char *ca_file) { for (int index = 0; index < 64; index += 1) { struct flux__tls_resumption_slot *slot = &flux__tls_resumption_slots[index]; if (slot->used && strcmp(slot->server_name, server_name) == 0 && strcmp(slot->ca_file, ca_file) == 0) return slot; } return NULL; }
+static inline void flux__tls_remember_resumption(const char *server_name, size_t server_name_length, const char *ca_file, size_t ca_file_length, SSL_SESSION *session) { if (session == NULL) return; struct flux__tls_resumption_slot *slot = flux__tls_resumption_for(server_name, ca_file); if (slot == NULL) for (int index = 0; index < 64; index += 1) if (!flux__tls_resumption_slots[index].used) { slot = &flux__tls_resumption_slots[index]; break; } if (slot == NULL) { SSL_SESSION_free(session); return; } char *server_copy = malloc(server_name_length + 1); char *ca_copy = malloc(ca_file_length + 1); if (server_copy == NULL || ca_copy == NULL) { free(server_copy); free(ca_copy); SSL_SESSION_free(session); return; } memcpy(server_copy, server_name, server_name_length + 1); memcpy(ca_copy, ca_file, ca_file_length + 1); if (slot->used) { SSL_SESSION_free(slot->session); free(slot->server_name); free(slot->ca_file); } *slot = (struct flux__tls_resumption_slot){ .session = session, .server_name = server_copy, .ca_file = ca_copy, .used = true }; }
+static void flux__tls_cleanup(void) { for (int index = 0; index < 64; index += 1) { struct flux__tls_slot *slot = &flux__tls_slots[index]; if (slot->used) { SSL_free(slot->session); SSL_CTX_free(slot->context); close(slot->socket); slot->used = false; } struct flux__tls_resumption_slot *resumption = &flux__tls_resumption_slots[index]; if (resumption->used) { SSL_SESSION_free(resumption->session); free(resumption->server_name); free(resumption->ca_file); resumption->used = false; } } }
 static inline void flux__tls_register_cleanup(void) { if (!flux__tls_cleanup_registered) { (void)atexit(flux__tls_cleanup); flux__tls_cleanup_registered = true; } }
 static inline bool flux__tls_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }
 static inline int flux__tls_handshake(SSL *session, int socket_handle, bool server) {
@@ -7663,12 +7667,17 @@ static inline struct flux__net_i64_error flux__tls_wrap(int64_t socket_handle, c
     SSL_CTX *context = SSL_CTX_new(TLS_client_method());
     if (context == NULL) return flux__tls_result(-1, "failed to create TLS context");
     SSL_CTX_set_verify(context, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_CLIENT);
     if (ca_file[0] == '\0') { if (SSL_CTX_set_default_verify_paths(context) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load system CA certificates"); } }
     else if (SSL_CTX_load_verify_locations(context, ca_file, NULL) != 1) { SSL_CTX_free(context); return flux__tls_result(-1, "failed to load TLS CA file"); }
     SSL *session = SSL_new(context);
     if (session == NULL || SSL_set_fd(session, (int)socket_handle) != 1 || SSL_set_tlsext_host_name(session, server_name) != 1) { if (session != NULL) SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "failed to configure TLS session"); }
+    struct flux__tls_resumption_slot *resumption = flux__tls_resumption_for(server_name, ca_file);
+    if (resumption != NULL) (void)SSL_set_session(session, resumption->session);
     X509_VERIFY_PARAM *parameters = SSL_get0_param(session);
     if (parameters == NULL || X509_VERIFY_PARAM_set1_host(parameters, server_name, 0) != 1 || !flux__tls_handshake(session, (int)socket_handle, false) || SSL_get_verify_result(session) != X509_V_OK) { SSL_free(session); SSL_CTX_free(context); return flux__tls_result(-1, "TLS handshake or certificate verification failed"); }
+    flux__tls_register_cleanup();
+    flux__tls_remember_resumption(server_name, server_name_length, ca_file, ca_file_length, SSL_get1_session(session));
     for (int index = 0; index < 64; index += 1) if (!flux__tls_slots[index].used) { flux__tls_slots[index] = (struct flux__tls_slot){ .context = context, .session = session, .socket = (int)socket_handle, .used = true }; flux__tls_register_cleanup(); return flux__tls_result((int64_t)index + 1, NULL); }
     SSL_shutdown(session); SSL_free(session); SSL_CTX_free(context); close((int)socket_handle); return flux__tls_result(-1, "too many active TLS sessions");
 }
