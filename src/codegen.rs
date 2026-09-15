@@ -4817,19 +4817,33 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
         if (output > sizeof(encoded) - 1 - encoded_key_length - 1) return "encoded JSON object exceeds 393216 bytes";
         memcpy(encoded + output, flux__json_capture_value, encoded_key_length); output += encoded_key_length;
         flux__json_capture_value = NULL;
-        struct flux__map child = *((struct flux__map *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
-        struct flux__list child_array = *((struct flux__list *)((char *)values.values.data + (ptrdiff_t)index * value_stride));
-        const char *error = kind >= 200000
-            ? flux__json_encode_recursive_array(child_array, (kind - 200000) % 1000000, (kind - 200000) / 1000000, flux__json_capture)
-            : kind < 3
-            ? flux__json_encode_object(child, kind, flux__json_capture)
-            : kind < 6
-                ? flux__json_encode_nested_object(child, kind - 3, flux__json_capture)
-                : kind >= 100000 && kind < 100003
-                    ? flux__json_encode_optional_object(child, kind, flux__json_capture)
-                    : kind >= 100003 && kind < 100006
-                        ? flux__json_encode_nested_object(child, kind, flux__json_capture)
-                    : flux__json_encode_map_map(child, kind - 6, flux__json_capture);
+        const char *error;
+        char *value_address = (char *)values.values.data + (ptrdiff_t)index * value_stride;
+        if (kind >= 200000) {
+            /* Recursive arrays occupy a list slot. Do not read it through the
+               map type first: that violates C's effective-type rules and can
+               miscompile under strict-aliasing optimizations. */
+            struct flux__list child_array = *((struct flux__list *)value_address);
+            error = flux__json_encode_recursive_array(
+                child_array,
+                (kind - 200000) % 1000000,
+                (kind - 200000) / 1000000,
+                flux__json_capture);
+        } else {
+            /* All remaining recursive map shapes occupy a map slot. */
+            struct flux__map child = *((struct flux__map *)value_address);
+            if (kind < 3) {
+                error = flux__json_encode_object(child, kind, flux__json_capture);
+            } else if (kind < 6) {
+                error = flux__json_encode_nested_object(child, kind - 3, flux__json_capture);
+            } else if (kind >= 100000 && kind < 100003) {
+                error = flux__json_encode_optional_object(child, kind, flux__json_capture);
+            } else if (kind >= 100003 && kind < 100006) {
+                error = flux__json_encode_nested_object(child, kind, flux__json_capture);
+            } else {
+                error = flux__json_encode_map_map(child, kind - 6, flux__json_capture);
+            }
+        }
         if (error != NULL) return error;
         if (flux__json_capture_value == NULL) return "JSON object encoding failed";
         size_t child_length = strlen(flux__json_capture_value);
