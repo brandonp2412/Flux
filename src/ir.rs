@@ -301,6 +301,12 @@ pub struct OwnershipCall {
     /// Source definitions reached by each argument at this call boundary.
     /// This remains parallel to `arguments` for future consuming-call checks.
     pub argument_definitions: Vec<Vec<ControlFlowDefinitionId>>,
+    /// Definitions whose storage is immutably borrowed by each argument.
+    /// Copy arguments deliberately stay empty; keeping this separate from
+    /// `argument_definitions` lets future consuming-call checks distinguish a
+    /// projected non-copy borrow from ordinary scalar provenance without
+    /// re-walking the typed AST.
+    pub borrowed_argument_definitions: Vec<Vec<ControlFlowDefinitionId>>,
     pub span: SourceSpan,
 }
 
@@ -2711,6 +2717,7 @@ impl<'a> ControlFlowBuilder<'a> {
                     callee,
                     arguments,
                     argument_definitions: Vec::new(),
+                    borrowed_argument_definitions: Vec::new(),
                     span: value.span,
                 })
             })
@@ -2758,6 +2765,25 @@ fn populate_call_argument_definitions(graph: &mut ControlFlowGraph) {
                 .arguments
                 .iter()
                 .map(|argument| call_argument_definitions(*argument, &values))
+                .collect();
+            call.borrowed_argument_definitions = call
+                .arguments
+                .iter()
+                .map(|argument| {
+                    let Some(value) = values.get(argument.0) else {
+                        return Vec::new();
+                    };
+                    let is_borrowed = match &value.ty {
+                        Type::List(_) => true,
+                        Type::Optional(inner) => matches!(inner.as_ref(), Type::List(_)),
+                        _ => false,
+                    };
+                    if is_borrowed {
+                        call_argument_definitions(*argument, &values)
+                    } else {
+                        Vec::new()
+                    }
+                })
                 .collect();
         }
     }

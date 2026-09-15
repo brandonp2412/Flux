@@ -15221,6 +15221,9 @@ fn main() -> i64 {
         .expect("contains call should be recorded");
     assert_eq!(call.argument_definitions.len(), 2);
     assert_eq!(call.argument_definitions[0].len(), 1);
+    assert_eq!(call.borrowed_argument_definitions.len(), 2);
+    assert_eq!(call.borrowed_argument_definitions[0].len(), 1);
+    assert!(call.borrowed_argument_definitions[1].is_empty());
     assert!(matches!(
         call.argument_definitions[0][0],
         ControlFlowDefinitionId::Parameter(0)
@@ -15255,6 +15258,9 @@ fn main() -> i64 {
         .expect("contains call should be recorded");
     assert_eq!(call.argument_definitions.len(), 2);
     assert_eq!(call.argument_definitions[0].len(), 1);
+    assert_eq!(call.borrowed_argument_definitions.len(), 2);
+    assert_eq!(call.borrowed_argument_definitions[0].len(), 1);
+    assert!(call.borrowed_argument_definitions[1].is_empty());
     assert!(matches!(
         call.argument_definitions[0][0],
         ControlFlowDefinitionId::Parameter(0)
