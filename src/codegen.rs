@@ -38605,20 +38605,28 @@ fn emit_json_record_helpers(
         let value_call = if let Type::Optional(inner) = &element_ty {
             if let Type::Map(_, map_value) = signatures.canonical_type(inner) {
                 let map_value = signatures.canonical_type(&map_value);
-                let kind = json_map_value_kind(&map_value, signatures)
-                    .expect("supported optional JSON map array values have a native map kind");
-                let (helper, helper_kind) = if kind < 3 {
-                    ("flux__json_encode_object", kind)
-                } else if kind < 6 {
-                    ("flux__json_encode_nested_object", kind - 3)
-                } else if (100000..100003).contains(&kind) {
-                    ("flux__json_encode_optional_object", kind)
+                if json_map_contains_aggregate(&map_value, signatures) {
+                    let map_ty = signatures.canonical_type(inner);
+                    let helper = json_map_aggregate_helper_name(&map_ty, signatures);
+                    format!(
+                        "(value.has_value ? {helper}(value.value, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
+                    )
                 } else {
-                    ("flux__json_encode_map_map", kind)
-                };
-                format!(
-                    "(value.has_value ? {helper}(value.value, {helper_kind}, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
-                )
+                    let kind = json_map_value_kind(&map_value, signatures)
+                        .expect("supported optional JSON map array values have a native map kind");
+                    let (helper, helper_kind) = if kind < 3 {
+                        ("flux__json_encode_object", kind)
+                    } else if kind < 6 {
+                        ("flux__json_encode_nested_object", kind - 3)
+                    } else if (100000..100003).contains(&kind) {
+                        ("flux__json_encode_optional_object", kind)
+                    } else {
+                        ("flux__json_encode_map_map", kind)
+                    };
+                    format!(
+                        "(value.has_value ? {helper}(value.value, {helper_kind}, flux__json_capture) : flux__json_encode_null(flux__json_capture))"
+                    )
+                }
             } else {
                 format!("{value_helper}(value, flux__json_capture)")
             }

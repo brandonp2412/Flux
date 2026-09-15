@@ -18617,6 +18617,7 @@ fn json_optional_maps_inside_arrays_and_maps_encode_natively() {
 fn encoded(value: str) -> void {
     print(value)
 }
+
 fn main() -> i64 {
     let first: map<str, i64>? = {"a": 1}
     let second: map<str, i64>? = {"b": 2}
@@ -18657,6 +18658,61 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "[{\"a\":1},null,{\"b\":2}]\n{\"present\":{\"x\":1},\"absent\":null}\nnil\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_optional_aggregate_maps_inside_arrays_encode_natively() {
+    let source = r#"
+struct User {
+    name: str
+    age: i64
+}
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let first: map<str, User>? = {"a": User { name: "Ada", age: 37 }}
+    let second: map<str, User>? = {"b": User { name: "Lin", age: 42 }}
+    let values: map<str, User>?[] = [first, none, second]
+    let result: error = json.encodeArray(values, encoded)
+    print(result)
+    return 0
+}
+"#;
+    check_source(source).expect("optional aggregate maps inside JSON arrays should typecheck");
+    let generated =
+        compile_to_c(source).expect("optional aggregate maps inside JSON arrays should lower");
+    let root = std::env::temp_dir().join(format!(
+        "flux-json-optional-aggregate-map-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary optional aggregate-map directory should be writable");
+    let c_path = root.join("json-optional-aggregate-map.c");
+    let exe_path = root.join("json-optional-aggregate-map");
+    fs::write(&c_path, generated).expect("generated optional aggregate-map C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile optional aggregate-map JSON code");
+    assert!(
+        compile.status.success(),
+        "optional aggregate-map JSON C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("optional aggregate-map JSON program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[{\"a\":{\"name\":\"Ada\",\"age\":37}},null,{\"b\":{\"name\":\"Lin\",\"age\":42}}]\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
