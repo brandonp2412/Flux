@@ -28458,6 +28458,41 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
 }
 
 #[test]
+fn project_codegen_cache_separates_native_targets() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-codegen-target-cache-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary target-cache project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
+        .expect("target-cache source should be writable");
+    let analysis = fluxc::project::analyze(&entry).expect("target-cache analysis should succeed");
+
+    let linux = analysis
+        .emit_c_cached_for_target(&entry, fluxc::codegen::NativeTarget::Linux)
+        .expect("Linux target codegen should succeed");
+    let android = analysis
+        .emit_c_cached_for_target(&entry, fluxc::codegen::NativeTarget::Android)
+        .expect("Android target codegen should succeed");
+    assert_eq!(
+        linux, android,
+        "this target-neutral program should lower identically"
+    );
+
+    let cache_dir = root.join(".flux/cache");
+    assert_eq!(
+        fs::read_dir(cache_dir)
+            .expect("target cache directory should be readable")
+            .count(),
+        2,
+        "each native target should receive its own cache artifact"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-typecheck-{}",

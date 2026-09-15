@@ -37,7 +37,20 @@ impl ProjectAnalysis {
     /// repeating native-source generation and is invalidated by every loaded
     /// source, module identity, translation resource, and this cache version.
     pub fn emit_c_cached(&self, target: &Path) -> Result<String, Diagnostic> {
-        let fingerprint = codegen_cache_fingerprint(self);
+        self.emit_c_cached_for_target(target, codegen::NativeTarget::Linux)
+    }
+
+    /// Reuse a validated generated-C artifact for a specific native target.
+    ///
+    /// The target is part of the cache identity: the same Flux program can
+    /// legitimately produce different native declarations, runtime helpers,
+    /// and platform calls for Linux, Android, and Windows.
+    pub fn emit_c_cached_for_target(
+        &self,
+        target: &Path,
+        native_target: codegen::NativeTarget,
+    ) -> Result<String, Diagnostic> {
+        let fingerprint = codegen_cache_fingerprint(self, native_target);
         let path = codegen_cache_path(target, fingerprint);
         let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
         if let Ok(cached) = fs::read_to_string(&path)
@@ -48,7 +61,7 @@ impl ProjectAnalysis {
             return Ok(generated.to_string());
         }
 
-        let generated = self.emit_c()?;
+        let generated = self.emit_c_for_target(native_target)?;
         let header = format!(
             "{header_prefix}{:016x}\n",
             stable_bytes_hash(generated.as_bytes())
@@ -108,12 +121,16 @@ fn codegen_cache_path(target: &Path, fingerprint: u64) -> PathBuf {
         .join(format!("codegen-{fingerprint:016x}.c"))
 }
 
-fn codegen_cache_fingerprint(analysis: &ProjectAnalysis) -> u64 {
+fn codegen_cache_fingerprint(
+    analysis: &ProjectAnalysis,
+    native_target: codegen::NativeTarget,
+) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     let mut add = |bytes: &[u8]| {
         hash = stable_bytes_hash_with_seed(bytes, hash);
     };
     add(PROJECT_CODEGEN_CACHE_VERSION.as_bytes());
+    add(native_target_cache_tag(native_target).as_bytes());
     for source in &analysis.sources {
         add(source.path.to_string_lossy().as_bytes());
         add(source.module_name.as_bytes());
@@ -127,6 +144,14 @@ fn codegen_cache_fingerprint(analysis: &ProjectAnalysis) -> u64 {
         }
     }
     hash
+}
+
+fn native_target_cache_tag(native_target: codegen::NativeTarget) -> &'static str {
+    match native_target {
+        codegen::NativeTarget::Linux => "linux",
+        codegen::NativeTarget::Android => "android",
+        codegen::NativeTarget::Windows => "windows",
+    }
 }
 
 fn stable_bytes_hash(bytes: &[u8]) -> u64 {
