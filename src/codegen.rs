@@ -37965,6 +37965,10 @@ fn json_enum_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|payload| match signatures.canonical_type(payload) {
                     Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Optional(inner) => matches!(
+                        signatures.canonical_type(&inner),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
                     Type::Record(_) | Type::Named(_) => {
                         json_record_supported(payload, signatures)
                             || json_enum_supported(payload, signatures)
@@ -38207,6 +38211,18 @@ fn emit_json_enum_helpers(
                         Type::Str => {
                             format!("flux__json_encode_string({expr}, flux__json_capture)")
                         }
+                        Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                            Type::I64 => format!(
+                                "flux__json_encode_optional_i64({expr}, flux__json_capture)"
+                            ),
+                            Type::Bool => format!(
+                                "flux__json_encode_optional_bool({expr}, flux__json_capture)"
+                            ),
+                            Type::Str => format!(
+                                "flux__json_encode_optional_str({expr}, flux__json_capture)"
+                            ),
+                            _ => continue,
+                        },
                         Type::Record(_) | Type::Named(_)
                             if json_enum_supported(payload, signatures) =>
                         {

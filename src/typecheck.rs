@@ -5834,6 +5834,10 @@ fn json_enum_type_is_supported(ty: &Type, signatures: &Signatures) -> bool {
                 .iter()
                 .all(|payload| match signatures.canonical_type(payload) {
                     Type::I64 | Type::Bool | Type::Str => true,
+                    Type::Optional(inner) => matches!(
+                        signatures.canonical_type(&inner),
+                        Type::I64 | Type::Bool | Type::Str
+                    ),
                     Type::Record(_) | Type::Named(_) => {
                         json_record_type_is_supported(payload, signatures)
                             || json_enum_type_is_supported(payload, signatures)
