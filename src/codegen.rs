@@ -6589,10 +6589,16 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
 }
 "#);
     }
+    if runtime_usage.contains("flux__time_format_zone(")
+        || runtime_usage.contains("flux__time_zone_offset(")
+    {
+        out.push_str(
+            "#if defined(__GLIBC__)\nstatic volatile int flux_time_zone_transaction_lock = 0;\n#endif\n",
+        );
+    }
     if runtime_usage.contains("flux__time_format_zone(") {
         out.push_str(r#"static inline const char *flux__time_format_zone(int64_t unix_ms, const char *zone, void (*callback)(const char *)) {
 #if defined(__GLIBC__)
-    static volatile int flux_time_zone_lock = 0;
     if (zone == NULL || zone[0] == '\0') return "time.formatZone zone must not be empty";
     size_t zone_length = strlen(zone);
     if (zone_length > 128) return "time.formatZone zone is too long";
@@ -6612,41 +6618,41 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     if (millis < 0) { millis += INT64_C(1000); seconds -= INT64_C(1); }
     time_t native_seconds = (time_t)seconds;
     if ((int64_t)native_seconds != seconds) return "time.formatZone timestamp exceeds platform range";
-    while (__sync_lock_test_and_set(&flux_time_zone_lock, 1) != 0) { }
+    while (__sync_lock_test_and_set(&flux_time_zone_transaction_lock, 1) != 0) { }
     const char *previous_zone = getenv("TZ");
     char previous_zone_copy[129];
     bool had_previous_zone = previous_zone != NULL;
     if (had_previous_zone) {
         size_t previous_length = strlen(previous_zone);
-        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_lock); return "time.formatZone previous host zone is too long"; }
+        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone previous host zone is too long"; }
         memcpy(previous_zone_copy, previous_zone, previous_length + 1);
     }
-    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_lock); return "time.formatZone zone could not be selected"; }
+    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone zone could not be selected"; }
     tzset();
     struct tm value;
     if (localtime_r(&native_seconds, &value) == NULL) {
         if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
         tzset();
-        __sync_lock_release(&flux_time_zone_lock);
+        __sync_lock_release(&flux_time_zone_transaction_lock);
         return "time.formatZone calendar conversion failed";
     }
     int64_t year = (int64_t)value.tm_year + INT64_C(1900);
-    if (year < -9999 || year > 9999) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone year does not fit ISO-8601 form"; }
+    if (year < -9999 || year > 9999) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone year does not fit ISO-8601 form"; }
     long offset_seconds = value.__tm_gmtoff;
     char buffer[40];
     const char *year_format = year < 0 ? "%05lld" : "%04lld";
     int written = snprintf(buffer, sizeof(buffer), year_format, (long long)year);
-    if (written < 0 || (size_t)written >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone result exceeds buffer"; }
+    if (written < 0 || (size_t)written >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone result exceeds buffer"; }
     long absolute_offset = labs(offset_seconds);
     int suffix = snprintf(buffer + written, sizeof(buffer) - (size_t)written,
         "-%02d-%02dT%02d:%02d:%02d.%03lld%c%02ld:%02ld", value.tm_mon + 1,
         value.tm_mday, value.tm_hour, value.tm_min, value.tm_sec, (long long)millis,
         offset_seconds < 0 ? '-' : '+', absolute_offset / 3600,
         (absolute_offset % 3600) / 60);
-    if (suffix < 0 || (size_t)written + (size_t)suffix >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_lock); return "time.formatZone result exceeds buffer"; }
+    if (suffix < 0 || (size_t)written + (size_t)suffix >= sizeof(buffer)) { if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ"); tzset(); __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone result exceeds buffer"; }
     if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
     tzset();
-    __sync_lock_release(&flux_time_zone_lock);
+    __sync_lock_release(&flux_time_zone_transaction_lock);
     callback(buffer);
     return NULL;
 #else
@@ -6660,7 +6666,6 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         out.push_str(r#"struct flux__time_i64_error { int64_t v0; const char *v1; };
 static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms, const char *zone) {
 #if defined(__GLIBC__)
-    static volatile int flux_time_zone_offset_lock = 0;
     if (zone == NULL || zone[0] == '\0') return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone must not be empty" };
     size_t zone_length = strlen(zone);
     if (zone_length > 128) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone is too long" };
@@ -6679,16 +6684,16 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
     if (unix_ms % INT64_C(1000) < 0) seconds -= INT64_C(1);
     time_t native_seconds = (time_t)seconds;
     if ((int64_t)native_seconds != seconds) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset timestamp exceeds platform range" };
-    while (__sync_lock_test_and_set(&flux_time_zone_offset_lock, 1) != 0) { }
+    while (__sync_lock_test_and_set(&flux_time_zone_transaction_lock, 1) != 0) { }
     const char *previous_zone = getenv("TZ");
     char previous_zone_copy[129];
     bool had_previous_zone = previous_zone != NULL;
     if (had_previous_zone) {
         size_t previous_length = strlen(previous_zone);
-        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_offset_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset previous host zone is too long" }; }
+        if (previous_length > 128) { __sync_lock_release(&flux_time_zone_transaction_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset previous host zone is too long" }; }
         memcpy(previous_zone_copy, previous_zone, previous_length + 1);
     }
-    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_offset_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone could not be selected" }; }
+    if (setenv("TZ", zone, 1) != 0) { __sync_lock_release(&flux_time_zone_transaction_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone could not be selected" }; }
     tzset();
     struct tm value;
     const char *error = NULL;
@@ -6696,7 +6701,7 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
     int64_t offset = error == NULL ? (int64_t)(value.__tm_gmtoff / 60) : 0;
     if (had_previous_zone) setenv("TZ", previous_zone_copy, 1); else unsetenv("TZ");
     tzset();
-    __sync_lock_release(&flux_time_zone_offset_lock);
+    __sync_lock_release(&flux_time_zone_transaction_lock);
     return (struct flux__time_i64_error){ .v0 = offset, .v1 = error };
 #else
     (void)unix_ms; (void)zone;

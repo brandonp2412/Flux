@@ -182,6 +182,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn named_time_zone_operations_share_one_process_global_transaction_lock() {
+    let source = r#"
+fn emit(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let formatted: error = time.formatZone(946782245006, "America/New_York", emit)
+    let (offset, offsetError) = time.zoneOffset(946782245006, "America/New_York")
+    if formatted != nil:
+        return 1
+    if offsetError != nil:
+        return 2
+    return offset
+}
+"#;
+    let generated = compile_to_c(source).expect("combined named-zone operations should lower");
+    assert_eq!(
+        generated
+            .matches("static volatile int flux_time_zone_transaction_lock")
+            .count(),
+        1,
+        "both TZ operations should declare one shared process-global transaction lock"
+    );
+    assert!(generated.matches("flux_time_zone_transaction_lock").count() > 2);
+    assert!(!generated.contains("flux_time_zone_offset_lock"));
+}
+
+#[test]
 fn ui_targets_integrate_callbacks_with_native_event_loops() {
     let source = r#"
 view Screen {
