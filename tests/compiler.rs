@@ -9742,8 +9742,13 @@ fn main() -> i64 {
         .expect("fixed offset binary should run");
     assert!(run.status.success());
     assert_eq!(
-        String::from_utf8_lossy(&run.stdout).lines().collect::<Vec<_>>(),
-        vec!["2000-01-02T08:34:05.006+05:30", "1969-12-31T22:59:59.999-01:00"]
+        String::from_utf8_lossy(&run.stdout)
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "2000-01-02T08:34:05.006+05:30",
+            "1969-12-31T22:59:59.999-01:00"
+        ]
     );
     let invalid = r#"
 fn emit(value: str) -> void {
@@ -9755,7 +9760,9 @@ fn main() -> i64 {
 "#;
     let errors = check_source_all(invalid).expect_err("fixed offset bounds should be static");
     assert!(errors.iter().any(|error| {
-        error.message.contains("time.formatOffset offsetMinutes must be between -1439 and 1439")
+        error
+            .message
+            .contains("time.formatOffset offsetMinutes must be between -1439 and 1439")
     }));
     let _ = fs::remove_dir_all(&root);
 }
@@ -35993,26 +36000,42 @@ app Screen(id: "com.example.state", onSaveState: saveState, onRestoreState: rest
 
 #[test]
 fn linux_rejects_android_only_lifecycle_callbacks_instead_of_ignoring_them() {
-    let cases = [
-        ("onConfigurationChanged", "fn callback() -> void {\n}\n"),
-        ("onLowMemory", "fn callback() -> void {\n}\n"),
-    ];
+    let source = "fn callback() -> void {\n}\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n}\napp Screen(onLowMemory: callback)\n";
+    check_source(source).expect("target-specific lifecycle metadata should typecheck first");
+    let error =
+        compile_to_c(source).expect_err("Linux must reject lifecycle callbacks it cannot honor");
+    assert!(
+        error
+            .message
+            .contains("application onLowMemory lifecycle callback is not supported on Linux"),
+        "unexpected diagnostic: {}",
+        error.message
+    );
+}
 
-    for (field, callback) in cases {
-        let source = format!(
-            "{callback}view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n}}\napp Screen({field}: callback)\n"
-        );
-        check_source(&source).expect("target-specific lifecycle metadata should typecheck first");
-        let error = compile_to_c(&source)
-            .expect_err("Linux must reject lifecycle callbacks it cannot honor");
-        assert!(
-            error.message.contains(&format!(
-                "application {field} lifecycle callback is not supported on Linux"
-            )),
-            "unexpected diagnostic for {field}: {}",
-            error.message
-        );
-    }
+#[test]
+fn linux_configuration_lifecycle_callback_observes_environment_changes() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+
+fn configurationChanged() -> void {
+    print("configuration changed")
+}
+
+app Screen(onConfigurationChanged: configurationChanged)
+"#;
+    check_source(source).expect("Linux configuration callback should typecheck");
+    let generated = compile_to_c(source).expect("Linux configuration callback should lower");
+    assert!(generated.contains("static void flux__ui_window_environment_changed"));
+    assert!(generated.contains("flux__fn_configurationChanged();"));
+    assert!(
+        !generated.contains("onConfigurationChanged lifecycle callback is not supported on Linux")
+    );
 }
 
 #[test]

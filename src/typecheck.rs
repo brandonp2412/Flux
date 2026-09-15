@@ -11249,7 +11249,10 @@ fn check_qualified_call(
                 if args.len() != expected_args {
                     return Err(diag(
                         span,
-                        &format!("time.{name} expects {expected_args} arguments, got {}", args.len()),
+                        &format!(
+                            "time.{name} expects {expected_args} arguments, got {}",
+                            args.len()
+                        ),
                     ));
                 }
                 let timestamp = type_of_expr(&args[0], env, signatures)?;
@@ -11277,8 +11280,13 @@ fn check_qualified_call(
                         ));
                     }
                 }
-                let callback_arg = if name == "formatOffset" { &args[2] } else { &args[1] };
-                let callback = signatures.canonical_type(&type_of_expr(callback_arg, env, signatures)?);
+                let callback_arg = if name == "formatOffset" {
+                    &args[2]
+                } else {
+                    &args[1]
+                };
+                let callback =
+                    signatures.canonical_type(&type_of_expr(callback_arg, env, signatures)?);
                 let expected = Type::Function {
                     params: vec![Type::Str],
                     returns: Vec::new(),

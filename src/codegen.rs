@@ -12293,17 +12293,15 @@ fn emit_linux_gtk_application(
         .application
         .as_ref()
         .expect("application lowering requires app declaration");
-    for field_name in ["onConfigurationChanged", "onLowMemory"] {
-        if let Some(field) = application
-            .metadata
-            .iter()
-            .find(|field| field.name == field_name)
-        {
-            return Err(diag(
-                field.name_span,
-                &format!("application {field_name} lifecycle callback is not supported on Linux"),
-            ));
-        }
+    if let Some(field) = application
+        .metadata
+        .iter()
+        .find(|field| field.name == "onLowMemory")
+    {
+        return Err(diag(
+            field.name_span,
+            "application onLowMemory lifecycle callback is not supported on Linux",
+        ));
     }
     let view = program
         .views
@@ -12330,6 +12328,8 @@ fn emit_linux_gtk_application(
         .unwrap_or(i64::from(bootstrap_height));
     let application_id = application_metadata_string(application, "id", signatures)
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
+    let on_configuration_changed =
+        application_metadata_function(application, "on_configuration_changed");
     let on_save_state = application_metadata_function(application, "on_save_state");
     let on_restore_state = application_metadata_function(application, "on_restore_state");
 
@@ -12558,9 +12558,12 @@ fn emit_linux_gtk_application(
     }
     out.push('\n');
     emit_ui_refresh(out, view, signatures)?;
-    out.push_str(
-        "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n    flux__ui_refresh_changed(-2);\n}\n\n",
-    );
+    out.push_str(&format!(
+        "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {{\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n{}    flux__ui_refresh_changed(-2);\n}}\n\n",
+        on_configuration_changed
+            .map(|function| format!("    {}();\n", function_c_name(function)))
+            .unwrap_or_default(),
+    ));
 
     for element in &view.elements {
         if element.kind == "TextInput" {
