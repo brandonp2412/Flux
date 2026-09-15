@@ -46254,6 +46254,21 @@ fn main() -> i64 {
 }
 
 #[test]
+fn websocket_client_rejects_host_header_injection() {
+    let source = r#"
+fn main() -> i64 {
+    let (_session, failure) = websocket.connect(3, "bad\nInjected: value")
+    if failure == nil:
+        return 1
+    return 0
+}
+"#;
+    check_source(source).expect("WebSocket host validation should typecheck");
+    let generated = compile_to_c(source).expect("WebSocket host validation should lower");
+    assert!(generated.contains("invalid WebSocket client host"));
+}
+
+#[test]
 fn websocket_binary_surface_is_bounded_and_native() {
     let source = r#"
 fn consume(value: i64[]) -> void {
