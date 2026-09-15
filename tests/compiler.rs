@@ -46420,6 +46420,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_write_control"));
     assert!(generated.contains("flux__websocket_write_ping("));
     assert!(generated.contains("flux__websocket_write_pong("));
+    assert!(generated.contains("flux__websocket_close_with_code("));
+    assert!(generated.contains("WebSocket close reason contains invalid UTF-8"));
     assert!(generated.contains("failed to create WebSocket control mask"));
 }
 
@@ -46433,6 +46435,18 @@ fn main() -> i64 {
 "#;
     let error = check_source(source).expect_err("oversized WebSocket control payload should fail");
     assert!(error.message.contains("websocket.ping payload must be at most 125 bytes"));
+}
+
+#[test]
+fn websocket_close_codes_and_reasons_are_checked() {
+    let source = r#"
+fn main() -> i64 {
+    let closeError: error = websocket.closeWithCode(3, 1006, "going away")
+    return 0
+}
+"#;
+    let error = check_source(source).expect_err("reserved WebSocket close code should fail");
+    assert!(error.message.contains("websocket.closeWithCode code is invalid"));
 }
 
 #[test]

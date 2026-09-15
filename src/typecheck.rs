@@ -7883,6 +7883,24 @@ fn check_qualified_call(
                 }
                 return Ok(vec![Type::Error]);
             }
+            "closeWithCode" => {
+                if args.len() != 3 {
+                    return Err(diag(span, &format!("websocket.closeWithCode expects 3 arguments, got {}", args.len())));
+                }
+                let session = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::I64, &session, "websocket.closeWithCode session")?;
+                let code = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::I64, &code, "websocket.closeWithCode code")?;
+                if matches!(constant_primitive_value(&args[1], signatures), Some(ConstantValue::I64(value)) if value < 1000 || value >= 5000 || (1004..=1006).contains(&value) || value == 1015) {
+                    return Err(diag(args[1].span, "websocket.closeWithCode code is invalid; use a non-reserved RFC 6455 close code"));
+                }
+                let reason = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::Str, &reason, "websocket.closeWithCode reason")?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::Str(value)) if value.len() > 123) {
+                    return Err(diag(args[2].span, "websocket.closeWithCode reason must be at most 123 bytes"));
+                }
+                return Ok(vec![Type::Error]);
+            }
             "close" => {
                 if args.len() != 1 {
                     return Err(diag(
