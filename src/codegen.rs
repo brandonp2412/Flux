@@ -30185,7 +30185,8 @@ fn emit_block(
                         ));
                     }
                 } else {
-                    let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                    let (value, tag, actuals) =
+                        emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
                     let temp = format!("flux__multi_assign_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -30322,7 +30323,8 @@ fn emit_block(
                 else_return,
                 ..
             } => {
-                let (value, tag, _) = emit_multi_expr(expr, env, signatures)?;
+                let (value, tag, _) =
+                    emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
                 let temp = format!("flux__multi_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -30409,7 +30411,8 @@ fn emit_block(
                         env.insert(binding.name.clone(), ty);
                     }
                 } else {
-                    let (value, tag, actuals) = emit_multi_expr(expr, env, signatures)?;
+                    let (value, tag, actuals) =
+                        emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
                     let temp = format!("flux__multi_pattern_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -30587,7 +30590,8 @@ fn emit_block(
             StmtKind::Return(values)
                 if values.len() == 1 && context.current_function.returns.len() > 1 =>
             {
-                let (value, source_tag, _) = emit_multi_expr(&values[0], env, signatures)?;
+                let (value, source_tag, _) =
+                    emit_multi_expr(&values[0], env, signatures, context.cfg_constant_values)?;
                 let source_temp = format!("flux__forward_{}", *temp_counter);
                 *temp_counter += 1;
                 let return_tag = multi_return_struct_name(&context.current_function.name);
@@ -38642,7 +38646,15 @@ fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
+    // Multi-value boundaries used to bypass the typed-IR constant consumer
+    // even though ordinary scalar call boundaries already used it. Rewrite
+    // the complete value tree once here so destructuring and return forwarding
+    // receive the same proven constants without changing their evaluation
+    // shape or ownership-sensitive fallback behavior.
+    let rewritten = substitute_nested_ir_constant_arguments(expr, constant_values);
+    let expr = &rewritten;
     match &expr.kind {
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
@@ -38654,7 +38666,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures)
+            emit_multi_expr(&call, env, signatures, constant_values)
         }
         ExprKind::Pipe {
             input, name, args, ..
@@ -38671,7 +38683,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures)
+            emit_multi_expr(&call, env, signatures, constant_values)
         }
         ExprKind::Await(awaited) => {
             let ExprKind::Call {

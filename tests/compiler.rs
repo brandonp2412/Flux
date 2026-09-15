@@ -24270,6 +24270,31 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_at_multi_value_boundaries() {
+    let source = r#"
+fn pair(value: i64) -> (i64, error) {
+    return value, nil
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    let (value, failure) = pair(input + 2)
+    print(value)
+    print(failure)
+    return value
+}
+"#;
+
+    check_source(source).expect("multi-value propagated argument should typecheck");
+    let generated = compile_to_c(source).expect("multi-value propagated argument should compile");
+    assert!(generated.contains("flux__fn_pair(INT64_C(7))"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
+        "typed IR constants should reach multi-value call boundaries"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {
