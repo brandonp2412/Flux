@@ -1637,6 +1637,26 @@ impl ControlFlowGraph {
         })
     }
 
+    /// Return ownership events whose evaluation node is reachable after the
+    /// normalized CFG has removed statically unselected control-flow edges.
+    ///
+    /// The complete [`Self::ownership_events`] stream is useful for source
+    /// mapping and diagnostics, but ownership consumers that validate live
+    /// moves/borrows must not accidentally treat facts from `if false`, an
+    /// unreachable match arm, or a statically empty loop as executable.  The
+    /// iterator borrows the graph and allocates no filtered event buffer.
+    pub fn reachable_ownership_events(
+        &self,
+    ) -> impl Iterator<Item = (ControlFlowNodeId, ControlFlowOwnershipEvent<'_>)> {
+        self.nodes
+            .iter()
+            .filter(|node| self.is_reachable(node.id))
+            .flat_map(|node| {
+                let id = node.id;
+                self.ownership_events_at(id).map(move |event| (id, event))
+            })
+    }
+
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
         self.move_state_before(id)
             .is_some_and(ControlFlowMoveState::reachable)

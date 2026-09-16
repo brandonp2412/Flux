@@ -691,6 +691,39 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_reachable_event_stream_excludes_dead_cfg_nodes() {
+    let source = r#"
+fn main() -> i64 {
+    if false:
+        let dead: i64[] = [1]
+        drop(dead)
+    let live: i64[] = [2]
+    drop(live)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dead ownership event fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let all = graph.ownership_events().collect::<Vec<_>>();
+    assert!(all.iter().any(|(_, event)| matches!(
+        event,
+        ControlFlowOwnershipEvent::Move(movement) if movement.source == "dead"
+    )));
+    let reachable = graph.reachable_ownership_events().collect::<Vec<_>>();
+    assert!(!reachable.iter().any(|(_, event)| matches!(
+        event,
+        ControlFlowOwnershipEvent::Move(movement) if movement.source == "dead"
+    )));
+    assert!(reachable.iter().any(|(_, event)| matches!(
+        event,
+        ControlFlowOwnershipEvent::Move(movement) if movement.source == "live"
+    )));
+}
+
+#[test]
 fn ownership_ir_types_all_collection_iteration_bindings() {
     let source = r#"
 fn main() -> i64 {
