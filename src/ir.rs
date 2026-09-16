@@ -5139,6 +5139,7 @@ fn populate_immutable_borrows(
         if node.ownership.borrows.iter().any(|borrow| {
             borrow.source == *name
                 && borrow.kind == OwnershipBorrowKind::Immutable
+                && borrow.value == Some(value.id)
                 && borrow.span == value.span
         }) {
             continue;
