@@ -1300,6 +1300,8 @@ app Screen(title: "Image")
     assert!(generated.contains("static HBITMAP flux__win_bitmap_logo = NULL;"));
     assert!(generated.contains("LoadImageA(NULL, path, IMAGE_BITMAP"));
     assert!(generated.contains("GetModuleFileNameA"));
+    assert!(generated.contains("size_t source_length = 0; while (source_length <= 65536"));
+    assert!(generated.contains("if (source_length > 65536) return NULL;"));
     assert!(generated.contains("\\\\assets\\\\%s"));
     assert!(generated.contains("STM_SETIMAGE"));
     assert!(generated.contains("LR_CREATEDIBSECTION"));
