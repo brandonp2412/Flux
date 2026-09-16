@@ -35196,7 +35196,14 @@ fn emit_expr(
                 ty: Type::Void,
             }
         }
-        ExprKind::Call { name, args, .. } if name == "drop" => {
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "drop" => {
+            if !named_args.is_empty() || args.len() != 1 {
+                return Err(diag(expr.span, "invalid drop call reached code generation"));
+            }
             let value = emit_expr(&args[0], env, signatures)?;
             EmittedExpr {
                 // The bootstrap list representation is a borrowed descriptor,
