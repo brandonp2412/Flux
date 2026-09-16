@@ -38944,6 +38944,113 @@ fn substitute_nested_ir_constant_arguments(
                 *value = rewrite(value);
             }
         }
+        // Expression statements do not have an expected value type, so they
+        // take this path instead of `emit_expr_for_expected_with_cfg_proofs`.
+        // Keep their root expression connected to the normalized constant
+        // map as well; otherwise a pure binary/unary/conditional expression
+        // would still be rebuilt from the checked AST while the same value is
+        // consumed directly from typed IR at binding and return boundaries.
+        ExprKind::Unary { expr: value, .. }
+        | ExprKind::ListSpread { value, .. }
+        | ExprKind::ListOptional { value, .. } => {
+            **value = rewrite(value);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            **left = rewrite(left);
+            **right = rewrite(right);
+        }
+        ExprKind::Conditional {
+            then_expr,
+            cond,
+            else_expr,
+        } => {
+            **then_expr = rewrite(then_expr);
+            **cond = rewrite(cond);
+            **else_expr = rewrite(else_expr);
+        }
+        ExprKind::Index { base, index, .. } => {
+            **base = rewrite(base);
+            **index = rewrite(index);
+        }
+        ExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            **base = rewrite(base);
+            for value in [start, end, step].into_iter().flatten() {
+                **value = rewrite(value);
+            }
+        }
+        ExprKind::List(items) | ExprKind::Set(items) => {
+            for value in items {
+                *value = rewrite(value);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for entry in entries {
+                *entry = rewrite(entry);
+            }
+        }
+        ExprKind::ListIf {
+            condition,
+            value,
+            else_value,
+            ..
+        } => {
+            **condition = rewrite(condition);
+            **value = rewrite(value);
+            if let Some(value) = else_value {
+                **value = rewrite(value);
+            }
+        }
+        ExprKind::ListComprehension {
+            iterable,
+            value,
+            condition,
+            ..
+        } => {
+            **iterable = rewrite(iterable);
+            **value = rewrite(value);
+            if let Some(condition) = condition {
+                **condition = rewrite(condition);
+            }
+        }
+        ExprKind::RecordLiteral { fields } => {
+            for field in fields {
+                field.value = rewrite(&field.value);
+            }
+        }
+        ExprKind::StructLiteral { base, fields, .. } => {
+            if let Some(base) = base {
+                **base = rewrite(base);
+            }
+            for field in fields {
+                field.value = rewrite(&field.value);
+            }
+        }
+        ExprKind::Field { base, .. } => {
+            **base = rewrite(base);
+        }
+        ExprKind::Match { value, arms } => {
+            **value = rewrite(value);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    *guard = rewrite(guard);
+                }
+                arm.value = rewrite(&arm.value);
+            }
+        }
+        ExprKind::ListMatch { value, arms } => {
+            **value = rewrite(value);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    *guard = rewrite(guard);
+                }
+                arm.value = rewrite(&arm.value);
+            }
+        }
         _ => {}
     }
     rewritten
