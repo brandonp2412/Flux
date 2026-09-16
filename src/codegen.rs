@@ -30429,7 +30429,18 @@ fn emit_block(
                 }
             }
             StmtKind::AssignStructDestructure { fields, expr, .. } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expr_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: expr_type,
+                };
                 let Type::Named(struct_name) = &value.ty else {
                     return Err(diag(
                         stmt.span,
@@ -30507,7 +30518,18 @@ fn emit_block(
                 let (_, record_destructure) =
                     typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
                 if record_destructure {
-                    let value = emit_expr(expr, env, signatures)?;
+                    let expr_type = type_of_expr(expr, env, signatures)?;
+                    let value = EmittedExpr {
+                        code: emit_expr_for_expected_with_cfg_proofs(
+                            expr,
+                            &expr_type,
+                            env,
+                            signatures,
+                            context.checked_i64_cfg_proofs,
+                            context.cfg_constant_values,
+                        )?,
+                        ty: expr_type,
+                    };
                     let Type::Record(fields) = signatures.canonical_type(&value.ty) else {
                         return Err(diag(
                             stmt.span,
@@ -30601,7 +30623,18 @@ fn emit_block(
                 expr,
                 ..
             } => {
-                let value = emit_expr(expr, env, signatures)?;
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expr_type,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: expr_type,
+                };
                 let Type::List(element) = &value.ty else {
                     return Err(diag(
                         stmt.span,

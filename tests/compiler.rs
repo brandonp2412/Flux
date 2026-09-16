@@ -24784,6 +24784,40 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_at_pattern_destructure_boundaries() {
+    let source = r#"
+struct Point {
+    x: i64
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    let [value] = [input + 2]
+    let Point { x } = Point { x: input + 3 }
+    print(value)
+    print(x)
+    return value + x
+}
+"#;
+
+    check_source(source).expect("pattern sources should typecheck");
+    let generated = compile_to_c(source).expect("pattern sources should compile");
+    assert!(
+        generated.contains("INT64_C(7)"),
+        "typed IR constants should reach list-pattern sources"
+    );
+    assert!(
+        generated.contains("INT64_C(8)"),
+        "typed IR constants should reach struct-pattern sources"
+    );
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))")
+            && !generated.contains("flux_add_i64(flux__local_input, INT64_C(3))"),
+        "pattern destructuring should not reload proven scalar expressions from the AST"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {
