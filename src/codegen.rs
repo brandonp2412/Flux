@@ -8723,7 +8723,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return "failed to inspect socket type";
     if (socket_type != SOCK_STREAM) return "sendTextParts requires a TCP socket";
     if (parts.len == 0) return NULL;
+    if (parts.data == NULL) return "sendTextParts contains no storage";
     ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(const char *) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return "sendTextParts has invalid element stride";
     size_t index = 0;
     size_t offset = 0;
     while (index < parts.len) {
@@ -8793,7 +8796,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextPartsProgress requires a nonblocking TCP socket");
+    if (parts.len != 0 && parts.data == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgress contains no storage");
     ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(const char *) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return flux__net_progress_result(offset, false, "sendTextPartsProgress has invalid element stride");
     uint64_t total_length = 0;
     for (size_t cursor = 0; cursor < parts.len; ++cursor) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
@@ -8873,7 +8879,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if (flags < 0) return flux__net_result(-1, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, "sendTextPartsWithTimeout requires a nonblocking TCP socket");
     if (parts.len == 0) return flux__net_result(0, NULL);
+    if (parts.data == NULL) return flux__net_result(-1, "sendTextPartsWithTimeout contains no storage");
     ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(const char *) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return flux__net_result(-1, "sendTextPartsWithTimeout has invalid element stride");
     size_t index = 0;
     size_t offset = 0;
     int64_t total_sent = 0;
@@ -8973,7 +8982,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     int flags = fcntl((int)socket_handle, F_GETFL, 0);
     if (flags < 0) return flux__net_progress_result(offset, false, "failed to read socket flags");
     if ((flags & O_NONBLOCK) == 0) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout requires a nonblocking TCP socket");
+    if (parts.len != 0 && parts.data == NULL) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout contains no storage");
     ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(const char *) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) return flux__net_progress_result(offset, false, "sendTextPartsProgressWithTimeout has invalid element stride");
     uint64_t total_length = 0;
     for (size_t cursor = 0; cursor < parts.len; ++cursor) {
         const char *text = *((const char **)((char *)parts.data + (ptrdiff_t)cursor * stride));
@@ -9105,7 +9117,11 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     hints.ai_protocol = IPPROTO_UDP;
     struct addrinfo *addresses = NULL;
     if (getaddrinfo(host, service, &hints, &addresses) != 0) return "failed to resolve UDP peer";
+    if (parts.len == 0) { freeaddrinfo(addresses); return NULL; }
+    if (parts.data == NULL) { freeaddrinfo(addresses); return "sendTextToParts contains no storage"; }
     ptrdiff_t stride = parts.stride == 0 ? (ptrdiff_t)sizeof(const char *) : parts.stride;
+    uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride;
+    if (magnitude < sizeof(const char *) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) { freeaddrinfo(addresses); return "sendTextToParts has invalid element stride"; }
     struct iovec vectors[64];
     size_t vector_count = 0;
     size_t total_length = 0;

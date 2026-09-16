@@ -8871,6 +8871,31 @@ fn socket_multi_readiness_bounds_native_descriptor_storage() {
 }
 
 #[test]
+fn socket_scatter_gather_bounds_borrowed_part_storage_and_stride() {
+    let source = r#"
+fn sent(_socket: i64, _text: str) -> void {
+}
+fn main() -> i64 {
+    let parts: str[] = ["a", "b"]
+    print(net.writeParts(1, parts))
+    let (_next, _complete, _failure) = net.writePartsFrom(1, parts, 0)
+    let (_written, _writeFailure) = net.writePartsTimeout(1, parts, 0)
+    let (_timedNext, _timedComplete, _timedFailure) = net.writePartsFromTimeout(1, parts, 0, 0)
+    print(net.writePartsTo(1, "127.0.0.1", 1, parts))
+    return 0
+}
+"#;
+    let generated = compile_to_c(source).expect("scatter/gather socket APIs should lower");
+    assert!(generated.contains("sendTextParts contains no storage"));
+    assert!(generated.contains("sendTextPartsProgress contains no storage"));
+    assert!(generated.contains("sendTextPartsWithTimeout contains no storage"));
+    assert!(generated.contains("sendTextPartsProgressWithTimeout contains no storage"));
+    assert!(generated.contains("sendTextToParts contains no storage"));
+    assert!(generated.contains("sendTextParts has invalid element stride"));
+    assert!(generated.contains("PTRDIFF_MAX / magnitude"));
+}
+
+#[test]
 fn udp_socket_lifecycle_is_typed_native_tree_shaken_and_runnable() {
     let source = r#"
 fn main() -> i64 {
