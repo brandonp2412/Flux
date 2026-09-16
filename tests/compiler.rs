@@ -52362,6 +52362,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("binary socket write should lower");
     assert!(generated.contains("flux__net_send_bytes("));
     assert!(generated.contains("writeBytes byte values must be between 0 and 255"));
+    assert!(generated.contains("writeBytes byte list has an invalid element stride"));
     assert!(generated.contains("MSG_NOSIGNAL"));
     assert!(generated.contains("bytes.stride"));
     assert!(generated.contains("unsigned char buffer[4096]"));

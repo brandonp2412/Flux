@@ -8561,6 +8561,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
     if (bytes.len != 0 && bytes.data == NULL) return flux__net_result(-1, "writeBytes byte list has missing storage");
+    if (bytes.stride < 0 || (bytes.stride != 0 && (uintmax_t)bytes.stride < (uintmax_t)sizeof(int64_t))) return flux__net_result(-1, "writeBytes byte list has an invalid element stride");
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
     if (socket_type != SOCK_STREAM) return flux__net_result(-1, "writeBytes requires a TCP socket");
@@ -8588,6 +8589,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL };
     if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = "invalid socket handle"; return result; }
     if (bytes.len != 0 && bytes.data == NULL) { result.v2 = "writeBytesFrom byte list has missing storage"; return result; }
+    if (bytes.stride < 0 || (bytes.stride != 0 && (uintmax_t)bytes.stride < (uintmax_t)sizeof(int64_t))) { result.v2 = "writeBytesFrom byte list has an invalid element stride"; return result; }
     if (offset < 0) { result.v2 = "writeBytesFrom offset must be non-negative"; return result; }
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = "failed to inspect socket type"; return result; }
