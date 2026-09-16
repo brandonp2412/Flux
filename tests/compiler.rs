@@ -52671,6 +52671,26 @@ fn main() -> i64 {
 }
 
 #[test]
+fn timed_binary_udp_receive_is_bounded_and_reuses_single_datagram_path() {
+    let source = r#"
+fn received(_socket: i64, _bytes: i64[], _host: str, _port: i64) -> void {
+}
+
+fn main() -> i64 {
+    let (_bytes, _ready, failure) = net.readBytesFromTimeout(1, 1024, 25, received)
+    print(failure)
+    return 0
+}
+"#;
+    check_source(source).expect("timed binary UDP receive should typecheck");
+    let generated = compile_to_c(source).expect("timed binary UDP receive should lower");
+    assert!(generated.contains("flux__net_receive_bytes_from_many_with_timeout("));
+    assert!(generated.contains(", 1, INT64_C(25),"));
+    assert!(generated.contains("readBytesFromManyTimeout requires a nonblocking UDP socket"));
+    assert!(generated.contains("readBytesFromManyTimeout maxBytes must be between 1 and 65536"));
+}
+
+#[test]
 fn websocket_server_surface_lowers_to_bounded_native_frames() {
     let source = r#"
 fn onText(value: str) -> void {

@@ -866,6 +866,10 @@ UTC calendar conversion remains allocation-free. `time.utc(year, month, day, hou
 
 `time.zoneOffset(unixMillis, zone)` returns `(offsetMinutes, error)` for a bounded IANA zone at that instant, preserving daylight-saving rules while restoring the host `TZ` setting before returning. It is allocation-free and rejects invalid or unavailable zones explicitly.
 
+## Native UDP receive timeouts
+
+`net.readBytesFromTimeout(socket, maxBytes, timeoutMillis, callback)` is the timed binary counterpart to `net.readFromTimeout`. It requires a UDP socket, waits through the compiler-owned cancellation-aware readiness path, and lends one datagram as an `i64[]` byte view plus the numeric peer address only for the exact `fn(i64, i64[], str, i64) -> void` callback. The result is `(receivedBytes, ready, error)`; a timeout returns zero bytes with `ready` false, while cancellation, invalid socket state, oversized datagrams, and malformed peer addresses return explicit errors. Payload bytes are checked as `0..=255` and no owned buffer is created. The compatibility spelling `net.receiveBytesFromWithTimeout` remains accepted, and the helper is tree-shaken when unreachable.
+
 ## Native worker threads
 
 Flux can run independent capture-free work on a native worker thread without exposing a thread object or callback-shaped result API:

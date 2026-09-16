@@ -1556,6 +1556,10 @@ fn add_qualified_namespace_completions(
                 "fn net.readBytesFromManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeoutMillis: i64, callback: fn(i64, i64[], str, i64) -> void) -> (i64, bool, error)",
             ),
             (
+                "readBytesFromTimeout",
+                "fn net.readBytesFromTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, i64[], str, i64) -> void) -> (i64, bool, error)",
+            ),
+            (
                 "readBytesTimeout",
                 "fn net.readBytesTimeout(socket: i64, maxBytes: i64, timeoutMillis: i64, callback: fn(i64, i64[]) -> void) -> (i64, bool, error)",
             ),

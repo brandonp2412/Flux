@@ -36658,6 +36658,23 @@ fn emit_qualified_call(
                     Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
+            "readBytesFromTimeout" | "receiveBytesFromWithTimeout" => {
+                if args.len() != 4 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let socket_handle = emit_expr(&args[0], env, signatures)?;
+                let max_bytes = emit_expr(&args[1], env, signatures)?;
+                let timeout = emit_expr(&args[2], env, signatures)?;
+                let callback = emit_expr(&args[3], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__net_receive_bytes_from_many_with_timeout({}, {}, 1, {}, {})",
+                        socket_handle.code, max_bytes.code, timeout.code, callback.code
+                    ),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
+                ));
+            }
             "readBytesFromMany" | "receiveBytesFromMany" => {
                 if args.len() != 4 {
                     return Err(diag(span, "invalid network call reached code generation"));
