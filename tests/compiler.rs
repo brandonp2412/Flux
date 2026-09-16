@@ -52678,6 +52678,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("timed binary socket read should lower");
     assert!(generated.contains("flux__net_receive_bytes_with_timeout("));
     assert!(generated.contains("flux__net_poll_cancellable"));
+    assert!(generated.contains("readBytesTimeout requires a callback"));
     assert!(generated.contains("readBytesTimeout requires a connected TCP socket"));
     let c_path = std::env::temp_dir().join(format!(
         "flux-receive-bytes-timeout-{}.c",
