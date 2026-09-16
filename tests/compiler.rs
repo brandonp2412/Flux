@@ -52641,6 +52641,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_read_bytes("));
     assert!(generated.contains("WebSocket binary message exceeds maxBytes"));
     assert!(generated.contains("flux__websocket_write_bytes("));
+    assert!(generated.contains("WebSocket binary bytes have no storage"));
     assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
 }
 
