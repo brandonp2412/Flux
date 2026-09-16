@@ -8062,6 +8062,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if runtime_usage.contains("flux__path_is_absolute(")
         || runtime_usage.contains("flux__path_join(")
         || runtime_usage.contains("flux__path_component(")
+        || runtime_usage.contains("flux__path_normalize(")
     {
         out.push_str("static inline bool flux__path_is_absolute(const char *path) { if (path == NULL || path[0] == '\\0') return false; if (path[0] == '/' || path[0] == '\\\\') return true; return ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\\\'); }\n");
     }
@@ -8070,6 +8071,9 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     }
     if runtime_usage.contains("flux__path_component(") {
         out.push_str("static inline const char *flux__path_component(const char *value, bool basename, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path component arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; if (length == 0) return \"path must not be empty\"; size_t end = length; while (end > 1 && (value[end - 1] == '/' || value[end - 1] == '\\\\')) end -= 1; size_t slash = end; while (slash > 0 && value[slash - 1] != '/' && value[slash - 1] != '\\\\') slash -= 1; size_t begin = basename ? slash : 0; size_t finish = basename ? end : (slash == 0 ? 1 : slash - 1); if (!basename && slash == 0) { char result[2] = {'.', '\\0'}; callback(result); return NULL; } while (!basename && finish > 1 && (value[finish - 1] == '/' || value[finish - 1] == '\\\\')) finish -= 1; size_t result_length = finish - begin; if (result_length == 0 || result_length > 65536) return \"path component exceeds 65536 bytes\"; char result[65537]; memcpy(result, value + begin, result_length); result[result_length] = '\\0'; callback(result); return NULL; }\n");
+    }
+    if runtime_usage.contains("flux__path_normalize(") {
+        out.push_str("static inline const char *flux__path_normalize(const char *value, void (*callback)(const char *)) { if (value == NULL || callback == NULL) return \"invalid path.normalize arguments\"; size_t length = strnlen(value, 65537); if (length > 65536) return \"path exceeds 65536 bytes\"; char result[65537]; size_t output = 0; size_t index = 0; bool absolute = length > 0 && (value[0] == '/' || value[0] == '\\\\'); if (absolute) result[output++] = '/'; while (index < length) { while (index < length && (value[index] == '/' || value[index] == '\\\\')) index += 1; size_t begin = index; while (index < length && value[index] != '/' && value[index] != '\\\\') index += 1; size_t part_length = index - begin; if (part_length == 0 || (part_length == 1 && value[begin] == '.') ) continue; bool parent = part_length == 2 && value[begin] == '.' && value[begin + 1] == '.'; if (parent) { size_t previous = output; if (previous > (absolute ? 1u : 0u)) { if (previous > 0 && result[previous - 1] == '/') previous -= 1; size_t slash = previous; while (slash > (absolute ? 1u : 0u) && result[slash - 1] != '/') slash -= 1; if (slash < previous && !(previous - slash == 2 && result[slash] == '.' && result[slash + 1] == '.')) { output = slash; continue; } } if (!absolute) { if (output > 0 && result[output - 1] != '/') result[output++] = '/'; if (output > 65536 - 2) return \"normalized path exceeds 65536 bytes\"; result[output++] = '.'; result[output++] = '.'; } continue; } if (output > 0 && result[output - 1] != '/') { if (output == 65536) return \"normalized path exceeds 65536 bytes\"; result[output++] = '/'; } if (part_length > 65536 - output) return \"normalized path exceeds 65536 bytes\"; memcpy(result + output, value + begin, part_length); output += part_length; } if (output == 0) result[output++] = '.'; while (output > 1 && result[output - 1] == '/') output -= 1; result[output] = '\\0'; callback(result); return NULL; }\n");
     }
     if runtime_usage.contains("flux__fs_is_file(") {
         out.push_str("static inline bool flux__fs_is_file(const char *path) { struct stat info; return stat(path, &info) == 0 && S_ISREG(info.st_mode); }\n");
@@ -38118,6 +38122,18 @@ fn emit_qualified_call(
                         if name == "basename" { "true" } else { "false" },
                         callback.code
                     ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            "normalize" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid path.normalize call reached code generation"));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                let callback = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__path_normalize({}, {})", value.code, callback.code),
                     vec![Type::Error],
                     None,
                 ));

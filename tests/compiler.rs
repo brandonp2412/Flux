@@ -50,6 +50,7 @@ fn main() -> i64 {
     print(path.join("/tmp", "flux", show))
     print(path.dirname("/tmp/flux", show))
     print(path.basename("/tmp/flux", show))
+    print(path.normalize("/tmp/flux/../cache//./item", show))
     return 0
 }
 "#;
@@ -58,7 +59,36 @@ fn main() -> i64 {
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
+    assert!(generated.contains("flux__path_normalize(\"/tmp/flux/../cache//./item\", flux__fn_show)"));
     assert!(generated.contains("strnlen(base, 65537)"));
+
+    let root = std::env::temp_dir().join(format!("flux-path-normalize-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("path normalization test directory should be writable");
+    let c_path = root.join("path.c");
+    let exe_path = root.join("path");
+    fs::write(&c_path, generated).expect("path normalization C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-D_GNU_SOURCE", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile path normalization C");
+    assert!(
+        compile.status.success(),
+        "path normalization C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("path normalization program should run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
+    );
+    let _ = fs::remove_dir_all(&root);
 
     let shaken = compile_to_c(
         "fn main() -> i64 {\n    return 0\n}\n",
@@ -66,6 +96,7 @@ fn main() -> i64 {
     .expect("path-free source should compile");
     assert!(!shaken.contains("flux__path_join"));
     assert!(!shaken.contains("flux__path_is_absolute"));
+    assert!(!shaken.contains("flux__path_normalize"));
 }
 
 #[test]

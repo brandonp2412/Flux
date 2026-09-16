@@ -1732,6 +1732,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn path.basename(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "normalize",
+            3,
+            "fn path.normalize(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "json" {
@@ -4030,7 +4037,7 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "dirname" | "basename" => Some(signature_help_for_builtin(
+                "dirname" | "basename" | "normalize" => Some(signature_help_for_builtin(
                     &format!("path.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
                     "error",
@@ -8879,6 +8886,9 @@ mod tests {
         assert!(path_items.contains("fn path.isAbsolute(value: str) -> bool"));
         assert!(path_items.contains(
             "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error"
+        ));
+        assert!(path_items.contains(
+            "fn path.normalize(value: str, callback: fn(str) -> void) -> error"
         ));
 
         let directory_line = source

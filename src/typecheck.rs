@@ -12818,7 +12818,7 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
                 return Ok(vec![Type::Bool]);
             }
-            "join" | "dirname" | "basename" => {
+            "join" | "dirname" | "basename" | "normalize" => {
                 let expected_args = if name == "join" { 3 } else { 2 };
                 if args.len() != expected_args {
                     return Err(diag(
@@ -12843,7 +12843,7 @@ fn check_qualified_call(
                     } else {
                         Type::Str
                     };
-                    require_type(arg.span, &expected, &actual, &format!("path.join {label}"))?;
+                    require_type(arg.span, &expected, &actual, &format!("path.{name} {label}"))?;
                 }
                 return Ok(vec![Type::Error]);
             }
