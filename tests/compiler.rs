@@ -8860,6 +8860,8 @@ fn socket_multi_readiness_bounds_native_descriptor_storage() {
     let source = "fn ready(_socket: i64) -> void {\n}\nfn main() -> i64 {\n    let sockets: i64[] = [1]\n    let (count, failure) = net.waitReadableMany(sockets, 0, ready)\n    print(count)\n    print(failure)\n    return 0\n}\n";
     let generated = compile_to_c(source).expect("readiness lists should still lower");
     assert!(generated.contains("sockets.len > 1024"));
+    assert!(generated.contains("sockets.data == NULL"));
+    assert!(generated.contains("socket handle list has no storage"));
     assert!(generated.contains("struct pollfd descriptors[1024]"));
 }
 
