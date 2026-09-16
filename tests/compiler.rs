@@ -29874,6 +29874,47 @@ fn main() -> i64 {
 }
 
 #[test]
+fn semantic_cfg_preserves_record_and_set_expression_shapes() {
+    let source = r#"
+fn main() -> i64 {
+    let record: (name: str, count: i64) = (name: "Flux", count: 2)
+    let values: set<i64> = {1, 2, 3}
+    print(record.name)
+    print(values.count)
+    return 0
+}
+"#;
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1315))
+        .expect("record and set fixture should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should have a control-flow graph");
+    let roots = graph
+        .nodes()
+        .iter()
+        .filter_map(|node| {
+            matches!(
+                node.kind,
+                ControlFlowNodeKind::Evaluation(ControlFlowEvaluationKind::BindingInitializer)
+            )
+            .then(|| node.values.first().copied())
+            .flatten()
+            .and_then(|id| graph.value(id))
+        })
+        .collect::<Vec<_>>();
+    assert!(roots.iter().any(|value| matches!(
+        value.kind,
+        ControlFlowValueKind::RecordLiteral { ref fields }
+            if fields.len() == 2 && fields.iter().all(|(_, field)| graph.value(*field).is_some())
+    )));
+    assert!(roots.iter().any(|value| matches!(
+        value.kind,
+        ControlFlowValueKind::Set { ref items }
+            if items.len() == 3 && items.iter().all(|item| graph.value(*item).is_some())
+    )));
+}
+
+#[test]
 fn semantic_cfg_retains_await_boundaries_in_typed_values() {
     let source = r#"
 async fn fetch_value() -> i64 {

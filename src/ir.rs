@@ -59,6 +59,9 @@ pub enum ControlFlowValueKind {
     List {
         items: Vec<ControlFlowValueId>,
     },
+    Set {
+        items: Vec<ControlFlowValueId>,
+    },
     Map {
         entries: Vec<(ControlFlowValueId, ControlFlowValueId)>,
     },
@@ -93,6 +96,9 @@ pub enum ControlFlowValueKind {
         name: String,
         base: Option<ControlFlowValueId>,
         fields: Vec<(String, ControlFlowValueId)>,
+    },
+    RecordLiteral {
+        fields: Vec<(Option<String>, ControlFlowValueId)>,
     },
     QualifiedCall {
         namespace: String,
@@ -948,6 +954,11 @@ impl ControlFlowGraph {
                         .then_some(ControlFlowValueEffect::Pure)
                         .unwrap_or(ControlFlowValueEffect::MayEffect)
                 }
+                ControlFlowValueKind::Set { items } => {
+                    all_pure(graph, items.iter().copied(), visiting)
+                        .then_some(ControlFlowValueEffect::Pure)
+                        .unwrap_or(ControlFlowValueEffect::MayEffect)
+                }
                 ControlFlowValueKind::Map { entries } => all_pure(
                     graph,
                     entries.iter().flat_map(|(key, value)| [*key, *value]),
@@ -1008,6 +1019,13 @@ impl ControlFlowGraph {
                     base.iter()
                         .copied()
                         .chain(fields.iter().map(|(_, value)| *value)),
+                    visiting,
+                )
+                .then_some(ControlFlowValueEffect::Pure)
+                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::RecordLiteral { fields } => all_pure(
+                    graph,
+                    fields.iter().map(|(_, value)| *value),
                     visiting,
                 )
                 .then_some(ControlFlowValueEffect::Pure)
@@ -2913,7 +2931,10 @@ impl<'a> ControlFlowBuilder<'a> {
                     }
                 }
             }
-            ExprKind::List(items) | ExprKind::Set(items) => ControlFlowValueKind::List {
+            ExprKind::List(items) => ControlFlowValueKind::List {
+                items: self.lower_expr_arguments(producer, items),
+            },
+            ExprKind::Set(items) => ControlFlowValueKind::Set {
                 items: self.lower_expr_arguments(producer, items),
             },
             ExprKind::Map(items) => ControlFlowValueKind::Map {
@@ -3054,10 +3075,15 @@ impl<'a> ControlFlowBuilder<'a> {
                 }
             }
             ExprKind::RecordLiteral { fields } => {
-                for field in fields {
-                    let _ = self.lower_scalar_expr(producer, &field.value);
+                ControlFlowValueKind::RecordLiteral {
+                    fields: fields
+                        .iter()
+                        .filter_map(|field| {
+                            self.lower_scalar_expr(producer, &field.value)
+                                .map(|value| (field.name.clone(), value))
+                        })
+                        .collect(),
                 }
-                ControlFlowValueKind::Opaque
             }
             ExprKind::StructLiteral {
                 name, base, fields, ..
@@ -3924,7 +3950,7 @@ fn collect_call_argument_definitions(
         } => {
             definitions.extend(reached.iter().copied());
         }
-        ControlFlowValueKind::List { items } => {
+        ControlFlowValueKind::List { items } | ControlFlowValueKind::Set { items } => {
             for item in items {
                 collect_call_argument_definitions(*item, values, visited, definitions);
             }
@@ -4013,6 +4039,7 @@ fn collect_call_argument_definitions(
         ControlFlowValueKind::Literal
         | ControlFlowValueKind::AnonymousFunction { .. }
         | ControlFlowValueKind::Map { .. }
+        | ControlFlowValueKind::RecordLiteral { .. }
         | ControlFlowValueKind::StructLiteral { .. }
         | ControlFlowValueKind::Unary { .. }
         | ControlFlowValueKind::Binary { .. }
@@ -4725,7 +4752,7 @@ fn collect_value_uses(
             | ControlFlowValueKind::Field { base: packed, .. } => {
                 push_value_use(&mut uses, value.id, *packed, ControlFlowValueUseKind::Eager);
             }
-            ControlFlowValueKind::List { items } => {
+            ControlFlowValueKind::List { items } | ControlFlowValueKind::Set { items } => {
                 for item in items {
                     push_value_use(&mut uses, value.id, *item, ControlFlowValueUseKind::Eager);
                 }
@@ -4851,6 +4878,11 @@ fn collect_value_uses(
                 if let Some(base) = base {
                     push_value_use(&mut uses, value.id, *base, ControlFlowValueUseKind::Eager);
                 }
+                for (_, field) in fields {
+                    push_value_use(&mut uses, value.id, *field, ControlFlowValueUseKind::Eager);
+                }
+            }
+            ControlFlowValueKind::RecordLiteral { fields } => {
                 for (_, field) in fields {
                     push_value_use(&mut uses, value.id, *field, ControlFlowValueUseKind::Eager);
                 }
@@ -5245,7 +5277,9 @@ fn ir_value_is_discardable(
         ControlFlowValueKind::Literal | ControlFlowValueKind::AnonymousFunction { .. } => true,
         ControlFlowValueKind::Await { .. } => false,
         ControlFlowValueKind::NameRead { .. } => signatures.is_copy_type(&value.ty),
-        ControlFlowValueKind::List { items } => items.iter().all(|item| child(*item, visiting)),
+        ControlFlowValueKind::List { items } | ControlFlowValueKind::Set { items } => {
+            items.iter().all(|item| child(*item, visiting))
+        }
         ControlFlowValueKind::Map { entries } => entries
             .iter()
             .all(|(key, value)| child(*key, visiting) && child(*value, visiting)),
@@ -5264,6 +5298,9 @@ fn ir_value_is_discardable(
             base.is_none_or(|value| child(value, visiting))
                 && fields.iter().all(|(_, value)| child(*value, visiting))
         }
+        ControlFlowValueKind::RecordLiteral { fields } => fields
+            .iter()
+            .all(|(_, value)| child(*value, visiting)),
         ControlFlowValueKind::Field { base, .. } => child(*base, visiting),
         ControlFlowValueKind::Conditional {
             condition,
