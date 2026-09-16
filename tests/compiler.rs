@@ -10227,6 +10227,10 @@ fn main() -> i64 {
     let (fastHandle, fastError) = worker.start(fast)
     if fastError != nil:
         return 2
+    let duplicateHandles: i64[] = [fastHandle, fastHandle]
+    let (_duplicateCompleted, duplicateError) = worker.waitAny(duplicateHandles)
+    if duplicateError == nil:
+        return 17
     let handles: i64[] = [slowHandle, fastHandle]
     let (completed, waitError) = worker.waitAny(handles)
     if waitError != nil:
@@ -10281,6 +10285,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__worker_join_any"));
     assert!(generated.contains("worker.waitAny handle list has no storage"));
     assert!(generated.contains("worker.waitAny handle list has invalid element stride"));
+    assert!(generated.contains("worker.waitAny handle list contains a duplicate handle"));
     assert!(generated.contains("static pthread_cond_t flux__worker_changed"));
 
     let root = std::env::temp_dir().join(format!(
