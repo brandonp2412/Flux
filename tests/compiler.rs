@@ -9821,6 +9821,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__worker_done_result"));
     assert!(generated.contains("flux__worker_wait_any"));
     assert!(generated.contains("flux__worker_join_any"));
+    assert!(generated.contains("worker.waitAny handle list has no storage"));
+    assert!(generated.contains("worker.waitAny handle list has invalid element stride"));
     assert!(generated.contains("static pthread_cond_t flux__worker_changed"));
 
     let root = std::env::temp_dir().join(format!(
