@@ -13688,56 +13688,18 @@ fn check_qualified_call(
         });
     }
     if let Some(definition) = signatures.enum_type(namespace) {
-        require_visible_declaration(
+        return check_enum_variant_call(
+            span,
             *namespace_span,
-            definition.span,
-            definition.public,
-            "enum",
+            *name_span,
             namespace,
+            name,
+            args,
+            named_args,
+            definition,
+            env,
             signatures,
-        )?;
-        if !named_args.is_empty() {
-            return Err(diag(
-                span,
-                &format!("enum variant '{namespace}.{name}' does not accept named payloads"),
-            ));
-        }
-        let Some(variant_definition) = definition.variant(name) else {
-            return Err(diag(
-                *name_span,
-                &format!("enum '{namespace}' has no variant '{name}'"),
-            )
-            .with_label(definition.span, format!("'{namespace}' is declared here")));
-        };
-        if args.len() != variant_definition.payloads.len() {
-            return Err(diag(
-                span,
-                &format!(
-                    "variant '{namespace}.{name}' expects {} payload value{}, got {}",
-                    variant_definition.payloads.len(),
-                    if variant_definition.payloads.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    args.len()
-                ),
-            )
-            .with_label(
-                variant_definition.span,
-                format!("'{name}' is declared here"),
-            ));
-        }
-        for (index, (arg, expected)) in args.iter().zip(&variant_definition.payloads).enumerate() {
-            let actual = type_of_expr(arg, env, signatures)?;
-            require_type(
-                arg.span,
-                expected,
-                &actual,
-                &format!("payload {} of '{}.{name}'", index + 1, namespace),
-            )?;
-        }
-        return Ok(vec![Type::Named(namespace.to_string())]);
+        );
     }
 
     let Some(interface) = signatures.interface(namespace) else {
@@ -13839,6 +13801,71 @@ fn constant_duration_millis(expr: &Expr, signatures: &Signatures) -> Option<i64>
         }
         _ => None,
     }
+}
+
+#[inline(never)]
+fn check_enum_variant_call(
+    span: SourceSpan,
+    namespace_span: SourceSpan,
+    name_span: SourceSpan,
+    namespace: &str,
+    name: &str,
+    args: &[Expr],
+    named_args: &[NamedArg],
+    definition: &EnumSignature,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Vec<Type>, Diagnostic> {
+    require_visible_declaration(
+        namespace_span,
+        definition.span,
+        definition.public,
+        "enum",
+        namespace,
+        signatures,
+    )?;
+    if !named_args.is_empty() {
+        return Err(diag(
+            span,
+            &format!("enum variant '{namespace}.{name}' does not accept named payloads"),
+        ));
+    }
+    let Some(variant_definition) = definition.variant(name) else {
+        return Err(diag(
+            name_span,
+            &format!("enum '{namespace}' has no variant '{name}'"),
+        )
+        .with_label(definition.span, format!("'{namespace}' is declared here")));
+    };
+    if args.len() != variant_definition.payloads.len() {
+        return Err(diag(
+            span,
+            &format!(
+                "variant '{namespace}.{name}' expects {} payload value{}, got {}",
+                variant_definition.payloads.len(),
+                if variant_definition.payloads.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                args.len()
+            ),
+        )
+        .with_label(
+            variant_definition.span,
+            format!("'{name}' is declared here"),
+        ));
+    }
+    for (index, (arg, expected)) in args.iter().zip(&variant_definition.payloads).enumerate() {
+        let actual = type_of_expr(arg, env, signatures)?;
+        require_type(
+            arg.span,
+            expected,
+            &actual,
+            &format!("payload {} of '{}.{name}'", index + 1, namespace),
+        )?;
+    }
+    Ok(vec![Type::Named(namespace.to_string())])
 }
 
 #[inline(never)]
