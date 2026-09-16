@@ -48912,8 +48912,9 @@ async fn addOne(value: i64) -> i64 {
 }
 
 async fn choose(choice: Choice) -> i64 {
+    let offset: i64 = 5
     match choice:
-        Choice.Value(value) if value > 10:
+        Choice.Value(value) if value > offset + 5:
             return await addOne(value)
         Choice.Value(< 0 && > -99):
             return await addOne(10)
@@ -48940,6 +48941,7 @@ async fn main() -> i64 {
     ));
     assert!(guarded_generated.contains("< INT64_C(0)"));
     assert!(guarded_generated.contains("&&"));
+    assert!(!guarded_generated.contains("flux_add_i64(flux__local_offset, INT64_C(5))"));
     assert!(guarded_generated.contains(
         "flux__async_start_cont_addOne(INT64_C(10), flux__async_resume_choose, flux__task)"
     ));
