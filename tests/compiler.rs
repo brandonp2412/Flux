@@ -9097,6 +9097,10 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len"));
     assert!(generated.contains("void (*callback)(int64_t, bool, bool)"));
     assert!(generated.contains("invalid socket readiness callback"));
+    assert!(
+        generated.contains("int64_t socket_handle; memcpy(&socket_handle"),
+        "combined readiness must load strided handles with memcpy so unaligned borrowed views are defined"
+    );
 
     let root = std::env::temp_dir().join(format!("flux-net-ready-many-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
