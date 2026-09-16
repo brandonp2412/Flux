@@ -7683,13 +7683,16 @@ static const char *flux__preferences_remove(const char *key) {
         if (home == NULL || home[0] == '\0') return NULL;
         if (snprintf(directory, sizeof(directory), "%s/.config", home) >= (int)sizeof(directory)) return NULL;
         (void)mkdir(directory, 0700);
+        (void)chmod(directory, 0700);
         if (snprintf(directory, sizeof(directory), "%s/.config/flux", home) >= (int)sizeof(directory)) return NULL;
         base = directory;
         (void)mkdir(base, 0700);
+        (void)chmod(base, 0700);
     } else {
         if (snprintf(directory, sizeof(directory), "%s/flux", base) >= (int)sizeof(directory)) return NULL;
         base = directory;
         (void)mkdir(base, 0700);
+        (void)chmod(base, 0700);
     }
     if (snprintf(path, sizeof(path), "%s/preferences", base) >= (int)sizeof(path)) return NULL;
     return path;
