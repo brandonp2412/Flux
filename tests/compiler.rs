@@ -52641,6 +52641,7 @@ fn main() -> i64 {
     assert!(generated.contains("void (*callback)(int64_t, struct flux__list)"));
     assert!(generated.contains("readBytes requires a TCP socket"));
     assert!(generated.contains("readBytes requires a connected TCP socket"));
+    assert!(generated.contains("readBytes requires a callback"));
     assert!(generated.contains("buffer[index] = (int64_t)raw[index]"));
     assert!(!generated.contains("memchr(buffer, '\\0'"));
     let c_path = std::env::temp_dir().join(format!("flux-receive-bytes-{}.c", std::process::id()));
