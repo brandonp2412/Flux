@@ -175,9 +175,9 @@ fn persist_typed_ir_manifest(
     manifest.push('\n');
     manifest.push_str(native_target_cache_tag(native_target));
     manifest.push('\n');
+    let mut function_artifacts = Vec::new();
     for function in &analysis.program.functions {
         let cfg = crate::ir::ControlFlowGraph::from_function(function, &analysis.signatures);
-        use std::fmt::Write as _;
         let definitions = cfg
             .nodes()
             .iter()
@@ -216,8 +216,7 @@ fn persist_typed_ir_manifest(
         // miss; the current monolithic backend still consumes the source
         // analysis normally after validating this manifest.
         let shape_hash = normalized_cfg_shape_hash(&cfg);
-        let _ = writeln!(
-            manifest,
+        let function_manifest_line = format!(
             "function\t{}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
             function.name,
             cfg.nodes().len(),
@@ -231,6 +230,9 @@ fn persist_typed_ir_manifest(
             returns,
             drops,
         );
+        manifest.push_str(&function_manifest_line);
+        manifest.push('\n');
+        function_artifacts.push((function.name.clone(), shape_hash, function_manifest_line));
     }
     let checksum = stable_bytes_hash(manifest.as_bytes());
     let header = format!("{header_prefix}{checksum:016x}\n");
@@ -254,6 +256,72 @@ fn persist_typed_ir_manifest(
             let _ = fs::remove_file(&temporary);
         } else {
             prune_typed_ir_cache(&directory, &path);
+            for (function_name, shape_hash, function_manifest_line) in function_artifacts {
+                persist_typed_ir_function_artifact(
+                    &directory,
+                    native_target,
+                    function_name,
+                    shape_hash,
+                    &function_manifest_line,
+                );
+            }
+        }
+    }
+}
+
+/// Publish a separately addressable typed-IR artifact for one function.
+///
+/// The payload contains the target, function identity, shape hash, and the
+/// function's normalized summary. The function shape hash is the stable lookup
+/// key, so a changed sibling does not invalidate an unchanged function's
+/// durable artifact. Keeping the target in the payload prevents accidentally
+/// treating a shape hash from another backend as compatible.
+fn persist_typed_ir_function_artifact(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    function_name: String,
+    shape_hash: u64,
+    function_manifest_line: &str,
+) {
+    let mut key = String::new();
+    use std::fmt::Write as _;
+    let _ = write!(
+        key,
+        "{}\n{}\n{}\n{shape_hash:016x}",
+        PROJECT_TYPED_IR_CACHE_VERSION,
+        native_target_cache_tag(native_target),
+        function_name,
+    );
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    let path = directory.join(format!("function-{artifact_id:016x}.manifest"));
+    let mut payload = String::new();
+    payload.push_str(&key);
+    payload.push('\n');
+    payload.push_str(function_manifest_line);
+    let header = format!(
+        "{PROJECT_TYPED_IR_CACHE_VERSION}:{artifact_id:016x}:{:016x}\n",
+        stable_bytes_hash(payload.as_bytes())
+    );
+    if let Ok(existing) = fs::read_to_string(&path)
+        && existing == format!("{header}{payload}")
+    {
+        return;
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let persisted = File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(header.as_bytes())?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()
+        })
+        .is_ok();
+    if persisted {
+        if fs::rename(&temporary, &path).is_err() {
+            let _ = fs::remove_file(&temporary);
         }
     }
 }
@@ -478,7 +546,10 @@ fn prune_typed_ir_cache(directory: &Path, current: &Path) {
                 && entry
                     .file_name()
                     .to_str()
-                    .is_some_and(|name| name.starts_with("ir-") && name.ends_with(".manifest"))
+                    .is_some_and(|name| {
+                        (name.starts_with("ir-") || name.starts_with("function-"))
+                            && name.ends_with(".manifest")
+                    })
         })
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -5504,7 +5575,7 @@ mod tests {
         let entry = root.join("main.flux");
         fs::write(
             &entry,
-            "fn main() -> i64 {\n    let value: i64 = 7\n    return value\n}\n",
+            "fn helper() -> i64 {\n    return 3\n}\nfn main() -> i64 {\n    let value: i64 = 7\n    return value\n}\n",
         )
         .expect("initial source should be writable");
 
@@ -5539,16 +5610,32 @@ mod tests {
             })
             .count();
         assert_eq!(ir_entries, 1, "one typed IR manifest should be published");
+        let function_ir_entries = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should contain function artifacts")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("function-") && name.ends_with(".manifest"))
+            })
+            .count();
+        assert_eq!(function_ir_entries, 2, "one function IR artifact should be published per function");
         let ir_path = fs::read_dir(&ir_dir)
             .expect("typed IR cache directory should remain readable")
             .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
+            .find(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("ir-") && name.ends_with(".manifest")
+            })
             .expect("typed IR manifest should be discoverable")
             .path();
         let ir_manifest =
             fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
         assert!(ir_manifest.starts_with("flux-project-typed-ir-v3:"));
-        assert!(ir_manifest.contains("\nflux-project-typed-ir-v3\nlinux\nfunction\tmain\tshape="));
+        assert!(ir_manifest.contains("\nflux-project-typed-ir-v3\nlinux\nfunction\thelper\tshape="));
+        assert!(ir_manifest.contains("function\tmain\tshape="));
         assert!(ir_manifest.contains("\tnodes="));
         assert!(ir_manifest.contains("\tborrows="));
         assert!(ir_manifest.contains("\tdrops="));
@@ -5560,7 +5647,7 @@ mod tests {
 
         fs::write(
             &entry,
-            "fn main() -> i64 {\n  let value: i64 = 7\n  return value\n}\n",
+            "fn helper() -> i64 {\n    return 3\n}\nfn main() -> i64 {\n  let value: i64 = 7\n  return value\n}\n",
         )
         .expect("formatting-only source edit should be writable");
         let formatted = super::analyze(&entry).expect("formatted project should analyze");
@@ -5603,7 +5690,7 @@ mod tests {
 
         fs::write(
             &entry,
-            "fn main() -> i64 {\n    let value: i64 = 8\n    return value\n}\n",
+            "fn helper() -> i64 {\n    return 3\n}\nfn main() -> i64 {\n    let value: i64 = 8\n    return value\n}\n",
         )
         .expect("semantic source edit should be writable");
         let changed = super::analyze(&entry).expect("changed project should analyze");
@@ -5631,6 +5718,20 @@ mod tests {
                 .iter()
                 .any(|shape| shape != &first_function_shape),
             "semantic edits with unchanged counts must change normalized function identity"
+        );
+        let function_ir_artifacts = fs::read_dir(&ir_dir)
+            .expect("function IR artifacts should remain readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("function-")
+            })
+            .count();
+        assert_eq!(
+            function_ir_artifacts, 3,
+            "a changed function should publish a new artifact while retaining the old one"
         );
 
         for value in 9..=16 {
