@@ -21163,6 +21163,11 @@ fn main() -> i64 {
     assert!(generated.contains("JSON nested array has invalid element stride"));
     assert!(generated.contains("JSON object has invalid element stride"));
     assert!(!generated.contains("size_t length = strlen(literal)"));
+    assert!(generated.contains("int64_t value; memcpy(&value"));
+    assert!(
+        !generated.contains("int64_t value = *((int64_t *)"),
+        "JSON encoders must load borrowed strided values without alignment-dependent casts"
+    );
 }
 
 #[test]
@@ -52732,6 +52737,11 @@ fn main() -> i64 {
     assert!(generated.contains("writeBytesTimeout byte values must be between 0 and 255"));
     assert!(generated.contains("writeBytesTimeout byte list has an invalid element stride"));
     assert!(generated.contains("flux__net_poll_cancellable"));
+    assert!(generated.contains("int64_t value; memcpy(&value"));
+    assert!(
+        !generated.contains("int64_t value = *((int64_t *)"),
+        "binary socket writers must load borrowed strided values without alignment-dependent casts"
+    );
 
     let root = std::env::temp_dir().join(format!(
         "flux-write-bytes-timeout-{}-{}",
