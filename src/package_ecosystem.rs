@@ -1906,6 +1906,13 @@ pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
             continue;
         }
         let package = entry.file_name().to_string_lossy().into_owned();
+        // Publisher validation runs on a checked-out Git working tree, where
+        // the repository's administrative directory is not index content.
+        // Other hidden directories are likewise repository metadata (for
+        // example .github workflows), never package names.
+        if package.starts_with('.') {
+            continue;
+        }
         validate_package_name(&package)?;
         packages.push((package, path));
     }
