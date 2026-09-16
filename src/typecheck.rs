@@ -7190,9 +7190,32 @@ pub fn type_of_expr(
             }
         }
         ExprKind::QualifiedCall {
-            namespace, name, ..
+            namespace,
+            namespace_span,
+            name,
+            name_span,
+            args,
+            named_args,
         } => {
-            let returns = check_qualified_call(expr, env, signatures)?;
+            // Enum constructors are recursive expressions.  Dispatch them before
+            // entering the large platform-capability checker so nested constructors
+            // do not retain a full qualified-call frame at every nesting level.
+            let returns = if let Some(definition) = signatures.enum_type(namespace) {
+                check_enum_variant_call(
+                    expr.span,
+                    *namespace_span,
+                    *name_span,
+                    namespace,
+                    name,
+                    args,
+                    named_args,
+                    definition,
+                    env,
+                    signatures,
+                )?
+            } else {
+                check_qualified_call(expr, env, signatures)?
+            };
             match returns.as_slice() {
                 [] => Ok(Type::Void),
                 [ty] => Ok(ty.clone()),
