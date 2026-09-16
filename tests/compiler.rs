@@ -52806,6 +52806,7 @@ fn main() -> i64 {
     assert!(generated.contains("Sec-WebSocket-Accept"));
     assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));
     assert!(generated.contains("WebSocket handshake is missing Sec-WebSocket-Key"));
+    assert!(generated.contains("WebSocket handshake contains NUL"));
     assert!(generated.contains("WebSocket text message exceeds maxBytes"));
     assert!(generated.contains("WebSocket text message contains invalid UTF-8"));
     assert!(generated.contains("WebSocket continuation frame expected"));
@@ -52877,6 +52878,7 @@ fn main() -> i64 {
     ));
     assert!(!generated.contains("const char *line_end = strstr(cursor, \"\\r\\n\")"));
     assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
+    assert!(generated.contains("WebSocket client handshake contains NUL"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_write_control"));
     assert!(generated.contains("WebSocket control frame must be final and at most 125 bytes"));
