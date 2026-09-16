@@ -53481,6 +53481,10 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket requires a TCP socket"));
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
+    assert!(generated.contains("flux__websocket_find_bytes(const char *value, size_t length"));
+    assert!(generated.contains("flux__websocket_find_bytes(response, response_length, \"\\r\\n\", 2)"));
+    assert!(generated.contains("flux__websocket_find_bytes(cursor, remaining, \"\\r\\n\", 2)"));
+    assert!(!generated.contains("char *status_end = strstr(response, \"\\r\\n\")"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
     assert!(generated.contains(
