@@ -9823,6 +9823,7 @@ tone.other = ["en=common", "fr=commun", "ru=common-ru"]
 fn main() -> i64 {
     print(locale.plural("items", 0, "fallback"))
     print(locale.plural("items", 1, "fallback"))
+    print(locale.plural("items", -1, "fallback"))
     print(locale.plural("items", 2, "fallback"))
     print(locale.plural("items", 5, "fallback"))
     print(locale.plural("items", 11, "fallback"))
@@ -9864,15 +9865,15 @@ fn main() -> i64 {
     for (locale, expected) in [
         (
             "en_NZ.UTF-8",
-            "other\none\nother\nother\nother\nformal\ncommon\n",
+            "other\none\none\nother\nother\nother\nformal\ncommon\n",
         ),
         (
             "fr_FR.UTF-8",
-            "fr-one\nfr-one\nfr-other\nfr-other\nfr-other\nformel\ncommun\n",
+            "fr-one\nfr-one\nfr-one\nfr-other\nfr-other\nfr-other\nformel\ncommun\n",
         ),
         (
             "ru_RU.UTF-8",
-            "ru-many\nru-one\nru-few\nru-many\nru-many\nformal-ru\ncommon-ru\n",
+            "ru-many\nru-one\nru-one\nru-few\nru-many\nru-many\nformal-ru\ncommon-ru\n",
         ),
     ] {
         let run = Command::new(&binary)
