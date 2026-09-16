@@ -1499,6 +1499,20 @@ impl ControlFlowGraph {
         })
     }
 
+    /// Return the complete normalized ownership event stream in CFG node
+    /// order.  The node id is retained alongside each borrowed event so a
+    /// consumer can correlate a boundary with its control-flow position
+    /// without scanning the graph again.  Events within a node use the same
+    /// stable category order as [`Self::ownership_events_at`].
+    pub fn ownership_events(
+        &self,
+    ) -> impl Iterator<Item = (ControlFlowNodeId, ControlFlowOwnershipEvent<'_>)> {
+        self.nodes.iter().flat_map(|node| {
+            let id = node.id;
+            self.ownership_events_at(id).map(move |event| (id, event))
+        })
+    }
+
     pub fn is_reachable(&self, id: ControlFlowNodeId) -> bool {
         self.move_state_before(id)
             .is_some_and(ControlFlowMoveState::reachable)

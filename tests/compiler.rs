@@ -436,6 +436,48 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_exposes_one_ordered_graph_event_stream() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    drop(values)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("ownership graph fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let events = graph.ownership_events().collect::<Vec<_>>();
+    let drop_node = events
+        .iter()
+        .find_map(|(node, event)| {
+            matches!(event, ControlFlowOwnershipEvent::Call(call) if call.callee == "drop")
+                .then_some(*node)
+        })
+        .expect("graph event stream should contain the drop call");
+    let drop_index = events
+        .iter()
+        .position(|(node, event)| {
+            *node == drop_node
+                && matches!(event, ControlFlowOwnershipEvent::Call(call) if call.callee == "drop")
+        })
+        .expect("drop call should have a stable stream position");
+    let move_index = events
+        .iter()
+        .position(|(node, event)| {
+            *node == drop_node
+                && matches!(event, ControlFlowOwnershipEvent::Move(movement) if movement.source == "values")
+        })
+        .expect("drop move should be present in the graph stream");
+    assert!(move_index < drop_index, "moves must precede calls at one node");
+    assert!(events[..=drop_index]
+        .iter()
+        .all(|(node, _)| node.0 <= drop_node.0));
+}
+
+#[test]
 fn ownership_ir_types_all_collection_iteration_bindings() {
     let source = r#"
 fn main() -> i64 {
