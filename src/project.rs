@@ -302,9 +302,8 @@ fn persist_typed_ir_function_artifact(
         "{PROJECT_TYPED_IR_CACHE_VERSION}:{artifact_id:016x}:{:016x}\n",
         stable_bytes_hash(payload.as_bytes())
     );
-    if let Ok(existing) = fs::read_to_string(&path)
-        && existing == format!("{header}{payload}")
-    {
+    let previous = fs::read_to_string(&path).ok();
+    if previous.as_deref() == Some(&format!("{header}{payload}")) {
         return;
     }
     let nonce = SystemTime::now()
@@ -321,7 +320,22 @@ fn persist_typed_ir_function_artifact(
         .is_ok();
     if persisted {
         if fs::rename(&temporary, &path).is_err() {
-            let _ = fs::remove_file(&temporary);
+            // Windows does not replace an existing file with rename.  Only
+            // remove the path when it is still the exact bytes we inspected
+            // above; a concurrent publisher may have installed a valid
+            // artifact while this writer was syncing its temporary file.
+            let current = fs::read_to_string(&path).ok();
+            if current != previous {
+                let _ = fs::remove_file(&temporary);
+                return;
+            }
+            if previous.is_none() {
+                let _ = fs::remove_file(&temporary);
+                return;
+            }
+            if fs::remove_file(&path).is_err() || fs::rename(&temporary, &path).is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
         }
     }
 }
