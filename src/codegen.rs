@@ -4558,7 +4558,7 @@ static inline int flux__json_valid_number(const char *value) {
 }
 static inline const char *flux__json_parse_value(const char **cursor, const char *end, int depth, void (*callback)(const char *, const char *)) {
     if (callback == NULL) return "invalid json.parse callback";
-    if (depth > 128) return "JSON nesting exceeds 128 levels";
+    if (depth >= 128 && (**cursor == '{' || **cursor == '[')) return "JSON nesting exceeds 128 levels";
     flux__json_skip_ws(cursor, end);
     if (*cursor >= end) return "JSON value is incomplete";
     if (**cursor == '{' || **cursor == '[') {
@@ -4881,7 +4881,7 @@ static inline void flux__json_capture(const char *value) {
 }
 static inline const char *flux__json_encode_recursive_array(struct flux__list values, int kind, int depth, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeArray callback";
-    if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002)) || depth < 0 || depth > 128) return "invalid nested JSON array shape";
+    if (!((kind >= 0 && kind <= 2) || (kind >= 100000 && kind <= 100002)) || depth < 0 || depth >= 128) return "invalid nested JSON array shape";
     if (depth == 0) return flux__json_encode_array(values, kind, callback);
     if (values.len > 65536) return "JSON array exceeds 65536 elements";
     if (values.len != 0 && values.data == NULL) return "JSON array has missing element storage";
@@ -4904,7 +4904,7 @@ static inline const char *flux__json_encode_recursive_array(struct flux__list va
 }
 static inline const char *flux__json_encode_map_map(struct flux__map values, int kind, int depth, void (*callback)(const char *)) {
     if (callback == NULL) return "invalid json.encodeObject callback";
-    if (depth > 128) return "JSON nesting exceeds 128 levels";
+    if (depth >= 128) return "JSON nesting exceeds 128 levels";
     if (kind < 0) return "invalid nested JSON object value kind";
     if (values.keys.len != values.values.len || values.keys.len > 65536) return "JSON object is invalid or too large";
     if ((values.keys.len != 0 && values.keys.data == NULL) || (values.values.len != 0 && values.values.data == NULL)) return "JSON object has missing element storage";
@@ -34320,7 +34320,7 @@ fn json_array_encoding_shape(
             },
             Type::List(inner) | Type::Set(inner) => {
                 depth += 1;
-                if depth > 128 {
+                if depth >= 128 {
                     return Err("json.encodeArray nesting exceeds 128 levels");
                 }
                 current = signatures.canonical_type(&inner);

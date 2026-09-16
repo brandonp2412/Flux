@@ -20534,7 +20534,7 @@ fn main() -> i64 {
     check_source(source).expect("deeply nested JSON maps should typecheck");
     let generated = compile_to_c(source).expect("deeply nested JSON maps should lower");
     assert!(generated.contains("flux__json_encode_map_map("));
-    assert!(generated.contains("if (depth > 128) return \"JSON nesting exceeds 128 levels\";"));
+    assert!(generated.contains("if (depth >= 128) return \"JSON nesting exceeds 128 levels\";"));
     let root = std::env::temp_dir().join(format!("flux-json-deep-map-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary deep-map directory should be writable");
@@ -20886,6 +20886,24 @@ fn json_bounded_inputs_reject_oversized_values_before_unbounded_reads() {
         "JSON value exceeds 65536 bytes\nJSON string exceeds 65536 bytes\n"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn json_native_parser_enforces_the_documented_nesting_limit() {
+    let over_limit = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+    let source = format!(
+        r#"
+fn token(_kind: str, _value: str) -> void {{
+}}
+fn main() -> i64 {{
+    let overLimit: error = json.parse({over_limit:?}, token)
+    print(overLimit)
+    return 0
+}}
+"#
+    );
+    let generated = compile_to_c(&source).expect("JSON nesting boundary should lower");
+    assert!(generated.contains("if (depth >= 128 && (**cursor == '{' || **cursor == '[')) return \"JSON nesting exceeds 128 levels\";"));
 }
 
 #[test]
