@@ -51724,6 +51724,9 @@ app Screen
 
     assert!(generated.contains("FLUX_RELOAD_STATE_PATH"));
     assert!(generated.contains("'F','L','X','S'"));
+    assert!(generated.contains("const uint32_t version = 1"));
+    assert!(generated.contains("const char *view_name = \"Screen\""));
+    assert!(generated.contains("strcmp(view_name, \"Screen\") != 0"));
     assert!(generated.contains("uint32_t count = 3;"));
     assert!(generated.contains("const char *name = \"enabled\""));
     assert!(generated.contains("const char *name = \"count\""));
