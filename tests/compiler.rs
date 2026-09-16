@@ -8339,6 +8339,7 @@ fn udp_peer_binary_send_is_typed_native_and_runnable() {
     assert!(generated.contains("sendto("));
     assert!(generated.contains("UDP binary datagram exceeds 65507 bytes"));
     assert!(generated.contains("sendBytesTo byte list has missing storage"));
+    assert!(generated.contains("sendBytesTo byte list has an invalid element stride"));
 
     let root = std::env::temp_dir().join(format!("flux-udp-binary-peer-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -52000,6 +52001,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("timed binary write should lower");
     assert!(generated.contains("flux__net_send_bytes_with_timeout("));
     assert!(generated.contains("writeBytesTimeout byte values must be between 0 and 255"));
+    assert!(generated.contains("writeBytesTimeout byte list has an invalid element stride"));
     assert!(generated.contains("flux__net_poll_cancellable"));
 
     let root = std::env::temp_dir().join(format!(
@@ -52065,6 +52067,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("resumable timed binary write should lower");
     assert!(generated.contains("flux__net_send_bytes_progress_with_timeout("));
     assert!(generated.contains("writeBytesFromTimeout offset exceeds byte length"));
+    assert!(generated.contains("writeBytesFromTimeout byte list has an invalid element stride"));
     assert!(generated.contains("writeBytesFromTimeout cancelled by worker scope"));
 
     let root = std::env::temp_dir().join(format!(
