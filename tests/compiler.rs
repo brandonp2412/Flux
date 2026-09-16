@@ -14,7 +14,8 @@ use fluxc::ast::Type;
 use fluxc::formatter::format_source;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
+    ControlFlowBorrowBoundary, ControlFlowOwnershipEvent, ControlFlowValueEffect,
+    ControlFlowValueKind,
     ControlFlowValueOwnership, ControlFlowValueRegionKind, ControlFlowValueUseKind,
     OwnershipCallArgumentKind,
 };
@@ -16376,6 +16377,15 @@ fn main() -> i64 {
         .iter()
         .find(|start| start.borrower == "tail" && start.source == "source")
         .expect("normalized ownership IR should expose the edge where the tail borrow starts");
+    let start_boundaries = graph
+        .borrow_boundaries_on_edge(tail_start.from, tail_start.to)
+        .collect::<Vec<_>>();
+    assert_eq!(start_boundaries.len(), 1);
+    assert!(matches!(
+        start_boundaries[0],
+        ControlFlowBorrowBoundary::Start(start)
+            if start.borrower == "tail" && start.source == "source"
+    ));
     assert!(
         graph
             .borrow_state_before(tail_start.from)
@@ -16410,6 +16420,15 @@ fn main() -> i64 {
         .iter()
         .find(|end| end.borrower == "tail" && end.source == "source")
         .expect("normalized ownership IR should expose the edge where the tail borrow ends");
+    let end_boundaries = graph
+        .borrow_boundaries_on_edge(tail_end.from, tail_end.to)
+        .collect::<Vec<_>>();
+    assert_eq!(end_boundaries.len(), 1);
+    assert!(matches!(
+        end_boundaries[0],
+        ControlFlowBorrowBoundary::End(end)
+            if end.borrower == "tail" && end.source == "source"
+    ));
     assert!(
         graph
             .borrow_state_before(tail_end.from)

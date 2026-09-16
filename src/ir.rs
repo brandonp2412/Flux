@@ -570,6 +570,18 @@ pub enum ControlFlowOwnershipEvent<'a> {
     Drop(&'a OwnershipDrop),
 }
 
+/// A normalized immutable-borrow boundary on a CFG edge.
+///
+/// Borrow starts and ends are edge facts rather than node-local evaluations.
+/// Keeping them in one borrowed view lets ownership consumers follow the
+/// complete lifetime boundary stream without independently correlating the
+/// start/end vectors or rebuilding borrow liveness from source syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlowBorrowBoundary<'a> {
+    Start(&'a OwnershipBorrowStart),
+    End(&'a OwnershipBorrowEnd),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ControlFlowOwnership {
     pub reads: Vec<String>,
@@ -1401,6 +1413,35 @@ impl ControlFlowGraph {
     ) -> impl Iterator<Item = &OwnershipBorrowLifetime> {
         self.borrow_lifetimes_before(id)
             .filter(move |lifetime| lifetime.source_definition == source_definition)
+    }
+
+    /// Return all normalized immutable-borrow boundaries in deterministic
+    /// order. Starts precede ends, and each underlying collection retains the
+    /// graph's stable `(from, to, definition)` ordering. The view is borrowed
+    /// and allocation-free, like the node-local ownership event stream.
+    pub fn borrow_boundaries(&self) -> impl Iterator<Item = ControlFlowBorrowBoundary<'_>> {
+        self.borrow_starts
+            .iter()
+            .map(ControlFlowBorrowBoundary::Start)
+            .chain(self.borrow_ends.iter().map(ControlFlowBorrowBoundary::End))
+    }
+
+    /// Return normalized borrow boundaries for one CFG edge.
+    pub fn borrow_boundaries_on_edge(
+        &self,
+        from: ControlFlowNodeId,
+        to: ControlFlowNodeId,
+    ) -> impl Iterator<Item = ControlFlowBorrowBoundary<'_>> {
+        self.borrow_starts
+            .iter()
+            .filter(move |boundary| boundary.from == from && boundary.to == to)
+            .map(ControlFlowBorrowBoundary::Start)
+            .chain(
+                self.borrow_ends
+                    .iter()
+                    .filter(move |boundary| boundary.from == from && boundary.to == to)
+                    .map(ControlFlowBorrowBoundary::End),
+            )
     }
 
     /// Returns the normalized drop facts attached to a CFG evaluation node.
