@@ -12261,6 +12261,8 @@ fn main() -> i64 {{
     check_source(&source).expect("directory.list should typecheck");
     let generated = compile_to_c(&source).expect("directory.list should lower natively");
     assert!(generated.contains("flux__fs_list_directory"));
+    assert!(generated.contains("flux__fs_entry_name_length"));
+    assert!(!generated.contains("strlen(entry->d_name)"));
 
     let source_path = root.join("main.flux");
     fs::write(&source_path, &source).expect("directory list source should be writable");
