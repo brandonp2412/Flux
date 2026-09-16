@@ -4351,7 +4351,11 @@ fn emit_runtime_prelude(
         int64_t parsed = 0;
         for (const unsigned char *part = (const unsigned char *)port_text; *part != '\0'; part += 1) {
             if (*part < '0' || *part > '9') return "URL port must be numeric";
-            parsed = parsed * 10 + (int64_t)(*part - '0');
+            int64_t digit = (int64_t)(*part - '0');
+            // Check before multiplying so a bounded but deliberately huge
+            // decimal port cannot invoke signed-overflow UB in generated C.
+            if (parsed > (INT64_MAX - digit) / 10) return "URL port must be between 1 and 65535";
+            parsed = parsed * 10 + digit;
             if (parsed > 65535) return "URL port must be between 1 and 65535";
         }
         if (parsed < 1) return "URL port must be between 1 and 65535";
