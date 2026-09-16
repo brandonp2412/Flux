@@ -12,6 +12,7 @@ const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
+const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -268,7 +269,9 @@ fn persist_typed_ir_manifest(
             let _ = fs::remove_file(&temporary);
         } else {
             prune_typed_ir_cache(&directory, &path);
-            for (module_name, function_name, shape_hash, function_manifest_line) in function_artifacts {
+            for (module_name, function_name, shape_hash, function_manifest_line) in
+                function_artifacts
+            {
                 persist_typed_ir_function_artifact(
                     &directory,
                     native_target,
@@ -360,6 +363,12 @@ fn persist_typed_ir_function_artifact(
                 let _ = fs::remove_file(&temporary);
             }
         }
+        prune_typed_ir_family(
+            directory,
+            &path,
+            "function-",
+            PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT,
+        );
     }
 }
 
@@ -682,6 +691,21 @@ fn prune_codegen_cache(directory: Option<&Path>, current: &Path) {
 }
 
 fn prune_typed_ir_cache(directory: &Path, current: &Path) {
+    prune_typed_ir_family(directory, current, "ir-", PROJECT_TYPED_IR_CACHE_LIMIT);
+    prune_typed_ir_family(
+        directory,
+        Path::new(""),
+        "function-",
+        PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT,
+    );
+}
+
+fn prune_typed_ir_family(
+    directory: &Path,
+    current: &Path,
+    prefix: &str,
+    limit: usize,
+) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -689,13 +713,9 @@ fn prune_typed_ir_cache(directory: &Path, current: &Path) {
         .filter_map(Result::ok)
         .filter(|entry| {
             entry.path() != current
-                && entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| {
-                        (name.starts_with("ir-") || name.starts_with("function-"))
-                            && name.ends_with(".manifest")
-                    })
+                && entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with(prefix) && name.ends_with(".manifest")
+                })
         })
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -703,7 +723,8 @@ fn prune_typed_ir_cache(directory: &Path, current: &Path) {
         })
         .collect::<Vec<_>>();
     artifacts.sort_by(|left, right| right.0.cmp(&left.0));
-    for (_, path) in artifacts.into_iter().skip(PROJECT_TYPED_IR_CACHE_LIMIT - 1) {
+    let retain_existing = limit.saturating_sub(1);
+    for (_, path) in artifacts.into_iter().skip(retain_existing) {
         let _ = fs::remove_file(path);
     }
 }
@@ -5906,6 +5927,19 @@ mod tests {
         assert!(
             retained_ir <= 8,
             "typed IR cache should retain only the bounded recent manifest set"
+        );
+        let retained_function_ir = fs::read_dir(&ir_dir)
+            .expect("typed IR cache should remain readable for function retention")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with("function-") && name.ends_with(".manifest")
+                })
+            })
+            .count();
+        assert!(
+            retained_function_ir <= 8,
+            "typed IR function cache should retain only the bounded recent artifact set"
         );
 
         let _ = fs::remove_dir_all(root);
