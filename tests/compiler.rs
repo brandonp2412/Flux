@@ -37761,6 +37761,43 @@ app Invalid
 }
 
 #[test]
+fn windows_view_environment_tracks_portable_width_breakpoints() {
+    let source = r#"
+view Responsive {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text compact at 1,1
+        text: "Compact"
+        visible: windowIsCompact
+    Text medium at 2,1
+        text: "Medium"
+        visible: windowIsMedium
+    Text expanded at 3,1
+        text: "Expanded"
+        visible: windowIsExpanded
+}
+app Responsive(width: 720, height: 480)
+"#;
+    check_source(source).expect("portable breakpoint bindings should typecheck on Windows");
+    let program = fluxc::parser::parse(source).expect("Windows breakpoint source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows breakpoint source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows breakpoint bindings should lower to native C");
+    assert!(generated.contains("flux__ui_window_width < INT64_C(600)"));
+    assert!(generated.contains(
+        "flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840)"
+    ));
+    assert!(generated.contains("flux__ui_window_width >= INT64_C(840)"));
+    assert!(generated.contains("WM_SIZE"));
+}
+
+#[test]
 fn native_elements_support_common_alignment_and_margins() {
     let source = r#"
 view Layout {
