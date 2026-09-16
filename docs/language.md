@@ -870,6 +870,8 @@ UTC calendar conversion remains allocation-free. `time.utc(year, month, day, hou
 
 `net.readBytesFromTimeout(socket, maxBytes, timeoutMillis, callback)` is the timed binary counterpart to `net.readFromTimeout`. It requires a UDP socket, waits through the compiler-owned cancellation-aware readiness path, and lends one datagram as an `i64[]` byte view plus the numeric peer address only for the exact `fn(i64, i64[], str, i64) -> void` callback. The result is `(receivedBytes, ready, error)`; a timeout returns zero bytes with `ready` false, while cancellation, invalid socket state, oversized datagrams, and malformed peer addresses return explicit errors. Payload bytes are checked as `0..=255` and no owned buffer is created. The compatibility spelling `net.receiveBytesFromWithTimeout` remains accepted, and the helper is tree-shaken when unreachable.
 
+`net.waitAny(sockets, timeoutMillis)` performs one bounded, cancellation-aware native `poll` over a borrowed `i64[]` socket list and returns `(socket, readable, error)`. The first ready handle in source-list order is returned; `socket` is `-1` with no error on timeout or an empty list, and `readable` distinguishes readable/hangup readiness from writable-only readiness. Invalid handles, descriptor strides, limits, timeouts, and worker cancellation produce explicit errors. The helper allocates no result collection and is tree-shaken when unreachable.
+
 ## Native worker threads
 
 Flux can run independent capture-free work on a native worker thread without exposing a thread object or callback-shaped result API:

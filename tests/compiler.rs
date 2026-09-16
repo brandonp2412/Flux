@@ -9163,6 +9163,52 @@ fn main() -> i64 {
 }
 
 #[test]
+fn socket_wait_any_returns_first_ready_handle_and_tree_shakes() {
+    let source = r#"
+fn main() -> i64 {
+    let (socket, connectError) = net.tcpConnect("127.0.0.1", 1)
+    let (ready, readable, waitError) = net.waitAny([socket], 0)
+    print(connectError)
+    print(ready)
+    print(readable)
+    print(waitError)
+    print(net.close(socket))
+    return 0
+}
+"#;
+    check_source(source).expect("waitAny should typecheck");
+    let generated = compile_to_c(source).expect("waitAny should lower on Linux");
+    assert!(generated.contains("flux__net_wait_any("));
+    assert!(generated.contains("POLLIN | POLLOUT"));
+    assert!(generated.contains("waitAny cancelled by worker scope"));
+    assert!(generated.contains("waitAny timeoutMillis must be -1 or between 0 and 2147483647"));
+
+    let invalid = check_source(
+        "fn main() -> i64 {\n    let (socket, failure) = net.tcpConnect(\"127.0.0.1\", 1)\n    let (ready, readable, waitError) = net.waitAny([socket], -2)\n    return 0\n}\n",
+    )
+    .expect_err("waitAny should reject invalid literal timeouts");
+    assert!(
+        invalid
+            .message
+            .contains("net.waitAny timeoutMillis must be -1 or between 0 and 2147483647")
+    );
+
+    let unused = r#"
+fn hidden(sockets: i64[]) -> void {
+    let (ready, readable, failure) = net.waitAny(sockets, 0)
+    print(ready)
+    print(readable)
+    print(failure)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead waitAny should compile");
+    assert!(!unused_generated.contains("flux__net_wait_any("));
+}
+
+#[test]
 fn socket_multi_readiness_bounds_native_descriptor_storage() {
     let handles = std::iter::repeat_n("1", 1025)
         .collect::<Vec<_>>()

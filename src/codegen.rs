@@ -5476,6 +5476,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
         || runtime_usage.contains("flux__net_send_bytes_progress_with_timeout(")
         || runtime_usage.contains("flux__net_receive_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(")
+        || runtime_usage.contains("flux__net_wait_any(")
     {
         out.push_str("#ifndef FLUX_NET_I64_BOOL_ERROR_DEFINED\n#define FLUX_NET_I64_BOOL_ERROR_DEFINED\nstruct flux__net_i64_bool_error { int64_t v0; bool v1; const char *v2; };\n#endif\n");
         out.push_str("static inline struct flux__net_i64_bool_error flux__net_progress_result(int64_t offset, bool complete, const char *error) { struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = complete, .v2 = error }; return result; }\n");
@@ -5519,6 +5520,9 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
     {
         out.push_str("struct flux__net_bool_error { bool v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_bool_error flux__net_bool_result(bool value, const char *error) { struct flux__net_bool_error result = { .v0 = value, .v1 = error }; return result; }\n");
+    }
+    if runtime_usage.contains("flux__net_wait_any(") {
+        out.push_str("static inline struct flux__net_i64_bool_error flux__net_wait_any(struct flux__list sockets, int64_t timeout_millis) { struct flux__net_i64_bool_error result = { .v0 = -1, .v1 = false, .v2 = NULL }; if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v2 = \"waitAny timeoutMillis must be -1 or between 0 and 2147483647\"; return result; } if (sockets.len == 0) return result; if (sockets.data == NULL) { result.v2 = \"socket handle list has no storage\"; return result; } if (sockets.len > 1024) { result.v2 = \"too many socket handles for readiness wait (maximum is 1024)\"; return result; } ptrdiff_t stride = sockets.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : sockets.stride; uint64_t magnitude = stride < 0 ? (uint64_t)(-(stride + 1)) + 1u : (uint64_t)stride; if (magnitude < sizeof(int64_t) || (sockets.len > 1 && (uint64_t)(sockets.len - 1) > (uint64_t)PTRDIFF_MAX / magnitude)) { result.v2 = \"socket handle list has invalid element stride\"; return result; } struct pollfd descriptors[1024]; for (size_t index = 0; index < sockets.len; ++index) { int64_t socket_handle = *((int64_t *)((char *)sockets.data + (ptrdiff_t)index * stride)); if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = \"invalid socket handle\"; return result; } descriptors[index] = (struct pollfd){ .fd = (int)socket_handle, .events = POLLIN | POLLOUT, .revents = 0 }; } int ready = flux__net_poll_cancellable(descriptors, (nfds_t)sockets.len, timeout_millis); if (ready == -2) { result.v2 = \"waitAny cancelled by worker scope\"; return result; } if (ready < 0) { result.v2 = \"failed to wait for socket readiness\"; return result; } if (ready == 0) return result; for (size_t index = 0; index < sockets.len; ++index) { short revents = descriptors[index].revents; if ((revents & POLLNVAL) != 0) { result.v2 = \"invalid socket handle\"; return result; } if ((revents & POLLERR) != 0) { result.v2 = \"socket readiness failed\"; return result; } if ((revents & (POLLIN | POLLOUT | POLLHUP)) != 0) { result.v0 = (int64_t)descriptors[index].fd; result.v1 = (revents & (POLLIN | POLLHUP)) != 0; return result; } } return result; }\n");
     }
     if uses_cancellable_net {
         if uses_workers {
@@ -36944,6 +36948,18 @@ fn emit_qualified_call(
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),
+                ));
+            }
+            "waitAny" => {
+                if args.len() != 2 {
+                    return Err(diag(span, "invalid network call reached code generation"));
+                }
+                let sockets = emit_expr(&args[0], env, signatures)?;
+                let timeout = emit_expr(&args[1], env, signatures)?;
+                return Ok((
+                    format!("flux__net_wait_any({}, {})", sockets.code, timeout.code),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                    Some("flux__net_i64_bool_error".to_string()),
                 ));
             }
             "shutdownRead" | "shutdownWrite" => {

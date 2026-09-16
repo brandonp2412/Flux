@@ -1627,6 +1627,10 @@ fn add_qualified_namespace_completions(
                 "readyMany",
                 "fn net.readyMany(sockets: i64[], timeoutMillis: i64, callback: fn(i64, bool, bool) -> void) -> (i64, error)",
             ),
+            (
+                "waitAny",
+                "fn net.waitAny(sockets: i64[], timeoutMillis: i64) -> (i64, bool, error)",
+            ),
             ("closeRead", "fn net.closeRead(socket: i64) -> error"),
             ("closeWrite", "fn net.closeWrite(socket: i64) -> error"),
             ("close", "fn net.close(socket: i64) -> error"),
