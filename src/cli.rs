@@ -5778,11 +5778,15 @@ fn clean_target(target: &Path) -> Result<(), CliError> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."))
     };
-    let cache = cache_root.join(".flux").join("cache");
-    if cache.is_dir() {
-        fs::remove_dir_all(&cache)
-            .map_err(|error| format!("failed to remove '{}': {error}", cache.display()))?;
-        removed.push(cache);
+    for cache in [
+        cache_root.join(".flux").join("cache"),
+        cache_root.join(".flux").join("ir-cache"),
+    ] {
+        if cache.is_dir() {
+            fs::remove_dir_all(&cache)
+                .map_err(|error| format!("failed to remove '{}': {error}", cache.display()))?;
+            removed.push(cache);
+        }
     }
     if removed.is_empty() {
         println!("clean: nothing to remove for {}", target.display());
@@ -10886,8 +10890,12 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(root.join(".flux/cache")).expect("cache fixture should be writable");
+        fs::create_dir_all(root.join(".flux/ir-cache"))
+            .expect("typed IR cache fixture should be writable");
         fs::write(root.join(".flux/cache/codegen-dead.c"), "stale")
             .expect("cache fixture should contain an artifact");
+        fs::write(root.join(".flux/ir-cache/function-dead.manifest"), "stale")
+            .expect("typed IR cache fixture should contain an artifact");
         let entry = root.join("main.flux");
         fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
             .expect("source fixture should be writable");
@@ -10895,6 +10903,7 @@ mod tests {
         clean_target(&entry).expect("clean should remove project cache");
 
         assert!(!root.join(".flux/cache").exists());
+        assert!(!root.join(".flux/ir-cache").exists());
         let _ = fs::remove_dir_all(root);
     }
 
