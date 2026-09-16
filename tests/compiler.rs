@@ -127,9 +127,9 @@ fn observe(value: i64) -> i64 {
 }
 
 fn main() -> i64 {
-    let pure: fn(i64) -> i64 = fn(_value: i64) -> i64 { 1 }
+    let pureValue: fn(i64) -> i64 = fn(_value: i64) -> i64 { 1 }
     let effectful: fn(i64) -> i64 = fn(_value: i64) -> i64 { observe(1) }
-    print(pure(4))
+    print(pureValue(4))
     print(effectful(5))
     return 0
 }
@@ -176,7 +176,7 @@ fn main() -> i64 {
 #[test]
 fn typed_ir_exposes_reachable_direct_effect_boundaries() {
     let source = r#"
-fn pure(value: i64) -> i64 {
+fn pureValue(value: i64) -> i64 {
     return value + 1
 }
 
@@ -197,7 +197,7 @@ async fn delayed(value: i64) -> i64 {
 async fn main() -> i64 {
     if false:
         dead(0)
-    let result: i64 = pure(4)
+    let result: i64 = pureValue(4)
     let _delayed: i64 = await delayed(result)
     return observe(result)
 }
@@ -208,7 +208,7 @@ async fn main() -> i64 {
         .control_flow_graph("main")
         .expect("main CFG should be available");
     let callees = main.direct_call_callees();
-    assert!(callees.contains("pure"));
+    assert!(callees.contains("pureValue"));
     assert!(callees.contains("delayed"));
     assert!(callees.contains("observe"));
     assert!(!callees.contains("dead"));
@@ -216,7 +216,7 @@ async fn main() -> i64 {
     assert!(main.has_intrinsic_effect());
 
     let pure = database
-        .control_flow_graph("pure")
+        .control_flow_graph("pureValue")
         .expect("pure CFG should be available");
     assert!(pure.direct_call_callees().is_empty());
     assert!(!pure.has_intrinsic_effect());
@@ -224,7 +224,7 @@ async fn main() -> i64 {
     let summaries = database.effect_summaries();
     assert_eq!(
         summaries
-            .get("pure")
+            .get("pureValue")
             .expect("pure summary should be present")
             .is_locally_pure(),
         true
@@ -239,12 +239,12 @@ async fn main() -> i64 {
 #[test]
 fn semantic_effect_results_resolve_user_calls_and_cycles_conservatively() {
     let source = r#"
-fn pure(value: i64) -> i64 {
+fn pureValue(value: i64) -> i64 {
     return value + 1
 }
 
 fn wrapper(value: i64) -> i64 {
-    return pure(value)
+    return pureValue(value)
 }
 
 fn observe(value: i64) -> i64 {
@@ -269,7 +269,10 @@ fn main() -> i64 {
     let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("whole-program effect fixture should typecheck");
     let effects = database.effect_results();
-    assert_eq!(effects.get("pure"), Some(&ControlFlowValueEffect::Pure));
+    assert_eq!(
+        effects.get("pureValue"),
+        Some(&ControlFlowValueEffect::Pure)
+    );
     assert_eq!(effects.get("wrapper"), Some(&ControlFlowValueEffect::Pure));
     assert_eq!(
         effects.get("effectful_wrapper"),
