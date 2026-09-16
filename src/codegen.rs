@@ -38861,81 +38861,15 @@ fn substitute_nested_ir_constant_arguments(
             args, named_args, ..
         } => {
             for value in args {
-                if matches!(
-                    value.kind,
-                    ExprKind::Call { .. }
-                        | ExprKind::QualifiedCall { .. }
-                        | ExprKind::Pipe { .. }
-                        | ExprKind::Conditional { .. }
-                        | ExprKind::Binary { .. }
-                        | ExprKind::Unary { .. }
-                        | ExprKind::List(_)
-                        | ExprKind::Set(_)
-                        | ExprKind::Map(_)
-                        | ExprKind::ListIf { .. }
-                        | ExprKind::Index { .. }
-                        | ExprKind::Slice { .. }
-                        | ExprKind::ListComprehension { .. }
-                        | ExprKind::RecordLiteral { .. }
-                        | ExprKind::StructLiteral { .. }
-                        | ExprKind::Field { .. }
-                        | ExprKind::Match { .. }
-                        | ExprKind::ListMatch { .. }
-                ) {
-                    *value = rewrite(value);
-                }
+                *value = rewrite(value);
             }
             for argument in named_args {
-                if matches!(
-                    argument.value.kind,
-                    ExprKind::Call { .. }
-                        | ExprKind::QualifiedCall { .. }
-                        | ExprKind::Pipe { .. }
-                        | ExprKind::Conditional { .. }
-                        | ExprKind::Binary { .. }
-                        | ExprKind::Unary { .. }
-                        | ExprKind::List(_)
-                        | ExprKind::Set(_)
-                        | ExprKind::Map(_)
-                        | ExprKind::ListIf { .. }
-                        | ExprKind::Index { .. }
-                        | ExprKind::Slice { .. }
-                        | ExprKind::ListComprehension { .. }
-                        | ExprKind::RecordLiteral { .. }
-                        | ExprKind::StructLiteral { .. }
-                        | ExprKind::Field { .. }
-                        | ExprKind::Match { .. }
-                        | ExprKind::ListMatch { .. }
-                ) {
-                    argument.value = rewrite(&argument.value);
-                }
+                argument.value = rewrite(&argument.value);
             }
         }
         ExprKind::ShellCall { args, .. } => {
             for value in args {
-                if matches!(
-                    value.kind,
-                    ExprKind::Call { .. }
-                        | ExprKind::QualifiedCall { .. }
-                        | ExprKind::Pipe { .. }
-                        | ExprKind::Conditional { .. }
-                        | ExprKind::Binary { .. }
-                        | ExprKind::Unary { .. }
-                        | ExprKind::List(_)
-                        | ExprKind::Set(_)
-                        | ExprKind::Map(_)
-                        | ExprKind::ListIf { .. }
-                        | ExprKind::Index { .. }
-                        | ExprKind::Slice { .. }
-                        | ExprKind::ListComprehension { .. }
-                        | ExprKind::RecordLiteral { .. }
-                        | ExprKind::StructLiteral { .. }
-                        | ExprKind::Field { .. }
-                        | ExprKind::Match { .. }
-                        | ExprKind::ListMatch { .. }
-                ) {
-                    *value = rewrite(value);
-                }
+                *value = rewrite(value);
             }
         }
         ExprKind::Pipe { input, args, .. } => {
