@@ -5247,4 +5247,68 @@ mod tests {
         assert_eq!(cache.incremental_typecheck_stats().runs, 0);
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn durable_codegen_cache_reuses_canonical_format_and_invalidates_body_edits() {
+        let root = test_path("durable-codegen-cache");
+        fs::create_dir_all(&root).expect("temporary cache project should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn main() -> i64 {\n    let value: i64 = 7\n    return value\n}\n",
+        )
+        .expect("initial source should be writable");
+
+        let first = super::analyze(&entry).expect("initial project should analyze");
+        let first_c = first
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("initial generated C should be emitted");
+        let cache_dir = root.join(".flux/cache");
+        let initial_entries = fs::read_dir(&cache_dir)
+            .expect("codegen cache directory should exist")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("codegen-") && name.ends_with(".c"))
+            })
+            .count();
+        assert_eq!(initial_entries, 1, "one durable artifact should be published");
+
+        fs::write(
+            &entry,
+            "fn main() -> i64 {\n  let value: i64 = 7\n  return value\n}\n",
+        )
+        .expect("formatting-only source edit should be writable");
+        let formatted = super::analyze(&entry).expect("formatted project should analyze");
+        let formatted_c = formatted
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("formatted generated C should be emitted");
+        assert_eq!(formatted_c, first_c, "canonical formatting should reuse the artifact");
+        let formatted_entries = fs::read_dir(&cache_dir)
+            .expect("codegen cache directory should remain available")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("codegen-") && name.ends_with(".c"))
+            })
+            .count();
+        assert_eq!(formatted_entries, 1, "formatting should not add a cache artifact");
+
+        fs::write(
+            &entry,
+            "fn main() -> i64 {\n    let value: i64 = 8\n    return value\n}\n",
+        )
+        .expect("semantic source edit should be writable");
+        let changed = super::analyze(&entry).expect("changed project should analyze");
+        let changed_c = changed
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("changed generated C should be emitted");
+        assert_ne!(changed_c, first_c, "semantic edits must invalidate generated C");
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
