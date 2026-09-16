@@ -24635,7 +24635,7 @@ fn main() -> i64 {
 
     check_source(source).expect("propagated expression should typecheck");
     let generated = compile_to_c(source).expect("propagated expression should compile");
-    assert!(generated.contains("flux_print_i64(flux__local_propagated)"));
+    assert!(generated.contains("flux_print_i64(INT64_C(7))"));
     assert!(generated.contains("flux__local_propagated = INT64_C(7);"));
     assert!(generated.contains("flux__local_propagatedBool = true;"));
     assert!(
