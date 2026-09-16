@@ -5879,12 +5879,13 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("HTTP custom-header request should lower");
     assert!(generated.contains("flux__net_http_send_text_request_with_headers("));
     assert!(generated.contains("HTTP custom headers cannot override framing headers"));
+    assert!(generated.contains("invalid HTTP request argument"));
     assert!(generated.contains("HTTP request argument exceeds 65536 bytes"));
     assert!(generated.contains(
         "if (headers == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
     ));
     assert!(generated.contains(
-        "if (method == NULL || target == NULL || host == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
+        "size_t method_length = 0; size_t target_length = 0; size_t host_length = 0; size_t content_type_length = 0; if (!flux__net_http_bounded_length(method, &method_length)"
     ));
 
     let invalid_type = check_source(
@@ -6860,7 +6861,7 @@ fn main() -> i64 {
     assert!(generated.contains("Connection: %s"));
     assert!(generated.contains("keep_alive ? \"keep-alive\" : \"close\""));
     assert!(generated.contains(
-        "if (content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
+        "size_t response_content_type_length = 0; if (!flux__net_http_bounded_length(content_type, &response_content_type_length)"
     ));
     assert!(generated.contains("#include <sys/socket.h>"));
 
@@ -6962,7 +6963,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("HTTP custom-header response should lower");
     assert!(generated.contains("flux__net_http_send_text_response_with_headers("));
     assert!(generated.contains("HTTP custom headers cannot override framing headers"));
-    assert!(generated.contains("HTTP content type exceeds 65536 bytes"));
+    assert!(generated.contains("HTTP response argument exceeds 65536 bytes"));
 
     let invalid_type = check_source(
         "fn main() -> i64 {\n    print(http.sendTextResponseWithHeaders(1, 200, \"text/plain\", \"hello\", false))\n    return 0\n}\n",
