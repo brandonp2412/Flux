@@ -3491,6 +3491,7 @@ fn main() -> i64 {
         generated.contains("static inline int64_t flux__process_peak_resident_memory_bytes(void)")
     );
     assert!(generated.contains("static inline bool flux__process_has_env(const char *name)"));
+    assert!(generated.contains("while (length <= 1024 && name[length] != '\\0') length += 1"));
     assert!(generated.contains(
         "static inline const char *flux__process_env(const char *name, const char *fallback)"
     ));

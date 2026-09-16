@@ -4222,10 +4222,10 @@ fn emit_runtime_prelude(
         out.push_str("static inline int64_t flux__process_peak_resident_memory_bytes(void) { struct rusage usage = flux__process_usage(); if (usage.ru_maxrss < 0 || (uint64_t)usage.ru_maxrss > (uint64_t)INT64_MAX / UINT64_C(1024)) { fputs(\"Flux runtime error: process peak RSS exceeds i64 range\\n\", stderr); abort(); } return (int64_t)((uint64_t)usage.ru_maxrss * UINT64_C(1024)); }\n");
     }
     if runtime_usage.contains("flux__process_has_env(") {
-        out.push_str("static inline bool flux__process_has_env(const char *name) { return getenv(name) != NULL; }\n");
+        out.push_str("static inline bool flux__process_has_env(const char *name) { if (name == NULL) return false; size_t length = 0; while (length <= 1024 && name[length] != '\\0') length += 1; if (length > 1024) return false; return getenv(name) != NULL; }\n");
     }
     if runtime_usage.contains("flux__process_env(") {
-        out.push_str("static inline const char *flux__process_env(const char *name, const char *fallback) { const char *value = getenv(name); return value != NULL ? value : fallback; }\n");
+        out.push_str("static inline const char *flux__process_env(const char *name, const char *fallback) { if (name == NULL || fallback == NULL) return fallback; size_t length = 0; while (length <= 1024 && name[length] != '\\0') length += 1; if (length > 1024) return fallback; const char *value = getenv(name); return value != NULL ? value : fallback; }\n");
     }
     if runtime_usage.contains("flux__process_termination_requested(") {
         out.push_str("static volatile sig_atomic_t flux__process_termination_flag = 0;\n");
