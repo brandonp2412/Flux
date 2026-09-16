@@ -20890,20 +20890,57 @@ fn json_bounded_inputs_reject_oversized_values_before_unbounded_reads() {
 
 #[test]
 fn json_native_parser_enforces_the_documented_nesting_limit() {
+    let at_limit = format!("{}0{}", "[".repeat(128), "]".repeat(128));
     let over_limit = format!("{}0{}", "[".repeat(129), "]".repeat(129));
     let source = format!(
         r#"
 fn token(_kind: str, _value: str) -> void {{
 }}
 fn main() -> i64 {{
+    let atLimit: error = json.parse({at_limit:?}, token)
     let overLimit: error = json.parse({over_limit:?}, token)
+    print(atLimit)
     print(overLimit)
     return 0
 }}
 "#
     );
+    check_source(&source).expect("JSON nesting boundary should typecheck");
     let generated = compile_to_c(&source).expect("JSON nesting boundary should lower");
     assert!(generated.contains("if (depth >= 128 && (**cursor == '{' || **cursor == '[')) return \"JSON nesting exceeds 128 levels\";"));
+    let root = std::env::temp_dir().join(format!("flux-json-depth-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON depth directory should be writable");
+    let c_path = root.join("json-depth.c");
+    let exe_path = root.join("json-depth");
+    fs::write(&c_path, generated).expect("JSON depth C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON depth code");
+    assert!(
+        compile.status.success(),
+        "JSON depth C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON depth program should run");
+    assert!(
+        output.status.success(),
+        "JSON depth program failed: status={:?}, stdout={}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nil\nJSON nesting exceeds 128 levels\n"
+    );
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

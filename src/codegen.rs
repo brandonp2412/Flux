@@ -4477,6 +4477,10 @@ static inline const char *flux__json_encode_map_map(struct flux__map values, int
 static inline const char *flux__json_encode_optional_object(struct flux__map values, int kind, void (*callback)(const char *));
 static inline const char *flux__json_encode_optional_map(struct flux__optional_map value, int kind, void (*callback)(const char *));
 static _Thread_local const char *flux__json_capture_value;
+/* JSON callbacks borrow decoded strings only for the duration of the callback.
+ * Reusing thread-local storage keeps deeply nested parsing bounded without
+ * allocating one 64 KiB buffer per recursive parser frame. */
+static _Thread_local char flux__json_token_buffer[65537];
 static inline int flux__json_capture_length(const char *value, size_t *length);
 static inline void flux__json_capture(const char *value);
 static inline const char *flux__json_encode_int(int64_t value, void (*callback)(const char *));
@@ -4568,7 +4572,7 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
         while (*cursor < end) {
             if (object) {
                 if (**cursor != '"') return "JSON object keys must be strings";
-                const char *key_start = ++*cursor; char key[65537]; size_t key_len = 0;
+                ++*cursor; char *key = flux__json_token_buffer; size_t key_len = 0;
                 while (*cursor < end && **cursor != '"') {
                     unsigned char byte = (unsigned char)**cursor;
                     if (byte < 0x20) return "JSON object key contains a control character";
@@ -4591,7 +4595,7 @@ static inline const char *flux__json_parse_value(const char **cursor, const char
         return "JSON container is incomplete";
     }
     if (**cursor == '"') {
-        *cursor += 1; char text[65537]; size_t length = 0;
+        *cursor += 1; char *text = flux__json_token_buffer; size_t length = 0;
         while (*cursor < end && **cursor != '"') {
             unsigned char byte = (unsigned char)**cursor;
             if (byte < 0x20) return "JSON string contains a control character";
