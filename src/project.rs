@@ -10,7 +10,7 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
-const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v1";
+const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v2";
 
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -183,14 +183,70 @@ fn persist_typed_ir_manifest(
             .map(|node| node.definitions.len())
             .sum::<usize>()
             + cfg.parameters().len();
+        let borrows = cfg
+            .nodes()
+            .iter()
+            .map(|node| node.ownership.borrows.len())
+            .sum::<usize>();
+        let moves = cfg
+            .nodes()
+            .iter()
+            .map(|node| node.ownership.moves.len())
+            .sum::<usize>();
+        let calls = cfg
+            .nodes()
+            .iter()
+            .map(|node| node.ownership.calls.len())
+            .sum::<usize>();
+        let returns = cfg
+            .nodes()
+            .iter()
+            .map(|node| node.ownership.returns.len())
+            .sum::<usize>();
+        let drops = cfg.drops().len();
+        let reachable_values = cfg
+            .values()
+            .iter()
+            .filter(|value| cfg.is_value_reachable(value.id))
+            .count();
+        // Keep each function's normalized shape independently addressable in
+        // the durable artifact.  Future per-module codegen can reuse an
+        // unchanged function without treating a changed sibling as a cache
+        // miss; the current monolithic backend still consumes the source
+        // analysis normally after validating this manifest.
+        let mut function_shape = String::new();
+        let _ = write!(
+            function_shape,
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+            function.name,
+            cfg.parameters().len(),
+            cfg.returns().len(),
+            cfg.nodes().len(),
+            cfg.edges().len(),
+            cfg.values().len(),
+            reachable_values,
+            definitions,
+            borrows,
+            moves,
+            calls,
+            returns,
+            drops,
+        );
+        let shape_hash = stable_bytes_hash(function_shape.as_bytes());
         let _ = writeln!(
             manifest,
-            "function\t{}\tnodes={}\tedges={}\tvalues={}\tdefinitions={}",
+            "function\t{}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
             function.name,
             cfg.nodes().len(),
             cfg.edges().len(),
             cfg.values().len(),
-            definitions
+            reachable_values,
+            definitions,
+            borrows,
+            moves,
+            calls,
+            returns,
+            drops,
         );
     }
     let checksum = stable_bytes_hash(manifest.as_bytes());
@@ -5368,8 +5424,11 @@ mod tests {
             .expect("typed IR manifest should be discoverable")
             .path();
         let ir_manifest = fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
-        assert!(ir_manifest.starts_with("flux-project-typed-ir-v1:"));
-        assert!(ir_manifest.contains("\nflux-project-typed-ir-v1\nlinux\nfunction\tmain\tnodes="));
+        assert!(ir_manifest.starts_with("flux-project-typed-ir-v2:"));
+        assert!(ir_manifest.contains("\nflux-project-typed-ir-v2\nlinux\nfunction\tmain\tshape="));
+        assert!(ir_manifest.contains("\tnodes="));
+        assert!(ir_manifest.contains("\tborrows="));
+        assert!(ir_manifest.contains("\tdrops="));
 
         fs::write(
             &entry,
