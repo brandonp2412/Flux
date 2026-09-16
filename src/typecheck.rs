@@ -12795,14 +12795,22 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
                 return Ok(vec![Type::Bool]);
             }
-            "join" => {
-                if args.len() != 3 {
+            "join" | "dirname" | "basename" => {
+                let expected_args = if name == "join" { 3 } else { 2 };
+                if args.len() != expected_args {
                     return Err(diag(
                         span,
-                        &format!("path.join expects 3 arguments, got {}", args.len()),
+                        &format!("path.{name} expects {expected_args} arguments, got {}", args.len()),
                     ));
                 }
-                for (arg, label) in args.iter().zip(["base", "child", "callback"]) {
+                let labels = if name == "join" {
+                    vec!["base", "child", "callback"]
+                } else if name == "dirname" {
+                    vec!["value", "callback"]
+                } else {
+                    vec!["value", "callback"]
+                };
+                for (arg, label) in args.iter().zip(labels) {
                     let actual = type_of_expr(arg, env, signatures)?;
                     let expected = if label == "callback" {
                         Type::Function {

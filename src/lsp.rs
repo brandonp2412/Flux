@@ -1718,6 +1718,20 @@ fn add_qualified_namespace_completions(
             3,
             "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "dirname",
+            3,
+            "fn path.dirname(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "basename",
+            3,
+            "fn path.basename(value: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "json" {
@@ -4013,6 +4027,12 @@ fn signature_help_for_document_cached(
                 "join" => Some(signature_help_for_builtin(
                     "path.join",
                     &["base: str", "child: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "dirname" | "basename" => Some(signature_help_for_builtin(
+                    &format!("path.{implementation_member}"),
+                    &["value: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),

@@ -48,12 +48,16 @@ fn main() -> i64 {
     let absolute: bool = path.isAbsolute("/tmp/flux")
     print(absolute)
     print(path.join("/tmp", "flux", show))
+    print(path.dirname("/tmp/flux", show))
+    print(path.basename("/tmp/flux", show))
     return 0
 }
 "#;
     let generated = compile_to_c(source).expect("path capability source should compile");
     assert!(generated.contains("flux__path_is_absolute(\"/tmp/flux\")"));
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
+    assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
+    assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
     assert!(generated.contains("strnlen(base, 65537)"));
 
     let shaken = compile_to_c(
