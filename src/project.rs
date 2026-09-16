@@ -11,6 +11,7 @@ use crate::{codegen, formatter, parser, typecheck};
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v2";
+const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -266,8 +267,12 @@ fn persist_typed_ir_manifest(
             file.sync_all()
         })
         .is_ok();
-    if persisted && fs::rename(&temporary, &path).is_err() {
-        let _ = fs::remove_file(&temporary);
+    if persisted {
+        if fs::rename(&temporary, &path).is_err() {
+            let _ = fs::remove_file(&temporary);
+        } else {
+            prune_typed_ir_cache(&directory, &path);
+        }
     }
 }
 
@@ -368,6 +373,30 @@ fn prune_codegen_cache(directory: Option<&Path>, current: &Path) {
         .collect::<Vec<_>>();
     artifacts.sort_by(|left, right| right.0.cmp(&left.0));
     for (_, path) in artifacts.into_iter().skip(PROJECT_CODEGEN_CACHE_LIMIT - 1) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn prune_typed_ir_cache(directory: &Path, current: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut artifacts = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.path() != current
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("ir-") && name.ends_with(".manifest"))
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in artifacts.into_iter().skip(PROJECT_TYPED_IR_CACHE_LIMIT - 1) {
         let _ = fs::remove_file(path);
     }
 }
@@ -5404,7 +5433,10 @@ mod tests {
                     .is_some_and(|name| name.starts_with("codegen-") && name.ends_with(".c"))
             })
             .count();
-        assert_eq!(initial_entries, 1, "one durable artifact should be published");
+        assert_eq!(
+            initial_entries, 1,
+            "one durable artifact should be published"
+        );
         let ir_dir = root.join(".flux/ir-cache");
         let ir_entries = fs::read_dir(&ir_dir)
             .expect("typed IR cache directory should exist")
@@ -5423,7 +5455,8 @@ mod tests {
             .find(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
             .expect("typed IR manifest should be discoverable")
             .path();
-        let ir_manifest = fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
+        let ir_manifest =
+            fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
         assert!(ir_manifest.starts_with("flux-project-typed-ir-v2:"));
         assert!(ir_manifest.contains("\nflux-project-typed-ir-v2\nlinux\nfunction\tmain\tshape="));
         assert!(ir_manifest.contains("\tnodes="));
@@ -5439,7 +5472,10 @@ mod tests {
         let formatted_c = formatted
             .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
             .expect("formatted generated C should be emitted");
-        assert_eq!(formatted_c, first_c, "canonical formatting should reuse the artifact");
+        assert_eq!(
+            formatted_c, first_c,
+            "canonical formatting should reuse the artifact"
+        );
         let formatted_entries = fs::read_dir(&cache_dir)
             .expect("codegen cache directory should remain available")
             .filter_map(Result::ok)
@@ -5450,7 +5486,10 @@ mod tests {
                     .is_some_and(|name| name.starts_with("codegen-") && name.ends_with(".c"))
             })
             .count();
-        assert_eq!(formatted_entries, 1, "formatting should not add a cache artifact");
+        assert_eq!(
+            formatted_entries, 1,
+            "formatting should not add a cache artifact"
+        );
 
         fs::write(
             &entry,
@@ -5461,7 +5500,38 @@ mod tests {
         let changed_c = changed
             .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
             .expect("changed generated C should be emitted");
-        assert_ne!(changed_c, first_c, "semantic edits must invalidate generated C");
+        assert_ne!(
+            changed_c, first_c,
+            "semantic edits must invalidate generated C"
+        );
+
+        for value in 9..=16 {
+            fs::write(
+                &entry,
+                format!(
+                    "fn main() -> i64 {{\n    let value: i64 = {value}\n    return value\n}}\n"
+                ),
+            )
+            .expect("repeated semantic source edit should be writable");
+            let analysis = super::analyze(&entry).expect("repeated project should analyze");
+            analysis
+                .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+                .expect("repeated generated C should be emitted");
+        }
+        let retained_ir = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should remain readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("ir-") && name.ends_with(".manifest"))
+            })
+            .count();
+        assert!(
+            retained_ir <= 8,
+            "typed IR cache should retain only the bounded recent manifest set"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
