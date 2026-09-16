@@ -4284,6 +4284,7 @@ fn emit_runtime_prelude(
     char buffer[65537];
     memcpy(buffer, value, length + 1);
     for (size_t index = 0; index < length; index += 1) {
+        if ((unsigned char)buffer[index] >= 0x80) return "URL contains raw non-ASCII bytes; percent-encode UTF-8";
         if ((unsigned char)buffer[index] != '%') continue;
         if (index + 2 >= length) return "URL contains an incomplete percent escape";
         unsigned char high = (unsigned char)buffer[index + 1];
