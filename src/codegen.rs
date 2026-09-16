@@ -13761,6 +13761,7 @@ fn emit_linux_gtk_application(
     if view_uses_text_input_validation(view) {
         out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
     }
+    out.push_str("static gchar *flux__ui_image_source_path(const char *source);\nstatic gchar *flux__ui_bounded_image_source_path(const char *source) { if (source == NULL) return flux__ui_image_source_path(source); size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\\0') source_length += 1; if (source_length > 65536) return g_strdup(\"\"); return flux__ui_image_source_path(source); }\n");
     out.push_str(
         "static gchar *flux__ui_image_source_path(const char *source) {\n    if (source == NULL) return g_strdup(\"\");\n    if (!g_str_has_prefix(source, \"asset://\")) return g_strdup(source);\n    const char *relative = source + 8;\n    if (*relative == '\\0' || *relative == '/' || strstr(relative, \"../\") != NULL || g_str_has_suffix(relative, \"/..\")) return g_strdup(\"\");\n    const char *override_root = getenv(\"FLUX_ASSET_ROOT\");\n    if (override_root != NULL && *override_root != '\\0') return g_build_filename(override_root, relative, NULL);\n    GError *error = NULL;\n    gchar *executable = g_file_read_link(\"/proc/self/exe\", &error);\n    if (executable == NULL) {\n        if (error != NULL) g_error_free(error);\n        return g_build_filename(\"assets\", relative, NULL);\n    }\n    gchar *directory = g_path_get_dirname(executable);\n    gchar *resolved = g_build_filename(directory, \"assets\", relative, NULL);\n    g_free(directory);\n    g_free(executable);\n    return resolved;\n}\n"
     );
@@ -15061,7 +15062,7 @@ fn emit_linux_gtk_application(
                     None => c_string(""),
                 };
                 out.push_str(&format!(
-                    "    gchar *flux__image_source_{} = flux__ui_image_source_path({source});\n    {variable} = gtk_picture_new_for_filename(flux__image_source_{});\n    g_free(flux__image_source_{});\n",
+                    "    gchar *flux__image_source_{} = flux__ui_bounded_image_source_path({source});\n    {variable} = gtk_picture_new_for_filename(flux__image_source_{});\n    g_free(flux__image_source_{});\n",
                     element.name, element.name, element.name
                 ));
                 if let Some(property) = view_property(element, "alt") {
@@ -18472,7 +18473,7 @@ fn emit_ui_refresh(
                 if let Some(property) = view_property(element, "source") {
                     let value = ui_expr_c(&property.value, view, signatures)?;
                     out.push_str(&format!(
-                        "    if ({widget} != NULL) {{ gchar *flux__image_source = flux__ui_image_source_path({value}); gtk_picture_set_filename(GTK_PICTURE({widget}), flux__image_source); g_free(flux__image_source); }}\n"
+                        "    if ({widget} != NULL) {{ gchar *flux__image_source = flux__ui_bounded_image_source_path({value}); gtk_picture_set_filename(GTK_PICTURE({widget}), flux__image_source); g_free(flux__image_source); }}\n"
                     ));
                 }
                 if let Some(property) = view_property(element, "alt") {

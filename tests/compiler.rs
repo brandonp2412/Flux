@@ -38377,6 +38377,9 @@ app Gallery
     check_source(source).expect("Image properties and state-derived source should typecheck");
     let generated = compile_to_c(source).expect("Image should lower to native GtkPicture");
     assert!(generated.contains("flux__ui_image_source_path"));
+    assert!(generated.contains("flux__ui_bounded_image_source_path"));
+    assert!(generated.contains("size_t source_length = 0; while (source_length <= 65536"));
+    assert!(generated.contains("if (source_length > 65536) return g_strdup(\"\");"));
     assert!(generated.contains("gtk_picture_new_for_filename"));
     assert!(generated.contains("gtk_picture_set_alternative_text"));
     assert!(generated.contains("const char *child_image_fit_value = flux__ui_state_imageFit"));

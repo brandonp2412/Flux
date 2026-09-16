@@ -1009,6 +1009,8 @@ Android is the first application-platform target. Android integration must feel 
 
 ## Linux
 
+  - [x] Linux image source lowering bounds every borrowed source to 65536 bytes before asset inspection or native path construction, matching the Windows backend’s bounded source contract.
+
 - [x] Native Linux window/render/input backend: the current GTK4 backend owns the real Linux application window, native flat-grid rendering, pointer/keyboard/text input, focus, and direct callback dispatch without a browser/widget-emulation runtime. A dedicated compiler regression now exercises window + Text + TextInput + Button lowering together and rejects Android/web runtime leakage.
   - [x] Bootstrap GTK4 backend opens a real native Linux window, lowers Flux flat grid/Text/Button to native controls, and dispatches native button clicks into Flux callbacks.
 - [x] Wayland-first support with appropriate fallback where practical.
