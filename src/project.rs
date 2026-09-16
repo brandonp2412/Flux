@@ -215,25 +215,7 @@ fn persist_typed_ir_manifest(
         // unchanged function without treating a changed sibling as a cache
         // miss; the current monolithic backend still consumes the source
         // analysis normally after validating this manifest.
-        let mut function_shape = String::new();
-        let _ = write!(
-            function_shape,
-            "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
-            function.name,
-            cfg.parameters().len(),
-            cfg.returns().len(),
-            cfg.nodes().len(),
-            cfg.edges().len(),
-            cfg.values().len(),
-            reachable_values,
-            definitions,
-            borrows,
-            moves,
-            calls,
-            returns,
-            drops,
-        );
-        let shape_hash = stable_bytes_hash(function_shape.as_bytes());
+        let shape_hash = normalized_cfg_shape_hash(&cfg);
         let _ = writeln!(
             manifest,
             "function\t{}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
@@ -274,6 +256,112 @@ fn persist_typed_ir_manifest(
             prune_typed_ir_cache(&directory, &path);
         }
     }
+}
+
+/// Hash the semantic portion of one normalized CFG for durable IR identity.
+///
+/// Counts alone are not an identity: changing a literal, callee, edge kind,
+/// or ownership provenance can leave every count unchanged.  The normalized
+/// graph already has stable IDs for those relationships, so include its
+/// semantic payload here.  Source spans are intentionally omitted; the
+/// project-level cache fingerprint is canonical-format based and formatting
+/// edits must not force a new IR artifact.
+fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
+    use std::fmt::Write as _;
+
+    let mut shape = String::new();
+    let _ = write!(shape, "function={:?}\n", cfg.function());
+    for parameter in cfg.parameters() {
+        let _ = writeln!(shape, "parameter\t{}\t{:?}", parameter.name, parameter.ty);
+    }
+    for return_type in cfg.returns() {
+        let _ = writeln!(shape, "return-type\t{:?}", return_type);
+    }
+    for edge in cfg.edges() {
+        let _ = writeln!(shape, "edge\t{}\t{}\t{:?}", edge.from.0, edge.to.0, edge.kind);
+    }
+    for value in cfg.values() {
+        let _ = writeln!(
+            shape,
+            "value\t{}\t{}\t{:?}\t{:?}\t{:?}\t{:?}",
+            value.id.0,
+            value.producer.0,
+            value.result_index,
+            value.ty,
+            value.kind,
+            value.constant,
+        );
+    }
+    for node in cfg.nodes() {
+        let _ = writeln!(shape, "node\t{}\t{:?}", node.id.0, node.kind);
+        for value_type in &node.value_types {
+            let _ = writeln!(shape, "node-value-type\t{}\t{:?}", node.id.0, value_type);
+        }
+        for value in &node.values {
+            let _ = writeln!(shape, "node-value\t{}\t{}", node.id.0, value.0);
+        }
+        for definition in &node.definitions {
+            let _ = writeln!(shape, "definition\t{}\t{}\t{:?}", node.id.0, definition.name, definition.ty);
+        }
+        for read in &node.ownership.reads {
+            let _ = writeln!(shape, "read\t{}\t{}", node.id.0, read);
+        }
+        for borrow in &node.ownership.borrows {
+            let _ = writeln!(
+                shape,
+                "borrow\t{}\t{}\t{:?}\t{:?}",
+                node.id.0,
+                borrow.source,
+                borrow.kind,
+                borrow.source_definitions,
+            );
+        }
+        for moved in &node.ownership.moves {
+            let _ = writeln!(
+                shape,
+                "move\t{}\t{}\t{}\t{:?}\t{:?}",
+                node.id.0,
+                moved.source,
+                moved.destination,
+                moved.projection,
+                moved.source_definitions,
+            );
+        }
+        for call in &node.ownership.calls {
+            let _ = writeln!(
+                shape,
+                "call\t{}\t{}\t{:?}\t{:?}\t{:?}\t{:?}",
+                node.id.0,
+                call.callee,
+                call.arguments,
+                call.argument_kinds,
+                call.argument_definitions,
+                call.borrowed_argument_definitions,
+            );
+        }
+        for returned in &node.ownership.returns {
+            let _ = writeln!(
+                shape,
+                "ownership-return\t{}\t{}\t{:?}\t{:?}\t{:?}",
+                node.id.0,
+                returned.value.0,
+                returned.kind,
+                returned.definitions,
+                returned.borrowed_definitions,
+            );
+        }
+        for dropped in &node.ownership.drops {
+            let _ = writeln!(
+                shape,
+                "drop\t{}\t{:?}\t{:?}\t{}",
+                node.id.0,
+                dropped.definition,
+                dropped.value,
+                dropped.name,
+            );
+        }
+    }
+    stable_bytes_hash(shape.as_bytes())
 }
 
 fn remove_cache_artifact_if_unchanged(path: &Path, inspected: &str) {
@@ -5462,6 +5550,11 @@ mod tests {
         assert!(ir_manifest.contains("\tnodes="));
         assert!(ir_manifest.contains("\tborrows="));
         assert!(ir_manifest.contains("\tdrops="));
+        let first_function_shape = ir_manifest
+            .lines()
+            .find(|line| line.starts_with("function\tmain\t"))
+            .expect("manifest should contain main function identity")
+            .to_string();
 
         fs::write(
             &entry,
@@ -5490,6 +5583,21 @@ mod tests {
             formatted_entries, 1,
             "formatting should not add a cache artifact"
         );
+        let formatted_ir = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should remain readable after formatting")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
+            .expect("formatted manifest should remain discoverable")
+            .path();
+        let formatted_manifest =
+            fs::read_to_string(formatted_ir).expect("formatted manifest should be readable");
+        assert_eq!(
+            formatted_manifest
+                .lines()
+                .find(|line| line.starts_with("function\tmain\t")),
+            Some(first_function_shape.as_str()),
+            "formatting-only edits should preserve normalized function identity"
+        );
 
         fs::write(
             &entry,
@@ -5503,6 +5611,24 @@ mod tests {
         assert_ne!(
             changed_c, first_c,
             "semantic edits must invalidate generated C"
+        );
+        let changed_function_shapes = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should remain readable after semantic edit")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
+            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+            .filter_map(|manifest| {
+                manifest
+                    .lines()
+                    .find(|line| line.starts_with("function\tmain\t"))
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            changed_function_shapes
+                .iter()
+                .any(|shape| shape != &first_function_shape),
+            "semantic edits with unchanged counts must change normalized function identity"
         );
 
         for value in 9..=16 {
