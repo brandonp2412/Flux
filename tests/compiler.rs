@@ -481,6 +481,48 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_borrows_retain_distinct_typed_value_identity() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    print(values.count + values.count)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("borrow value identity fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let borrows = graph
+        .ownership_events()
+        .filter_map(|(_, event)| match event {
+            ControlFlowOwnershipEvent::Borrow(borrow) => Some(borrow),
+            _ => None,
+        })
+        .filter(|borrow| borrow.source == "values")
+        .collect::<Vec<_>>();
+    assert_eq!(borrows.len(), 2);
+    let values = borrows
+        .iter()
+        .map(|borrow| {
+            let value_id = borrow
+                .value
+                .expect("normalized borrow should retain its typed value");
+            let value = graph
+                .value(value_id)
+                .expect("borrow value identity should resolve in the graph");
+            assert!(matches!(
+                value.kind,
+                ControlFlowValueKind::NameRead { ref name, .. } if name == "values"
+            ));
+            value_id
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
 fn ownership_ir_exposes_one_ordered_graph_event_stream() {
     let source = r#"
 fn main() -> i64 {
