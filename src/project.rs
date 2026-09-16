@@ -10,7 +10,7 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
-const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v3";
+const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -216,9 +216,16 @@ fn persist_typed_ir_manifest(
         // miss; the current monolithic backend still consumes the source
         // analysis normally after validating this manifest.
         let shape_hash = normalized_cfg_shape_hash(&cfg);
+        let module_name = analysis
+            .sources
+            .iter()
+            .find(|source| source.source_id == function.span.source_id)
+            .map(|source| source.module_name.as_str())
+            .unwrap_or("<unknown>");
         let function_manifest_line = format!(
-            "function\t{}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
+            "function\t{}\tmodule={}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
             function.name,
+            module_name,
             cfg.nodes().len(),
             cfg.edges().len(),
             cfg.values().len(),
@@ -232,7 +239,12 @@ fn persist_typed_ir_manifest(
         );
         manifest.push_str(&function_manifest_line);
         manifest.push('\n');
-        function_artifacts.push((function.name.clone(), shape_hash, function_manifest_line));
+        function_artifacts.push((
+            module_name.to_string(),
+            function.name.clone(),
+            shape_hash,
+            function_manifest_line,
+        ));
     }
     let checksum = stable_bytes_hash(manifest.as_bytes());
     let header = format!("{header_prefix}{checksum:016x}\n");
@@ -256,10 +268,11 @@ fn persist_typed_ir_manifest(
             let _ = fs::remove_file(&temporary);
         } else {
             prune_typed_ir_cache(&directory, &path);
-            for (function_name, shape_hash, function_manifest_line) in function_artifacts {
+            for (module_name, function_name, shape_hash, function_manifest_line) in function_artifacts {
                 persist_typed_ir_function_artifact(
                     &directory,
                     native_target,
+                    module_name,
                     function_name,
                     shape_hash,
                     &function_manifest_line,
@@ -271,14 +284,15 @@ fn persist_typed_ir_manifest(
 
 /// Publish a separately addressable typed-IR artifact for one function.
 ///
-/// The payload contains the target, function identity, shape hash, and the
-/// function's normalized summary. The function shape hash is the stable lookup
-/// key, so a changed sibling does not invalidate an unchanged function's
-/// durable artifact. Keeping the target in the payload prevents accidentally
-/// treating a shape hash from another backend as compatible.
+/// The payload contains the target, source module/function identity, shape
+/// hash, and normalized summary. The module plus shape form the stable lookup
+/// key, so same-shaped functions in different modules cannot alias while a
+/// changed sibling does not invalidate an unchanged function's artifact.
+/// Keeping the target in the payload prevents cross-backend reuse.
 fn persist_typed_ir_function_artifact(
     directory: &Path,
     native_target: codegen::NativeTarget,
+    module_name: String,
     function_name: String,
     shape_hash: u64,
     function_manifest_line: &str,
@@ -287,9 +301,10 @@ fn persist_typed_ir_function_artifact(
     use std::fmt::Write as _;
     let _ = write!(
         key,
-        "{}\n{}\n{}\n{shape_hash:016x}",
+        "{}\n{}\n{}\n{}\n{shape_hash:016x}",
         PROJECT_TYPED_IR_CACHE_VERSION,
         native_target_cache_tag(native_target),
+        module_name,
         function_name,
     );
     let artifact_id = stable_bytes_hash(key.as_bytes());
@@ -5647,9 +5662,9 @@ mod tests {
             .path();
         let ir_manifest =
             fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
-        assert!(ir_manifest.starts_with("flux-project-typed-ir-v3:"));
-        assert!(ir_manifest.contains("\nflux-project-typed-ir-v3\nlinux\nfunction\thelper\tshape="));
-        assert!(ir_manifest.contains("function\tmain\tshape="));
+        assert!(ir_manifest.starts_with("flux-project-typed-ir-v4:"));
+        assert!(ir_manifest.contains("\nflux-project-typed-ir-v4\nlinux\nfunction\thelper\tmodule="));
+        assert!(ir_manifest.contains("function\tmain\tmodule=") && ir_manifest.contains("\tshape="));
         assert!(ir_manifest.contains("\tnodes="));
         assert!(ir_manifest.contains("\tborrows="));
         assert!(ir_manifest.contains("\tdrops="));
@@ -5775,6 +5790,45 @@ mod tests {
             retained_ir <= 8,
             "typed IR cache should retain only the bounded recent manifest set"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_ir_function_artifacts_include_source_module_identity() {
+        let root = test_path("typed-ir-module-identity");
+        fs::create_dir_all(&root).expect("module identity fixture should be writable");
+        let cache_dir = root.join(".flux/ir-cache");
+        fs::create_dir_all(&cache_dir).expect("typed IR cache should be writable");
+        super::persist_typed_ir_function_artifact(
+            &cache_dir,
+            crate::codegen::NativeTarget::Linux,
+            "package.dep".to_string(),
+            "helper".to_string(),
+            0x1234,
+            "function\thelper\tmodule=package.dep\tshape=0000000000001234",
+        );
+        super::persist_typed_ir_function_artifact(
+            &cache_dir,
+            crate::codegen::NativeTarget::Linux,
+            "package.main".to_string(),
+            "helper".to_string(),
+            0x1234,
+            "function\thelper\tmodule=package.main\tshape=0000000000001234",
+        );
+        let manifests = fs::read_dir(&cache_dir)
+            .expect("typed IR cache should be readable")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
+            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+            .collect::<Vec<_>>();
+        let helper_manifests = manifests
+            .iter()
+            .filter(|manifest| manifest.lines().any(|line| line.starts_with("function\thelper\t")))
+            .collect::<Vec<_>>();
+        assert_eq!(helper_manifests.len(), 2, "each module's helper needs its own artifact");
+        assert_ne!(helper_manifests[0], helper_manifests[1]);
+        assert!(helper_manifests.iter().all(|manifest| manifest.contains("\tmodule=")));
 
         let _ = fs::remove_dir_all(root);
     }
