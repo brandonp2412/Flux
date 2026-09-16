@@ -24614,6 +24614,28 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_inside_anonymous_function_helpers() {
+    let source = r#"
+fn apply(callback: fn(i64) -> i64) -> i64 {
+    return callback(1)
+}
+
+fn main() -> i64 {
+    let callback: fn(i64) -> i64 = fn(value: i64) -> i64 { value + (2 + 3) }
+    return apply(callback)
+}
+"#;
+
+    check_source(source).expect("anonymous helper constant should typecheck");
+    let generated = compile_to_c(source).expect("anonymous helper constant should compile");
+    assert!(generated.contains("flux_add_i64(flux__local_value, INT64_C(5))"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_value, INT64_C(2))"),
+        "anonymous helper body should consume the normalized typed-IR constant"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_boolean_conditions() {
     let source = r#"
 fn main() -> i64 {

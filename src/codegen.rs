@@ -21186,11 +21186,49 @@ fn emit_anonymous_function(
     for param in params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
-    let body = emit_expr(body, &env, signatures)?;
-    if returns.is_empty() {
-        out.push_str(&format!("    {};\n", body.code));
+    // Anonymous helpers have no source-level Function declaration, but their
+    // bodies are still ordinary typed Flux expressions. Build the same
+    // normalized CFG used by named functions so backend constant/proof
+    // consumption does not silently fall back to the checked AST at this
+    // boundary.
+    let synthetic = Function {
+        public: false,
+        foreign_symbol: None,
+        unsafe_foreign: false,
+        pure: false,
+        asynchronous: false,
+        name: anonymous_function_c_name(expr.span),
+        name_span: expr.span,
+        keyword_span: expr.span,
+        params: params.clone(),
+        returns: returns.clone(),
+        return_span: body.span,
+        return_type_spans: Vec::new(),
+        body: vec![Stmt {
+            line: body.line,
+            span: body.span,
+            keyword_span: body.span,
+            kind: StmtKind::Return(vec![(*body.clone())]),
+        }],
+        expression_body: true,
+        line: expr.line,
+        span: expr.span,
+    };
+    let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
+    let constants = cfg_constant_values(&cfg);
+    let proofs = cfg_checked_i64_proofs(&cfg);
+    let body = if let Some(expected) = returns.first() {
+        emit_expr_for_expected_with_cfg_proofs(
+            body, expected, &env, signatures, &proofs, &constants,
+        )?
     } else {
-        out.push_str(&format!("    return {};\n", body.code));
+        let rewritten = substitute_nested_ir_constant_arguments(body, &constants);
+        emit_expr(&rewritten, &env, signatures)?.code
+    };
+    if returns.is_empty() {
+        out.push_str(&format!("    {};\n", body));
+    } else {
+        out.push_str(&format!("    return {};\n", body));
     }
     out.push_str("}\n");
     Ok(())
