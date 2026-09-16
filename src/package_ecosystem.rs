@@ -1960,9 +1960,7 @@ pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "registry package '{package}' versions.txt must be sorted and unique"
-                    ),
+                    format!("registry package '{package}' versions.txt must be sorted and unique"),
                 ));
             }
             versions.push(version.to_string());
@@ -1974,10 +1972,7 @@ pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
             ));
         }
 
-        let listed = versions
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
+        let listed = versions.iter().map(String::as_str).collect::<BTreeSet<_>>();
         for version in &versions {
             let path = directory.join(format!("{version}.toml"));
             if !path.is_file() {
@@ -1990,10 +1985,7 @@ pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
                 ));
             }
             let release = read_registry_release(&path)?;
-            if release.package != package
-                || release.version != *version
-                || release.owner != owner
-            {
+            if release.package != package || release.version != *version || release.owner != owner {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -2560,11 +2552,7 @@ mod tests {
         let error = validate_registry_index(&root).unwrap_err();
         assert!(error.to_string().contains("1.2.4.toml"));
 
-        fs::write(
-            root.join("demo/versions.txt"),
-            "1.2.3\n",
-        )
-        .unwrap();
+        fs::write(root.join("demo/versions.txt"), "1.2.3\n").unwrap();
         fs::write(
             root.join("demo/1.2.4.toml"),
             serialize_registry_release(&RegistryRelease {

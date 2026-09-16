@@ -5263,7 +5263,7 @@ fn reclassify_borrowed_collection_reborrows(
         let mut changed = false;
         for node in nodes.iter() {
             for (index, definition) in node.definitions.iter().enumerate() {
-            if !is_collection_owner(&signatures.canonical_type(&definition.ty)) {
+                if !is_collection_owner(&signatures.canonical_type(&definition.ty)) {
                     continue;
                 }
                 let id = ControlFlowDefinitionId::Node {
@@ -5786,9 +5786,7 @@ fn propagated_ir_constant(
                 (BinOp::And, _, Some(ConstantValue::Bool(false))) => {
                     Some(ConstantValue::Bool(false))
                 }
-                (BinOp::Or, _, Some(ConstantValue::Bool(true))) => {
-                    Some(ConstantValue::Bool(true))
-                }
+                (BinOp::Or, _, Some(ConstantValue::Bool(true))) => Some(ConstantValue::Bool(true)),
                 _ => typecheck::evaluate_constant_binary(
                     value.span,
                     *op,
