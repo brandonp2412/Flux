@@ -2348,10 +2348,10 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             };
             let property_name = property_line.text[..colon].trim();
             validate_identifier(property_name, property_line.number)?;
-            if element
-                .properties
-                .iter()
-                .any(|property| property.name == property_name)
+            let canonical_property_name = property_name_to_internal(property_name);
+            if element.properties.iter().any(|property| {
+                property_name_to_internal(&property.name) == canonical_property_name
+            })
             {
                 return Err(diag(
                     property_line.number,
@@ -2529,6 +2529,24 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
         line: header.number,
         span: definition_span,
     })
+}
+
+/// View properties are intentionally available in both the readable camelCase
+/// spelling used by Flux UI examples and the snake_case spelling accepted by
+/// the compiler's canonical names.  Treat those spellings as one source-level
+/// property while parsing so type checking and native lowering cannot disagree
+/// about which duplicate wins.
+fn property_name_to_internal(name: &str) -> String {
+    let mut internal = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_uppercase() {
+            internal.push('_');
+            internal.push(character.to_ascii_lowercase());
+        } else {
+            internal.push(character);
+        }
+    }
+    internal
 }
 
 fn parse_grid_tracks(input: &str, line: usize) -> Result<Vec<GridTrack>, Diagnostic> {

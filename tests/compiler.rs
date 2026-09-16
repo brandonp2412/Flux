@@ -45425,6 +45425,27 @@ fn main() -> i64 { 0 }
 }
 
 #[test]
+fn rejects_view_properties_that_only_differ_by_canonical_spelling() {
+    let source = r##"
+view App {
+    grid columns: 1fr
+    grid rows: 1fr
+    Text title at 1,1
+        text: "Flux"
+        textColor: "#ffffff"
+        text_color: "#000000"
+}
+
+fn main() -> i64 { 0 }
+"##;
+    let diagnostics = check_source_all(source)
+        .expect_err("camelCase and snake_case aliases must not define two properties");
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("duplicate view property 'text_color'")));
+}
+
+#[test]
 fn rejects_invalid_or_cyclic_parameterized_view_composition() {
     let invalid = r#"
 view Greeting(name: str, enabled: bool = true) {
