@@ -16120,6 +16120,19 @@ fn main() -> i64 {
     check_source(source)
         .expect("explicit borrows should support all current non-copy collection descriptors");
     compile_to_c(source).expect("set and map borrows should lower as descriptor identity");
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1214))
+        .expect("collection borrow lifetimes should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("collection borrow fixture should expose a CFG");
+    assert!(graph
+        .borrow_lifetimes()
+        .iter()
+        .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "values"));
+    assert!(graph
+        .borrow_lifetimes()
+        .iter()
+        .any(|lifetime| lifetime.borrower == "entriesView" && lifetime.source == "entries"));
 
     let live = r#"
 fn main() -> i64 {
