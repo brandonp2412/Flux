@@ -52692,6 +52692,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
+    assert!(generated.contains("while (cursor + 1 < limit && !(cursor[0] == '\\r' && cursor[1] == '\\n')) cursor += 1"));
+    assert!(!generated.contains("const char *line_end = strstr(cursor, \"\\r\\n\")"));
     assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_write_control"));
