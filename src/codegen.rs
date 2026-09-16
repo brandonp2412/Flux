@@ -9300,6 +9300,13 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     *out = out
         .replace(legacy_request_length, hardened_request_length)
         .replace(legacy_response_length, hardened_response_length);
+    let receive_text_prefix = "flux__net_receive_text(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { if (socket_handle < 0";
+    let guarded_receive_text_prefix = "flux__net_receive_text(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { if (callback == NULL) return flux__net_result(-1, \"receiveText requires a callback\"); if (socket_handle < 0";
+    let receive_text_from_prefix = "flux__net_receive_text_from(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *, const char *, int64_t)) { if (socket_handle < 0";
+    let guarded_receive_text_from_prefix = "flux__net_receive_text_from(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *, const char *, int64_t)) { if (callback == NULL) return flux__net_result(-1, \"receiveTextFrom requires a callback\"); if (socket_handle < 0";
+    *out = out
+        .replace(receive_text_prefix, guarded_receive_text_prefix)
+        .replace(receive_text_from_prefix, guarded_receive_text_from_prefix);
     out.push('\n');
 }
 

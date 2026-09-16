@@ -7141,6 +7141,7 @@ fn main() -> i64 {{
     let generated = compile_to_c(&source).expect("socket text I/O should lower on Linux");
     assert!(generated.contains("flux__net_send_text("));
     assert!(generated.contains("flux__net_receive_text("));
+    assert!(generated.contains("receiveText requires a callback"));
     assert!(generated.contains("flux__net_set_nonblocking("));
     assert!(generated.contains("flux__net_wait_readable("));
     assert!(generated.contains("flux__net_wait_writable("));
@@ -8568,6 +8569,7 @@ fn main() -> i64 {{
     assert!(generated.contains("UDP peer host exceeds 65536 bytes"));
     assert!(generated.contains("text exceeds 65536 bytes"));
     assert!(generated.contains("flux__net_receive_text_from("));
+    assert!(generated.contains("receiveTextFrom requires a callback"));
     assert!(generated.contains("sendto("));
     assert!(generated.contains("recvfrom("));
     assert!(generated.contains("inet_ntop("));
