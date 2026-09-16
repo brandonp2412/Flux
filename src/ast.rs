@@ -506,6 +506,9 @@ pub struct Function {
     pub public: bool,
     pub foreign_symbol: Option<String>,
     pub unsafe_foreign: bool,
+    /// An explicitly pure function must not reach an effectful operation.
+    /// Ordinary functions remain effectful by default.
+    pub pure: bool,
     pub asynchronous: bool,
     pub name: String,
     pub name_span: SourceSpan,

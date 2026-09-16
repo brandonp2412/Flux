@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fluxc::ast::Type;
+use fluxc::formatter::format_source;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
     ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
@@ -277,6 +278,38 @@ fn main() -> i64 {
     assert_eq!(
         effects.get("recursive"),
         Some(&ControlFlowValueEffect::Pure)
+    );
+}
+
+#[test]
+fn pure_function_annotations_are_checked_against_whole_program_effects() {
+    let pure = r#"
+pure fn double(value: i64) -> i64 { value * 2 }
+fn main() -> i64 {
+    return double(3)
+}
+"#;
+    check_source(pure).expect("pure function with only pure operations should typecheck");
+    let formatted = format_source(pure).expect("pure fixture should format");
+    assert!(formatted.contains("pure fn double"));
+
+    let impure = r#"
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+pure fn wrapper(value: i64) -> i64 {
+    return observe(value)
+}
+fn main() -> i64 {
+    return wrapper(3)
+}
+"#;
+    let diagnostics = check_source_all(impure).expect_err("pure effect contract must reject calls");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("pure function 'wrapper'"))
     );
 }
 

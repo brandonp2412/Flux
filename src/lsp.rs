@@ -5739,7 +5739,12 @@ fn format_ast_function_signature(function: &crate::ast::Function) -> String {
                 .join(", ")
         ),
     };
-    format!("fn {}({}) -> {returns}", function.name, params.join(", "))
+    let prefix = if function.pure { "pure " } else { "" };
+    format!(
+        "{prefix}fn {}({}) -> {returns}",
+        function.name,
+        params.join(", ")
+    )
 }
 
 const SEMANTIC_TOKEN_TYPES: &[&str] = &[

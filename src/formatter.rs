@@ -409,6 +409,7 @@ fn format_grid_tracks(tracks: &[GridTrack]) -> String {
 
 fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     let visibility = if function.public { "pub " } else { "" };
+    let pure_prefix = if function.pure { "pure " } else { "" };
     let async_prefix = if function.asynchronous { "async " } else { "" };
     let mut param_parts = Vec::new();
     let mut emitted_named_marker = false;
@@ -455,7 +456,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
         lines.insert(
             function.line,
             format!(
-                "{visibility}{async_prefix}fn {}({params}) -> {} {{ {} }}",
+                "{visibility}{pure_prefix}{async_prefix}fn {}({params}) -> {} {{ {} }}",
                 function.name,
                 format_return_types(&function.returns),
                 format_expr(expression, 0)
@@ -466,7 +467,7 @@ fn format_function(function: &Function, lines: &mut HashMap<usize, String>) {
     lines.insert(
         function.line,
         format_function_header(
-            &format!("{visibility}{async_prefix}fn "),
+            &format!("{visibility}{pure_prefix}{async_prefix}fn "),
             &function.name,
             &param_parts,
             &format_return_types(&function.returns),

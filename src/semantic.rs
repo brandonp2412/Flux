@@ -55,7 +55,46 @@ impl SemanticDatabase {
     pub fn analyze(source: &str, source_id: SourceId) -> Result<Self, Vec<Diagnostic>> {
         let program = parser::parse_all_with_source(source, source_id)?;
         let signatures = typecheck::check_all(&program)?;
-        Ok(Self::from_analyzed(program, signatures))
+        let database = Self::from_analyzed(program, signatures);
+        let diagnostics = if database
+            .program
+            .functions
+            .iter()
+            .any(|function| function.pure)
+        {
+            let effects = database.effect_results();
+            database
+                .program
+                .functions
+                .iter()
+                .filter(|function| function.pure)
+                .filter(|function| {
+                    effects
+                        .get(&function.name)
+                        .is_some_and(|effect| *effect == ControlFlowValueEffect::MayEffect)
+                })
+                .map(|function| {
+                    Diagnostic::new(
+                        crate::diagnostic::DiagnosticStage::Type,
+                        function.name_span,
+                        format!(
+                            "pure function '{}' reaches an effectful operation",
+                            function.name
+                        ),
+                    )
+                    .with_note(
+                        "remove 'pure' or move the effectful call behind an ordinary effectful function",
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if diagnostics.is_empty() {
+            Ok(database)
+        } else {
+            Err(diagnostics)
+        }
     }
 
     pub fn from_analyzed(program: Program, signatures: Signatures) -> Self {

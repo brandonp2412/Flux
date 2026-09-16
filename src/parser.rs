@@ -301,6 +301,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             }
         };
         let FunctionHeader {
+            pure,
             asynchronous,
             name,
             name_span,
@@ -341,6 +342,7 @@ pub fn parse_all(source: &str) -> Result<Program, Vec<Diagnostic>> {
             public,
             foreign_symbol: None,
             unsafe_foreign: false,
+            pure,
             asynchronous,
             name,
             name_span,
@@ -2807,7 +2809,13 @@ fn comment_marker(input: &str) -> Option<usize> {
 
 fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Diagnostic> {
     let (text, public, visibility_offset) = split_visibility(&line.text);
-    if !(text.starts_with("fn ") || text.starts_with("async fn ")) || !text.ends_with('}') {
+    if !(text.starts_with("fn ")
+        || text.starts_with("pure fn ")
+        || text.starts_with("async fn ")
+        || text.starts_with("pure async fn ")
+        || text.starts_with("async pure fn "))
+        || !text.ends_with('}')
+    {
         return Ok(None);
     }
     let Some(open_offset) = text.find('{') else {
@@ -2842,6 +2850,7 @@ fn parse_single_expression_function(line: &Line) -> Result<Option<Function>, Dia
         public,
         foreign_symbol: None,
         unsafe_foreign: false,
+        pure: header.pure,
         asynchronous: header.asynchronous,
         name: header.name,
         name_span: header.name_span,
@@ -2917,6 +2926,7 @@ fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> 
         public,
         foreign_symbol: Some(symbol.to_string()),
         unsafe_foreign,
+        pure: false,
         asynchronous: false,
         name: header.name,
         name_span: header.name_span,
@@ -2933,6 +2943,7 @@ fn parse_extern_c_function(line: &Line) -> Result<Option<Function>, Diagnostic> 
 }
 
 struct FunctionHeader {
+    pure: bool,
     asynchronous: bool,
     name: String,
     name_span: SourceSpan,
@@ -2943,16 +2954,23 @@ struct FunctionHeader {
 }
 
 fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Diagnostic> {
-    let (rest, asynchronous, prefix_len) = if let Some(rest) = input.strip_prefix("async fn ") {
-        (rest, true, 9usize)
-    } else if let Some(rest) = input.strip_prefix("fn ") {
-        (rest, false, 3usize)
-    } else {
-        return Err(diag(
-            line,
-            "expected function declaration starting with 'fn' or 'async fn'",
-        ));
-    };
+    let (rest, pure, asynchronous, prefix_len) =
+        if let Some(rest) = input.strip_prefix("pure async fn ") {
+            (rest, true, true, 14usize)
+        } else if let Some(rest) = input.strip_prefix("async pure fn ") {
+            (rest, true, true, 14usize)
+        } else if let Some(rest) = input.strip_prefix("pure fn ") {
+            (rest, true, false, 8usize)
+        } else if let Some(rest) = input.strip_prefix("async fn ") {
+            (rest, false, true, 9usize)
+        } else if let Some(rest) = input.strip_prefix("fn ") {
+            (rest, false, false, 3usize)
+        } else {
+            return Err(diag(
+                line,
+                "expected function declaration starting with 'fn' or 'async fn'",
+            ));
+        };
     let Some(open) = rest.find('(') else {
         return Err(diag(line, "expected '(' after function name"));
     };
@@ -3074,6 +3092,7 @@ fn parse_function_header(input: &str, line: usize) -> Result<FunctionHeader, Dia
     }
 
     Ok(FunctionHeader {
+        pure,
         asynchronous,
         name: name.to_string(),
         name_span,
