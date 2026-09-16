@@ -14,6 +14,10 @@ The stable rules for the current language are:
   containing borrowed string storage are not `Send` across detached tasks.
 - A direct transfer of a non-`Copy` local moves it. Reads after the move are
   rejected using normalized CFG reaching-definition facts.
+- Normalized typed call boundaries retain each argument's value identity,
+  reaching definitions, and named aggregate field path. This is provenance
+  for future consuming-call/partial-move checking; ordinary calls do not
+  consume values in the bootstrap model.
 - Bootstrap list/view values are immutable borrowed descriptors. They cannot
   escape through returns or aggregate storage, and an owner cannot move while
   a derived view is live. `borrow` makes this reborrow explicit.
