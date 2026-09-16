@@ -176,20 +176,30 @@ fn main() -> i64 {
         .iter()
         .filter(|value| matches!(value.ty, Type::List(_)))
         .collect::<Vec<_>>();
-    assert!(!list_values.is_empty(), "the list producer should be in typed IR");
-    assert!(list_values
-        .iter()
-        .all(|value| value.ownership == ControlFlowValueOwnership::ImmutableBorrow));
+    assert!(
+        !list_values.is_empty(),
+        "the list producer should be in typed IR"
+    );
+    assert!(
+        list_values
+            .iter()
+            .all(|value| value.ownership == ControlFlowValueOwnership::ImmutableBorrow)
+    );
 
     let scalar_values = graph
         .values()
         .iter()
         .filter(|value| value.ty == Type::I64)
         .collect::<Vec<_>>();
-    assert!(!scalar_values.is_empty(), "scalar values should be in typed IR");
-    assert!(scalar_values
-        .iter()
-        .all(|value| value.ownership == ControlFlowValueOwnership::Copy));
+    assert!(
+        !scalar_values.is_empty(),
+        "scalar values should be in typed IR"
+    );
+    assert!(
+        scalar_values
+            .iter()
+            .all(|value| value.ownership == ControlFlowValueOwnership::Copy)
+    );
     assert!(scalar_values.iter().all(|value| value.ownership.is_copy()));
     assert!(list_values.iter().all(|value| value.ownership.is_borrow()));
 }
@@ -561,6 +571,35 @@ fn main() -> i64 {
         })
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn ownership_ir_call_arguments_retain_named_field_projections() {
+    let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+fn consume(value: i64) -> i64 {
+    return value
+}
+fn main() -> i64 {
+    let pair: Pair = Pair { left: 7, right: 9 }
+    print(consume(pair.left))
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("field-projection call fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let call = graph
+        .ownership_calls()
+        .find_map(|(_, call)| (call.callee == "consume").then_some(call))
+        .expect("normalized call should be present");
+    assert_eq!(call.arguments.len(), 1);
+    assert_eq!(call.argument_projection_at(0), ["left"]);
 }
 
 #[test]

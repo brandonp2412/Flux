@@ -413,6 +413,11 @@ pub struct OwnershipBorrow {
 pub struct OwnershipCall {
     pub callee: String,
     pub arguments: Vec<ControlFlowValueId>,
+    /// Named aggregate projection for each argument, when the argument is a
+    /// field chain rooted in a value. Keeping this parallel to `arguments`
+    /// lets future consuming-call analysis distinguish `consume(value)` from
+    /// `consume(value.field)` without rebuilding the expression tree.
+    pub argument_projections: Vec<Vec<String>>,
     /// Ownership mode for each argument at this call boundary. `Consuming`
     /// is reserved for a future owned-value ABI; bootstrap calls are either
     /// ordinary `Copy` values or immutable collection/view borrows.
@@ -442,6 +447,14 @@ impl OwnershipCall {
     /// Returns the exact reaching definitions for one argument.
     pub fn argument_definitions_at(&self, index: usize) -> &[ControlFlowDefinitionId] {
         self.argument_definitions
+            .get(index)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Returns the named aggregate projection for one argument, if present.
+    pub fn argument_projection_at(&self, index: usize) -> &[String] {
+        self.argument_projections
             .get(index)
             .map(Vec::as_slice)
             .unwrap_or_default()
@@ -3619,9 +3632,14 @@ impl<'a> ControlFlowBuilder<'a> {
                     } => (format!("{interface}.{capability}"), arguments.clone()),
                     _ => return None,
                 };
+                let argument_projections = arguments
+                    .iter()
+                    .map(|argument| self.value_projection(*argument))
+                    .collect();
                 Some(OwnershipCall {
                     callee,
                     arguments,
+                    argument_projections,
                     argument_kinds: Vec::new(),
                     argument_definitions: Vec::new(),
                     borrowed_argument_definitions: Vec::new(),
@@ -3661,6 +3679,7 @@ impl<'a> ControlFlowBuilder<'a> {
             calls.push(OwnershipCall {
                 callee: "drop".to_string(),
                 arguments: vec![argument.id],
+                argument_projections: vec![Vec::new()],
                 argument_kinds: Vec::new(),
                 argument_definitions: Vec::new(),
                 borrowed_argument_definitions: Vec::new(),
@@ -3704,6 +3723,22 @@ impl<'a> ControlFlowBuilder<'a> {
             returns: Vec::new(),
             drops: Vec::new(),
         }
+    }
+
+    fn value_projection(&self, value: ControlFlowValueId) -> Vec<String> {
+        let mut projection = Vec::new();
+        let mut current = value;
+        while let Some(value) = self.values.iter().find(|value| value.id == current) {
+            match &value.kind {
+                ControlFlowValueKind::Field { base, name } => {
+                    projection.push(name.clone());
+                    current = *base;
+                }
+                _ => break,
+            }
+        }
+        projection.reverse();
+        projection
     }
 
     fn binding_move_ownership(&self, name: &str, ty: &Type, expr: &Expr) -> ControlFlowOwnership {
@@ -5491,10 +5526,7 @@ fn value_use_is_reachable(
     }
 }
 
-fn value_ownership(
-    signatures: &Signatures,
-    ty: &Type,
-) -> ControlFlowValueOwnership {
+fn value_ownership(signatures: &Signatures, ty: &Type) -> ControlFlowValueOwnership {
     if signatures.is_copy_type(ty) {
         ControlFlowValueOwnership::Copy
     } else {
@@ -6555,6 +6587,7 @@ mod tests {
                     calls: vec![OwnershipCall {
                         callee: "consume".to_string(),
                         arguments: vec![],
+                        argument_projections: vec![],
                         argument_kinds: vec![OwnershipCallArgumentKind::Consuming],
                         argument_definitions: vec![vec![definition]],
                         borrowed_argument_definitions: vec![Vec::new()],
@@ -6605,6 +6638,7 @@ mod tests {
             calls: vec![OwnershipCall {
                 callee: "consume".to_string(),
                 arguments: vec![],
+                argument_projections: vec![],
                 argument_kinds: vec![OwnershipCallArgumentKind::Consuming],
                 argument_definitions: vec![vec![definition]],
                 borrowed_argument_definitions: vec![Vec::new()],
