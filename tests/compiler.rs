@@ -11935,6 +11935,8 @@ fn main() -> i64 {{
     assert!(generated.contains("#include <sys/stat.h>"));
     assert!(generated.contains("#include <dirent.h>"));
     assert!(generated.contains("static inline bool flux__fs_exists(const char *path)"));
+    assert!(generated.contains("static inline bool flux__fs_bounded_length(const char *value, size_t *length)"));
+    assert!(generated.contains("flux__fs_bounded_length(path, &length)"));
     assert!(generated.contains("static inline bool flux__fs_is_file(const char *path)"));
     assert!(generated.contains("static inline bool flux__fs_is_directory(const char *path)"));
     assert!(
@@ -11950,6 +11952,7 @@ fn main() -> i64 {{
     );
     assert!(generated.contains("static const char *flux__fs_remove_directories(const char *path)"));
     assert!(generated.contains("static inline const char *flux__fs_write_text_mode"));
+    assert!(generated.contains("fwrite(text, 1, text_length, file)"));
     assert!(generated.contains(
         "static inline const char *flux__fs_rename(const char *source, const char *destination)"
     ));
@@ -12503,6 +12506,38 @@ fn main() -> i64 {{
         String::from_utf8_lossy(&run.stdout),
         "directory entry name is not valid UTF-8\n"
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn filesystem_path_inputs_are_bounded_before_native_calls() {
+    let root = std::env::temp_dir().join(format!("flux-fs-bounds-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("filesystem bounds fixture should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("bounds");
+    let overlong = "a".repeat(65_537);
+    let source = format!(
+        "fn main() -> i64 {{\n    print(fs.exists(\"{overlong}\"))\n    return 0\n}}\n"
+    );
+    fs::write(&source_path, source).expect("filesystem bounds source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("filesystem bounds binary should build");
+    assert!(
+        built.status.success(),
+        "filesystem bounds build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("filesystem bounds binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "false");
     let _ = fs::remove_dir_all(&root);
 }
 
