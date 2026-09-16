@@ -39326,6 +39326,15 @@ fn substitute_nested_ir_constant_arguments(
     expr: &Expr,
     constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Expr {
+    // Expression statements have no expected result type, but their root can
+    // still be a pure value already proven by normalized typed IR.  Consume
+    // that fact before walking children so discarded expressions use the same
+    // backend boundary as bindings, assignments, and returns.  The direct
+    // helper preserves the original span while replacing only compiler-known
+    // scalar constants; effectful and ownership-sensitive roots are unchanged.
+    if constant_values.contains_key(&source_span_key(expr.span)) {
+        return substitute_direct_ir_constant_arguments(expr, constant_values);
+    }
     let mut rewritten = expr.clone();
     let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, constant_values);
     match &mut rewritten.kind {

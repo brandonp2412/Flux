@@ -25682,6 +25682,28 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_pure_expression_statement_roots() {
+    let source = r#"
+fn main() -> i64 {
+    let input: i64 = 5
+    input + 2
+    return 0
+}
+"#;
+
+    check_source(source).expect("discarded pure expression should typecheck");
+    let generated = compile_to_c(source).expect("discarded pure expression should compile");
+    assert!(
+        generated.contains("    INT64_C(7);"),
+        "expression statements should consume their typed-IR root constant"
+    );
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"),
+        "expression statements should not rebuild proven constants from the AST"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_constants_inside_compound_call_arguments() {
     let source = r#"
 fn first(values: i64[]) -> i64 {
