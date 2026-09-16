@@ -7541,6 +7541,7 @@ fn main() -> i64 {{
     assert!(generated.contains("readBytesFromMany requires a callback"));
     assert!(generated.contains("readBytesFromMany cancelled by worker scope"));
     assert!(generated.contains("MSG_TRUNC | MSG_DONTWAIT"));
+    assert!(generated.contains("UDP peer address is truncated"));
     let timed = "fn consume(_socket: i64, _bytes: i64[], _host: str, _port: i64) -> void {\n}\nfn main() -> i64 {\n    let (_received, _ready, _failure) = net.readBytesFromManyTimeout(1, 64, 8, 1000, consume)\n    return 0\n}\n";
     check_source(timed).expect("timed UDP binary batch receive should typecheck");
     let timed_generated = compile_to_c(timed).expect("timed UDP binary batch receive should lower");

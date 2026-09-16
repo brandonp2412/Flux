@@ -6780,8 +6780,8 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         if (received > max_bytes) return flux__net_result(total, "received UDP bytes exceed maxBytes");
         for (ssize_t index = 0; index < received; ++index) buffer[index] = (int64_t)raw[index];
         char host[INET6_ADDRSTRLEN]; const void *address = NULL; int64_t port = -1;
-        if (peer.ss_family == AF_INET) { struct sockaddr_in *ipv4 = (struct sockaddr_in *)&peer; address = &ipv4->sin_addr; port = (int64_t)ntohs(ipv4->sin_port); }
-        else if (peer.ss_family == AF_INET6) { struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)&peer; address = &ipv6->sin6_addr; port = (int64_t)ntohs(ipv6->sin6_port); }
+        if (peer.ss_family == AF_INET) { if (peer_length < sizeof(struct sockaddr_in)) return flux__net_result(total, "UDP peer address is truncated"); struct sockaddr_in *ipv4 = (struct sockaddr_in *)&peer; address = &ipv4->sin_addr; port = (int64_t)ntohs(ipv4->sin_port); }
+        else if (peer.ss_family == AF_INET6) { if (peer_length < sizeof(struct sockaddr_in6)) return flux__net_result(total, "UDP peer address is truncated"); struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)&peer; address = &ipv6->sin6_addr; port = (int64_t)ntohs(ipv6->sin6_port); }
         else return flux__net_result(total, "UDP peer address has unsupported family");
         if (inet_ntop(peer.ss_family, address, host, sizeof(host)) == NULL) return flux__net_result(total, "failed to format UDP peer address");
         callback(socket_handle, (struct flux__list){ .data = buffer, .len = (size_t)received, .stride = sizeof(int64_t) }, host, port);
