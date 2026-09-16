@@ -31002,10 +31002,19 @@ fn emit_block(
                 }
             }
             StmtKind::Expr(expr) => {
-                let rewritten =
-                    substitute_nested_ir_constant_arguments(expr, context.cfg_constant_values);
-                let value = emit_expr(&rewritten, env, signatures)?;
-                out.push_str(&format!("{pad}{};\n", value.code));
+                // Discarding an expression's result does not erase its
+                // statically known shape. Keep this boundary on the same
+                // typed-IR proof path as bindings, assignments, and returns.
+                let expr_type = type_of_expr(expr, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    expr,
+                    &expr_type,
+                    env,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}{};\n", value));
             }
             StmtKind::Shell {
                 expr,

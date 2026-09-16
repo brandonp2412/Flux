@@ -24614,6 +24614,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_proofs_at_expression_statement_roots() {
+    let source = r#"
+pub fn exercise(value: i64) -> void {
+    value + 1 - 1
+    value + 1
+    return
+}
+
+fn main() -> i64 {
+    exercise(9)
+    return 0
+}
+"#;
+
+    check_source(source).expect("expression-statement proof fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("expression-statement proof fixture should compile");
+    assert!(
+        generated.contains("((flux_add_i64(flux__local_value, INT64_C(1))) - (INT64_C(1)));"),
+        "a proven-safe discarded subtraction should use typed-IR proof lowering"
+    );
+    assert!(
+        generated.contains("flux_add_i64(flux__local_value, INT64_C(1));"),
+        "an unchecked discarded addition must retain its runtime overflow guard"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_constants_inside_anonymous_function_helpers() {
     let source = r#"
 fn apply(callback: fn(i64) -> i64) -> i64 {
