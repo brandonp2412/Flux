@@ -61,6 +61,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
     assert!(generated.contains("flux__path_normalize(\"/tmp/flux/../cache//./item\", flux__fn_show)"));
     assert!(generated.contains("strnlen(base, 65537)"));
+    assert!(generated.contains("return length >= 3 && ((path[0] >= 'A'"));
 
     let root = std::env::temp_dir().join(format!("flux-path-normalize-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
