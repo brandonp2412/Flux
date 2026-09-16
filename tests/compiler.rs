@@ -20551,6 +20551,7 @@ fn main() -> i64 {
     assert!(generated.contains("JSON array has invalid element stride"));
     assert!(generated.contains("JSON nested array has invalid element stride"));
     assert!(generated.contains("JSON object has invalid element stride"));
+    assert!(!generated.contains("size_t length = strlen(literal)"));
 }
 
 #[test]
