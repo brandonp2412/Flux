@@ -11235,7 +11235,7 @@ fn check_qualified_call(
             ));
         }
         match name.as_str() {
-            "parseHttp" => {
+            "parse" | "parseHttp" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -11252,7 +11252,7 @@ fn check_qualified_call(
                 require_type(args[1].span, &expected, &callback, "url.parseHttp callback")?;
                 return Ok(vec![Type::Error]);
             }
-            "parseFormQuery" => {
+            "query" | "parseFormQuery" => {
                 if args.len() != 2 {
                     return Err(diag(
                         span,
@@ -11274,9 +11274,13 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::Error]);
             }
-            "decodeComponent"
+            "decode"
+            | "decodeComponent"
+            | "encode"
             | "encodeComponent"
+            | "decodeForm"
             | "decodeFormComponent"
+            | "encodeForm"
             | "encodeFormComponent" => {
                 if args.len() != 2 {
                     return Err(diag(

@@ -36663,12 +36663,12 @@ fn emit_qualified_call(
         let value = emit_expr(&args[0], env, signatures)?;
         let callback = emit_expr(&args[1], env, signatures)?;
         let helper = match name {
-            "parseHttp" => "flux__url_parse_http",
-            "decodeComponent" => "flux__url_decode_component",
-            "encodeComponent" => "flux__url_encode_component",
-            "decodeFormComponent" => "flux__url_decode_form_component",
-            "encodeFormComponent" => "flux__url_encode_form_component",
-            "parseFormQuery" => "flux__url_parse_form_query",
+            "parse" | "parseHttp" => "flux__url_parse_http",
+            "decode" | "decodeComponent" => "flux__url_decode_component",
+            "encode" | "encodeComponent" => "flux__url_encode_component",
+            "decodeForm" | "decodeFormComponent" => "flux__url_decode_form_component",
+            "encodeForm" | "encodeFormComponent" => "flux__url_encode_form_component",
+            "query" | "parseFormQuery" => "flux__url_parse_form_query",
             _ => return Err(diag(span, "unknown URL call reached code generation")),
         };
         return Ok((

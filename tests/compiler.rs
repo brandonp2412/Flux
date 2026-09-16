@@ -5897,6 +5897,35 @@ fn main() -> i64 {
 }
 
 #[test]
+fn canonical_url_names_advertised_by_lsp_are_typed_and_lower_natively() {
+    let source = r#"
+fn parsed(_scheme: str, _host: str, _port: i64, _target: str) -> void {
+}
+fn converted(_value: str) -> void {
+}
+fn field(_name: str, _value: str) -> void {
+}
+fn main() -> i64 {
+    print(url.parse("https://example.test/", parsed))
+    print(url.decode("a%20b", converted))
+    print(url.encode("a b", converted))
+    print(url.decodeForm("a+b", converted))
+    print(url.encodeForm("a b", converted))
+    print(url.query("a=1", field))
+    return 0
+}
+"#;
+    check_source(source).expect("canonical URL names should typecheck");
+    let generated = compile_to_c(source).expect("canonical URL names should lower");
+    assert!(generated.contains("flux__url_parse_http("));
+    assert!(generated.contains("flux__url_decode_component("));
+    assert!(generated.contains("flux__url_encode_component("));
+    assert!(generated.contains("flux__url_decode_form_component("));
+    assert!(generated.contains("flux__url_encode_form_component("));
+    assert!(generated.contains("flux__url_parse_form_query("));
+}
+
+#[test]
 fn general_uri_parsing_is_typed_borrowed_tree_shaken_and_runnable() {
     let source = r#"
 fn parsed(scheme: str, authority: str, path: str, query: str, fragment: str) -> void {
