@@ -52602,6 +52602,8 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_write_control"));
+    assert!(generated.contains("WebSocket control frame must be final and at most 125 bytes"));
+    assert!(generated.contains("WebSocket opcode is reserved or unsupported"));
     assert!(generated.contains("flux__websocket_write_ping("));
     assert!(generated.contains("flux__websocket_write_pong("));
     assert!(generated.contains("flux__websocket_bounded_length(value, 125"));
@@ -52610,6 +52612,8 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_bounded_length(value, 65535"));
     assert!(generated.contains("WebSocket close reason contains invalid UTF-8"));
     assert!(generated.contains("failed to create WebSocket control mask"));
+    assert!(generated.contains("fread(mask, 1, sizeof(mask), random_source) != sizeof(mask)"));
+    assert!(generated.contains("WebSocket text frame contains invalid UTF-8"));
 }
 
 #[test]
