@@ -57,6 +57,7 @@ fn main() -> i64 {
     print(path.stem("/tmp/.env", show))
     print(path.stem("/tmp/flux.txt", show))
     print(path.normalize("/tmp/flux/../cache//./item", show))
+    print(path.normalize("../a/../../b", show))
     return 0
 }
 "#;
@@ -101,7 +102,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
+        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n../../b\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
