@@ -1383,24 +1383,13 @@ fn web_source_stamp(target: &Path) -> Result<u64, CliError> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for path in files {
         path.hash(&mut hasher);
-        let metadata = fs::metadata(&path).map_err(|error| {
+        let bytes = fs::read(&path).map_err(|error| {
             CliError::Message(format!(
-                "failed to inspect web source '{}': {error}",
+                "failed to read web source '{}': {error}",
                 path.display()
             ))
         })?;
-        metadata.len().hash(&mut hasher);
-        let modified = metadata.modified().map_err(|error| {
-            CliError::Message(format!(
-                "failed to inspect web source timestamp '{}': {error}",
-                path.display()
-            ))
-        })?;
-        modified
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .hash(&mut hasher);
+        bytes.hash(&mut hasher);
     }
     Ok(hasher.finish())
 }
@@ -11169,6 +11158,12 @@ exit 2
             "view Demo {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"After source save\"\n}\n\napp Demo(title: \"Dev\")\n",
         )
         .expect("updated web dev source should be writable");
+        let changed_stamp =
+            web_source_stamp(&source).expect("updated web source stamp should be readable");
+        assert_ne!(
+            changed_stamp, stamp,
+            "source-content edits must invalidate the web dev build"
+        );
         let (_, _, version) = web_dev_response(&source, &mut state, "/__flux_version")
             .expect("version endpoint should observe source changes");
         assert_eq!(version, "2");
