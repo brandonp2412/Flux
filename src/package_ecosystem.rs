@@ -1867,6 +1867,166 @@ pub fn read_registry_release(path: &Path) -> io::Result<RegistryRelease> {
     })
 }
 
+/// Validate a checked-out static registry index before it is published.
+///
+/// The provider validates individual releases on lookup, but a public index
+/// also needs a repository-wide invariant: every listed version must have
+/// exactly one matching immutable metadata file, every package must have one
+/// owner record, and no unlisted metadata can silently become resolvable.
+/// Keeping this check compiler-owned lets CI and publisher tools audit the
+/// same format without contacting a registry service.
+pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
+    let root_metadata = fs::metadata(registry_root).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot inspect registry index '{}': {error}",
+                registry_root.display()
+            ),
+        )
+    })?;
+    if !root_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "registry index '{}' is not a directory",
+                registry_root.display()
+            ),
+        ));
+    }
+
+    let mut packages = Vec::new();
+    for entry in fs::read_dir(registry_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "registry index contains non-package entry '{}'; expected package directories",
+                    path.display()
+                ),
+            ));
+        }
+        let package = entry.file_name().to_string_lossy().into_owned();
+        validate_package_name(&package)?;
+        packages.push((package, path));
+    }
+    packages.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (package, directory) in packages {
+        let owner_path = directory.join("owner.txt");
+        let owner = fs::read_to_string(&owner_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("registry package '{package}' cannot read owner.txt: {error}"),
+            )
+        })?;
+        let owner = owner.trim();
+        if owner.is_empty() || owner.contains('\n') || owner.contains('\r') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("registry package '{package}' has an invalid owner.txt record"),
+            ));
+        }
+
+        let versions_path = directory.join("versions.txt");
+        let versions_source = fs::read_to_string(&versions_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("registry package '{package}' cannot read versions.txt: {error}"),
+            )
+        })?;
+        let mut versions = Vec::new();
+        for (line_number, raw_version) in versions_source.lines().enumerate() {
+            let version = raw_version.trim();
+            if version.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry package '{package}' has an empty version at line {}",
+                        line_number + 1
+                    ),
+                ));
+            }
+            validate_version(version)?;
+            if versions
+                .last()
+                .is_some_and(|previous: &String| previous.as_str() >= version)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry package '{package}' versions.txt must be sorted and unique"
+                    ),
+                ));
+            }
+            versions.push(version.to_string());
+        }
+        if versions.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("registry package '{package}' has no published versions"),
+            ));
+        }
+
+        let listed = versions
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for version in &versions {
+            let path = directory.join(format!("{version}.toml"));
+            if !path.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry metadata '{}' is listed in versions.txt but is missing",
+                        path.display()
+                    ),
+                ));
+            }
+            let release = read_registry_release(&path)?;
+            if release.package != package
+                || release.version != *version
+                || release.owner != owner
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry metadata '{}' does not match its package, version, or owner path",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+                continue;
+            }
+            let version = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "registry metadata filename is not UTF-8",
+                    )
+                })?;
+            if !listed.contains(version) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry metadata '{}' is not listed in versions.txt",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn parse_registry_release(source: &str) -> Result<RegistryRelease, String> {
     let mut section = "release";
     let mut format_version = None;
@@ -2366,6 +2526,47 @@ mod tests {
             release.dependencies.get("util"),
             Some(&"^1.0.0".to_string())
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_index_validation_rejects_stale_or_unlisted_metadata() {
+        let root = temp_root("registry-index-validation");
+        let release = RegistryRelease {
+            package: "demo".to_string(),
+            owner: "flux-lang".to_string(),
+            repository: "https://github.com/flux-lang/demo".to_string(),
+            version: "1.2.3".to_string(),
+            flux: "^0.1.0".to_string(),
+            asset: "https://github.com/flux-lang/demo/releases/download/v1.2.3/demo-1.2.3.fluxpkg"
+                .to_string(),
+            sha256: "0".repeat(64),
+            dependencies: BTreeMap::new(),
+            yanked: false,
+        };
+        write_registry_release(&root, &release).unwrap();
+        validate_registry_index(&root).unwrap();
+
+        fs::write(root.join("demo/versions.txt"), "1.2.3\n1.2.4\n").unwrap();
+        let error = validate_registry_index(&root).unwrap_err();
+        assert!(error.to_string().contains("1.2.4.toml"));
+
+        fs::write(
+            root.join("demo/versions.txt"),
+            "1.2.3\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("demo/1.2.4.toml"),
+            serialize_registry_release(&RegistryRelease {
+                version: "1.2.4".to_string(),
+                ..release
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let error = validate_registry_index(&root).unwrap_err();
+        assert!(error.to_string().contains("not listed in versions.txt"));
         let _ = fs::remove_dir_all(root);
     }
 
