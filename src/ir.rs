@@ -4,6 +4,11 @@ use crate::ast::{BinOp, Expr, ExprKind, Function, Stmt, StmtKind, Type, UnaryOp}
 use crate::diagnostic::SourceSpan;
 use crate::typecheck::{self, ConstantValue, Signatures};
 
+fn is_non_copy_collection_type(ty: &Type) -> bool {
+    matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+        || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Set(_) | Type::Map(_, _)))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ControlFlowNodeId(pub usize);
 
@@ -1687,10 +1692,7 @@ impl ControlFlowGraph {
                 .iter()
                 .enumerate()
                 .find_map(|(index, definition)| {
-                    if definition.name != name
-                        || (!matches!(definition.ty, Type::List(_))
-                            && !matches!(&definition.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_))))
-                    {
+                    if definition.name != name || !is_non_copy_collection_type(&definition.ty) {
                         return None;
                     }
                     let id = ControlFlowDefinitionId::Node {
@@ -2038,9 +2040,7 @@ fn definition_borrow_source_value_from_parts(
         return None;
     };
     let definition = nodes.get(node.0)?.definitions.get(index)?;
-    if !matches!(definition.ty, Type::List(_))
-        && !matches!(&definition.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
-    {
+    if !is_non_copy_collection_type(&definition.ty) {
         return None;
     }
     let source_node = match nodes.get(node.0)?.kind {
@@ -5186,10 +5186,7 @@ fn reclassify_borrowed_list_reborrows(
     parameters: &[ControlFlowParameter],
     signatures: &Signatures,
 ) {
-    let is_list_owner = |ty: &Type| {
-        matches!(ty, Type::List(_))
-            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
-    };
+    let is_list_owner = is_non_copy_collection_type;
     let mut borrowed_definitions = parameters
         .iter()
         .enumerate()
@@ -6134,10 +6131,7 @@ fn compute_borrow_lifetimes(graph: &ControlFlowGraph) -> Vec<OwnershipBorrowLife
 }
 
 fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState> {
-    let is_list_owner = |ty: &Type| {
-        matches!(ty, Type::List(_))
-            || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
-    };
+    let is_list_owner = is_non_copy_collection_type;
     let mut source_names = graph
         .parameters
         .iter()

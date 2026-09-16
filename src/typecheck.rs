@@ -5853,6 +5853,11 @@ fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
     }
 }
 
+fn is_borrowable_collection_type(ty: &Type) -> bool {
+    matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+        || matches!(ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Set(_) | Type::Map(_, _)))
+}
+
 fn json_map_literal_value_is_constant(value: &Expr, signatures: &Signatures) -> bool {
     if constant_primitive_value(value, signatures).is_some() || matches!(value.kind, ExprKind::None)
     {
@@ -7688,12 +7693,10 @@ pub fn type_of_expr(
                             "bind the owner first, then borrow that binding or one of its zero-copy indexing/slicing/property views so the inferred lifetime has stable storage",
                         ));
                     }
-                    if !matches!(signatures.canonical_type(&ty), Type::List(_))
-                        && !matches!(signatures.canonical_type(&ty), Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)))
-                    {
+                    if !is_borrowable_collection_type(&signatures.canonical_type(&ty)) {
                         return Err(diag(
                             expr.span,
-                            "borrow currently supports concrete list bindings and optional list views",
+                            "borrow currently supports concrete list, set, or map bindings and optional collection views",
                         ));
                     }
                     Ok(ty)

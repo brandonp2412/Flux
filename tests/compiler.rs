@@ -16100,6 +16100,46 @@ fn main() -> i64 {
 }
 
 #[test]
+fn explicit_collection_borrow_supports_set_and_map_storage() {
+    let source = r#"
+fn main() -> i64 {
+    let values: set<i64> = {10, 20}
+    let view: set<i64> = borrow values
+    print(view.count)
+    let destination: set<i64> = values
+    print(destination.count)
+
+    let entries: map<str, i64> = {"answer": 42}
+    let entriesView: map<str, i64> = borrow entries
+    print(entriesView.count)
+    let entriesDestination: map<str, i64> = entries
+    print(entriesDestination.count)
+    return 0
+}
+"#;
+    check_source(source)
+        .expect("explicit borrows should support all current non-copy collection descriptors");
+    compile_to_c(source).expect("set and map borrows should lower as descriptor identity");
+
+    let live = r#"
+fn main() -> i64 {
+    let values: set<i64> = {10, 20}
+    let view: set<i64> = borrow values
+    let destination: set<i64> = values
+    print(view.count)
+    print(destination.count)
+    return 0
+}
+"#;
+    let errors = check_source_all(live).expect_err("a live set borrow must protect its owner");
+    assert!(errors.iter().any(|error| {
+        error.message.contains(
+            "cannot move non-copy binding 'values' while borrowed view 'view' is still live",
+        )
+    }));
+}
+
+#[test]
 fn explicit_list_reborrow_preserves_original_owner_provenance() {
     let source = r#"
 fn main() -> i64 {
@@ -16191,7 +16231,9 @@ fn main() -> i64 {
     assert!(
         error
             .message
-            .contains("borrow currently supports concrete list bindings and optional list views")
+            .contains(
+                "borrow currently supports concrete list, set, or map bindings and optional collection views"
+            )
     );
 
     let optional = r#"
