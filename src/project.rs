@@ -10,6 +10,7 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
+const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v1";
 
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
@@ -54,6 +55,7 @@ impl ProjectAnalysis {
     ) -> Result<String, Diagnostic> {
         let fingerprint = codegen_cache_fingerprint(self, native_target);
         let path = codegen_cache_path(target, fingerprint);
+        persist_typed_ir_manifest(self, target, native_target, fingerprint);
         let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
         if let Ok(cached) = fs::read_to_string(&path) {
             if let Some((header, generated)) = cached.split_once('\n')
@@ -138,6 +140,78 @@ impl ProjectAnalysis {
             &self.translations,
             target,
         )
+    }
+}
+
+/// Persist a small, deterministic description of the normalized typed IR
+/// used by native codegen.  This is deliberately separate from generated C:
+/// tooling and future per-module codegen can validate the semantic artifact
+/// without reparsing the source, while the bootstrap backend remains free to
+/// regenerate the monolithic C file on a miss.
+fn persist_typed_ir_manifest(
+    analysis: &ProjectAnalysis,
+    target: &Path,
+    native_target: codegen::NativeTarget,
+    fingerprint: u64,
+) {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let directory = root.join(".flux").join("ir-cache");
+    let path = directory.join(format!("ir-{fingerprint:016x}.manifest"));
+    let header_prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{fingerprint:016x}:");
+    if let Ok(cached) = fs::read_to_string(&path)
+        && let Some((header, manifest)) = cached.split_once('\n')
+        && let Some(checksum) = header.strip_prefix(&header_prefix)
+        && checksum == format!("{:016x}", stable_bytes_hash(manifest.as_bytes()))
+    {
+        return;
+    }
+    let mut manifest = String::new();
+    manifest.push_str(PROJECT_TYPED_IR_CACHE_VERSION);
+    manifest.push('\n');
+    manifest.push_str(native_target_cache_tag(native_target));
+    manifest.push('\n');
+    for function in &analysis.program.functions {
+        let cfg = crate::ir::ControlFlowGraph::from_function(function, &analysis.signatures);
+        use std::fmt::Write as _;
+        let definitions = cfg
+            .nodes()
+            .iter()
+            .map(|node| node.definitions.len())
+            .sum::<usize>()
+            + cfg.parameters().len();
+        let _ = writeln!(
+            manifest,
+            "function\t{}\tnodes={}\tedges={}\tvalues={}\tdefinitions={}",
+            function.name,
+            cfg.nodes().len(),
+            cfg.edges().len(),
+            cfg.values().len(),
+            definitions
+        );
+    }
+    let checksum = stable_bytes_hash(manifest.as_bytes());
+    let header = format!("{header_prefix}{checksum:016x}\n");
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let persisted = File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(header.as_bytes())?;
+            file.write_all(manifest.as_bytes())?;
+            file.sync_all()
+        })
+        .is_ok();
+    if persisted && fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(&temporary);
     }
 }
 
@@ -5275,6 +5349,27 @@ mod tests {
             })
             .count();
         assert_eq!(initial_entries, 1, "one durable artifact should be published");
+        let ir_dir = root.join(".flux/ir-cache");
+        let ir_entries = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should exist")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("ir-") && name.ends_with(".manifest"))
+            })
+            .count();
+        assert_eq!(ir_entries, 1, "one typed IR manifest should be published");
+        let ir_path = fs::read_dir(&ir_dir)
+            .expect("typed IR cache directory should remain readable")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
+            .expect("typed IR manifest should be discoverable")
+            .path();
+        let ir_manifest = fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
+        assert!(ir_manifest.starts_with("flux-project-typed-ir-v1:"));
+        assert!(ir_manifest.contains("\nflux-project-typed-ir-v1\nlinux\nfunction\tmain\tnodes="));
 
         fs::write(
             &entry,
