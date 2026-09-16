@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{
     BinOp, EnumDef, Expr, ExprKind, Function, InterpolatedStringPart, ListMatchPattern,
-    MatchPattern, NamedArg, PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind,
+    MatchPattern, NamedArg, Param, PatternLogicalOp, Program, ShellRedirectMode, Stmt, StmtKind,
     StructDef, StructPatternField, Type, TypeAlias, UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
@@ -21186,45 +21186,7 @@ fn emit_anonymous_function(
     for param in params {
         env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
     }
-    // Anonymous helpers have no source-level Function declaration, but their
-    // bodies are still ordinary typed Flux expressions. Build the same
-    // normalized CFG used by named functions so backend constant/proof
-    // consumption does not silently fall back to the checked AST at this
-    // boundary.
-    let synthetic = Function {
-        public: false,
-        foreign_symbol: None,
-        unsafe_foreign: false,
-        pure: false,
-        asynchronous: false,
-        name: anonymous_function_c_name(expr.span),
-        name_span: expr.span,
-        keyword_span: expr.span,
-        params: params.clone(),
-        returns: returns.clone(),
-        return_span: body.span,
-        return_type_spans: Vec::new(),
-        body: vec![Stmt {
-            line: body.line,
-            span: body.span,
-            keyword_span: body.span,
-            kind: StmtKind::Return(vec![(*body.clone())]),
-        }],
-        expression_body: true,
-        line: expr.line,
-        span: expr.span,
-    };
-    let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
-    let constants = cfg_constant_values(&cfg);
-    let proofs = cfg_checked_i64_proofs(&cfg);
-    let body = if let Some(expected) = returns.first() {
-        emit_expr_for_expected_with_cfg_proofs(
-            body, expected, &env, signatures, &proofs, &constants,
-        )?
-    } else {
-        let rewritten = substitute_nested_ir_constant_arguments(body, &constants);
-        emit_expr(&rewritten, &env, signatures)?.code
-    };
+    let body = emit_lambda_body_with_cfg(body, params, returns.first(), &env, signatures)?;
     if returns.is_empty() {
         out.push_str(&format!("    {};\n", body));
     } else {
@@ -21232,6 +21194,54 @@ fn emit_anonymous_function(
     }
     out.push_str("}\n");
     Ok(())
+}
+
+fn emit_lambda_body_with_cfg(
+    body: &Expr,
+    params: &[Param],
+    expected: Option<&Type>,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    // Inline sequence callbacks and emitted anonymous helpers have no
+    // source-level Function declaration, but their bodies are still ordinary
+    // typed Flux expressions. Build the same normalized CFG used by named
+    // functions so backend constant/proof consumption does not silently fall
+    // back to the checked AST at this boundary.
+    let synthetic = Function {
+        public: false,
+        foreign_symbol: None,
+        unsafe_foreign: false,
+        pure: false,
+        asynchronous: false,
+        name: format!("flux__lambda_cfg_{}_{}", body.span.line, body.span.column),
+        name_span: body.span,
+        keyword_span: body.span,
+        params: params.to_vec(),
+        returns: expected.into_iter().cloned().collect(),
+        return_span: body.span,
+        return_type_spans: Vec::new(),
+        body: vec![Stmt {
+            line: body.line,
+            span: body.span,
+            keyword_span: body.span,
+            kind: StmtKind::Return(vec![body.clone()]),
+        }],
+        expression_body: true,
+        line: body.line,
+        span: body.span,
+    };
+    let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
+    let constants = cfg_constant_values(&cfg);
+    let proofs = cfg_checked_i64_proofs(&cfg);
+    if let Some(expected) = expected {
+        emit_expr_for_expected_with_cfg_proofs(
+            body, expected, env, signatures, &proofs, &constants,
+        )
+    } else {
+        let rewritten = substitute_nested_ir_constant_arguments(body, &constants);
+        Ok(emit_expr(&rewritten, env, signatures)?.code)
+    }
 }
 
 type FunctionIrCache = HashMap<String, crate::ir::ControlFlowGraph>;
@@ -33250,8 +33260,14 @@ fn emit_sequence_transform_stages(
                     c_type(&param.ty, signatures),
                     local_c_name(&param.name)
                 ));
-                let condition = emit_expr(body, &callback_env, signatures)?;
-                out.push_str(&format!("{pad}    if (!{}) continue;\n", condition.code));
+                let condition = emit_lambda_body_with_cfg(
+                    body,
+                    params,
+                    Some(&Type::Bool),
+                    &callback_env,
+                    signatures,
+                )?;
+                out.push_str(&format!("{pad}    if (!{}) continue;\n", condition));
                 out.push_str(&format!("{pad}}}\n"));
                 continue;
             }
@@ -33274,8 +33290,14 @@ fn emit_sequence_transform_stages(
                 c_type(&param.ty, signatures),
                 local_c_name(&param.name)
             ));
-            let mapped = emit_expr(body, &callback_env, signatures)?;
-            out.push_str(&format!("{pad}    {next_name} = {};\n", mapped.code));
+            let mapped = emit_lambda_body_with_cfg(
+                body,
+                params,
+                Some(&output_ty),
+                &callback_env,
+                signatures,
+            )?;
+            out.push_str(&format!("{pad}    {next_name} = {mapped};\n"));
             out.push_str(&format!("{pad}}}\n"));
             value_name = next_name;
             value_ty = output_ty;
@@ -33500,8 +33522,15 @@ fn emit_inline_sequence_reducer_application(
         c_type(&item.ty, signatures),
         local_c_name(&item.name)
     ));
-    let reduced = emit_expr(body, &callback_env, signatures)?;
-    out.push_str(&format!("{pad}    {target_name} = {};\n", reduced.code));
+    let reduced_ty = type_of_expr(body, &callback_env, signatures)?;
+    let reduced = emit_lambda_body_with_cfg(
+        body,
+        params,
+        Some(&reduced_ty),
+        &callback_env,
+        signatures,
+    )?;
+    out.push_str(&format!("{pad}    {target_name} = {reduced};\n"));
     out.push_str(&format!("{pad}}}\n"));
     Ok(true)
 }

@@ -24636,6 +24636,25 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_inside_inline_sequence_callbacks() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1]
+    let mapped: i64[] = map(values, fn(value: i64) -> i64 { value + (2 + 3) })
+    return mapped[0]
+}
+"#;
+
+    check_source(source).expect("inline callback constant should typecheck");
+    let generated = compile_to_c(source).expect("inline callback constant should compile");
+    assert!(generated.contains("flux_add_i64(flux__local_value, INT64_C(5))"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_value, INT64_C(2))"),
+        "inline sequence callback should consume the normalized typed-IR constant"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_boolean_conditions() {
     let source = r#"
 fn main() -> i64 {
