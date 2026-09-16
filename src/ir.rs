@@ -473,6 +473,11 @@ pub enum OwnershipCallArgumentKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipDrop {
     pub definition: ControlFlowDefinitionId,
+    /// The normalized value produced for this definition, when one exists.
+    /// Keeping the value identity here lets future destructors consume the
+    /// same typed value graph as moves, calls, and returns instead of
+    /// reconstructing a value from its source name.
+    pub value: Option<ControlFlowValueId>,
     pub name: String,
     pub span: SourceSpan,
 }
@@ -6088,6 +6093,7 @@ fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, Owner
                 node.id,
                 OwnershipDrop {
                     definition,
+                    value: graph.definition_value(definition),
                     name,
                     span,
                 },

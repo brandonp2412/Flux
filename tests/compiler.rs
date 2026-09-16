@@ -66,6 +66,15 @@ fn main() -> i64 {
         drops[0].1.definition,
         ControlFlowDefinitionId::Node { .. }
     ));
+    assert!(
+        drops[0].1.value.is_some(),
+        "implicit release should retain its normalized definition value"
+    );
+    assert_eq!(
+        graph.definition_value(drops[0].1.definition),
+        drops[0].1.value,
+        "release value identity must match the definition value query"
+    );
 }
 
 #[test]
