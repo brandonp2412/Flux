@@ -50,6 +50,8 @@ fn main() -> i64 {
     print(path.join("/tmp", "flux", show))
     print(path.dirname("/tmp/flux", show))
     print(path.basename("/tmp/flux", show))
+    print(path.dirname("/", show))
+    print(path.basename("\\", show))
     print(path.extension("/tmp/flux.txt", show))
     print(path.extension("/tmp/flux.", show))
     print(path.stem("/tmp/.env", show))
@@ -99,7 +101,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
+        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n/\nnil\n\\\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
