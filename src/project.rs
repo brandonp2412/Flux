@@ -341,12 +341,22 @@ fn typed_ir_manifest_is_current(
         "{PROJECT_TYPED_IR_CACHE_VERSION}\n{}\n",
         native_target_cache_tag(native_target)
     )) && analysis.program.functions.iter().all(|function| {
+        let module_name = analysis
+            .sources
+            .iter()
+            .find(|source| source.source_id == function.span.source_id)
+            .map(|source| source.module_name.as_str())
+            .unwrap_or("<unknown>");
+        let cfg = crate::ir::ControlFlowGraph::from_function(function, &analysis.signatures);
+        let shape_hash = normalized_cfg_shape_hash(&cfg);
         manifest.lines().any(|line| {
             line.starts_with("function\t")
                 && line
                     .split('\t')
                     .nth(1)
                     .is_some_and(|name| name == function.name)
+                && line.contains(&format!("\tmodule={module_name}\t"))
+                && line.contains(&format!("\tshape={shape_hash:016x}\t"))
         })
     })
 }
@@ -5946,6 +5956,22 @@ mod tests {
         assert_eq!(
             function_ir_entries, 2,
             "one function IR artifact should be published per function"
+        );
+        // Function names are not globally unique: a project may contain the
+        // same declaration name in different source modules.  A manifest
+        // validated by name alone could therefore be accepted for the wrong
+        // module and leave tooling with stale normalized facts.
+        let fingerprint = super::codegen_cache_fingerprint(&first, crate::codegen::NativeTarget::Linux);
+        let mut wrong_module = first.clone();
+        wrong_module.sources[0].module_name.push_str(".changed");
+        assert!(
+            !super::typed_ir_manifest_is_current(
+                &wrong_module,
+                &root,
+                crate::codegen::NativeTarget::Linux,
+                fingerprint,
+            ),
+            "typed IR cache validation must include source module identity"
         );
         // A valid native cache hit must repair independently cleaned IR
         // metadata instead of silently leaving tooling without a manifest.
