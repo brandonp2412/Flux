@@ -19591,6 +19591,52 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_validate_is_callback_free_and_reuses_bounded_native_parser() {
+    let source = r#"
+fn main() -> i64 {
+    let valid: error = json.validate(" {\"name\": \"Flux\", \"items\": [1, true, null]} ")
+    let invalid: error = json.validate("{\"name\": }")
+    print(valid)
+    print(invalid)
+    return 0
+}
+"#;
+    check_source(source).expect("json.validate should typecheck without a callback");
+    let generated = compile_to_c(source).expect("json.validate should lower natively");
+    assert!(generated.contains("flux__json_validate("));
+    assert!(generated.contains("flux__json_validate_callback"));
+    let root = std::env::temp_dir().join(format!("flux-json-validate-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary JSON directory should be writable");
+    let c_path = root.join("json_validate.c");
+    let exe_path = root.join("json_validate");
+    fs::write(&c_path, generated).expect("generated JSON C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile JSON validation code");
+    assert!(
+        compile.status.success(),
+        "JSON validation C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON validation program should run");
+    assert!(output.status.success(), "JSON validation should exit cleanly");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("nil\n"), "valid JSON should return nil: {stdout:?}");
+    assert!(
+        stdout.contains("JSON primitive is invalid"),
+        "invalid JSON should return an error: {stdout:?}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn json_string_encoding_rejects_invalid_utf8_from_native_boundary() {
     let source = r#"
 unsafe extern c "flux_invalid_utf8" fn invalidUtf8() -> str

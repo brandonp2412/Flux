@@ -4433,6 +4433,7 @@ fn emit_runtime_prelude(
 "#);
     }
     if runtime_usage.contains("flux__json_parse(")
+        || runtime_usage.contains("flux__json_validate(")
         || runtime_usage.contains("flux__json_encode_string(")
         || runtime_usage.contains("flux__json_encode_array(")
         || runtime_usage.contains("flux__json_encode_nested_array(")
@@ -4632,6 +4633,10 @@ static inline const char *flux__json_parse(const char *value, void (*callback)(c
     if (length > 65536) return "JSON value exceeds 65536 bytes";
     const char *cursor = value; const char *end = value + length; const char *error = flux__json_parse_value(&cursor, end, 0, callback); if (error != NULL) return error;
     flux__json_skip_ws(&cursor, end); if (cursor != end) return "JSON has trailing data"; return NULL;
+}
+static inline void flux__json_validate_callback(const char *kind, const char *value) { (void)kind; (void)value; }
+static inline const char *flux__json_validate(const char *value) {
+    return flux__json_parse(value, flux__json_validate_callback);
 }
 static inline const char *flux__json_encode_string(const char *value, void (*callback)(const char *)) {
     if (value == NULL || callback == NULL) return "invalid json.encodeString arguments";
@@ -37195,9 +37200,17 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "json" {
-        let expected_args = if name == "encodeNull" { 1 } else { 2 };
+        let expected_args = if name == "encodeNull" { 1 } else if name == "validate" { 1 } else { 2 };
         if !named_args.is_empty() || args.len() != expected_args {
             return Err(diag(span, "invalid JSON call reached code generation"));
+        }
+        if name == "validate" {
+            let value = emit_expr(&args[0], env, signatures)?;
+            return Ok((
+                format!("flux__json_validate({})", value.code),
+                vec![Type::Error],
+                None,
+            ));
         }
         let callback_index = if name == "encodeNull" { 0 } else { 1 };
         let value = if name == "encodeNull" {

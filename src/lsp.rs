@@ -1745,6 +1745,13 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "validate",
+            3,
+            "fn json.validate(value: str) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "parse",
             3,
             "fn json.parse(value: str, callback: fn(str, str) -> void) -> error",
@@ -4048,6 +4055,12 @@ fn signature_help_for_document_cached(
         }
         if namespace == "json" {
             return match implementation_member {
+                "validate" => Some(signature_help_for_builtin(
+                    "json.validate",
+                    &["value: str"],
+                    "error",
+                    active_parameter,
+                )),
                 "parse" => Some(signature_help_for_builtin(
                     "json.parse",
                     &["value: str", "callback: fn(str, str) -> void"],
