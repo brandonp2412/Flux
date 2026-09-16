@@ -31415,7 +31415,18 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::Match { value, arms } => {
-                let value = emit_expr(value, env, signatures)?;
+                let value_ty = type_of_expr(value, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        value,
+                        &value_ty,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: value_ty,
+                };
                 let Type::Named(enum_name) = &value.ty else {
                     return Err(diag(
                         stmt.span,
@@ -31510,8 +31521,15 @@ fn emit_block(
                             }
                         }
                         if let Some(guard) = &arm.guard {
-                            let guard = emit_expr(guard, &nested, signatures)?;
-                            pattern_conditions.push(c_condition(&guard.code));
+                            let guard = emit_expr_for_expected_with_cfg_proofs(
+                                guard,
+                                &Type::Bool,
+                                &nested,
+                                signatures,
+                                context.checked_i64_cfg_proofs,
+                                context.cfg_constant_values,
+                            )?;
+                            pattern_conditions.push(c_condition(&guard));
                         }
                         let mut nested_mutable = mutable.clone();
                         if pattern_conditions.is_empty() {
@@ -31551,7 +31569,18 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::ListMatch { value, arms } => {
-                let value = emit_expr(value, env, signatures)?;
+                let value_ty = type_of_expr(value, env, signatures)?;
+                let value = EmittedExpr {
+                    code: emit_expr_for_expected_with_cfg_proofs(
+                        value,
+                        &value_ty,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_constant_values,
+                    )?,
+                    ty: value_ty,
+                };
                 if let Type::Map(key, mapped_value) = &value.ty {
                     return emit_map_match(
                         out,
@@ -31643,10 +31672,17 @@ fn emit_block(
                             },
                         )?;
                         if let Some(guard) = &arm.guard {
-                            let guard = emit_expr(guard, &nested, signatures)?;
+                            let guard = emit_expr_for_expected_with_cfg_proofs(
+                                guard,
+                                &Type::Bool,
+                                &nested,
+                                signatures,
+                                context.checked_i64_cfg_proofs,
+                                context.cfg_constant_values,
+                            )?;
                             out.push_str(&format!(
                                 "{pad}    if ({}) {{\n",
-                                c_condition(&guard.code)
+                                c_condition(&guard)
                             ));
                             out.push_str(&format!("{pad}        {matched} = true;\n"));
                             let mut nested_mutable = mutable.clone();
@@ -31722,8 +31758,15 @@ fn emit_map_match(
             let mut nested = env.clone();
             let mut nested_mutable = mutable.clone();
             if let Some(guard) = &arm.guard {
-                let guard = emit_expr(guard, &nested, signatures)?;
-                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
+                let guard = emit_expr_for_expected_with_cfg_proofs(
+                    guard,
+                    &Type::Bool,
+                    &nested,
+                    signatures,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
                 emit_block(
                     out,
@@ -31762,7 +31805,14 @@ fn emit_map_match(
             .get(&source_span_key(arm.span));
         let mut binding_temps = Vec::new();
         for entry in entries {
-            let key_code = emit_expr(&entry.key, env, signatures)?.code;
+            let key_code = emit_expr_for_expected_with_cfg_proofs(
+                &entry.key,
+                key_ty,
+                env,
+                signatures,
+                context.checked_i64_cfg_proofs,
+                context.cfg_constant_values,
+            )?;
             let found = format!("flux__map_key_found_{}", *temp_counter);
             *temp_counter += 1;
             let value_temp = format!("flux__map_value_{}", *temp_counter);
@@ -31808,10 +31858,17 @@ fn emit_map_match(
             nested.insert(name, (*value_ty).clone());
         }
         if let Some(guard) = &arm.guard {
-            let guard = emit_expr(guard, &nested, signatures)?;
+            let guard = emit_expr_for_expected_with_cfg_proofs(
+                guard,
+                &Type::Bool,
+                &nested,
+                signatures,
+                context.checked_i64_cfg_proofs,
+                context.cfg_constant_values,
+            )?;
             out.push_str(&format!(
                 "{pad}        if ({}) {{\n",
-                c_condition(&guard.code)
+                c_condition(&guard)
             ));
             out.push_str(&format!("{pad}            {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
