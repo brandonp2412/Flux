@@ -8379,6 +8379,8 @@ fn main() -> i64 {{
     check_source(&source).expect("peer-addressed UDP text I/O should typecheck");
     let generated = compile_to_c(&source).expect("peer-addressed UDP text I/O should lower");
     assert!(generated.contains("flux__net_send_text_to("));
+    assert!(generated.contains("UDP peer host exceeds 65536 bytes"));
+    assert!(generated.contains("text exceeds 65536 bytes"));
     assert!(generated.contains("flux__net_receive_text_from("));
     assert!(generated.contains("sendto("));
     assert!(generated.contains("recvfrom("));
