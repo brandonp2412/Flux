@@ -8399,6 +8399,7 @@ fn udp_peer_binary_send_is_typed_native_and_runnable() {
     assert!(generated.contains("UDP binary datagram exceeds 65507 bytes"));
     assert!(generated.contains("sendBytesTo byte list has missing storage"));
     assert!(generated.contains("sendBytesTo byte list has an invalid element stride"));
+    assert!(generated.contains("sendBytesTo peer host exceeds 65536 bytes"));
     assert!(generated.contains("PTRDIFF_MAX / stride_magnitude"));
 
     let root = std::env::temp_dir().join(format!("flux-udp-binary-peer-{}", std::process::id()));
@@ -8471,6 +8472,7 @@ fn udp_peer_binary_parts_send_is_typed_native_and_runnable() {
     assert!(generated.contains("flux__net_send_bytes_to_parts("));
     assert!(generated.contains("UDP binary datagram exceeds 65507 bytes"));
     assert!(generated.contains("sendBytesToParts part has missing storage"));
+    assert!(generated.contains("sendBytesToParts peer host exceeds 65536 bytes"));
     assert!(generated.contains("PTRDIFF_MAX / (uint64_t)stride"));
 
     let root = std::env::temp_dir().join(format!("flux-udp-binary-parts-{}", std::process::id()));

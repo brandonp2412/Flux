@@ -6536,9 +6536,12 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_send_bytes_to(") {
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes_to(int64_t socket_handle, const char *host, int64_t port, struct flux__list bytes) {
-    if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (socket_handle < 0 || socket_handle > INT_MAX || host == NULL) return flux__net_result(-1, "invalid socket handle");
     if (bytes.len != 0 && bytes.data == NULL) return flux__net_result(-1, "sendBytesTo byte list has missing storage");
     if (bytes.stride < 0 || (bytes.stride != 0 && (uintmax_t)bytes.stride < (uintmax_t)sizeof(int64_t))) return flux__net_result(-1, "sendBytesTo byte list has an invalid element stride");
+    size_t host_length = 0;
+    while (host_length <= 65536 && host[host_length] != '\0') host_length += 1;
+    if (host_length > 65536) return flux__net_result(-1, "sendBytesTo peer host exceeds 65536 bytes");
     if (port < 1 || port > 65535) return flux__net_result(-1, "sendBytesTo port must be between 1 and 65535");
     if (bytes.len > 65507) return flux__net_result(-1, "UDP binary datagram exceeds 65507 bytes");
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
@@ -6566,6 +6569,9 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if (socket_handle < 0 || socket_handle > INT_MAX || host == NULL) return flux__net_result(-1, "invalid socket handle");
     if (parts.len != 0 && parts.data == NULL) return flux__net_result(-1, "sendBytesToParts list has missing storage");
     if (parts.stride < 0 || (parts.stride != 0 && (uintmax_t)parts.stride < (uintmax_t)sizeof(struct flux__list))) return flux__net_result(-1, "sendBytesToParts has an invalid part stride");
+    size_t host_length = 0;
+    while (host_length <= 65536 && host[host_length] != '\0') host_length += 1;
+    if (host_length > 65536) return flux__net_result(-1, "sendBytesToParts peer host exceeds 65536 bytes");
     if (port < 1 || port > 65535) return flux__net_result(-1, "sendBytesToParts port must be between 1 and 65535");
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
