@@ -4697,6 +4697,7 @@ fn main() -> i64 {
     assert!(generated.contains("unsupported HTTP Transfer-Encoding"));
     assert!(generated.contains("Content-Length with Transfer-Encoding is not supported"));
     assert!(generated.contains("HTTP request body exceeds maxBodyBytes"));
+    assert!(generated.contains("body_length > ((size_t)max_body_bytes - digit_value) / 10u"));
     assert!(generated.contains("HTTP request body contains invalid UTF-8"));
 
     let invalid_limit = check_source(

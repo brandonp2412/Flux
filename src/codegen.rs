@@ -5934,8 +5934,9 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
             body_length = 0;
             for (char *digit = value; digit < value_end; digit += 1) {
                 if (*digit < '0' || *digit > '9') return flux__net_result(-1, "invalid Content-Length");
-                body_length = body_length * 10u + (size_t)(*digit - '0');
-                if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
+                size_t digit_value = (size_t)(*digit - '0');
+                if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, "HTTP request body exceeds maxBodyBytes");
+                body_length = body_length * 10u + digit_value;
             }
             content_length_seen = true;
         }
@@ -6190,8 +6191,9 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
             body_length = 0;
             for (char *digit = value; digit < value_end; digit += 1) {
                 if (*digit < '0' || *digit > '9') return flux__net_result(-1, "invalid Content-Length");
-                body_length = body_length * 10u + (size_t)(*digit - '0');
-                if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+                size_t digit_value = (size_t)(*digit - '0');
+                if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, "HTTP response body exceeds maxBodyBytes");
+                body_length = body_length * 10u + digit_value;
             }
             content_length_seen = true;
         }
@@ -9206,6 +9208,21 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str("    return a / b;\n");
         out.push_str("}\n");
     }
+    // The legacy HTTP text-body entry points are emitted as compact one-line
+    // compatibility helpers. Harden their Content-Length accumulator too;
+    // otherwise a very long decimal header can wrap before the configured
+    // body limit is checked.
+    let legacy_request_length =
+        "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\");";
+    let hardened_request_length =
+        "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
+    let legacy_response_length =
+        "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\");";
+    let hardened_response_length =
+        "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
+    *out = out
+        .replace(legacy_request_length, hardened_request_length)
+        .replace(legacy_response_length, hardened_response_length);
     out.push('\n');
 }
 
