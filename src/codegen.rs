@@ -5557,10 +5557,11 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
     if runtime_usage.contains("flux__net_tcp_accept_many(")
         || runtime_usage.contains("flux__net_tcp_accept_many_with_timeout(")
     {
-        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"acceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"acceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"acceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"acceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { if (flux__worker_cancelled()) return flux__net_result(accepted, \"acceptMany cancelled by worker scope\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } if (!flux__net_register_socket(fd)) { close(fd); return flux__net_result(accepted, \"too many active sockets\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
+        out.push_str("static inline struct flux__net_i64_error flux__net_tcp_accept_many(int64_t listener, int64_t max_count, void (*callback)(int64_t)) { if (callback == NULL) return flux__net_result(-1, \"invalid acceptMany callback\"); if (listener < 0 || listener > INT_MAX) return flux__net_result(-1, \"invalid TCP listener handle\"); if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, \"acceptMany maxCount must be between 1 and 2147483647\"); int socket_type = 0; socklen_t type_length = sizeof(socket_type); if (getsockopt((int)listener, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener\"); if (socket_type != SOCK_STREAM) return flux__net_result(-1, \"acceptMany requires a TCP listener\"); int accepting = 0; socklen_t accepting_length = sizeof(accepting); if (getsockopt((int)listener, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__net_result(-1, \"failed to inspect TCP listener state\"); if (accepting == 0) return flux__net_result(-1, \"acceptMany requires a listening TCP socket\"); int flags = fcntl((int)listener, F_GETFL, 0); if (flags < 0) return flux__net_result(-1, \"failed to read TCP listener flags\"); if ((flags & O_NONBLOCK) == 0) return flux__net_result(-1, \"acceptMany requires a nonblocking TCP listener\"); int64_t accepted = 0; while (accepted < max_count) { if (flux__worker_cancelled()) return flux__net_result(accepted, \"acceptMany cancelled by worker scope\"); int fd; do { fd = accept((int)listener, NULL, NULL); } while (fd < 0 && errno == EINTR); if (fd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return flux__net_result(accepted, NULL); return flux__net_result(accepted, \"failed to accept TCP connection\"); } int accepted_flags = fcntl(fd, F_GETFL, 0); if (accepted_flags < 0 || fcntl(fd, F_SETFL, accepted_flags | O_NONBLOCK) != 0) { close(fd); return flux__net_result(accepted, \"failed to make accepted TCP socket nonblocking\"); } if (!flux__net_register_socket(fd)) { close(fd); return flux__net_result(accepted, \"too many active sockets\"); } callback((int64_t)fd); accepted += 1; } return flux__net_result(accepted, NULL); }\n");
     }
     if runtime_usage.contains("flux__net_tcp_accept_many_with_timeout(") {
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_tcp_accept_many_with_timeout(int64_t listener, int64_t max_count, int64_t timeout_millis, void (*callback)(int64_t)) {
+    if (callback == NULL) return flux__net_progress_result(-1, false, "invalid acceptManyTimeout callback");
     if (listener < 0 || listener > INT_MAX) return flux__net_progress_result(-1, false, "invalid TCP listener handle");
     if (max_count < 1 || max_count > INT_MAX) return flux__net_progress_result(-1, false, "acceptManyTimeout maxCount must be between 1 and 2147483647");
     if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_progress_result(-1, false, "acceptManyTimeout timeoutMillis must be -1 or between 0 and 2147483647");
@@ -6575,6 +6576,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         || runtime_usage.contains("flux__net_receive_text_many_with_timeout(")
     {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_receive_text_many(int64_t socket_handle, int64_t max_bytes, int64_t max_count, void (*callback)(int64_t, const char *)) {
+    if (callback == NULL) return flux__net_result(-1, "invalid readMany callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, "receiveTextMany maxBytes must be between 1 and 65536");
     if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, "receiveTextMany maxCount must be between 1 and 2147483647");
@@ -6612,6 +6614,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     }
     if runtime_usage.contains("flux__net_receive_text_many_with_timeout(") {
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_receive_text_many_with_timeout(int64_t socket_handle, int64_t max_bytes, int64_t max_count, int64_t timeout_millis, void (*callback)(int64_t, const char *)) {
+    if (callback == NULL) return flux__net_progress_result(-1, false, "invalid readManyTimeout callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(-1, false, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_progress_result(-1, false, "readManyTimeout maxBytes must be between 1 and 65536");
     if (max_count < 1 || max_count > INT_MAX) return flux__net_progress_result(-1, false, "readManyTimeout maxCount must be between 1 and 2147483647");
@@ -6682,6 +6685,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         || runtime_usage.contains("flux__net_receive_text_from_many_with_timeout(")
     {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_receive_text_from_many(int64_t socket_handle, int64_t max_bytes, int64_t max_count, void (*callback)(int64_t, const char *, const char *, int64_t)) {
+    if (callback == NULL) return flux__net_result(-1, "invalid readManyFrom callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, "receiveTextFromMany maxBytes must be between 1 and 65536");
     if (max_count < 1 || max_count > INT_MAX) return flux__net_result(-1, "receiveTextFromMany maxCount must be between 1 and 2147483647");
@@ -6737,6 +6741,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     }
     if runtime_usage.contains("flux__net_receive_text_from_many_with_timeout(") {
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_receive_text_from_many_with_timeout(int64_t socket_handle, int64_t max_bytes, int64_t max_count, int64_t timeout_millis, void (*callback)(int64_t, const char *, const char *, int64_t)) {
+    if (callback == NULL) return flux__net_progress_result(-1, false, "invalid readManyFromTimeout callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(-1, false, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_progress_result(-1, false, "readManyFromTimeout maxBytes must be between 1 and 65536");
     if (max_count < 1 || max_count > INT_MAX) return flux__net_progress_result(-1, false, "readManyFromTimeout maxCount must be between 1 and 2147483647");
@@ -6763,6 +6768,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_receive_bytes_from_many(") {
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_receive_bytes_from_many(int64_t socket_handle, int64_t max_bytes, int64_t max_count, void (*callback)(int64_t, struct flux__list, const char *, int64_t)) {
+    if (callback == NULL) return flux__net_result(-1, "invalid readBytesFromMany callback");
     if (callback == NULL) return flux__net_result(-1, "readBytesFromMany requires a callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, "readBytesFromMany maxBytes must be between 1 and 65536");
@@ -6796,6 +6802,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     }
     if runtime_usage.contains("flux__net_receive_bytes_from_many_with_timeout(") {
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_receive_bytes_from_many_with_timeout(int64_t socket_handle, int64_t max_bytes, int64_t max_count, int64_t timeout_millis, void (*callback)(int64_t, struct flux__list, const char *, int64_t)) {
+    if (callback == NULL) return flux__net_progress_result(-1, false, "invalid readBytesFromManyTimeout callback");
     if (callback == NULL) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout requires a callback");
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_progress_result(-1, false, "invalid socket handle");
     if (max_bytes < 1 || max_bytes > 65536) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout maxBytes must be between 1 and 65536");

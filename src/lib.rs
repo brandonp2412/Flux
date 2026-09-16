@@ -91,4 +91,23 @@ fn main() -> i64 {
         assert!(generated.contains("flux__fs_valid_utf8_name"));
         assert!(generated.contains("directory entry name is not valid UTF-8"));
     }
+
+    #[test]
+    fn batched_accept_helpers_validate_callbacks_at_the_native_boundary() {
+        let source = r#"
+fn accepted(_socket: i64) -> void {
+}
+
+fn main() -> i64 {
+    let (_count, _failure) = net.acceptMany(1, 4, accepted)
+    let (_timedCount, _ready, _timedFailure) = net.acceptManyTimeout(1, 4, 0, accepted)
+    return 0
+}
+"#;
+        let generated = compile_to_c(source).expect("batched accept helpers should compile");
+        assert!(generated.contains("if (callback == NULL) return flux__net_result"));
+        assert!(generated.contains("invalid acceptMany callback"));
+        assert!(generated.contains("if (callback == NULL) return flux__net_progress_result"));
+        assert!(generated.contains("invalid acceptManyTimeout callback"));
+    }
 }
