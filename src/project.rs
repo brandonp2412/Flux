@@ -504,6 +504,78 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
                 dropped.name,
             );
         }
+        if let Some(state) = cfg.borrow_state_before(node.id) {
+            for borrow in state.borrows() {
+                let _ = writeln!(
+                    shape,
+                    "borrow-state\t{}\t{:?}\t{}\t{}\t{:?}",
+                    node.id.0,
+                    borrow.definition,
+                    borrow.borrower,
+                    borrow.source,
+                    borrow.source_definition,
+                );
+            }
+        }
+    }
+    // Borrow event counts alone are insufficient for identity: moving a
+    // borrow's end across a branch or loop changes safety even when the same
+    // events exist. Include the normalized path-sensitive boundaries and
+    // lifetime regions while continuing to omit source spans.
+    for start in cfg.borrow_starts() {
+        let _ = writeln!(
+            shape,
+            "borrow-start\t{}\t{}\t{:?}\t{}\t{:?}\t{}",
+            start.from.0,
+            start.to.0,
+            start.definition,
+            start.borrower,
+            start.source_definition,
+            start.source,
+        );
+    }
+    for end in cfg.borrow_ends() {
+        let _ = writeln!(
+            shape,
+            "borrow-end\t{}\t{}\t{:?}\t{}\t{:?}\t{}",
+            end.from.0,
+            end.to.0,
+            end.definition,
+            end.borrower,
+            end.source_definition,
+            end.source,
+        );
+    }
+    for lifetime in cfg.borrow_lifetimes() {
+        let _ = writeln!(
+            shape,
+            "borrow-lifetime\t{:?}\t{}\t{:?}\t{}",
+            lifetime.definition,
+            lifetime.borrower,
+            lifetime.source_definition,
+            lifetime.source,
+        );
+        for node in &lifetime.active_before {
+            let _ = writeln!(shape, "borrow-active\t{:?}\t{}", lifetime.definition, node.0);
+        }
+        for start in &lifetime.starts {
+            let _ = writeln!(
+                shape,
+                "lifetime-start\t{:?}\t{}\t{}",
+                lifetime.definition,
+                start.from.0,
+                start.to.0,
+            );
+        }
+        for end in &lifetime.ends {
+            let _ = writeln!(
+                shape,
+                "lifetime-end\t{:?}\t{}\t{}",
+                lifetime.definition,
+                end.from.0,
+                end.to.0,
+            );
+        }
     }
     stable_bytes_hash(shape.as_bytes())
 }
