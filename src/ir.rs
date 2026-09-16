@@ -2931,9 +2931,27 @@ impl<'a> ControlFlowBuilder<'a> {
             ExprKind::Int(_)
             | ExprKind::Bool(_)
             | ExprKind::Str(_)
-            | ExprKind::InterpolatedString(_)
             | ExprKind::Nil
             | ExprKind::None => ControlFlowValueKind::Literal,
+            // A single local string interpolation is the allocation-free
+            // identity form accepted by the type checker. Preserve its
+            // read dependency in typed IR instead of collapsing it into a
+            // literal: reaching-definition, liveness, and future ownership
+            // consumers must see the source binding it borrows.
+            ExprKind::InterpolatedString(parts) => {
+                if let [crate::ast::InterpolatedStringPart::Binding { name, .. }] = parts.as_slice()
+                    && self
+                        .scalar_expression_type(expr)
+                        .is_some_and(|ty| self.signatures.canonical_type(&ty) == Type::Str)
+                {
+                    ControlFlowValueKind::NameRead {
+                        name: name.clone(),
+                        definitions: self.scoped_definition_for(name).into_iter().collect(),
+                    }
+                } else {
+                    ControlFlowValueKind::Literal
+                }
+            }
             ExprKind::Var(name) => ControlFlowValueKind::NameRead {
                 name: name.clone(),
                 definitions: self.scoped_definition_for(name).into_iter().collect(),

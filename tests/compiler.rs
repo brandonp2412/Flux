@@ -57,6 +57,29 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_preserves_local_string_interpolation_read_dependency() {
+    let source = r#"
+fn main() -> i64 {
+    let value: str = "hello"
+    print("${value}")
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::new(2001))
+        .expect("local interpolation should retain semantic IR");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    assert!(graph.values().iter().any(|value| {
+        matches!(
+            &value.kind,
+            ControlFlowValueKind::NameRead { name, definitions }
+                if name == "value" && !definitions.is_empty()
+        )
+    }));
+}
+
+#[test]
 fn path_capabilities_are_typed_bounded_and_tree_shakeable() {
     let source = r#"
 fn show(value: str) -> void {
