@@ -30244,6 +30244,11 @@ fn main() -> i64 {
     assert_eq!(source_evaluation.ownership.borrows.len(), 1);
     assert_eq!(source_evaluation.ownership.borrows[0].source, "source");
     assert_eq!(
+        source_evaluation.ownership.borrows[0].value,
+        Some(source_evaluation.values[0]),
+        "normalized borrows must retain the typed value that produced the read"
+    );
+    assert_eq!(
         source_evaluation.ownership.borrows[0].source_definitions,
         ownership_graph
             .definitions_reaching_before(source_evaluation.id, "source")

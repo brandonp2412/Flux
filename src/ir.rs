@@ -368,6 +368,11 @@ pub enum OwnershipBorrowKind {
 pub struct OwnershipBorrow {
     pub source: String,
     pub kind: OwnershipBorrowKind,
+    /// The exact typed value whose evaluation created this borrow.  Keeping
+    /// the value identity alongside the reaching source definitions lets
+    /// ownership consumers correlate borrow provenance with projections and
+    /// other normalized value facts without rebuilding an AST read.
+    pub value: Option<ControlFlowValueId>,
     /// Exact source definitions reaching this borrow.  The source name is
     /// retained for diagnostics, but ownership consumers must use these
     /// identities so shadowed and re-executed bindings cannot be conflated.
@@ -5141,6 +5146,7 @@ fn populate_immutable_borrows(
         node.ownership.borrows.push(OwnershipBorrow {
             source: name.clone(),
             kind: OwnershipBorrowKind::Immutable,
+            value: Some(value.id),
             source_definitions: Vec::new(),
             span: value.span,
         });
