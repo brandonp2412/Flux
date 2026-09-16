@@ -171,13 +171,15 @@ fn persist_typed_ir_manifest(
     let directory = root.join(".flux").join("ir-cache");
     let path = directory.join(format!("ir-{fingerprint:016x}.manifest"));
     let header_prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{fingerprint:016x}:");
-    if let Ok(cached) = fs::read_to_string(&path)
+    let manifest_is_current = if let Ok(cached) = fs::read_to_string(&path)
         && let Some((header, manifest)) = cached.split_once('\n')
         && let Some(checksum) = header.strip_prefix(&header_prefix)
         && checksum == format!("{:016x}", stable_bytes_hash(manifest.as_bytes()))
     {
-        return;
-    }
+        true
+    } else {
+        false
+    };
     let mut manifest = String::new();
     manifest.push_str(PROJECT_TYPED_IR_CACHE_VERSION);
     manifest.push('\n');
@@ -259,35 +261,40 @@ fn persist_typed_ir_manifest(
     if fs::create_dir_all(&directory).is_err() {
         return;
     }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
-    let persisted = File::create(&temporary)
-        .and_then(|mut file| {
-            file.write_all(header.as_bytes())?;
-            file.write_all(manifest.as_bytes())?;
-            file.sync_all()
-        })
-        .is_ok();
-    if persisted {
-        if fs::rename(&temporary, &path).is_err() {
-            let _ = fs::remove_file(&temporary);
-        } else {
-            prune_typed_ir_cache(&directory, &path);
-            for (module_name, function_name, shape_hash, function_manifest_line) in
-                function_artifacts
-            {
-                persist_typed_ir_function_artifact(
-                    &directory,
-                    native_target,
-                    module_name,
-                    function_name,
-                    shape_hash,
-                    &function_manifest_line,
-                );
+    if !manifest_is_current {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+        let persisted = File::create(&temporary)
+            .and_then(|mut file| {
+                file.write_all(header.as_bytes())?;
+                file.write_all(manifest.as_bytes())?;
+                file.sync_all()
+            })
+            .is_ok();
+        if persisted {
+            if fs::rename(&temporary, &path).is_err() {
+                let _ = fs::remove_file(&temporary);
+            } else {
+                prune_typed_ir_cache(&directory, &path);
             }
+        }
+    }
+    // Repair missing or corrupt per-function records even when the aggregate
+    // manifest is already valid. This keeps the independently addressable
+    // cache family self-healing after partial cleanup or interrupted writes.
+    if manifest_is_current || path.exists() {
+        for (module_name, function_name, shape_hash, function_manifest_line) in function_artifacts {
+            persist_typed_ir_function_artifact(
+                &directory,
+                native_target,
+                module_name,
+                function_name,
+                shape_hash,
+                &function_manifest_line,
+            );
         }
     }
 }
@@ -6036,6 +6043,47 @@ mod tests {
             "checksum failures must be treated as cache misses"
         );
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_ir_manifest_rebuild_repairs_missing_function_artifact() {
+        let root = test_path("typed-ir-repair");
+        fs::create_dir_all(&root).expect("typed IR repair fixture should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn helper() -> i64 {\n    return 3\n}\nfn main() -> i64 {\n    return helper()\n}\n",
+        )
+        .expect("typed IR repair source should be writable");
+
+        let analysis = super::analyze(&entry).expect("repair fixture should analyze");
+        analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("initial codegen should succeed");
+        let ir_dir = root.join(".flux/ir-cache");
+        let missing = fs::read_dir(&ir_dir)
+            .expect("typed IR cache should exist")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
+            .expect("function artifact should be published")
+            .path();
+        fs::remove_file(&missing).expect("function artifact should be removable");
+        let codegen = fs::read_dir(root.join(".flux/cache"))
+            .expect("codegen cache should exist")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("codegen-"))
+            .expect("codegen artifact should be published")
+            .path();
+        fs::remove_file(codegen).expect("codegen artifact should be removable");
+
+        analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("codegen miss should repair typed IR artifacts");
+        assert!(
+            missing.exists(),
+            "missing function artifact should be restored"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
