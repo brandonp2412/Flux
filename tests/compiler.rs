@@ -6055,6 +6055,12 @@ fn main() -> i64 {
     assert!(generated.contains("flux__url_decode_form_component("));
     assert!(generated.contains("flux__url_encode_form_component("));
     assert!(generated.contains("flux__url_parse_form_query("));
+    assert!(generated.contains("invalid URL parser callback"));
+    assert!(generated.contains("invalid URL decode callback"));
+    assert!(generated.contains("invalid URL encode callback"));
+    assert!(generated.contains("invalid form URL decode callback"));
+    assert!(generated.contains("invalid form URL encode callback"));
+    assert!(generated.contains("invalid form URL query callback"));
 }
 
 #[test]
@@ -6086,6 +6092,7 @@ fn main() -> i64 {
     assert!(!generated.contains(
         "flux__uri_parse(const char *value, void (*callback)(const char *, const char *, const char *, const char *, const char *)) {\n    size_t length = strlen(value);"
     ));
+    assert!(generated.contains("invalid URI parser callback"));
     assert!(!generated.contains("#include <sys/socket.h>"));
 
     let invalid_callback = check_source(
@@ -6154,6 +6161,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("URI normalization should lower natively");
     assert!(generated.contains("flux__uri_normalize("));
     assert!(generated.contains("flux__bounded_url_length("));
+    assert!(generated.contains("invalid URI normalize callback"));
     assert!(!generated.contains("#include <sys/socket.h>"));
 
     let root = std::env::temp_dir().join(format!("flux-uri-normalize-{}", std::process::id()));
