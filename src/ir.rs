@@ -481,6 +481,31 @@ impl OwnershipCall {
             .unwrap_or_default()
     }
 
+    /// Return the normalized ownership facts for one consuming argument.
+    ///
+    /// The returned tuple keeps the projected path and exact reaching
+    /// definitions together.  Consumers of future owned aggregates can use
+    /// this boundary without independently indexing the parallel call
+    /// vectors (and without accidentally treating an immutable borrow as a
+    /// consuming projection).
+    pub fn consuming_argument_at(
+        &self,
+        index: usize,
+    ) -> Option<(
+        &[String],
+        &[ControlFlowDefinitionId],
+        Option<ControlFlowValueId>,
+    )> {
+        if self.argument_kind(index) != Some(OwnershipCallArgumentKind::Consuming) {
+            return None;
+        }
+        Some((
+            self.argument_projection_at(index),
+            self.consuming_argument_definitions_at(index),
+            self.arguments.get(index).copied(),
+        ))
+    }
+
     pub fn is_consuming(&self) -> bool {
         self.argument_kinds
             .iter()
