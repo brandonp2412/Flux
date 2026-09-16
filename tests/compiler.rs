@@ -236,6 +236,51 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn semantic_effect_results_resolve_user_calls_and_cycles_conservatively() {
+    let source = r#"
+fn pure(value: i64) -> i64 {
+    return value + 1
+}
+
+fn wrapper(value: i64) -> i64 {
+    return pure(value)
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn effectful_wrapper(value: i64) -> i64 {
+    return observe(value)
+}
+
+fn recursive(value: i64) -> i64 {
+    if value == 0:
+        return 0
+    return recursive(value - 1)
+}
+
+fn main() -> i64 {
+    return wrapper(4)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("whole-program effect fixture should typecheck");
+    let effects = database.effect_results();
+    assert_eq!(effects.get("pure"), Some(&ControlFlowValueEffect::Pure));
+    assert_eq!(effects.get("wrapper"), Some(&ControlFlowValueEffect::Pure));
+    assert_eq!(
+        effects.get("effectful_wrapper"),
+        Some(&ControlFlowValueEffect::MayEffect)
+    );
+    assert_eq!(
+        effects.get("recursive"),
+        Some(&ControlFlowValueEffect::Pure)
+    );
+}
+
+#[test]
 fn ownership_ir_does_not_drop_moved_definitions() {
     let source = r#"
 fn main() -> i64 {

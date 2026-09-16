@@ -5,7 +5,7 @@ use crate::ast::{
     Type,
 };
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
-use crate::ir::{ControlFlowEffectSummary, ControlFlowGraph};
+use crate::ir::{ControlFlowEffectSummary, ControlFlowGraph, ControlFlowValueEffect};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
 
@@ -298,6 +298,55 @@ impl SemanticDatabase {
             .iter()
             .map(|graph| (graph.function().to_string(), graph.effect_summary()))
             .collect()
+    }
+
+    /// Solve the conservative whole-program effect result for each analyzed
+    /// function. Direct CFG summaries intentionally keep calls symbolic; this
+    /// query resolves those symbols to analyzed functions until a fixed point
+    /// is reached, so recursive call cycles are handled deterministically.
+    /// Calls to builtins, foreign functions, or unavailable module boundaries
+    /// remain effectful because their implementation is outside this database.
+    pub fn effect_results(&self) -> BTreeMap<String, ControlFlowValueEffect> {
+        let summaries = self.effect_summaries();
+        let mut results = summaries
+            .iter()
+            .map(|(name, summary)| {
+                (
+                    name.clone(),
+                    if summary.intrinsic_effect {
+                        ControlFlowValueEffect::MayEffect
+                    } else {
+                        ControlFlowValueEffect::Pure
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        loop {
+            let mut changed = false;
+            for (name, summary) in &summaries {
+                let effectful = summary.intrinsic_effect
+                    || summary.direct_callees.iter().any(|callee| {
+                        summaries
+                            .get(callee)
+                            .and_then(|_| results.get(callee))
+                            .is_none_or(|effect| *effect == ControlFlowValueEffect::MayEffect)
+                    });
+                let next = if effectful {
+                    ControlFlowValueEffect::MayEffect
+                } else {
+                    ControlFlowValueEffect::Pure
+                };
+                if results.get(name).copied() != Some(next) {
+                    results.insert(name.clone(), next);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        results
     }
 
     pub fn symbols_named(&self, name: &str) -> impl Iterator<Item = &SemanticSymbol> {
