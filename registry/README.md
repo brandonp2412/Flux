@@ -28,6 +28,15 @@ the same tree can be served as static HTTPS content and selected with
 entries remain usable offline, so the index does not require a database or an
 always-on service.
 
+Validate a checked-out index locally, or in CI, with:
+
+```text
+flux registry validate registry
+```
+
+The command checks package ownership records, sorted version lists, matching
+release metadata, and rejects unlisted metadata files before publication.
+
 Registry changes should be made by the publisher workflow after release and
 archive verification. Do not add mutable branch archives, install hooks,
 native build instructions, credentials, or generated build output here.

@@ -26,4 +26,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate static registry index
-        run: cargo run --quiet -- registry validate registry
+        run: cargo run --quiet --bin flux -- registry validate registry
