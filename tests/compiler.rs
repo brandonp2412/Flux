@@ -6286,6 +6286,7 @@ fn main() -> i64 {
     print(uri.parse("mailto:alice@example.test", parsed))
     print(uri.parse("custom://example.test/%ZZ", parsed))
     print(uri.parse("not a URI", parsed))
+    print(uri.parse("custom://example.test/é", parsed))
     return 0
 }
 "#;
@@ -6345,7 +6346,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\ncustom+v1\nexample.test\n/a%20b\n\n\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains an invalid percent escape\nURI contains whitespace or control characters\n"
+        "custom+v1\nexample.test\n/a/b\nx=1\nfrag\nnil\ncustom+v1\nexample.test\n/a%20b\n\n\nnil\nmailto\n\nalice@example.test\n\n\nnil\nURI contains an invalid percent escape\nURI contains whitespace or control characters\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }
@@ -6361,6 +6362,7 @@ fn main() -> i64 {
     print(uri.normalize("HTTP://host/a/./b/../c?x=1#frag", normalized))
     print(uri.normalize("mailto:alice/./../example.test", normalized))
     print(uri.normalize("custom://host/%ZZ", normalized))
+    print(uri.normalize("custom://host/é", normalized))
     return 0
 }
 "#;
@@ -6395,7 +6397,7 @@ fn main() -> i64 {
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
-        "custom://host/a%2Fb\nnil\nhttp://host/a/c?x=1#frag\nnil\nmailto:alice/./../example.test\nnil\nURI contains an invalid percent escape\n"
+        "custom://host/a%2Fb\nnil\nhttp://host/a/c?x=1#frag\nnil\nmailto:alice/./../example.test\nnil\nURI contains an invalid percent escape\nURI contains raw non-ASCII bytes; percent-encode UTF-8\n"
     );
     let _ = fs::remove_dir_all(&root);
 }

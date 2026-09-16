@@ -4381,6 +4381,10 @@ fn emit_runtime_prelude(
     for (size_t index = 0; index < length; index += 1) {
         unsigned char byte = (unsigned char)buffer[index];
         if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+        // Raw non-ASCII octets are IRI/IDNA input, not URI syntax. Keep the
+        // borrowed bootstrap API deterministic until the owned Unicode/IDNA
+        // layer exists; callers can use percent-encoded UTF-8 meanwhile.
+        if (byte >= 0x80) return "URI contains raw non-ASCII bytes; percent-encode UTF-8";
         if (byte == '%') {
             if (index + 2 >= length) return "URI contains an incomplete percent escape";
             unsigned char high = (unsigned char)buffer[index + 1];
@@ -5043,6 +5047,7 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     for (size_t index = 0; index < length; index += 1) {
         unsigned char byte = (unsigned char)buffer[index];
         if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+        if (byte >= 0x80) return "URI contains raw non-ASCII bytes; percent-encode UTF-8";
         if (byte != '%') continue;
         if (index + 2 >= length) return "URI contains an incomplete percent escape";
         unsigned char high = (unsigned char)buffer[index + 1];
