@@ -10,7 +10,7 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
-const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v2";
+const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v3";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 
 #[derive(Debug, Clone)]
@@ -283,12 +283,14 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
     for value in cfg.values() {
         let _ = writeln!(
             shape,
-            "value\t{}\t{}\t{:?}\t{:?}\t{:?}\t{:?}",
+            "value\t{}\t{}\treachable={}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}",
             value.id.0,
             value.producer.0,
+            cfg.is_value_reachable(value.id),
             value.result_index,
             value.ty,
             value.kind,
+            value.source_constant,
             value.constant,
         );
     }
@@ -5545,8 +5547,8 @@ mod tests {
             .path();
         let ir_manifest =
             fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
-        assert!(ir_manifest.starts_with("flux-project-typed-ir-v2:"));
-        assert!(ir_manifest.contains("\nflux-project-typed-ir-v2\nlinux\nfunction\tmain\tshape="));
+        assert!(ir_manifest.starts_with("flux-project-typed-ir-v3:"));
+        assert!(ir_manifest.contains("\nflux-project-typed-ir-v3\nlinux\nfunction\tmain\tshape="));
         assert!(ir_manifest.contains("\tnodes="));
         assert!(ir_manifest.contains("\tborrows="));
         assert!(ir_manifest.contains("\tdrops="));
