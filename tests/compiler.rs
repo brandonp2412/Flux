@@ -219,6 +219,20 @@ async fn main() -> i64 {
         .expect("pure CFG should be available");
     assert!(pure.direct_call_callees().is_empty());
     assert!(!pure.has_intrinsic_effect());
+
+    let summaries = database.effect_summaries();
+    assert_eq!(
+        summaries
+            .get("pure")
+            .expect("pure summary should be present")
+            .is_locally_pure(),
+        true
+    );
+    let main_summary = summaries
+        .get("main")
+        .expect("main summary should be present");
+    assert!(main_summary.direct_callees.contains("delayed"));
+    assert!(main_summary.intrinsic_effect);
 }
 
 #[test]

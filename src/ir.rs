@@ -162,6 +162,24 @@ pub enum ControlFlowValueEffect {
     MayEffect,
 }
 
+/// The normalized direct effect summary for one function body.
+///
+/// This is deliberately not a transitive effect result yet: callees remain
+/// named so a whole-program solver can handle recursion, function values, and
+/// platform capabilities without making the per-function CFG rebuild another
+/// AST-shaped call graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowEffectSummary {
+    pub intrinsic_effect: bool,
+    pub direct_callees: BTreeSet<String>,
+}
+
+impl ControlFlowEffectSummary {
+    pub fn is_locally_pure(&self) -> bool {
+        !self.intrinsic_effect && self.direct_callees.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlFlowValueUseKind {
     Eager,
@@ -1092,6 +1110,14 @@ impl ControlFlowGraph {
                         | ControlFlowValueKind::InterfaceDispatch { .. }
                 )
         })
+    }
+
+    /// Summarize the direct effect boundary of this normalized function graph.
+    pub fn effect_summary(&self) -> ControlFlowEffectSummary {
+        ControlFlowEffectSummary {
+            intrinsic_effect: self.has_intrinsic_effect(),
+            direct_callees: self.direct_call_callees(),
+        }
     }
 
     /// Return the constant proven safe for direct native emission, if any.

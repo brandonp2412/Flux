@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{
     Expr, ExprKind, ListMatchPattern, MatchPattern, Program, Stmt, StmtKind, StructPatternField,
     Type,
 };
 use crate::diagnostic::{Diagnostic, SourceId, SourceSpan};
-use crate::ir::ControlFlowGraph;
+use crate::ir::{ControlFlowEffectSummary, ControlFlowGraph};
 use crate::parser;
 use crate::typecheck::{self, Signature, Signatures};
 
@@ -288,6 +288,16 @@ impl SemanticDatabase {
         self.control_flow_graphs
             .iter()
             .find(|graph| graph.function() == name)
+    }
+
+    /// Return deterministic direct effect summaries for every analyzed
+    /// function. The summaries are derived from normalized CFG reachability;
+    /// they do not re-walk checked AST bodies.
+    pub fn effect_summaries(&self) -> BTreeMap<String, ControlFlowEffectSummary> {
+        self.control_flow_graphs
+            .iter()
+            .map(|graph| (graph.function().to_string(), graph.effect_summary()))
+            .collect()
     }
 
     pub fn symbols_named(&self, name: &str) -> impl Iterator<Item = &SemanticSymbol> {
