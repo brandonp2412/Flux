@@ -52861,6 +52861,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_write_bytes("));
     assert!(generated.contains("WebSocket binary bytes have no storage"));
     assert!(generated.contains("WebSocket binary byte list has an invalid element stride"));
+    assert!(generated.contains("PTRDIFF_MAX / (uint64_t)stride"));
     assert!(generated.contains("WebSocket binary byte values must be between 0 and 255"));
 }
 
