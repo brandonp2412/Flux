@@ -57,7 +57,6 @@ impl ProjectAnalysis {
     ) -> Result<String, Diagnostic> {
         let fingerprint = codegen_cache_fingerprint(self, native_target);
         let path = codegen_cache_path(target, fingerprint);
-        persist_typed_ir_manifest(self, target, native_target, fingerprint);
         let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
         if let Ok(cached) = fs::read_to_string(&path) {
             if let Some((header, generated)) = cached.split_once('\n')
@@ -74,6 +73,14 @@ impl ProjectAnalysis {
             remove_cache_artifact_if_unchanged(&path, &cached);
         }
 
+        // The normalized IR manifest is useful on a codegen miss, but it is
+        // not part of validating a complete generated-C artifact.  Keep the
+        // hit path strictly bounded to reading and checking that artifact:
+        // rebuilding every function CFG here otherwise turns a native cache
+        // hit back into a full semantic/codegen walk.  A miss still publishes
+        // the manifest before native generation so tooling gets a consistent
+        // view even when native emission later fails.
+        persist_typed_ir_manifest(self, target, native_target, fingerprint);
         let generated = self.emit_c_for_target(native_target)?;
         let header = format!(
             "{header_prefix}{:016x}\n",
