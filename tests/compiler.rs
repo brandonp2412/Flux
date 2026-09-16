@@ -5882,7 +5882,7 @@ fn main() -> i64 {
         "if (headers == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
     ));
     assert!(generated.contains(
-        "if (method == NULL || target == NULL || host == NULL || content_type == NULL) return \"invalid HTTP text argument\";"
+        "if (method == NULL || target == NULL || host == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
     ));
 
     let invalid_type = check_source(
@@ -6858,7 +6858,7 @@ fn main() -> i64 {
     assert!(generated.contains("Connection: %s"));
     assert!(generated.contains("keep_alive ? \"keep-alive\" : \"close\""));
     assert!(generated.contains(
-        "if (content_type == NULL) return \"invalid HTTP text argument\";"
+        "if (content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
     ));
     assert!(generated.contains("#include <sys/socket.h>"));
 
