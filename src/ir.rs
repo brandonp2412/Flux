@@ -5636,14 +5636,28 @@ fn propagated_ir_constant(
         }
         ControlFlowValueKind::Binary { op, left, right } => {
             let left_constant = constants.get(left.0)?.clone();
+            // A short-circuiting left operand can determine the result even
+            // when the right operand is dynamic.  Keep this proof in the
+            // normalized value graph; `proven_scalar_constant` still checks
+            // purity before a backend may substitute it, so an effectful
+            // skipped branch is never silently removed.
+            if matches!(
+                (op, left_constant.as_ref()),
+                (BinOp::And, Some(ConstantValue::Bool(false)))
+                    | (BinOp::Or, Some(ConstantValue::Bool(true)))
+            ) {
+                return Some(match op {
+                    BinOp::And => ConstantValue::Bool(false),
+                    BinOp::Or => ConstantValue::Bool(true),
+                    _ => unreachable!(),
+                });
+            }
             let right_constant = constants.get(right.0)?.clone();
             match (op, left_constant.as_ref(), right_constant.as_ref()) {
-                (BinOp::And, Some(ConstantValue::Bool(false)), _)
-                | (BinOp::And, _, Some(ConstantValue::Bool(false))) => {
+                (BinOp::And, _, Some(ConstantValue::Bool(false))) => {
                     Some(ConstantValue::Bool(false))
                 }
-                (BinOp::Or, Some(ConstantValue::Bool(true)), _)
-                | (BinOp::Or, _, Some(ConstantValue::Bool(true))) => {
+                (BinOp::Or, _, Some(ConstantValue::Bool(true))) => {
                     Some(ConstantValue::Bool(true))
                 }
                 _ => typecheck::evaluate_constant_binary(

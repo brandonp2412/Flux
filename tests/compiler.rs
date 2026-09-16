@@ -39,6 +39,23 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn typed_ir_proves_short_circuit_result_from_left_constant() {
+    let source = r#"
+fn choose(value: bool) -> bool {
+    return false && value
+}
+
+fn main() -> i64 {
+    if choose(true):
+        return 1
+    return 0
+}
+    "#;
+    let generated = compile_to_c(source).expect("short-circuit source should compile");
+    assert!(generated.contains("return false;"), "{generated}");
+}
+
+#[test]
 fn path_capabilities_are_typed_bounded_and_tree_shakeable() {
     let source = r#"
 fn show(value: str) -> void {
