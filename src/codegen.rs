@@ -4500,7 +4500,11 @@ static inline const char *flux__json_encode_optional_i64(struct flux__optional_i
 static inline const char *flux__json_encode_optional_bool(struct flux__optional_bool value, void (*callback)(const char *));
 static inline const char *flux__json_encode_optional_str(struct flux__optional_str value, void (*callback)(const char *));
 static inline bool flux__json_valid_stride(ptrdiff_t stride, size_t minimum) {
-    return stride == 0 || (stride > 0 && (uintmax_t)stride >= (uintmax_t)minimum);
+    /* Every JSON collection is bounded to 65536 elements. Validate the
+       largest possible byte offset before generated encoders use index *
+       stride for borrowed descriptor storage. */
+    return stride == 0 || (stride > 0 && (uintmax_t)stride >= (uintmax_t)minimum &&
+        (uintmax_t)stride <= (uintmax_t)PTRDIFF_MAX / UINTMAX_C(65535));
 }
 static inline const char *flux__json_skip_ws(const char **cursor, const char *end) {
     while (*cursor < end && (**cursor == ' ' || **cursor == '\n' || **cursor == '\r' || **cursor == '\t')) *cursor += 1;

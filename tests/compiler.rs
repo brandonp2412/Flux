@@ -20084,6 +20084,7 @@ fn main() -> i64 {
     assert!(generated.contains("JSON object key contains invalid UTF-8"));
     assert!(generated.contains("JSON container expects ',' or its closing delimiter"));
     assert!(generated.contains("JSON string has an invalid escape"));
+    assert!(generated.contains("PTRDIFF_MAX / UINTMAX_C(65535)"));
     assert!(
         !generated.contains("size_t count = strlen(escape)"),
         "JSON encoders should use the fixed two-byte escape width without a runtime scan"
