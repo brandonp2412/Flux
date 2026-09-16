@@ -6864,6 +6864,9 @@ fn main() -> i64 {
     assert!(generated.contains(
         "size_t response_content_type_length = 0; if (!flux__net_http_bounded_length(content_type, &response_content_type_length)"
     ));
+    assert!(generated.contains(
+        "if (content_type == NULL || body == NULL) return \"invalid HTTP response argument\";"
+    ));
     assert!(generated.contains("#include <sys/socket.h>"));
 
     let invalid_status = check_source(

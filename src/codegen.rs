@@ -1739,7 +1739,7 @@ fn harden_generated_http_text_argument_checks(out: &mut String) {
 
     let response_content_guard =
         "if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL)";
-    let response_content_guard_with_null = "size_t response_content_type_length = 0; if (!flux__net_http_bounded_length(content_type, &response_content_type_length) || body == NULL) return \"HTTP response argument exceeds 65536 bytes\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL)";
+    let response_content_guard_with_null = "if (content_type == NULL || body == NULL) return \"invalid HTTP response argument\"; size_t response_content_type_length = 0; if (!flux__net_http_bounded_length(content_type, &response_content_type_length)) return \"HTTP response argument exceeds 65536 bytes\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL)";
     *out = out.replace(response_content_guard, response_content_guard_with_null);
 }
 
