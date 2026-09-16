@@ -460,7 +460,7 @@ fn ordered_public_scalar_aliases<'a>(
                 false,
                 "checked public scalar aliases cannot contain a cycle"
             );
-            ordered.extend(remaining.drain(..));
+            ordered.append(&mut remaining);
         }
     }
 

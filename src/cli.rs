@@ -10204,7 +10204,7 @@ fn build_native_configured(
                 .map(|library| format!("-l{library}")),
         );
     }
-    let cache_enabled = native_package.map_or(true, |native_package| {
+    let cache_enabled = native_package.is_none_or(|native_package| {
         native_package.libraries.is_empty() && native_package.search_paths.is_empty()
     });
     let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
