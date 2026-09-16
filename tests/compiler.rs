@@ -24818,6 +24818,45 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_constants_inside_match_expression_regions() {
+    let source = r#"
+enum Outcome {
+    Value(i64)
+    Empty
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    let outcome: Outcome = Outcome.Value(10)
+    let score: i64 = match outcome:
+        Outcome.Value(value) if value > input + 4: input + 2
+        Outcome.Value(_): input + 3
+        Outcome.Empty(): input + 4
+    let values: i64[] = [input + 1]
+    let listScore: i64 = match values:
+        [single]: input + single
+        _: input + 9
+    print(score)
+    print(listScore)
+    return listScore
+}
+"#;
+
+    check_source(source).expect("match-region sources should typecheck");
+    let generated = compile_to_c(source).expect("match-region sources should compile");
+    assert!(generated.contains("flux__local_values"));
+    assert!(generated.contains("flux__local_listScore"));
+    assert!(generated.contains("flux__local_score"));
+    assert!(generated.contains("INT64_C(7)"));
+    assert!(generated.contains("INT64_C(9)"));
+    assert!(generated.contains("INT64_C(10)"));
+    assert!(generated.contains("INT64_C(14)"));
+    assert!(!generated.contains("flux_add_i64(flux__local_input, INT64_C(2))"));
+    assert!(!generated.contains("flux_add_i64(flux__local_input, INT64_C(3))"));
+    assert!(!generated.contains("flux_add_i64(flux__local_input, INT64_C(4))"));
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_loop_values() {
     let source = r#"
 fn main() -> i64 {

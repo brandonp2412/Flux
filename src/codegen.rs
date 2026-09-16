@@ -30241,7 +30241,17 @@ fn emit_block(
             {
                 let target = local_c_name(name);
                 out.push_str(&format!("{pad}{} {target};\n", c_type(ty, signatures)));
-                emit_match_expr_into(out, expr, &target, depth, env, signatures, temp_counter)?;
+                emit_match_expr_into(
+                    out,
+                    expr,
+                    &target,
+                    depth,
+                    env,
+                    signatures,
+                    temp_counter,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_constant_values,
+                )?;
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
@@ -30806,6 +30816,8 @@ fn emit_block(
                     env,
                     signatures,
                     temp_counter,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_constant_values,
                 )?;
                 if context.async_state_machine {
                     out.push_str(&format!(
@@ -31919,9 +31931,21 @@ fn emit_match_expr_into(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Result<(), Diagnostic> {
     if matches!(expr.kind, ExprKind::ListMatch { .. }) {
-        return emit_list_match_expr_into(out, expr, target, depth, env, signatures, temp_counter);
+        return emit_list_match_expr_into(
+            out,
+            expr,
+            target,
+            depth,
+            env,
+            signatures,
+            temp_counter,
+            checked_i64_cfg_proofs,
+            cfg_constant_values,
+        );
     }
     let ExprKind::Match { value, arms } = &expr.kind else {
         return Err(diag(
@@ -31929,7 +31953,18 @@ fn emit_match_expr_into(
             "expected match expression during code generation",
         ));
     };
-    let emitted_value = emit_expr(value, env, signatures)?;
+    let value_ty = type_of_expr(value, env, signatures)?;
+    let emitted_value = EmittedExpr {
+        code: emit_expr_for_expected_with_cfg_proofs(
+            value,
+            &value_ty,
+            env,
+            signatures,
+            checked_i64_cfg_proofs,
+            cfg_constant_values,
+        )?,
+        ty: value_ty,
+    };
     let Type::Named(enum_name) = &emitted_value.ty else {
         return Err(diag(
             value.span,
@@ -32020,14 +32055,29 @@ fn emit_match_expr_into(
                 }
             }
             if let Some(guard) = &arm.guard {
-                let guard = emit_expr(guard, &nested, signatures)?;
-                pattern_conditions.push(c_condition(&guard.code));
+                let guard = emit_expr_for_expected_with_cfg_proofs(
+                    guard,
+                    &Type::Bool,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
+                pattern_conditions.push(c_condition(&guard));
             }
+            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
             if pattern_conditions.is_empty() {
-                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
                 out.push_str(&format!(
                     "{pad}            {target} = {};\n",
-                    arm_value.code
+                    arm_value
                 ));
                 out.push_str(&format!("{pad}            break;\n"));
             } else {
@@ -32035,10 +32085,17 @@ fn emit_match_expr_into(
                     "{pad}            if ({}) {{\n",
                     pattern_conditions.join(" && ")
                 ));
-                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
                 out.push_str(&format!(
                     "{pad}                {target} = {};\n",
-                    arm_value.code
+                    arm_value
                 ));
                 out.push_str(&format!("{pad}                break;\n"));
                 out.push_str(&format!("{pad}            }}\n"));
@@ -32059,6 +32116,8 @@ fn emit_list_match_expr_into(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Result<(), Diagnostic> {
     let ExprKind::ListMatch { value, arms } = &expr.kind else {
         return Err(diag(
@@ -32066,7 +32125,18 @@ fn emit_list_match_expr_into(
             "expected list match expression during code generation",
         ));
     };
-    let emitted_value = emit_expr(value, env, signatures)?;
+    let value_ty = type_of_expr(value, env, signatures)?;
+    let emitted_value = EmittedExpr {
+        code: emit_expr_for_expected_with_cfg_proofs(
+            value,
+            &value_ty,
+            env,
+            signatures,
+            checked_i64_cfg_proofs,
+            cfg_constant_values,
+        )?,
+        ty: value_ty,
+    };
     let Type::List(element) = &emitted_value.ty else {
         return Err(diag(
             value.span,
@@ -32103,8 +32173,16 @@ fn emit_list_match_expr_into(
                     dead_definitions: None,
                 },
             )?;
-            let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-            out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
+            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+            let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                &arm.value,
+                &arm_ty,
+                &nested,
+                signatures,
+                checked_i64_cfg_proofs,
+                cfg_constant_values,
+            )?;
+            out.push_str(&format!("{pad}    {target} = {};\n", arm_value));
             out.push_str(&format!("{pad}}}\n"));
         }
     } else {
@@ -32128,15 +32206,38 @@ fn emit_list_match_expr_into(
                 },
             )?;
             if let Some(guard) = &arm.guard {
-                let guard = emit_expr(guard, &nested, signatures)?;
-                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
-                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-                out.push_str(&format!("{pad}        {target} = {};\n", arm_value.code));
+                let guard = emit_expr_for_expected_with_cfg_proofs(
+                    guard,
+                    &Type::Bool,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}        {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
                 out.push_str(&format!("{pad}    }}\n"));
             } else {
-                let arm_value = emit_expr(&arm.value, &nested, signatures)?;
-                out.push_str(&format!("{pad}    {target} = {};\n", arm_value.code));
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_constant_values,
+                )?;
+                out.push_str(&format!("{pad}    {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}    {matched} = true;\n"));
             }
             out.push_str(&format!("{pad}}}\n"));
