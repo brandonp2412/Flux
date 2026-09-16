@@ -9180,6 +9180,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("waitAny should lower on Linux");
     assert!(generated.contains("flux__net_wait_any("));
     assert!(generated.contains("POLLIN | POLLOUT"));
+    assert!(generated.contains("memcpy(&socket_handle"));
     assert!(generated.contains("waitAny cancelled by worker scope"));
     assert!(generated.contains("waitAny timeoutMillis must be -1 or between 0 and 2147483647"));
 
