@@ -6336,6 +6336,8 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_http_send_text_request_v2(") {
         out.push_str(r#"static inline const char *flux__net_http_send_text_request_v2(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, const char *body, bool keep_alive) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    size_t method_length = 0; size_t target_length = 0; size_t host_length = 0; size_t content_type_length = 0;
+    if (!flux__net_http_bounded_length(method, &method_length) || !flux__net_http_bounded_length(target, &target_length) || !flux__net_http_bounded_length(host, &host_length) || !flux__net_http_bounded_length(content_type, &content_type_length)) return "HTTP request argument exceeds 65536 bytes";
     if (method[0] == '\0') return "HTTP method must not be empty";
     for (const unsigned char *part = (const unsigned char *)method; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return "invalid HTTP method";
     if (target[0] == '\0') return "HTTP request target must not be empty";
@@ -6376,6 +6378,8 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_http_send_text_request_with_headers(") {
         out.push_str(r#"static inline const char *flux__net_http_send_text_request_with_headers(int64_t socket_handle, const char *method, const char *target, const char *host, const char *content_type, const char *body, const char *headers, bool keep_alive) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    size_t method_length = 0; size_t target_length = 0; size_t host_length = 0; size_t content_type_length = 0;
+    if (!flux__net_http_bounded_length(method, &method_length) || !flux__net_http_bounded_length(target, &target_length) || !flux__net_http_bounded_length(host, &host_length) || !flux__net_http_bounded_length(content_type, &content_type_length)) return "HTTP request argument exceeds 65536 bytes";
     size_t headers_length = 0;
     while (headers_length <= 8192 && headers[headers_length] != '\0') headers_length += 1;
     if (headers_length > 8192) return "HTTP custom headers exceed 8192 bytes";
@@ -6445,6 +6449,8 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     if runtime_usage.contains("flux__net_http_send_text_response_with_headers(") {
         out.push_str(r#"static inline const char *flux__net_http_send_text_response_with_headers(int64_t socket_handle, int64_t status, const char *content_type, const char *body, const char *headers, bool keep_alive) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    size_t content_type_length = 0;
+    if (!flux__net_http_bounded_length(content_type, &content_type_length)) return "HTTP content type exceeds 65536 bytes";
     size_t headers_length = 0;
     while (headers_length <= 8192 && headers[headers_length] != '\0') headers_length += 1;
     if (headers_length > 8192) return "HTTP custom headers exceed 8192 bytes";
