@@ -4066,12 +4066,14 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "dirname" | "basename" | "extension" | "stem" | "normalize" => Some(signature_help_for_builtin(
-                    &format!("path.{implementation_member}"),
-                    &["value: str", "callback: fn(str) -> void"],
-                    "error",
-                    active_parameter,
-                )),
+                "dirname" | "basename" | "extension" | "stem" | "normalize" => {
+                    Some(signature_help_for_builtin(
+                        &format!("path.{implementation_member}"),
+                        &["value: str", "callback: fn(str) -> void"],
+                        "error",
+                        active_parameter,
+                    ))
+                }
                 _ => None,
             };
         }

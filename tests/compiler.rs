@@ -51,6 +51,7 @@ fn main() -> i64 {
     print(path.dirname("/tmp/flux", show))
     print(path.basename("/tmp/flux", show))
     print(path.extension("/tmp/flux.txt", show))
+    print(path.extension("/tmp/flux.", show))
     print(path.stem("/tmp/.env", show))
     print(path.stem("/tmp/flux.txt", show))
     print(path.normalize("/tmp/flux/../cache//./item", show))
@@ -62,8 +63,12 @@ fn main() -> i64 {
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
-    assert!(generated.contains("flux__path_extension_or_stem(\"/tmp/flux.txt\", true, flux__fn_show)"));
-    assert!(generated.contains("flux__path_extension_or_stem(\"/tmp/.env\", false, flux__fn_show)"));
+    assert!(
+        generated.contains("flux__path_extension_or_stem(\"/tmp/flux.txt\", true, flux__fn_show)")
+    );
+    assert!(
+        generated.contains("flux__path_extension_or_stem(\"/tmp/.env\", false, flux__fn_show)")
+    );
     assert!(
         generated.contains("flux__path_normalize(\"/tmp/flux/../cache//./item\", flux__fn_show)")
     );
@@ -94,7 +99,7 @@ fn main() -> i64 {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n.txt\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
+        "true\n/tmp/flux\nnil\n/tmp\nnil\nflux\nnil\n.txt\nnil\n\nnil\n.env\nnil\nflux\nnil\n/tmp/cache/item\nnil\n"
     );
     let _ = fs::remove_dir_all(&root);
 
