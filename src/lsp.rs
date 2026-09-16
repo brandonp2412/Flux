@@ -632,6 +632,7 @@ fn whole_document_range(source: &str, encoding: PositionEncoding) -> JsonValue {
 
 const COMPLETION_KEYWORDS: &[&str] = &[
     "fn",
+    "pure",
     "let",
     "var",
     "return",

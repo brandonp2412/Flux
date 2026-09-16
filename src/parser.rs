@@ -5136,6 +5136,7 @@ fn validate_identifier(input: &str, line: usize) -> Result<(), Diagnostic> {
             | "extern"
             | "unsafe"
             | "async"
+            | "pure"
             | "await"
             | "borrow"
             | "true"
