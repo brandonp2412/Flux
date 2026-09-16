@@ -861,6 +861,24 @@ impl ModuleParseCache {
     }
 }
 
+fn normalize_overlay_paths(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {
+    overlays
+        .iter()
+        .map(|(path, source)| {
+            let normalized = fs::canonicalize(path).unwrap_or_else(|_| {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    std::env::current_dir()
+                        .map(|directory| directory.join(path))
+                        .unwrap_or_else(|_| path.clone())
+                }
+            });
+            (normalized, source.clone())
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub struct ProjectAnalysisCache {
     entries: HashMap<PathBuf, CachedProjectAnalysis>,
@@ -880,8 +898,15 @@ impl ProjectAnalysisCache {
         overlays: &HashMap<PathBuf, String>,
     ) -> Result<ProjectAnalysis, Vec<Diagnostic>> {
         let key = cache_target_key(target)?;
+        // Loader source identities are canonical paths.  Normalize overlay
+        // keys at this boundary as well so editor clients may supply a
+        // relative path, a path containing `.`/`..`, or a symlink spelling
+        // without making the cache compare the overlay against the wrong
+        // source.  Without this, a changed overlay could be ignored on a
+        // cache hit while the loader itself correctly used it on a miss.
+        let overlays = normalize_overlay_paths(overlays);
         if let Some(entry) = self.entries.get(&key)
-            && cached_analysis_is_current(&key, entry, overlays)
+            && cached_analysis_is_current(&key, entry, &overlays)
             && !self.entry_is_invalidated(&key, entry)
         {
             self.hits += 1;
@@ -892,7 +917,7 @@ impl ProjectAnalysisCache {
         let previous = self.entries.get(&key).cloned();
         let report = load_report_with_overlays_and_parse_cache(
             target,
-            overlays,
+            &overlays,
             Some(&mut self.module_parses),
             codegen::NativeTarget::Linux,
         )?;
@@ -5723,6 +5748,7 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
 mod tests {
     use super::{module_type_surface, remove_cache_artifact_if_unchanged};
     use crate::diagnostic::SourceId;
+    use std::collections::HashMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5823,6 +5849,46 @@ mod tests {
 
         assert_eq!(cache.incremental_typecheck_stats().full_runs, 2);
         assert_eq!(cache.incremental_typecheck_stats().runs, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn overlay_path_spellings_share_canonical_incremental_cache_identity() {
+        let root = test_path("overlay-path-identity");
+        fs::create_dir_all(&root).expect("temporary cache project should be writable");
+        let dependency = root.join("dependency.flux");
+        let entry = root.join("main.flux");
+        fs::write(&dependency, "pub fn value() -> i64 {\n    return 1\n}\n")
+            .expect("dependency should be writable");
+        fs::write(
+            &entry,
+            "import \"dependency.flux\"\nfn main() -> i64 {\n    return value()\n}\n",
+        )
+        .expect("entry should be writable");
+
+        let mut cache = super::ProjectAnalysisCache::default();
+        cache
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("initial project should analyze");
+
+        let noncanonical = root.join(".").join("dependency.flux");
+        let mut overlays = HashMap::new();
+        overlays.insert(
+            noncanonical,
+            "pub fn value() -> i64 {\n    return 2\n}\n".to_string(),
+        );
+        cache
+            .analyze_with_overlays(&entry, &overlays)
+            .expect("overlay project should analyze");
+
+        assert_eq!(cache.incremental_typecheck_stats().full_runs, 1);
+        assert_eq!(cache.incremental_typecheck_stats().runs, 1);
+        assert_eq!(cache.incremental_typecheck_stats().rechecked_modules, 1);
+        assert_eq!(
+            cache.module_parse_stats().hits,
+            1,
+            "unchanged entry parse is reused while the changed overlay is reparsed"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
