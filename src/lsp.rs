@@ -1743,6 +1743,20 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "extension",
+            3,
+            "fn path.extension(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "stem",
+            3,
+            "fn path.stem(value: str, callback: fn(str) -> void) -> error",
+        );
+        push_completion_item(
+            items,
+            seen,
             "normalize",
             3,
             "fn path.normalize(value: str, callback: fn(str) -> void) -> error",
@@ -4052,7 +4066,7 @@ fn signature_help_for_document_cached(
                     "error",
                     active_parameter,
                 )),
-                "dirname" | "basename" | "normalize" => Some(signature_help_for_builtin(
+                "dirname" | "basename" | "extension" | "stem" | "normalize" => Some(signature_help_for_builtin(
                     &format!("path.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
                     "error",
@@ -8913,6 +8927,13 @@ mod tests {
         assert!(
             path_items
                 .contains("fn path.normalize(value: str, callback: fn(str) -> void) -> error")
+        );
+        assert!(
+            path_items
+                .contains("fn path.extension(value: str, callback: fn(str) -> void) -> error")
+        );
+        assert!(
+            path_items.contains("fn path.stem(value: str, callback: fn(str) -> void) -> error")
         );
 
         let directory_line = source

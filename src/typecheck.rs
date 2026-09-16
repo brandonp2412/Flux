@@ -12928,7 +12928,7 @@ fn check_qualified_call(
                 require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
                 return Ok(vec![Type::Bool]);
             }
-            "join" | "dirname" | "basename" | "normalize" => {
+            "join" | "dirname" | "basename" | "extension" | "stem" | "normalize" => {
                 let expected_args = if name == "join" { 3 } else { 2 };
                 if args.len() != expected_args {
                     return Err(diag(
