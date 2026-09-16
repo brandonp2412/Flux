@@ -1368,6 +1368,8 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified UDP peer-text bounds follow-up: `net.sendTextTo` and `net.sendTextToParts` now validate borrowed hosts, payloads, and fragments with the same 65536-byte bounded scans used by the rest of the text socket surface before DNS resolution or socket transmission. Generated-C coverage pins the peer-host rejection paths, while the existing native loopback tests remain green; owned byte buffers, queued backpressure, and task-integrated event-loop I/O remain open.
 
+# Verified JSON fixed-escape-width follow-up: compiler-generated JSON string, array, and object encoders copy each selected JSON escape literal using its statically known two-byte width instead of rescanning compiler-owned literals with `strlen`; native output and maximum-expansion coverage remain unchanged, while owned dynamic JSON values and escaping results remain open.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

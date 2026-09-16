@@ -19731,6 +19731,10 @@ fn main() -> i64 {
     assert!(generated.contains("JSON object key contains invalid UTF-8"));
     assert!(generated.contains("JSON container expects ',' or its closing delimiter"));
     assert!(generated.contains("JSON string has an invalid escape"));
+    assert!(
+        !generated.contains("size_t count = strlen(escape)"),
+        "JSON encoders should use the fixed two-byte escape width without a runtime scan"
+    );
     let root = std::env::temp_dir().join(format!("flux-json-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("temporary JSON directory should be writable");
