@@ -3138,7 +3138,7 @@ fn msix_block_map_xml(root: &Path) -> Result<String, CliError> {
 }
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, CliError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(CliError::Message(
             "MSIX block-map hash has an invalid hexadecimal length".to_string(),
         ));

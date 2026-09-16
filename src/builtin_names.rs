@@ -292,7 +292,7 @@ pub fn qualified_impl<'a>(namespace: &str, name: &'a str) -> &'a str {
     }
 }
 
-pub fn global<'a>(name: &'a str) -> &'a str {
+pub fn global(name: &str) -> &str {
     match name {
         "filter" => "where",
         "every" => "all",
@@ -305,7 +305,7 @@ pub fn global<'a>(name: &'a str) -> &'a str {
     }
 }
 
-pub fn global_impl<'a>(name: &'a str) -> &'a str {
+pub fn global_impl(name: &str) -> &str {
     match name {
         "all" => "every",
         "merge" => "concat",
@@ -317,7 +317,7 @@ pub fn global_impl<'a>(name: &'a str) -> &'a str {
     }
 }
 
-pub fn list_member<'a>(name: &'a str) -> &'a str {
+pub fn list_member(name: &str) -> &str {
     match name {
         "length" => "count",
         "isEmpty" => "empty",
@@ -327,7 +327,7 @@ pub fn list_member<'a>(name: &'a str) -> &'a str {
     }
 }
 
-pub fn list_member_impl<'a>(name: &'a str) -> &'a str {
+pub fn list_member_impl(name: &str) -> &str {
     match name {
         "count" => "length",
         "empty" => "isEmpty",
