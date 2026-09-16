@@ -149,10 +149,33 @@ pub struct ControlFlowValue {
     pub producer: ControlFlowNodeId,
     pub result_index: Option<usize>,
     pub ty: Type,
+    /// Ownership classification for the produced value.  Keeping this next
+    /// to the typed value means ownership consumers do not need to rediscover
+    /// whether a value is a copy or a borrowed collection descriptor from the
+    /// source AST.  Owned values are intentionally not represented yet: the
+    /// bootstrap type system rejects them until transfer and drop semantics
+    /// are available.
+    pub ownership: ControlFlowValueOwnership,
     pub span: SourceSpan,
     pub kind: ControlFlowValueKind,
     pub source_constant: Option<ConstantValue>,
     pub constant: Option<ConstantValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ControlFlowValueOwnership {
+    Copy,
+    ImmutableBorrow,
+}
+
+impl ControlFlowValueOwnership {
+    pub const fn is_copy(self) -> bool {
+        matches!(self, Self::Copy)
+    }
+
+    pub const fn is_borrow(self) -> bool {
+        matches!(self, Self::ImmutableBorrow)
+    }
 }
 
 /// The evaluation effect of a typed value.
@@ -838,6 +861,11 @@ impl ControlFlowGraph {
 
     pub fn value(&self, id: ControlFlowValueId) -> Option<&ControlFlowValue> {
         self.values.get(id.0)
+    }
+
+    /// Return the normalized ownership class for a typed value.
+    pub fn value_ownership(&self, id: ControlFlowValueId) -> Option<ControlFlowValueOwnership> {
+        self.value(id).map(|value| value.ownership)
     }
 
     /// Return whether a reachable typed value is a pure scalar expression.
@@ -3343,11 +3371,13 @@ impl<'a> ControlFlowBuilder<'a> {
             .enumerate()
             .map(|(index, ty)| {
                 let id = ControlFlowValueId(self.values.len());
+                let ownership = value_ownership(&self.signatures, &ty);
                 self.values.push(ControlFlowValue {
                     id,
                     producer,
                     result_index: is_result.then_some(index),
                     ty,
+                    ownership,
                     span,
                     kind: kind.clone(),
                     source_constant: scalar.then(|| constant.clone()).flatten(),
@@ -5458,6 +5488,21 @@ fn value_use_is_reachable(
         | ControlFlowValueRegionKind::LoopCondition { .. }
         | ControlFlowValueRegionKind::LoopBody { .. }
         | ControlFlowValueRegionKind::DeferredBody => true,
+    }
+}
+
+fn value_ownership(
+    signatures: &Signatures,
+    ty: &Type,
+) -> ControlFlowValueOwnership {
+    if signatures.is_copy_type(ty) {
+        ControlFlowValueOwnership::Copy
+    } else {
+        // Every currently admitted non-Copy value is a borrowed collection
+        // descriptor.  Keep this conservative fallback explicit so a future
+        // owned value cannot accidentally inherit borrow semantics when its
+        // type is added to the language.
+        ControlFlowValueOwnership::ImmutableBorrow
     }
 }
 

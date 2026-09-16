@@ -15,7 +15,8 @@ use fluxc::formatter::format_source;
 use fluxc::ir::{
     ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
     ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
-    ControlFlowValueRegionKind, ControlFlowValueUseKind, OwnershipCallArgumentKind,
+    ControlFlowValueOwnership, ControlFlowValueRegionKind, ControlFlowValueUseKind,
+    OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -123,6 +124,7 @@ fn main() -> i64 {
     print(first)
     return 0
 }
+
 "#;
     let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("drop-point fixture should typecheck");
@@ -152,6 +154,44 @@ fn main() -> i64 {
         drops[0].1.value,
         "release value identity must match the definition value query"
     );
+}
+
+#[test]
+fn ownership_ir_classifies_each_typed_value_without_ast_reinspection() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [4, 8]
+    let count: i64 = values.count
+    return count
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("value ownership fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+
+    let list_values = graph
+        .values()
+        .iter()
+        .filter(|value| matches!(value.ty, Type::List(_)))
+        .collect::<Vec<_>>();
+    assert!(!list_values.is_empty(), "the list producer should be in typed IR");
+    assert!(list_values
+        .iter()
+        .all(|value| value.ownership == ControlFlowValueOwnership::ImmutableBorrow));
+
+    let scalar_values = graph
+        .values()
+        .iter()
+        .filter(|value| value.ty == Type::I64)
+        .collect::<Vec<_>>();
+    assert!(!scalar_values.is_empty(), "scalar values should be in typed IR");
+    assert!(scalar_values
+        .iter()
+        .all(|value| value.ownership == ControlFlowValueOwnership::Copy));
+    assert!(scalar_values.iter().all(|value| value.ownership.is_copy()));
+    assert!(list_values.iter().all(|value| value.ownership.is_borrow()));
 }
 
 #[test]
