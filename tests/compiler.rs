@@ -52690,7 +52690,8 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("/dev/urandom"));
-    assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
+    assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
+    assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
     assert!(generated.contains("flux__websocket_write_control"));
     assert!(generated.contains("WebSocket control frame must be final and at most 125 bytes"));
