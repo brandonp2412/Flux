@@ -20375,6 +20375,26 @@ fn main() -> i64 {
 }
 
 #[test]
+fn json_collection_encoders_guard_borrowed_descriptor_strides() {
+    let source = r#"
+fn encoded(value: str) -> void {
+    print(value)
+}
+fn main() -> i64 {
+    let values: i64[][] = [[1, 2], [3]]
+    let encodingError: error = json.encodeArray(values, encoded)
+    print(encodingError)
+    return 0
+}
+"#;
+    check_source(source).expect("nested JSON arrays should typecheck");
+    let generated = compile_to_c(source).expect("nested JSON arrays should lower");
+    assert!(generated.contains("JSON array has invalid element stride"));
+    assert!(generated.contains("JSON nested array has invalid element stride"));
+    assert!(generated.contains("JSON object has invalid element stride"));
+}
+
+#[test]
 fn json_optional_maps_inside_arrays_and_maps_encode_natively() {
     let source = r#"
 fn encoded(value: str) -> void {
