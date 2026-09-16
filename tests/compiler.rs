@@ -5878,6 +5878,12 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("HTTP custom-header request should lower");
     assert!(generated.contains("flux__net_http_send_text_request_with_headers("));
     assert!(generated.contains("HTTP custom headers cannot override framing headers"));
+    assert!(generated.contains(
+        "if (headers == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";"
+    ));
+    assert!(generated.contains(
+        "if (method == NULL || target == NULL || host == NULL || content_type == NULL) return \"invalid HTTP text argument\";"
+    ));
 
     let invalid_type = check_source(
         "fn main() -> i64 {\n    print(http.sendTextRequestWithHeaders(1, \"GET\", \"/\", \"example.test\", \"text/plain\", \"\", false))\n    return 0\n}\n",
@@ -6851,6 +6857,9 @@ fn main() -> i64 {
     assert!(generated.contains("Content-Length: %zu"));
     assert!(generated.contains("Connection: %s"));
     assert!(generated.contains("keep_alive ? \"keep-alive\" : \"close\""));
+    assert!(generated.contains(
+        "if (content_type == NULL) return \"invalid HTTP text argument\";"
+    ));
     assert!(generated.contains("#include <sys/socket.h>"));
 
     let invalid_status = check_source(

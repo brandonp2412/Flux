@@ -1484,6 +1484,7 @@ pub fn emit_c_for_target_with_source_metadata(
             && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
         uses_windows_font_family,
     );
+    harden_generated_http_text_argument_checks(&mut out);
 
     for definition in &program.structs {
         if reachable_value_types.contains(&definition.name) {
@@ -1725,6 +1726,21 @@ pub fn emit_c_for_target_with_source_metadata(
     out.push_str(&application_body);
 
     Ok(out)
+}
+
+fn harden_generated_http_text_argument_checks(out: &mut String) {
+    let method_guard = "if (method[0] == '\\0')";
+    let method_guard_with_null = "if (method == NULL || target == NULL || host == NULL || content_type == NULL) return \"invalid HTTP text argument\"; if (method[0] == '\\0')";
+    *out = out.replace(method_guard, method_guard_with_null);
+
+    let header_scan = "size_t headers_length = 0;\n    while (headers_length <= 8192";
+    let header_scan_with_null = "if (headers == NULL || content_type == NULL || body == NULL) return \"invalid HTTP text argument\";\n    size_t headers_length = 0;\n    while (headers_length <= 8192";
+    *out = out.replace(header_scan, header_scan_with_null);
+
+    let response_content_guard =
+        "if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL)";
+    let response_content_guard_with_null = "if (content_type == NULL) return \"invalid HTTP text argument\"; if (strchr(content_type, '\\r') != NULL || strchr(content_type, '\\n') != NULL)";
+    *out = out.replace(response_content_guard, response_content_guard_with_null);
 }
 
 fn emit_runtime_prelude(
