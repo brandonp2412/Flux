@@ -13,11 +13,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use fluxc::ast::Type;
 use fluxc::formatter::format_source;
 use fluxc::ir::{
-    ControlFlowDefinitionId, ControlFlowEdgeKind, ControlFlowEvaluationKind, ControlFlowNodeKind,
-    ControlFlowBorrowBoundary, ControlFlowOwnershipEvent, ControlFlowValueEffect,
-    ControlFlowValueKind,
-    ControlFlowValueOwnership, ControlFlowValueRegionKind, ControlFlowValueUseKind,
-    OwnershipCallArgumentKind,
+    ControlFlowBorrowBoundary, ControlFlowDefinitionId, ControlFlowEdgeKind,
+    ControlFlowEvaluationKind, ControlFlowNodeKind, ControlFlowOwnershipEvent,
+    ControlFlowValueEffect, ControlFlowValueKind, ControlFlowValueOwnership,
+    ControlFlowValueRegionKind, ControlFlowValueUseKind, OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -16243,14 +16242,18 @@ fn main() -> i64 {
     let graph = database
         .control_flow_graph("main")
         .expect("collection borrow fixture should expose a CFG");
-    assert!(graph
-        .borrow_lifetimes()
-        .iter()
-        .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "values"));
-    assert!(graph
-        .borrow_lifetimes()
-        .iter()
-        .any(|lifetime| lifetime.borrower == "entriesView" && lifetime.source == "entries"));
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "view" && lifetime.source == "values")
+    );
+    assert!(
+        graph
+            .borrow_lifetimes()
+            .iter()
+            .any(|lifetime| lifetime.borrower == "entriesView" && lifetime.source == "entries")
+    );
 
     let live = r#"
 fn main() -> i64 {
@@ -32203,11 +32206,19 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &log,
         &[
             "version-two",
+            "reload: incremental analysis rechecked 1 module",
+            "reload: incremental codegen reused 1 function and regenerated 1",
             "reload: rebuilt and restarted after source change",
         ],
         Duration::from_secs(5),
     );
     wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
+    let status = fs::read_to_string(&status_path).expect("run status should remain readable");
+    assert!(status.contains("\"analysis\":\"incremental\""));
+    assert!(status.contains("\"rechecked_modules\":1"));
+    assert!(status.contains("\"codegen\":\"incremental\""));
+    assert!(status.contains("\"reused_functions\":1"));
+    assert!(status.contains("\"regenerated_functions\":1"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -34797,6 +34808,54 @@ fn project_analysis_cache_invalidates_missing_watched_modules() {
 }
 
 #[test]
+fn project_analysis_cache_preserves_durable_codegen_reuse_across_runner_caches() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-durable-run-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary durable-codegen project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(&entry, "fn main() -> i64 { 42 }\n").expect("entry should be writable");
+
+    let overlays = std::collections::HashMap::new();
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first_analysis = first_cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("initial durable-cache analysis should succeed");
+    let first_c = first_cache
+        .emit_c_for_target_cached(&entry, &first_analysis, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial durable-cache codegen should succeed");
+    assert_eq!(
+        first_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
+    let second_analysis = second_cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("cold runner analysis should succeed");
+    assert_eq!(
+        second_cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+    );
+    let second_c = second_cache
+        .emit_c_for_target_cached(
+            &entry,
+            &second_analysis,
+            fluxc::codegen::NativeTarget::Linux,
+        )
+        .expect("cold runner should reuse the validated generated-C artifact");
+    assert_eq!(first_c, second_c);
+    assert_eq!(
+        second_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Cached)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_clear_discards_parsed_module_entries() {
     let root =
         std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));
@@ -35091,9 +35150,16 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     .expect("entry should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
-    cache
+    let initial = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial analysis should succeed");
+    let initial_c = cache
+        .emit_c_for_target_cached(&entry, &initial, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial codegen should succeed");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
     assert_eq!(
         cache.incremental_typecheck_stats(),
         fluxc::project::IncrementalTypecheckStats {
@@ -35128,7 +35194,7 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
     fs::write(&dependency, "pub fn value() -> i64 { 2 }\n")
         .expect("valid body update should be writable");
     cache.invalidate_path(&dependency);
-    cache
+    let updated = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("valid body-only edit should reuse the prior typed graph");
     assert_eq!(
@@ -35138,6 +35204,23 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
             rechecked_modules: 2,
             full_runs: 1,
         }
+    );
+    let incremental_c = cache
+        .emit_c_for_target_cached(&entry, &updated, fluxc::codegen::NativeTarget::Linux)
+        .expect("body-only codegen should reuse unchanged function fragments");
+    assert_ne!(initial_c, incremental_c);
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 1,
+            regenerated_functions: 1,
+        })
+    );
+    assert_eq!(
+        incremental_c,
+        updated
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("fresh full codegen should match incremental codegen exactly")
     );
 
     fs::write(&dependency, "pub fn value() -> str { \"changed\" }\n")
@@ -53482,7 +53565,9 @@ fn main() -> i64 {
     assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("flux__websocket_find_bytes(const char *value, size_t length"));
-    assert!(generated.contains("flux__websocket_find_bytes(response, response_length, \"\\r\\n\", 2)"));
+    assert!(
+        generated.contains("flux__websocket_find_bytes(response, response_length, \"\\r\\n\", 2)")
+    );
     assert!(generated.contains("flux__websocket_find_bytes(cursor, remaining, \"\\r\\n\", 2)"));
     assert!(!generated.contains("char *status_end = strstr(response, \"\\r\\n\")"));
     assert!(generated.contains("/dev/urandom"));

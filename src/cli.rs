@@ -5111,7 +5111,12 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             "source change detected; recompiling",
         );
         eprintln!("reload: source change detected; recompiling");
-        let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
+        let analysis_result = analysis_cache.analyze_with_overlays(target, &HashMap::new());
+        let analysis_outcome = analysis_cache.last_outcome();
+        if let Some(outcome) = analysis_outcome {
+            eprintln!("reload: {}", development_analysis_summary(outcome));
+        }
+        let analysis = match analysis_result {
             Ok(analysis) => analysis,
             Err(diagnostics) => {
                 let (_, sources) = fluxc::project::check_with_sources(target);
@@ -5131,7 +5136,11 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             }
         };
         let sources = analysis.sources.clone();
-        let generated = match analysis.emit_c_cached(target) {
+        let generated = match analysis_cache.emit_c_for_target_cached(
+            target,
+            &analysis,
+            fluxc::codegen::NativeTarget::Linux,
+        ) {
             Ok(generated) => generated,
             Err(diagnostic) => {
                 report_diagnostics(target, &[diagnostic], &sources);
@@ -5149,6 +5158,10 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 continue;
             }
         };
+        let codegen_outcome = analysis_cache.last_codegen_outcome();
+        if let Some(outcome) = codegen_outcome {
+            eprintln!("reload: {}", development_codegen_summary(outcome));
+        }
         generation += 1;
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
@@ -5167,12 +5180,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
-        write_development_status(
+        write_development_status_with_build(
             target,
             "restarted",
             generation,
             mode,
             "rebuilt and restarted after source change",
+            analysis_outcome,
+            codegen_outcome,
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
@@ -5186,6 +5201,47 @@ fn write_development_status(
     mode: BuildMode,
     message: &str,
 ) {
+    write_development_status_with_build(target, state, generation, mode, message, None, None);
+}
+
+fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
+    match outcome {
+        fluxc::project::ProjectAnalysisOutcome::Cached => {
+            "analysis reused cached graph".to_string()
+        }
+        fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules } => format!(
+            "incremental analysis rechecked {rechecked_modules} module{}",
+            if rechecked_modules == 1 { "" } else { "s" }
+        ),
+        fluxc::project::ProjectAnalysisOutcome::Full => {
+            "analysis performed full typecheck".to_string()
+        }
+    }
+}
+
+fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -> String {
+    match outcome {
+        fluxc::project::ProjectCodegenOutcome::Cached => "codegen reused cached C".to_string(),
+        fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions,
+            regenerated_functions,
+        } => format!(
+            "incremental codegen reused {reused_functions} function{} and regenerated {regenerated_functions}",
+            if reused_functions == 1 { "" } else { "s" }
+        ),
+        fluxc::project::ProjectCodegenOutcome::Full => "codegen emitted full C".to_string(),
+    }
+}
+
+fn write_development_status_with_build(
+    target: &Path,
+    state: &str,
+    generation: usize,
+    mode: BuildMode,
+    message: &str,
+    analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
+    codegen_outcome: Option<fluxc::project::ProjectCodegenOutcome>,
+) {
     let Ok(path) = fluxc::project::development_status_path(target) else {
         return;
     };
@@ -5193,12 +5249,39 @@ fn write_development_status(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
+    let analysis_fields = match analysis_outcome {
+        Some(fluxc::project::ProjectAnalysisOutcome::Cached) => {
+            ",\"analysis\":\"cached\",\"rechecked_modules\":0".to_string()
+        }
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental { rechecked_modules }) => {
+            format!(",\"analysis\":\"incremental\",\"rechecked_modules\":{rechecked_modules}")
+        }
+        Some(fluxc::project::ProjectAnalysisOutcome::Full) => {
+            ",\"analysis\":\"full\",\"rechecked_modules\":0".to_string()
+        }
+        None => String::new(),
+    };
+    let codegen_fields = match codegen_outcome {
+        Some(fluxc::project::ProjectCodegenOutcome::Cached) => {
+            ",\"codegen\":\"cached\"".to_string()
+        }
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions,
+            regenerated_functions,
+        }) => format!(
+            ",\"codegen\":\"incremental\",\"reused_functions\":{reused_functions},\"regenerated_functions\":{regenerated_functions}"
+        ),
+        Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"".to_string(),
+        None => String::new(),
+    };
     let payload = format!(
-        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}}}\n",
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{}{} }}\n",
         json_string(state),
         json_string(mode.name()),
         std::process::id(),
         json_string(message),
+        analysis_fields,
+        codegen_fields,
     );
     let temp = path.with_file_name(format!(
         ".{}.{}.tmp",
@@ -5251,7 +5334,11 @@ fn start_development_build(
         }
     };
     let sources = analysis.sources.clone();
-    let generated = match analysis.emit_c_cached(target) {
+    let generated = match analysis_cache.emit_c_for_target_cached(
+        target,
+        &analysis,
+        fluxc::codegen::NativeTarget::Linux,
+    ) {
         Ok(generated) => generated,
         Err(diagnostic) => {
             report_diagnostics(target, &[diagnostic], &sources);

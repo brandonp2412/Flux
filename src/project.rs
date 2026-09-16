@@ -55,43 +55,47 @@ impl ProjectAnalysis {
         target: &Path,
         native_target: codegen::NativeTarget,
     ) -> Result<String, Diagnostic> {
+        if let Some(generated) = self.read_cached_c_for_target(target, native_target) {
+            return Ok(generated);
+        }
+        let fingerprint = codegen_cache_fingerprint(self, native_target);
+        persist_typed_ir_manifest(self, target, native_target, fingerprint);
+        let generated = self.emit_c_for_target(native_target)?;
+        self.store_cached_c_for_target(target, native_target, &generated);
+        Ok(generated)
+    }
+
+    fn read_cached_c_for_target(
+        &self,
+        target: &Path,
+        native_target: codegen::NativeTarget,
+    ) -> Option<String> {
         let fingerprint = codegen_cache_fingerprint(self, native_target);
         let path = codegen_cache_path(target, fingerprint);
         let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
-        if let Ok(cached) = fs::read_to_string(&path) {
-            if let Some((header, generated)) = cached.split_once('\n')
-                && let Some(checksum) = header.strip_prefix(&header_prefix)
-                && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
-            {
-                // The generated-C artifact and the typed-IR manifest are
-                // published independently. A manual cleanup, interrupted
-                // copy, or older compiler may therefore leave a valid native
-                // artifact without the durable IR metadata that tooling and
-                // future incremental consumers rely on. Repair only that
-                // exceptional case; ordinary cache hits remain bounded to a
-                // single artifact read and checksum validation.
-                if !typed_ir_manifest_is_current(self, target, native_target, fingerprint) {
-                    persist_typed_ir_manifest(self, target, native_target, fingerprint);
-                }
-                return Ok(generated.to_string());
+        let cached = fs::read_to_string(&path).ok()?;
+        if let Some((header, generated)) = cached.split_once('\n')
+            && let Some(checksum) = header.strip_prefix(&header_prefix)
+            && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
+        {
+            if !typed_ir_manifest_is_current(self, target, native_target, fingerprint) {
+                persist_typed_ir_manifest(self, target, native_target, fingerprint);
             }
-            // A corrupt or stale artifact is not usable, but leaving it in
-            // place makes every subsequent build pay the same failed parse
-            // and checksum cost. Remove it only if the bytes we inspected
-            // are still there: another process may have atomically published
-            // a valid replacement between the read and this cleanup.
-            remove_cache_artifact_if_unchanged(&path, &cached);
+            return Some(generated.to_string());
         }
+        remove_cache_artifact_if_unchanged(&path, &cached);
+        None
+    }
 
-        // The normalized IR manifest is useful on a codegen miss, but it is
-        // not part of validating a complete generated-C artifact.  Keep the
-        // hit path strictly bounded to reading and checking that artifact:
-        // rebuilding every function CFG here otherwise turns a native cache
-        // hit back into a full semantic/codegen walk.  A miss still publishes
-        // the manifest before native generation so tooling gets a consistent
-        // view even when native emission later fails.
-        persist_typed_ir_manifest(self, target, native_target, fingerprint);
-        let generated = self.emit_c_for_target(native_target)?;
+    fn store_cached_c_for_target(
+        &self,
+        target: &Path,
+        native_target: codegen::NativeTarget,
+        generated: &str,
+    ) {
+        let fingerprint = codegen_cache_fingerprint(self, native_target);
+        let path = codegen_cache_path(target, fingerprint);
+        let header_prefix = format!("{PROJECT_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
         let header = format!(
             "{header_prefix}{:016x}\n",
             stable_bytes_hash(generated.as_bytes())
@@ -99,22 +103,11 @@ impl ProjectAnalysis {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        // A target directory may be shared by concurrent `flux build`/`flux
-        // run` processes.  A PID is not sufficient to distinguish writers in
-        // containers or separate PID namespaces, and a colliding temporary
-        // name lets one writer remove another writer's artifact after rename
-        // fails.  The timestamp is only a name component; cache correctness
-        // still comes from the validated header and atomic rename.
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
-        // Persist the complete artifact before publishing its name. A rename
-        // alone prevents readers from observing a partial file, but without a
-        // synced temporary file a power loss could still leave the published
-        // cache entry pointing at incomplete bytes. Cache misses are safe, so
-        // failure to persist remains non-fatal to the build.
         let persisted = File::create(&temporary)
             .and_then(|mut file| {
                 file.write_all(header.as_bytes())?;
@@ -128,7 +121,6 @@ impl ProjectAnalysis {
             }
             prune_codegen_cache(path.parent(), &path);
         }
-        Ok(generated)
     }
 
     pub fn emit_c_header(&self) -> Result<String, Diagnostic> {
@@ -158,6 +150,32 @@ impl ProjectAnalysis {
             &source_modules,
             &self.translations,
             target,
+        )
+    }
+
+    fn emit_c_for_target_with_function_cache(
+        &self,
+        target: codegen::NativeTarget,
+        cache: &mut codegen::FunctionCodegenCache,
+    ) -> Result<(String, codegen::FunctionCodegenStats), Diagnostic> {
+        let source_paths = self
+            .sources
+            .iter()
+            .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
+            .collect::<HashMap<_, _>>();
+        let source_modules = self
+            .sources
+            .iter()
+            .map(|source| (source.source_id, source.module_name.clone()))
+            .collect::<HashMap<_, _>>();
+        codegen::emit_c_for_target_with_source_metadata_cached(
+            &self.program,
+            &self.signatures,
+            &source_paths,
+            &source_modules,
+            &self.translations,
+            target,
+            cache,
         )
     }
 }
@@ -808,6 +826,23 @@ pub struct IncrementalTypecheckStats {
     pub full_runs: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectAnalysisOutcome {
+    Cached,
+    Incremental { rechecked_modules: usize },
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectCodegenOutcome {
+    Cached,
+    Incremental {
+        reused_functions: usize,
+        regenerated_functions: usize,
+    },
+    Full,
+}
+
 #[derive(Debug, Clone)]
 struct CachedProjectAnalysis {
     analysis: ProjectAnalysis,
@@ -899,6 +934,10 @@ pub struct ProjectAnalysisCache {
     incremental_typecheck_runs: usize,
     incremental_typecheck_modules: usize,
     full_typecheck_runs: usize,
+    last_outcome: Option<ProjectAnalysisOutcome>,
+    generated_c: HashMap<(PathBuf, u8), String>,
+    function_codegen: HashMap<(PathBuf, u8), codegen::FunctionCodegenCache>,
+    last_codegen_outcome: Option<ProjectCodegenOutcome>,
 }
 
 impl ProjectAnalysisCache {
@@ -920,6 +959,7 @@ impl ProjectAnalysisCache {
             && !self.entry_is_invalidated(&key, entry)
         {
             self.hits += 1;
+            self.last_outcome = Some(ProjectAnalysisOutcome::Cached);
             return Ok(entry.analysis.clone());
         }
 
@@ -962,6 +1002,7 @@ impl ProjectAnalysisCache {
             (previous.as_ref(), incremental_sources.as_ref())
         {
             if changed_sources.is_empty() {
+                self.last_outcome = Some(ProjectAnalysisOutcome::Cached);
                 // A watcher may invalidate a path for an editor save even when
                 // the resulting bytes are unchanged. The loader has already
                 // reparsed the graph and reported parse errors above; with an
@@ -981,6 +1022,9 @@ impl ProjectAnalysisCache {
             } else {
                 self.incremental_typecheck_runs += 1;
                 self.incremental_typecheck_modules += changed_sources.len();
+                self.last_outcome = Some(ProjectAnalysisOutcome::Incremental {
+                    rechecked_modules: changed_sources.len(),
+                });
                 typecheck::check_changed_sources_with_signatures(
                     &report.program,
                     &previous.analysis.signatures,
@@ -995,6 +1039,7 @@ impl ProjectAnalysisCache {
             }
         } else {
             self.full_typecheck_runs += 1;
+            self.last_outcome = Some(ProjectAnalysisOutcome::Full);
             analyze_with_overlays_report(report)?
         };
         self.entries.insert(
@@ -1055,6 +1100,10 @@ impl ProjectAnalysisCache {
         self.entries.clear();
         self.module_parses.clear_entries();
         self.invalidated_paths.clear();
+        self.generated_c.clear();
+        self.function_codegen.clear();
+        self.last_outcome = None;
+        self.last_codegen_outcome = None;
     }
 
     pub const fn stats(&self) -> ProjectAnalysisCacheStats {
@@ -1074,6 +1123,68 @@ impl ProjectAnalysisCache {
             rechecked_modules: self.incremental_typecheck_modules,
             full_runs: self.full_typecheck_runs,
         }
+    }
+
+    pub const fn last_outcome(&self) -> Option<ProjectAnalysisOutcome> {
+        self.last_outcome
+    }
+
+    pub fn emit_c_for_target_cached(
+        &mut self,
+        target: &Path,
+        analysis: &ProjectAnalysis,
+        native_target: codegen::NativeTarget,
+    ) -> Result<String, Diagnostic> {
+        let key = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        let target_key = match native_target {
+            codegen::NativeTarget::Linux => 0,
+            codegen::NativeTarget::Android => 1,
+            codegen::NativeTarget::Windows => 2,
+        };
+        let cache_key = (key, target_key);
+        if self.last_outcome == Some(ProjectAnalysisOutcome::Cached)
+            && let Some(generated) = self.generated_c.get(&cache_key)
+        {
+            self.last_codegen_outcome = Some(ProjectCodegenOutcome::Cached);
+            return Ok(generated.clone());
+        }
+        if self.last_outcome == Some(ProjectAnalysisOutcome::Full)
+            && let Some(generated) = analysis.read_cached_c_for_target(target, native_target)
+        {
+            self.generated_c
+                .insert(cache_key.clone(), generated.clone());
+            self.function_codegen.remove(&cache_key);
+            self.last_codegen_outcome = Some(ProjectCodegenOutcome::Cached);
+            return Ok(generated);
+        }
+
+        let function_cache = self.function_codegen.entry(cache_key.clone()).or_default();
+        if !matches!(
+            self.last_outcome,
+            Some(ProjectAnalysisOutcome::Incremental { .. })
+        ) {
+            function_cache.clear();
+        }
+        let fingerprint = codegen_cache_fingerprint(analysis, native_target);
+        persist_typed_ir_manifest(analysis, target, native_target, fingerprint);
+        let (generated, stats) =
+            analysis.emit_c_for_target_with_function_cache(native_target, function_cache)?;
+        analysis.store_cached_c_for_target(target, native_target, &generated);
+        self.generated_c.insert(cache_key, generated.clone());
+        self.last_codegen_outcome = Some(match self.last_outcome {
+            Some(ProjectAnalysisOutcome::Incremental { .. }) => {
+                ProjectCodegenOutcome::Incremental {
+                    reused_functions: stats.reused_functions,
+                    regenerated_functions: stats.regenerated_functions,
+                }
+            }
+            _ => ProjectCodegenOutcome::Full,
+        });
+        Ok(generated)
+    }
+
+    pub const fn last_codegen_outcome(&self) -> Option<ProjectCodegenOutcome> {
+        self.last_codegen_outcome
     }
 
     fn entry_is_invalidated(&self, target: &Path, entry: &CachedProjectAnalysis) -> bool {
@@ -5961,7 +6072,8 @@ mod tests {
         // same declaration name in different source modules.  A manifest
         // validated by name alone could therefore be accepted for the wrong
         // module and leave tooling with stale normalized facts.
-        let fingerprint = super::codegen_cache_fingerprint(&first, crate::codegen::NativeTarget::Linux);
+        let fingerprint =
+            super::codegen_cache_fingerprint(&first, crate::codegen::NativeTarget::Linux);
         let mut wrong_module = first.clone();
         wrong_module.sources[0].module_name.push_str(".changed");
         assert!(
@@ -5983,12 +6095,7 @@ mod tests {
         let repaired_ir_entries = fs::read_dir(&ir_dir)
             .expect("repaired typed IR directory should be readable")
             .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("ir-")
-            })
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("ir-"))
             .count();
         assert_eq!(
             repaired_ir_entries, 1,

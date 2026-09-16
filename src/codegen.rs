@@ -19,6 +19,35 @@ pub enum NativeTarget {
     Windows,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FunctionCodegenCacheKey {
+    identity: String,
+    incoming_temp_counter: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFunctionCodegen {
+    generated: String,
+    next_temp_counter: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct FunctionCodegenCache {
+    entries: HashMap<FunctionCodegenCacheKey, CachedFunctionCodegen>,
+}
+
+impl FunctionCodegenCache {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FunctionCodegenStats {
+    pub reused_functions: usize,
+    pub regenerated_functions: usize,
+}
+
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
     emit_c_with_source_paths(program, signatures, &HashMap::new())
 }
@@ -1224,6 +1253,47 @@ pub fn emit_c_for_target_with_source_metadata(
     translations: &BTreeMap<String, BTreeMap<String, String>>,
     target: NativeTarget,
 ) -> Result<String, Diagnostic> {
+    let (generated, _) = emit_c_for_target_with_source_metadata_impl(
+        program,
+        signatures,
+        source_paths,
+        source_modules,
+        translations,
+        target,
+        None,
+    )?;
+    Ok(generated)
+}
+
+pub fn emit_c_for_target_with_source_metadata_cached(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+    source_modules: &HashMap<SourceId, String>,
+    translations: &BTreeMap<String, BTreeMap<String, String>>,
+    target: NativeTarget,
+    cache: &mut FunctionCodegenCache,
+) -> Result<(String, FunctionCodegenStats), Diagnostic> {
+    emit_c_for_target_with_source_metadata_impl(
+        program,
+        signatures,
+        source_paths,
+        source_modules,
+        translations,
+        target,
+        Some(cache),
+    )
+}
+
+fn emit_c_for_target_with_source_metadata_impl(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+    source_modules: &HashMap<SourceId, String>,
+    translations: &BTreeMap<String, BTreeMap<String, String>>,
+    target: NativeTarget,
+    mut function_cache: Option<&mut FunctionCodegenCache>,
+) -> Result<(String, FunctionCodegenStats), Diagnostic> {
     let function_ir = build_function_ir_cache(program, signatures);
     let mut reachable_interfaces = HashSet::new();
     let mut interface_pack_facts = InterfacePackFacts::external_roots(program, signatures);
@@ -1290,21 +1360,54 @@ pub fn emit_c_for_target_with_source_metadata(
         generated_body.push('\n');
     }
     let mut temp_counter = 0usize;
+    let mut codegen_stats = FunctionCodegenStats::default();
+    let mut used_cache_keys = HashSet::new();
     for function in &program.functions {
         if reachable_functions.contains(&function.name) && function.foreign_symbol.is_none() {
             let cfg = function_ir
                 .get(&function.name)
                 .expect("all parsed functions have cached typed IR");
+            let cache_key = FunctionCodegenCacheKey {
+                identity: function_codegen_cache_identity(function, source_paths),
+                incoming_temp_counter: temp_counter,
+            };
+            if let Some(cached) = function_cache
+                .as_deref_mut()
+                .and_then(|cache| cache.entries.get(&cache_key).cloned())
+            {
+                generated_body.push_str(&cached.generated);
+                temp_counter = cached.next_temp_counter;
+                codegen_stats.reused_functions += 1;
+                used_cache_keys.insert(cache_key);
+                continue;
+            }
+
+            let mut generated_function = String::new();
             emit_function(
-                &mut generated_body,
+                &mut generated_function,
                 function,
                 signatures,
                 cfg,
                 &mut temp_counter,
                 source_paths,
             )?;
-            generated_body.push('\n');
+            generated_function.push('\n');
+            codegen_stats.regenerated_functions += 1;
+            if let Some(cache) = function_cache.as_deref_mut() {
+                cache.entries.insert(
+                    cache_key.clone(),
+                    CachedFunctionCodegen {
+                        generated: generated_function.clone(),
+                        next_temp_counter: temp_counter,
+                    },
+                );
+                used_cache_keys.insert(cache_key);
+            }
+            generated_body.push_str(&generated_function);
         }
+    }
+    if let Some(cache) = function_cache.as_deref_mut() {
+        cache.entries.retain(|key, _| used_cache_keys.contains(key));
     }
     let mut application_body = String::new();
     if program.application.is_some() {
@@ -1725,7 +1828,21 @@ pub fn emit_c_for_target_with_source_metadata(
     out.push_str(&generated_body);
     out.push_str(&application_body);
 
-    Ok(out)
+    Ok((out, codegen_stats))
+}
+
+fn function_codegen_cache_identity(
+    function: &Function,
+    source_paths: &HashMap<SourceId, String>,
+) -> String {
+    format!(
+        "{:?}|source_path={}",
+        function,
+        source_paths
+            .get(&function.span.source_id)
+            .map(String::as_str)
+            .unwrap_or_default()
+    )
 }
 
 fn harden_generated_http_text_argument_checks(out: &mut String) {
