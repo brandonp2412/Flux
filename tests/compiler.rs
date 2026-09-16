@@ -724,6 +724,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn ownership_ir_reachable_borrow_boundaries_preserve_live_edges() {
+    let source = r#"
+fn main() -> i64 {
+    let values: i64[] = [1]
+    let liveView: i64[] = values[0:1]
+    print(liveView.count)
+    return 0
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("dead borrow boundary fixture should typecheck");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let all = graph.borrow_boundaries().collect::<Vec<_>>();
+    assert!(all.iter().any(|boundary| matches!(
+        boundary,
+        ControlFlowBorrowBoundary::Start(start) if start.borrower == "liveView"
+    )));
+    let reachable = graph.reachable_borrow_boundaries().collect::<Vec<_>>();
+    assert!(reachable.iter().any(|boundary| matches!(
+        boundary,
+        ControlFlowBorrowBoundary::Start(start) if start.borrower == "liveView"
+    )));
+    assert_eq!(all, reachable);
+}
+
+#[test]
 fn ownership_ir_types_all_collection_iteration_bindings() {
     let source = r#"
 fn main() -> i64 {

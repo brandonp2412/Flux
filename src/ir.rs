@@ -1440,6 +1440,25 @@ impl ControlFlowGraph {
             .chain(self.borrow_ends.iter().map(ControlFlowBorrowBoundary::End))
     }
 
+    /// Return borrow boundaries whose CFG edge remains executable.
+    ///
+    /// A lifetime is represented by edge facts, so filtering only node-local
+    /// ownership events is insufficient for consumers that reconstruct active
+    /// regions.  Both endpoints must be reachable: this excludes boundaries
+    /// in statically dead branches and preserves the allocation-free borrowed
+    /// view of the normalized facts.
+    pub fn reachable_borrow_boundaries(
+        &self,
+    ) -> impl Iterator<Item = ControlFlowBorrowBoundary<'_>> {
+        self.borrow_boundaries().filter(move |boundary| {
+            let (from, to) = match boundary {
+                ControlFlowBorrowBoundary::Start(start) => (start.from, start.to),
+                ControlFlowBorrowBoundary::End(end) => (end.from, end.to),
+            };
+            self.is_reachable(from) && self.is_reachable(to)
+        })
+    }
+
     /// Return normalized borrow boundaries for one CFG edge.
     pub fn borrow_boundaries_on_edge(
         &self,
