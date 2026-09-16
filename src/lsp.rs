@@ -1703,6 +1703,23 @@ fn add_qualified_namespace_completions(
         );
         return true;
     }
+    if namespace == "path" {
+        push_completion_item(
+            items,
+            seen,
+            "isAbsolute",
+            3,
+            "fn path.isAbsolute(value: str) -> bool",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "join",
+            3,
+            "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error",
+        );
+        return true;
+    }
     if namespace == "json" {
         push_completion_item(
             items,
@@ -3979,6 +3996,23 @@ fn signature_help_for_document_cached(
                 "decode" | "encode" | "normalize" => Some(signature_help_for_builtin(
                     &format!("uri.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                _ => None,
+            };
+        }
+        if namespace == "path" {
+            return match implementation_member {
+                "isAbsolute" => Some(signature_help_for_builtin(
+                    "path.isAbsolute",
+                    &["value: str"],
+                    "bool",
+                    active_parameter,
+                )),
+                "join" => Some(signature_help_for_builtin(
+                    "path.join",
+                    &["base: str", "child: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),
@@ -8497,7 +8531,7 @@ mod tests {
     #[test]
     fn qualified_completion_survives_incomplete_enum_and_interface_members() {
         let uri = "file:///tmp/qualified-completion.flux";
-        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    windows.\n    return 0\n}\n";
+        let source = "enum Outcome {\n    Ok(i64)\n    Failed(error)\n}\ninterface Storage {\n    fn load(path: str) -> (str, error)\n    fn save(path: str, data: str) -> error\n}\nfn main() -> i64 {\n    let result: Outcome = Outcome.\n    Storage.\n    process.\n    sqlite.\n    net.\n    locale.\n    time.\n    file.\n    directory.\n    path.\n    fs.\n    clipboard.\n    fileDialog.\n    focus.\n    textInput.\n    android.\n    windows.\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         let enum_line = source
             .lines()
@@ -8807,6 +8841,25 @@ mod tests {
         assert!(file_items.contains("fn file.rename(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.link(source: str, destination: str) -> error"));
         assert!(file_items.contains("fn file.remove(path: str) -> error"));
+
+        let path_line = source
+            .lines()
+            .position(|line| line.trim() == "path.")
+            .expect("path completion line should exist");
+        let path_source = source.lines().nth(path_line).unwrap();
+        let path_items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            source,
+            &documents,
+            Some(path_line),
+            Some(path_source.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(path_items.contains("fn path.isAbsolute(value: str) -> bool"));
+        assert!(path_items.contains(
+            "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error"
+        ));
 
         let directory_line = source
             .lines()

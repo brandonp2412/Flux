@@ -38,6 +38,33 @@ fn android_stable_view_id(view_name: &str, element_name: &str) -> u32 {
 }
 
 #[test]
+fn path_capabilities_are_typed_bounded_and_tree_shakeable() {
+    let source = r#"
+fn show(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    let absolute: bool = path.isAbsolute("/tmp/flux")
+    print(absolute)
+    print(path.join("/tmp", "flux", show))
+    return 0
+}
+"#;
+    let generated = compile_to_c(source).expect("path capability source should compile");
+    assert!(generated.contains("flux__path_is_absolute(\"/tmp/flux\")"));
+    assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
+    assert!(generated.contains("strnlen(base, 65537)"));
+
+    let shaken = compile_to_c(
+        "fn main() -> i64 {\n    return 0\n}\n",
+    )
+    .expect("path-free source should compile");
+    assert!(!shaken.contains("flux__path_join"));
+    assert!(!shaken.contains("flux__path_is_absolute"));
+}
+
+#[test]
 fn ownership_ir_records_definition_scoped_drop_points() {
     let source = r#"
 fn main() -> i64 {

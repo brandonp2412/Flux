@@ -12776,6 +12776,54 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "path" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("path.{name} accepts positional arguments only"),
+            ));
+        }
+        match name.as_str() {
+            "isAbsolute" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        &format!("path.isAbsolute expects 1 argument, got {}", args.len()),
+                    ));
+                }
+                let actual = type_of_expr(&args[0], env, signatures)?;
+                require_type(args[0].span, &Type::Str, &actual, "path.isAbsolute value")?;
+                return Ok(vec![Type::Bool]);
+            }
+            "join" => {
+                if args.len() != 3 {
+                    return Err(diag(
+                        span,
+                        &format!("path.join expects 3 arguments, got {}", args.len()),
+                    ));
+                }
+                for (arg, label) in args.iter().zip(["base", "child", "callback"]) {
+                    let actual = type_of_expr(arg, env, signatures)?;
+                    let expected = if label == "callback" {
+                        Type::Function {
+                            params: vec![Type::Str],
+                            returns: Vec::new(),
+                        }
+                    } else {
+                        Type::Str
+                    };
+                    require_type(arg.span, &expected, &actual, &format!("path.join {label}"))?;
+                }
+                return Ok(vec![Type::Error]);
+            }
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("path module has no function '{name}'"),
+                ));
+            }
+        }
+    }
     if namespace == "directory" {
         if !named_args.is_empty() {
             return Err(diag(

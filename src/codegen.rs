@@ -8059,6 +8059,14 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if runtime_usage.contains("flux__fs_exists(") {
         out.push_str("static inline bool flux__fs_exists(const char *path) { struct stat info; return stat(path, &info) == 0; }\n");
     }
+    if runtime_usage.contains("flux__path_is_absolute(")
+        || runtime_usage.contains("flux__path_join(")
+    {
+        out.push_str("static inline bool flux__path_is_absolute(const char *path) { if (path == NULL || path[0] == '\\0') return false; if (path[0] == '/' || path[0] == '\\\\') return true; return ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\\\'); }\n");
+    }
+    if runtime_usage.contains("flux__path_join(") {
+        out.push_str("static inline const char *flux__path_join(const char *base, const char *child, void (*callback)(const char *)) { if (base == NULL || child == NULL || callback == NULL) return \"invalid path.join arguments\"; size_t base_length = strnlen(base, 65537); size_t child_length = strnlen(child, 65537); if (base_length > 65536 || child_length > 65536) return \"path exceeds 65536 bytes\"; for (size_t index = 0; index < base_length; index += 1) if (base[index] == '\\0') return \"path contains NUL\"; for (size_t index = 0; index < child_length; index += 1) if (child[index] == '\\0') return \"path contains NUL\"; if (flux__path_is_absolute(child)) { char result[65537]; if (child_length == 65536) return \"joined path exceeds 65535 bytes\"; memcpy(result, child, child_length + 1); callback(result); return NULL; } bool separator = base_length > 0 && base[base_length - 1] != '/' && base[base_length - 1] != '\\\\'; size_t total = base_length + (separator ? 1u : 0u) + child_length; if (total > 65536) return \"joined path exceeds 65536 bytes\"; char result[65537]; memcpy(result, base, base_length); size_t offset = base_length; if (separator) result[offset++] = '/'; memcpy(result + offset, child, child_length + 1); callback(result); return NULL; }\n");
+    }
     if runtime_usage.contains("flux__fs_is_file(") {
         out.push_str("static inline bool flux__fs_is_file(const char *path) { struct stat info; return stat(path, &info) == 0 && S_ISREG(info.st_mode); }\n");
     }
@@ -38053,6 +38061,44 @@ fn emit_qualified_call(
                 ));
             }
             _ => return Err(diag(span, "unknown file call reached code generation")),
+        }
+    }
+    if namespace == "path" {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid path call reached code generation"));
+        }
+        match name {
+            "isAbsolute" => {
+                if args.len() != 1 {
+                    return Err(diag(
+                        span,
+                        "invalid path.isAbsolute call reached code generation",
+                    ));
+                }
+                let value = emit_expr(&args[0], env, signatures)?;
+                return Ok((
+                    format!("flux__path_is_absolute({})", value.code),
+                    vec![Type::Bool],
+                    None,
+                ));
+            }
+            "join" => {
+                if args.len() != 3 {
+                    return Err(diag(span, "invalid path.join call reached code generation"));
+                }
+                let base = emit_expr(&args[0], env, signatures)?;
+                let child = emit_expr(&args[1], env, signatures)?;
+                let callback = emit_expr(&args[2], env, signatures)?;
+                return Ok((
+                    format!(
+                        "flux__path_join({}, {}, {})",
+                        base.code, child.code, callback.code
+                    ),
+                    vec![Type::Error],
+                    None,
+                ));
+            }
+            _ => return Err(diag(span, "unknown path call reached code generation")),
         }
     }
     if namespace == "directory" {
