@@ -2550,6 +2550,11 @@ mod tests {
         };
         write_registry_release(&root, &release).unwrap();
         validate_registry_index(&root).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir(root.join(".github")).unwrap();
+        fs::write(root.join(".github/workflows.yml"), "metadata\n").unwrap();
+        validate_registry_index(&root).unwrap();
 
         fs::write(root.join("demo/versions.txt"), "1.2.3\n1.2.4\n").unwrap();
         let error = validate_registry_index(&root).unwrap_err();
