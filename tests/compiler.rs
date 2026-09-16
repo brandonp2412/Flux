@@ -8865,6 +8865,8 @@ fn socket_multi_readiness_bounds_native_descriptor_storage() {
     assert!(generated.contains("sockets.len > 1024"));
     assert!(generated.contains("sockets.data == NULL"));
     assert!(generated.contains("socket handle list has no storage"));
+    assert!(generated.contains("socket handle list has invalid element stride"));
+    assert!(generated.contains("PTRDIFF_MAX / magnitude"));
     assert!(generated.contains("struct pollfd descriptors[1024]"));
 }
 
