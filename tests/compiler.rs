@@ -12171,6 +12171,8 @@ fn main() -> i64 {{
     check_source(&source).expect("file.read should typecheck");
     let generated = compile_to_c(&source).expect("file.read should lower natively");
     assert!(generated.contains("flux__fs_read_text"));
+    assert!(generated.contains("int extra = fgetc(file)"));
+    assert!(generated.contains("if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; }"));
 
     let source_path = root.join("main.flux");
     fs::write(&source_path, &source).expect("file read source should be writable");
