@@ -14072,7 +14072,7 @@ fn emit_linux_gtk_application(
             "static void {setter_name}(const char *value) {{ if (value == NULL) value = \"\"; size_t length = 0; if (!flux__ui_bounded_length(value, 65536, &length)) {{ fputs(\"Flux runtime error: TextInput state exceeds 65536 bytes\\n\", stderr); abort(); }} char *copy = malloc(length + 1); if (copy == NULL) {{ fputs(\"Flux runtime error: unable to store TextInput state\\n\", stderr); abort(); }} memcpy(copy, value, length + 1); free({owned_name}); {owned_name} = copy; {state_name} = copy; }}\n"
         ));
     }
-    out.push_str("static void flux__ui_save_reload_state(void) { const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {'F','L','X','S'}; const uint32_t version = 1; const char *view_name = ");
+    out.push_str("static void flux__ui_save_reload_state(void) { const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; char temporary[4096]; int written = snprintf(temporary, sizeof(temporary), \"%s.tmp\", path); if (written <= 0 || (size_t)written >= sizeof(temporary)) return; FILE *file = fopen(temporary, \"wb\"); if (file == NULL) return; const unsigned char magic[4] = {'F','L','X','S'}; const uint32_t version = 2; const char *view_name = ");
     out.push_str(&format!(
         "{}; uint32_t view_name_length = (uint32_t)strlen(view_name); uint32_t count = ",
         c_string(&view.name)
@@ -14082,7 +14082,11 @@ fn emit_linux_gtk_application(
     for state in &view.states {
         let state_name = ui_state_c_name(&state.name);
         let source_name = c_string(&state.name);
-        out.push_str(&format!(" {{ const char *name = {source_name}; uint32_t name_length = (uint32_t)strlen(name); if (fwrite(&name_length, sizeof(name_length), 1, file) != 1 || (name_length != 0 && fwrite(name, 1, name_length, file) != name_length)) {{ fclose(file); remove(temporary); return; }}"));
+        let shape = match signatures.canonical_type(&state.ty) {
+            Type::Str if view_state_accepts_text_input_value(view, &state.name) => 1,
+            _ => 0,
+        };
+        out.push_str(&format!(" {{ const char *name = {source_name}; uint32_t name_length = (uint32_t)strlen(name); unsigned char shape = {shape}; if (fwrite(&name_length, sizeof(name_length), 1, file) != 1 || (name_length != 0 && fwrite(name, 1, name_length, file) != name_length) || fwrite(&shape, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }}"));
         match signatures.canonical_type(&state.ty) {
             Type::Bool => out.push_str(&format!(" unsigned char type = 'b'; unsigned char value = {state_name} ? 1 : 0; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&value, 1, 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
             Type::I64 => out.push_str(&format!(" unsigned char type = 'i'; if (fwrite(&type, 1, 1, file) != 1 || fwrite(&{state_name}, sizeof({state_name}), 1, file) != 1) {{ fclose(file); remove(temporary); return; }} }}")),
@@ -14091,12 +14095,12 @@ fn emit_linux_gtk_application(
         }
     }
     out.push_str(" if (fclose(file) != 0) { remove(temporary); return; } if (rename(temporary, path) != 0) remove(temporary); }\n");
-    out.push_str(&format!("static void flux__ui_restore_reload_state(void) {{ const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t view_name_length = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXS\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 1 || fread(&view_name_length, sizeof(view_name_length), 1, file) != 1 || view_name_length > 1024) {{ fclose(file); remove(path); return; }} char view_name[1025]; if (fread(view_name, 1, view_name_length, file) != view_name_length) {{ fclose(file); remove(path); return; }} view_name[view_name_length] = '\\0'; if (strcmp(view_name, {}) != 0 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) {{ fclose(file); remove(path); return; }} for (uint32_t record = 0; record < count; ++record) {{ uint32_t name_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024) {{ fclose(file); remove(path); return; }} char *name = malloc((size_t)name_length + 1); if (name == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length)) {{ free(name); fclose(file); remove(path); return; }} name[name_length] = '\\0'; unsigned char type = 0; if (fread(&type, 1, 1, file) != 1) {{ free(name); fclose(file); remove(path); return; }}", c_string(&view.name)));
+    out.push_str(&format!("static void flux__ui_restore_reload_state(void) {{ const char *path = getenv(\"FLUX_RELOAD_STATE_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t view_name_length = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXS\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&view_name_length, sizeof(view_name_length), 1, file) != 1 || view_name_length > 1024) {{ fclose(file); remove(path); return; }} char view_name[1025]; if (fread(view_name, 1, view_name_length, file) != view_name_length) {{ fclose(file); remove(path); return; }} view_name[view_name_length] = '\\0'; if (strcmp(view_name, {}) != 0 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) {{ fclose(file); remove(path); return; }} for (uint32_t record = 0; record < count; ++record) {{ uint32_t name_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024) {{ fclose(file); remove(path); return; }} char *name = malloc((size_t)name_length + 1); if (name == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length)) {{ free(name); fclose(file); remove(path); return; }} name[name_length] = '\\0'; unsigned char shape = 0; unsigned char type = 0; if (fread(&shape, 1, 1, file) != 1 || fread(&type, 1, 1, file) != 1) {{ free(name); fclose(file); remove(path); return; }}", c_string(&view.name)));
     out.push_str(" if (type == 'b') { unsigned char value = 0; if (fread(&value, 1, 1, file) != 1) { free(name); fclose(file); remove(path); return; }");
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Bool) {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0) {} = value != 0;",
+                " if (strcmp(name, {}) == 0 && shape == 0) {} = value != 0;",
                 c_string(&state.name),
                 ui_state_c_name(&state.name)
             ));
@@ -14106,7 +14110,7 @@ fn emit_linux_gtk_application(
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::I64) {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0) {} = value;",
+                " if (strcmp(name, {}) == 0 && shape == 0) {} = value;",
                 c_string(&state.name),
                 ui_state_c_name(&state.name)
             ));
@@ -14116,8 +14120,13 @@ fn emit_linux_gtk_application(
     for state in &view.states {
         if matches!(signatures.canonical_type(&state.ty), Type::Str) {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0) {{",
-                c_string(&state.name)
+                " if (strcmp(name, {}) == 0 && shape == {}) {{",
+                c_string(&state.name),
+                if view_state_accepts_text_input_value(view, &state.name) {
+                    1
+                } else {
+                    0
+                }
             ));
             if view_state_accepts_text_input_value(view, &state.name) {
                 out.push_str(&format!(" {}(value);", ui_set_state_c_name(&state.name)));

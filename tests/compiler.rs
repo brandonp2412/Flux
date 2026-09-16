@@ -52705,12 +52705,15 @@ fn linux_reload_preserves_compatible_primitive_view_state() {
     let source = r#"
 view Screen {
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     state enabled: bool = true
     state count: i64 = 3
     state message: str = "ready"
     Text label at 1,1
         text: message
+    TextInput input at 2,1
+        text: message
+        onChange: message, value => value
 }
 app Screen
 "#;
@@ -52727,15 +52730,17 @@ app Screen
 
     assert!(generated.contains("FLUX_RELOAD_STATE_PATH"));
     assert!(generated.contains("'F','L','X','S'"));
-    assert!(generated.contains("const uint32_t version = 1"));
+    assert!(generated.contains("const uint32_t version = 2"));
     assert!(generated.contains("const char *view_name = \"Screen\""));
     assert!(generated.contains("strcmp(view_name, \"Screen\") != 0"));
     assert!(generated.contains("uint32_t count = 3;"));
     assert!(generated.contains("const char *name = \"enabled\""));
     assert!(generated.contains("const char *name = \"count\""));
+    assert!(generated.contains("unsigned char shape = 1"));
+    assert!(generated.contains("strcmp(name, \"message\") == 0 && shape == 1"));
     assert!(generated.contains("flux__ui_state_enabled ? 1 : 0"));
     assert!(generated.contains("fwrite(&flux__ui_state_count"));
-    assert!(generated.contains("flux__ui_state_message = value"));
+    assert!(generated.contains("flux__ui_set_state_message(value)"));
     assert!(generated.contains("signal(SIGTERM, flux__ui_reload_signal)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
 }
