@@ -1899,6 +1899,8 @@ fn submit_registry_publish(
     )?;
     fluxc::package_ecosystem::write_registry_release(&checkout, &prepared.release)
         .map_err(|error| CliError::Message(error.to_string()))?;
+    fluxc::package_ecosystem::validate_registry_index(&checkout)
+        .map_err(|error| CliError::Message(format!("registry index validation failed: {error}")))?;
     let status = command_output_text(
         "git",
         &["status".to_string(), "--porcelain".to_string()],

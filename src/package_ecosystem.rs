@@ -1900,13 +1900,10 @@ pub fn validate_registry_index(registry_root: &Path) -> io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "registry index contains non-package entry '{}'; expected package directories",
-                    path.display()
-                ),
-            ));
+            // Repository documentation and CI metadata may live beside the
+            // package directories; only package-shaped directories are part
+            // of the index contract.
+            continue;
         }
         let package = entry.file_name().to_string_lossy().into_owned();
         validate_package_name(&package)?;
