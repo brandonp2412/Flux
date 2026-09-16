@@ -21066,6 +21066,10 @@ fn main() -> i64 {
     assert!(generated.contains("flux__preferences_get("));
     assert!(generated.contains("flux__preferences_set("));
     assert!(generated.contains("flux__preferences_remove("));
+    assert!(generated.contains("while (length < sizeof(path) && override[length] != '\\0')"));
+    assert!(generated.contains("while (value_length <= 65535 && value[value_length] != '\\0')"));
+    assert!(!generated.contains("if (strlen(override) >= sizeof(path))"));
+    assert!(!generated.contains("if (value == NULL || strlen(value) > 65535)"));
     assert!(generated.contains("FLUX_PREFERENCES_PATH"));
     assert!(generated.contains("S\\t%s\\t%s\\n"));
 
@@ -21182,6 +21186,10 @@ app Root(onStart: start)
     assert!(generated.contains("CreateDirectoryA"));
     assert!(generated.contains("preferences.log"));
     assert!(generated.contains("fopen(path, \"ab+\")"));
+    assert!(generated.contains("while (length < sizeof(path) && override[length] != '\\0')"));
+    assert!(generated.contains("while (value_length <= 65535 && value[value_length] != '\\0')"));
+    assert!(!generated.contains("if (strlen(override) >= sizeof(path))"));
+    assert!(!generated.contains("if (value == NULL || strlen(value) > 65535)"));
     assert!(!generated.contains("#include <sys/stat.h>"));
 }
 

@@ -7541,20 +7541,25 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
     static char directory[4096];
     const char *override = getenv("FLUX_PREFERENCES_PATH");
     if (override != NULL && override[0] != '\0') {
-        if (strlen(override) >= sizeof(path)) return NULL;
-        memcpy(path, override, strlen(override) + 1);
+        size_t length = 0;
+        while (length < sizeof(path) && override[length] != '\0') length += 1;
+        if (length >= sizeof(path)) return NULL;
+        memcpy(path, override, length + 1);
         return path;
     }
     const char *base = getenv("LOCALAPPDATA");
     if (base == NULL || base[0] == '\0') base = getenv("APPDATA");
     if (base == NULL || base[0] == '\0') return NULL;
-    if (snprintf(directory, sizeof(directory), "%s\\Flux", base) < 0 || strlen(directory) >= sizeof(directory)) return NULL;
+    if (snprintf(directory, sizeof(directory), "%s\\Flux", base) < 0 || directory[sizeof(directory) - 1] != '\0') return NULL;
     (void)CreateDirectoryA(directory, NULL);
-    if (snprintf(path, sizeof(path), "%s\\preferences.log", directory) < 0 || strlen(path) >= sizeof(path)) return NULL;
+    if (snprintf(path, sizeof(path), "%s\\preferences.log", directory) < 0 || path[sizeof(path) - 1] != '\0') return NULL;
     return path;
 }
 static const char *flux__preferences_validate_key(const char *key) {
-    if (key == NULL || key[0] == '\0' || strlen(key) > 1024) return "preference key is empty or too long";
+    if (key == NULL || key[0] == '\0') return "preference key is empty or too long";
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
+    if (key_length > 1024) return "preference key is empty or too long";
     for (const unsigned char *cursor = (const unsigned char *)key; *cursor != 0; ++cursor)
         if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference key contains a forbidden control character";
     return NULL;
@@ -7580,8 +7585,10 @@ static const char *flux__preferences_get(const char *key, const char *fallback, 
             if (line[0] == 'D') { found = false; continue; }
             if (line[0] != 'S') continue;
             const char *stored = separator + 1;
-            if (strlen(stored) >= sizeof(value)) { fclose(file); return "preference value is too long"; }
-            memcpy(value, stored, strlen(stored) + 1); found = true;
+            size_t stored_length = 0;
+            while (stored_length < sizeof(value) && stored[stored_length] != '\0') stored_length += 1;
+            if (stored_length >= sizeof(value)) { fclose(file); return "preference value is too long"; }
+            memcpy(value, stored, stored_length + 1); found = true;
         }
         if (ferror(file) || fclose(file) != 0) return "failed to read preferences";
     }
@@ -7602,10 +7609,14 @@ static const char *flux__preferences_append(const char *record, size_t length) {
 static const char *flux__preferences_set(const char *key, const char *value) {
     const char *invalid = flux__preferences_validate_key(key);
     if (invalid != NULL) return invalid;
-    if (value == NULL || strlen(value) > 65535) return "preference value is empty or too long";
+    if (value == NULL) return "preference value is empty or too long";
+    size_t value_length = 0;
+    while (value_length <= 65535 && value[value_length] != '\0') value_length += 1;
+    if (value_length > 65535) return "preference value is empty or too long";
     for (const unsigned char *cursor = (const unsigned char *)value; *cursor != 0; ++cursor)
         if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference value contains a forbidden control character";
-    size_t key_length = strlen(key), value_length = strlen(value);
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
     if (key_length > SIZE_MAX - value_length - 5) return "preference record is too long";
     size_t record_length = key_length + value_length + 5;
     char *record = malloc(record_length);
@@ -7617,7 +7628,8 @@ static const char *flux__preferences_set(const char *key, const char *value) {
 static const char *flux__preferences_remove(const char *key) {
     const char *invalid = flux__preferences_validate_key(key);
     if (invalid != NULL) return invalid;
-    size_t key_length = strlen(key);
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
     if (key_length > SIZE_MAX - 4) return "preference record is too long";
     size_t record_length = key_length + 4;
     char *record = malloc(record_length);
@@ -7636,8 +7648,10 @@ static const char *flux__preferences_remove(const char *key) {
     static char directory[4096];
     const char *override = getenv("FLUX_PREFERENCES_PATH");
     if (override != NULL && override[0] != '\0') {
-        if (strlen(override) >= sizeof(path)) return NULL;
-        memcpy(path, override, strlen(override) + 1);
+        size_t length = 0;
+        while (length < sizeof(path) && override[length] != '\0') length += 1;
+        if (length >= sizeof(path)) return NULL;
+        memcpy(path, override, length + 1);
         return path;
     }
     const char *base = getenv("XDG_CONFIG_HOME");
@@ -7658,7 +7672,10 @@ static const char *flux__preferences_remove(const char *key) {
     return path;
 }
 static const char *flux__preferences_validate_key(const char *key) {
-    if (key == NULL || key[0] == '\0' || strlen(key) > 1024) return "preference key is empty or too long";
+    if (key == NULL || key[0] == '\0') return "preference key is empty or too long";
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
+    if (key_length > 1024) return "preference key is empty or too long";
     for (const unsigned char *cursor = (const unsigned char *)key; *cursor != 0; ++cursor) {
         if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference key contains a forbidden control character";
     }
@@ -7687,8 +7704,10 @@ static const char *flux__preferences_get(const char *key, const char *fallback, 
             if (line[0] == 'D') { found = false; continue; }
             if (line[0] != 'S') continue;
             const char *stored = separator + 1;
-            if (strlen(stored) >= sizeof(value)) { fclose(file); return "preference value is too long"; }
-            memcpy(value, stored, strlen(stored) + 1);
+            size_t stored_length = 0;
+            while (stored_length < sizeof(value) && stored[stored_length] != '\0') stored_length += 1;
+            if (stored_length >= sizeof(value)) { fclose(file); return "preference value is too long"; }
+            memcpy(value, stored, stored_length + 1);
             found = true;
         }
         if (ferror(file) || fclose(file) != 0) return "failed to read preferences";
@@ -7714,12 +7733,15 @@ static const char *flux__preferences_append(const char *record, size_t length) {
 static const char *flux__preferences_set(const char *key, const char *value) {
     const char *invalid = flux__preferences_validate_key(key);
     if (invalid != NULL) return invalid;
-    if (value == NULL || strlen(value) > 65535) return "preference value is empty or too long";
+    if (value == NULL) return "preference value is empty or too long";
+    size_t value_length = 0;
+    while (value_length <= 65535 && value[value_length] != '\0') value_length += 1;
+    if (value_length > 65535) return "preference value is empty or too long";
     for (const unsigned char *cursor = (const unsigned char *)value; *cursor != 0; ++cursor) {
         if (*cursor == '\n' || *cursor == '\r' || *cursor == '\t') return "preference value contains a forbidden control character";
     }
-    size_t key_length = strlen(key);
-    size_t value_length = strlen(value);
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
     if (key_length > SIZE_MAX - value_length - 5) return "preference record is too long";
     size_t record_length = key_length + value_length + 5;
     char *record = malloc(record_length);
@@ -7732,7 +7754,8 @@ static const char *flux__preferences_set(const char *key, const char *value) {
 static const char *flux__preferences_remove(const char *key) {
     const char *invalid = flux__preferences_validate_key(key);
     if (invalid != NULL) return invalid;
-    size_t key_length = strlen(key);
+    size_t key_length = 0;
+    while (key_length <= 1024 && key[key_length] != '\0') key_length += 1;
     if (key_length > SIZE_MAX - 4) return "preference record is too long";
     size_t record_length = key_length + 4;
     char *record = malloc(record_length);
