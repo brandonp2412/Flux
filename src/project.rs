@@ -983,12 +983,34 @@ impl ProjectAnalysisCache {
         // missing; canonicalize the existing path so symlinked projects keep
         // their established identity.
         let normalized = fs::canonicalize(path).unwrap_or_else(|_| {
-            if path.is_absolute() {
+            let absolute = if path.is_absolute() {
                 path.to_path_buf()
             } else {
                 std::env::current_dir()
                     .map(|directory| directory.join(path))
                     .unwrap_or_else(|_| path.to_path_buf())
+            };
+            // Canonicalize the deepest existing parent so a deleted file
+            // beneath a symlinked directory still matches the canonical
+            // source path stored in the project graph.
+            let mut missing = Vec::new();
+            let mut existing = absolute.as_path();
+            while !existing.exists() {
+                if let Some(name) = existing.file_name() {
+                    missing.push(name.to_os_string());
+                }
+                let Some(parent) = existing.parent() else {
+                    break;
+                };
+                existing = parent;
+            }
+            if let Ok(mut canonical_parent) = fs::canonicalize(existing) {
+                for component in missing.iter().rev() {
+                    canonical_parent.push(component);
+                }
+                canonical_parent
+            } else {
+                absolute
             }
         });
         self.invalidated_paths.insert(normalized);
