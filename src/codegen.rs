@@ -26994,6 +26994,8 @@ fn emit_async_match_arm_bindings(
     arm: &crate::ast::MatchArm,
     signatures: &Signatures,
     env: &mut HashMap<String, Type>,
+    checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
 ) -> Result<Vec<String>, Diagnostic> {
     let definition = signatures.enum_type(&arm.enum_name).ok_or_else(|| {
         diag(
@@ -27059,8 +27061,15 @@ fn emit_async_match_arm_bindings(
         }
     }
     if let Some(guard) = &arm.guard {
-        let guard = emit_expr(guard, env, signatures)?;
-        conditions.push(c_condition(&guard.code));
+        let guard = emit_expr_for_expected_with_cfg_proofs(
+            guard,
+            &Type::Bool,
+            env,
+            signatures,
+            checked_i64_cfg_proofs,
+            cfg_constant_values,
+        )?;
+        conditions.push(c_condition(&guard));
     }
     Ok(conditions)
 }
@@ -27136,7 +27145,18 @@ fn emit_async_match_continuation_function(
             emit_async_completed_single_await(out, pad, value, function, signatures, temp_counter)?;
         EmittedExpr { code, ty }
     } else {
-        emit_expr(value, &outer_env, signatures)?
+        let value_ty = type_of_expr(value, &outer_env, signatures)?;
+        EmittedExpr {
+            code: emit_expr_for_expected_with_cfg_proofs(
+                value,
+                &value_ty,
+                &outer_env,
+                signatures,
+                context.checked_i64_cfg_proofs,
+                context.cfg_constant_values,
+            )?,
+            ty: value_ty,
+        }
     };
     let Type::Named(enum_name) = &emitted_value.ty else {
         return Err(diag(
@@ -27186,6 +27206,8 @@ fn emit_async_match_continuation_function(
                 arm,
                 signatures,
                 &mut arm_env,
+                state_context.checked_i64_cfg_proofs,
+                state_context.cfg_constant_values,
             )?;
             let guarded = !conditions.is_empty();
             if guarded {
@@ -27496,7 +27518,18 @@ fn emit_async_list_match_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let emitted_value = emit_expr(value, &outer_env, signatures)?;
+    let value_ty = type_of_expr(value, &outer_env, signatures)?;
+    let emitted_value = EmittedExpr {
+        code: emit_expr_for_expected_with_cfg_proofs(
+            value,
+            &value_ty,
+            &outer_env,
+            signatures,
+            context.checked_i64_cfg_proofs,
+            context.cfg_constant_values,
+        )?,
+        ty: value_ty,
+    };
     let Type::List(element) = &emitted_value.ty else {
         return Err(diag(
             value.span,
@@ -27531,8 +27564,15 @@ fn emit_async_list_match_continuation_function(
             },
         )?;
         let guarded = if let Some(guard) = &arm.guard {
-            let guard = emit_expr(guard, &arm_env, signatures)?;
-            out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard.code)));
+            let guard = emit_expr_for_expected_with_cfg_proofs(
+                guard,
+                &Type::Bool,
+                &arm_env,
+                signatures,
+                context.checked_i64_cfg_proofs,
+                context.cfg_constant_values,
+            )?;
+            out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
             true
         } else {
             false
