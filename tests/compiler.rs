@@ -34481,6 +34481,44 @@ fn project_analysis_cache_reuses_unchanged_graphs_and_invalidates_changed_source
 }
 
 #[test]
+fn project_analysis_cache_invalidates_missing_watched_modules() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-cache-missing-module-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary missing-module project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial project analysis should succeed");
+    let dependency_identity = fs::canonicalize(&dependency).expect("dependency should resolve");
+    fs::remove_file(&dependency).expect("dependency should be removable");
+    cache.invalidate_path(&dependency_identity);
+    let errors = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("deleted imported modules must not be served from the cache");
+    assert!(
+        errors.iter().any(|error| {
+            error.message.contains("cannot read imported module")
+                || error.message.contains("No such file")
+                || error.message.contains("not found")
+        }),
+        "unexpected diagnostics: {errors:?}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_clear_discards_parsed_module_entries() {
     let root =
         std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));

@@ -975,10 +975,23 @@ impl ProjectAnalysisCache {
     }
 
     pub fn invalidate_path(&mut self, path: &Path) {
-        let Ok(path) = fs::canonicalize(path) else {
-            return;
-        };
-        self.invalidated_paths.insert(path);
+        // Watchers report paths after a delete/rename as well as after an
+        // ordinary write. `canonicalize` cannot resolve a path that has
+        // temporarily disappeared, which used to make a deleted imported
+        // module look unchanged and let the analysis cache serve stale
+        // semantics. Preserve the same absolute identity when the file is
+        // missing; canonicalize the existing path so symlinked projects keep
+        // their established identity.
+        let normalized = fs::canonicalize(path).unwrap_or_else(|_| {
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|directory| directory.join(path))
+                    .unwrap_or_else(|_| path.to_path_buf())
+            }
+        });
+        self.invalidated_paths.insert(normalized);
     }
 
     pub fn clear(&mut self) {
