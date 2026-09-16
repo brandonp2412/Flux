@@ -25612,6 +25612,31 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_short_circuit_value_with_skipped_effectful_branch() {
+    let source = r#"
+fn effect() -> bool {
+    print("must-not-run")
+    return true
+}
+
+fn main() -> i64 {
+    let result: bool = false && effect()
+    if result:
+        print("wrong")
+    return 0
+}
+"#;
+
+    check_source(source).expect("short-circuit skipped branch should typecheck");
+    let generated = compile_to_c(source).expect("short-circuit skipped branch should compile");
+    assert!(generated.contains("flux__local_result = false;"));
+    assert!(
+        !generated.contains("flux__fn_effect()"),
+        "an effectful RHS in a statically skipped short-circuit region must not be emitted"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_propagated_string_values() {
     let source = r#"
 fn echo(value: str) -> str {

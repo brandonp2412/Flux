@@ -938,6 +938,15 @@ impl ControlFlowGraph {
             id: ControlFlowValueId,
             visiting: &mut BTreeSet<ControlFlowValueId>,
         ) -> bool {
+            // A value behind a pruned short-circuit/conditional region is not
+            // evaluated by the source program.  Its producer may therefore be
+            // effectful without making the reachable value impure.  Checking
+            // reachability here keeps the backend's IR proof aligned with the
+            // CFG's control-dependent evaluation facts instead of conservatively
+            // rebuilding an AST-shaped dependency walk.
+            if !graph.is_value_reachable(id) {
+                return true;
+            }
             if !visiting.insert(id) {
                 return false;
             }
