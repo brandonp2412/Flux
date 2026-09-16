@@ -6544,12 +6544,15 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
     if (socket_type != SOCK_DGRAM) return flux__net_result(-1, "sendBytesTo requires a UDP socket");
+    ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    uint64_t stride_magnitude = (uint64_t)stride;
+    if (bytes.len > 1 && (uint64_t)(bytes.len - 1) > (uint64_t)PTRDIFF_MAX / stride_magnitude) return flux__net_result(-1, "sendBytesTo byte list has an invalid element stride");
     struct sockaddr_storage local; socklen_t local_length = sizeof(local);
     if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return flux__net_result(-1, "failed to read UDP socket address");
     char service[6]; snprintf(service, sizeof(service), "%lld", (long long)port);
     struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = local.ss_family; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP;
     struct addrinfo *addresses = NULL; if (getaddrinfo(host, service, &hints, &addresses) != 0) return flux__net_result(-1, "failed to resolve UDP peer");
-    unsigned char payload[65507]; ptrdiff_t stride = bytes.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : bytes.stride;
+    unsigned char payload[65507];
     for (size_t index = 0; index < bytes.len; index += 1) { int64_t value = *((int64_t *)((char *)bytes.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesTo byte values must be between 0 and 255"); } payload[index] = (unsigned char)value; }
     struct flux__net_i64_error result = flux__net_result(-1, "failed to send UDP bytes");
     for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { ssize_t sent; do { sent = sendto((int)socket_handle, payload, bytes.len, 0, address->ai_addr, address->ai_addrlen); } while (sent < 0 && errno == EINTR); if (sent == (ssize_t)bytes.len) { result = flux__net_result((int64_t)sent, NULL); break; } }
@@ -6582,6 +6585,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         if (part.stride < 0 || (part.stride != 0 && (uintmax_t)part.stride < (uintmax_t)sizeof(int64_t))) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts part has an invalid element stride"); }
         if (part.len > 65507 - total) { freeaddrinfo(addresses); return flux__net_result(-1, "UDP binary datagram exceeds 65507 bytes"); }
         ptrdiff_t stride = part.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : part.stride;
+        if (part.len > 1 && (uint64_t)(part.len - 1) > (uint64_t)PTRDIFF_MAX / (uint64_t)stride) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts part has an invalid element stride"); }
         for (size_t index = 0; index < part.len; ++index) { int64_t value = *((int64_t *)((char *)part.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts byte values must be between 0 and 255"); } payload[total++] = (unsigned char)value; }
     }
     struct flux__net_i64_error result = flux__net_result(-1, "failed to send UDP bytes parts");
