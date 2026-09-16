@@ -317,10 +317,18 @@ fn persist_typed_ir_function_artifact(
         "{PROJECT_TYPED_IR_CACHE_VERSION}:{artifact_id:016x}:{:016x}\n",
         stable_bytes_hash(payload.as_bytes())
     );
-    let previous = fs::read_to_string(&path).ok();
-    if previous.as_deref() == Some(&format!("{header}{payload}")) {
+    if read_typed_ir_function_artifact(
+        directory,
+        native_target,
+        &module_name,
+        &function_name,
+        shape_hash,
+    )
+    .is_some_and(|cached| cached == payload)
+    {
         return;
     }
+    let previous = fs::read_to_string(&path).ok();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -353,6 +361,43 @@ fn persist_typed_ir_function_artifact(
             }
         }
     }
+}
+
+/// Read one durable normalized typed-IR function artifact when it matches the
+/// requested identity and checksum. The lookup key is reconstructed from the
+/// same target/module/function/shape tuple used by publication, so callers do
+/// not need to scan a cache directory or trust a filename alone. Invalid,
+/// stale, and concurrently replaced artifacts are treated as cache misses.
+fn read_typed_ir_function_artifact(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    module_name: &str,
+    function_name: &str,
+    shape_hash: u64,
+) -> Option<String> {
+    let mut key = String::new();
+    use std::fmt::Write as _;
+    let _ = write!(
+        key,
+        "{}\n{}\n{}\n{}\n{shape_hash:016x}",
+        PROJECT_TYPED_IR_CACHE_VERSION,
+        native_target_cache_tag(native_target),
+        module_name,
+        function_name,
+    );
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    let path = directory.join(format!("function-{artifact_id:016x}.manifest"));
+    let cached = fs::read_to_string(path).ok()?;
+    let (header, payload) = cached.split_once('\n')?;
+    let expected_prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{artifact_id:016x}:");
+    let checksum = header.strip_prefix(&expected_prefix)?;
+    if checksum != format!("{:016x}", stable_bytes_hash(payload.as_bytes())) {
+        return None;
+    }
+    if !payload.starts_with(&format!("{key}\n")) {
+        return None;
+    }
+    Some(payload.to_string())
 }
 
 /// Hash the semantic portion of one normalized CFG for durable IR identity.
@@ -5829,6 +5874,45 @@ mod tests {
         assert_eq!(helper_manifests.len(), 2, "each module's helper needs its own artifact");
         assert_ne!(helper_manifests[0], helper_manifests[1]);
         assert!(helper_manifests.iter().all(|manifest| manifest.contains("\tmodule=")));
+
+        let dependency = super::read_typed_ir_function_artifact(
+            &cache_dir,
+            crate::codegen::NativeTarget::Linux,
+            "package.dep",
+            "helper",
+            0x1234,
+        )
+        .expect("the exact function artifact should be discoverable");
+        assert!(dependency.contains("function\thelper\tmodule=package.dep"));
+        assert!(super::read_typed_ir_function_artifact(
+            &cache_dir,
+            crate::codegen::NativeTarget::Linux,
+            "package.dep",
+            "helper",
+            0x4321,
+        )
+        .is_none(), "a changed function shape must be a cache miss");
+
+        let dependency_path = fs::read_dir(&cache_dir)
+            .expect("typed IR cache should remain readable")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry.file_name().to_string_lossy().contains("function-")
+                    && fs::read_to_string(entry.path())
+                        .is_ok_and(|manifest| manifest.contains("module=package.dep"))
+            })
+            .expect("dependency artifact should remain discoverable")
+            .path();
+        fs::write(&dependency_path, "corrupt\npayload")
+            .expect("corrupt artifact fixture should be writable");
+        assert!(super::read_typed_ir_function_artifact(
+            &cache_dir,
+            crate::codegen::NativeTarget::Linux,
+            "package.dep",
+            "helper",
+            0x1234,
+        )
+        .is_none(), "checksum failures must be treated as cache misses");
 
         let _ = fs::remove_dir_all(root);
     }
