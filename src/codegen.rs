@@ -6557,6 +6557,39 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
 }
 "#);
     }
+    if runtime_usage.contains("flux__net_send_bytes_to_parts(") {
+        out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
+        out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes_to_parts(int64_t socket_handle, const char *host, int64_t port, struct flux__list parts) {
+    if (socket_handle < 0 || socket_handle > INT_MAX || host == NULL) return flux__net_result(-1, "invalid socket handle");
+    if (parts.len != 0 && parts.data == NULL) return flux__net_result(-1, "sendBytesToParts list has missing storage");
+    if (parts.stride < 0 || (parts.stride != 0 && (uintmax_t)parts.stride < (uintmax_t)sizeof(struct flux__list))) return flux__net_result(-1, "sendBytesToParts has an invalid part stride");
+    if (port < 1 || port > 65535) return flux__net_result(-1, "sendBytesToParts port must be between 1 and 65535");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
+    if (socket_type != SOCK_DGRAM) return flux__net_result(-1, "sendBytesToParts requires a UDP socket");
+    struct sockaddr_storage local; socklen_t local_length = sizeof(local);
+    if (getsockname((int)socket_handle, (struct sockaddr *)&local, &local_length) != 0) return flux__net_result(-1, "failed to read UDP socket address");
+    char service[6]; snprintf(service, sizeof(service), "%lld", (long long)port);
+    struct addrinfo hints; memset(&hints, 0, sizeof(hints)); hints.ai_family = local.ss_family; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP;
+    struct addrinfo *addresses = NULL; if (getaddrinfo(host, service, &hints, &addresses) != 0) return flux__net_result(-1, "failed to resolve UDP peer");
+    ptrdiff_t part_stride = parts.stride == 0 ? (ptrdiff_t)sizeof(struct flux__list) : parts.stride;
+    uint64_t part_magnitude = part_stride < 0 ? (uint64_t)(-(part_stride + 1)) + 1u : (uint64_t)part_stride;
+    if (part_magnitude < sizeof(struct flux__list) || (parts.len > 1 && (uint64_t)(parts.len - 1) > (uint64_t)PTRDIFF_MAX / part_magnitude)) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts has invalid part stride"); }
+    unsigned char payload[65507]; size_t total = 0;
+    for (size_t part_index = 0; part_index < parts.len; ++part_index) {
+        struct flux__list part = *((struct flux__list *)((char *)parts.data + (ptrdiff_t)part_index * part_stride));
+        if (part.len != 0 && part.data == NULL) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts part has missing storage"); }
+        if (part.stride < 0 || (part.stride != 0 && (uintmax_t)part.stride < (uintmax_t)sizeof(int64_t))) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts part has an invalid element stride"); }
+        if (part.len > 65507 - total) { freeaddrinfo(addresses); return flux__net_result(-1, "UDP binary datagram exceeds 65507 bytes"); }
+        ptrdiff_t stride = part.stride == 0 ? (ptrdiff_t)sizeof(int64_t) : part.stride;
+        for (size_t index = 0; index < part.len; ++index) { int64_t value = *((int64_t *)((char *)part.data + (ptrdiff_t)index * stride)); if (value < 0 || value > 255) { freeaddrinfo(addresses); return flux__net_result(-1, "sendBytesToParts byte values must be between 0 and 255"); } payload[total++] = (unsigned char)value; }
+    }
+    struct flux__net_i64_error result = flux__net_result(-1, "failed to send UDP bytes parts");
+    for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) { ssize_t sent; do { sent = sendto((int)socket_handle, payload, total, 0, address->ai_addr, address->ai_addrlen); } while (sent < 0 && errno == EINTR); if (sent == (ssize_t)total) { result = flux__net_result((int64_t)sent, NULL); break; } }
+    freeaddrinfo(addresses); return result;
+}
+"#);
+    }
     if runtime_usage.contains("flux__net_receive_text(") {
         out.push_str("static inline struct flux__net_i64_error flux__net_receive_text(int64_t socket_handle, int64_t max_bytes, void (*callback)(int64_t, const char *)) { if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, \"invalid socket handle\"); if (max_bytes < 1 || max_bytes > 65536) return flux__net_result(-1, \"receiveText maxBytes must be between 1 and 65536\"); char buffer[65537]; ssize_t received; do { received = recv((int)socket_handle, buffer, (size_t)max_bytes, 0); } while (received < 0 && errno == EINTR); if (received < 0) return flux__net_result(-1, \"failed to receive text\"); if (memchr(buffer, '\\0', (size_t)received) != NULL) return flux__net_result(-1, \"received text contains a NUL byte\"); buffer[received] = '\\0'; callback(socket_handle, buffer); return flux__net_result((int64_t)received, NULL); }\n");
     }
@@ -36492,7 +36525,7 @@ fn emit_qualified_call(
                     None,
                 ));
             }
-            "sendBytesTo" => {
+            "sendBytesTo" | "sendBytesToParts" => {
                 if args.len() != 4 {
                     return Err(diag(span, "invalid network call reached code generation"));
                 }
@@ -36500,10 +36533,15 @@ fn emit_qualified_call(
                 let host = emit_expr(&args[1], env, signatures)?;
                 let port = emit_expr(&args[2], env, signatures)?;
                 let bytes = emit_expr(&args[3], env, signatures)?;
+                let helper = if name == "sendBytesToParts" {
+                    "flux__net_send_bytes_to_parts"
+                } else {
+                    "flux__net_send_bytes_to"
+                };
                 return Ok((
                     format!(
-                        "flux__net_send_bytes_to({}, {}, {}, {})",
-                        socket_handle.code, host.code, port.code, bytes.code
+                        "{}({}, {}, {}, {})",
+                        helper, socket_handle.code, host.code, port.code, bytes.code
                     ),
                     vec![Type::I64, Type::Error],
                     Some("flux__net_i64_error".to_string()),

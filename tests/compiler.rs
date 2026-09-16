@@ -8450,6 +8450,80 @@ fn udp_peer_binary_send_is_typed_native_and_runnable() {
 }
 
 #[test]
+fn udp_peer_binary_parts_send_is_typed_native_and_runnable() {
+    let peer = UdpSocket::bind("127.0.0.1:0").expect("UDP binary parts peer should bind");
+    let peer_port = peer.local_addr().unwrap().port();
+    let source = format!(
+        r#"fn main() -> i64 {{
+    let (socket, bindError) = net.udpBind("127.0.0.1", 0)
+    print(bindError)
+    let (sent, sendError) = net.writeBytesToParts(socket, "127.0.0.1", {peer_port}, [[0, 1], [10, 127, 255]])
+    print(sent)
+    print(sendError)
+    print(net.close(socket))
+    return 0
+}}
+"#
+    );
+    check_source(&source).expect("peer-addressed UDP binary parts should typecheck");
+    let generated = compile_to_c(&source).expect("peer-addressed UDP binary parts should lower");
+    assert!(generated.contains("flux__net_send_bytes_to_parts("));
+    assert!(generated.contains("UDP binary datagram exceeds 65507 bytes"));
+    assert!(generated.contains("sendBytesToParts part has missing storage"));
+
+    let root = std::env::temp_dir().join(format!("flux-udp-binary-parts-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("UDP binary parts fixture should be writable");
+    let source_path = root.join("peer_binary_parts.flux");
+    fs::write(&source_path, &source).expect("UDP binary parts source should be writable");
+    let binary = root.join("peer_binary_parts");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("UDP binary parts executable should build");
+    assert!(
+        built.status.success(),
+        "UDP binary parts build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let server = thread::spawn(move || {
+        let mut request = [0u8; 8];
+        let (length, _) = peer
+            .recv_from(&mut request)
+            .expect("binary parts datagram should arrive");
+        assert_eq!(&request[..length], &[0, 1, 10, 127, 255]);
+    });
+    let run = Command::new(&binary)
+        .output()
+        .expect("UDP binary parts executable should run");
+    server.join().expect("UDP binary parts peer should finish");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "nil\n5\nnil\nnil\n");
+
+    let bad_byte = check_source(
+        "fn main() -> i64 {\n    let (sent, failure) = net.writeBytesToParts(1, \"127.0.0.1\", 1, [[1], [256]])\n    print(sent)\n    print(failure)\n    return 0\n}\n",
+    )
+    .expect_err("peer-addressed UDP binary parts should reject out-of-range literals");
+    assert!(
+        bad_byte
+            .message
+            .contains("net.writeBytesToParts byte values must be between 0 and 255"),
+        "{}",
+        bad_byte.message
+    );
+
+    let unused = "fn hidden(socket: i64) -> void {\n    let (sent, failure) = net.writeBytesToParts(socket, \"127.0.0.1\", 1, [[1], [2]])\n    print(sent)\n    print(failure)\n}\nfn main() -> i64 {\n    return 0\n}\n";
+    let unused_generated =
+        compile_to_c(unused).expect("dead UDP binary parts send should tree-shake");
+    assert!(!unused_generated.contains("flux__net_send_bytes_to_parts("));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn udp_peer_text_io_is_typed_borrowed_tree_shaken_and_runnable() {
     let peer = UdpSocket::bind("127.0.0.1:0").expect("loopback UDP peer should bind");
     let peer_port = peer.local_addr().unwrap().port();

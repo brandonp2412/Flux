@@ -2351,8 +2351,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
             let canonical_property_name = property_name_to_internal(property_name);
             if element.properties.iter().any(|property| {
                 property_name_to_internal(&property.name) == canonical_property_name
-            })
-            {
+            }) {
                 return Err(diag(
                     property_line.number,
                     &format!("duplicate view property '{property_name}'"),

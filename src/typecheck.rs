@@ -9729,6 +9729,38 @@ fn check_qualified_call(
             "sendBytesTo" => {
                 return check_net_send_bytes_to(span, args, env, signatures);
             }
+            "writeBytesToParts" | "sendBytesToParts" => {
+                if args.len() != 4 {
+                    return Err(diag(span, &format!("net.{name} expects 4 arguments")));
+                }
+                let handle = type_of_expr(&args[0], env, signatures)?;
+                require_type(
+                    args[0].span,
+                    &Type::I64,
+                    &handle,
+                    &format!("net.{name} socket"),
+                )?;
+                let host = type_of_expr(&args[1], env, signatures)?;
+                require_type(args[1].span, &Type::Str, &host, &format!("net.{name} host"))?;
+                let port = type_of_expr(&args[2], env, signatures)?;
+                require_type(args[2].span, &Type::I64, &port, &format!("net.{name} port"))?;
+                if matches!(constant_primitive_value(&args[2], signatures), Some(ConstantValue::I64(value)) if !(1..=65535).contains(&value))
+                {
+                    return Err(diag(
+                        args[2].span,
+                        &format!("net.{name} port must be between 1 and 65535"),
+                    ));
+                }
+                let parts = signatures.canonical_type(&type_of_expr(&args[3], env, signatures)?);
+                require_type(
+                    args[3].span,
+                    &Type::List(Box::new(Type::List(Box::new(Type::I64)))),
+                    &parts,
+                    &format!("net.{name} parts"),
+                )?;
+                validate_literal_byte_lists(&args[3], signatures, &format!("net.{name}"))?;
+                return Ok(vec![Type::I64, Type::Error]);
+            }
             "receiveTextWithTimeout" => {
                 if args.len() != 4 {
                     return Err(diag(
@@ -12901,7 +12933,10 @@ fn check_qualified_call(
                 if args.len() != expected_args {
                     return Err(diag(
                         span,
-                        &format!("path.{name} expects {expected_args} arguments, got {}", args.len()),
+                        &format!(
+                            "path.{name} expects {expected_args} arguments, got {}",
+                            args.len()
+                        ),
                     ));
                 }
                 let labels = if name == "join" {
@@ -12921,7 +12956,12 @@ fn check_qualified_call(
                     } else {
                         Type::Str
                     };
-                    require_type(arg.span, &expected, &actual, &format!("path.{name} {label}"))?;
+                    require_type(
+                        arg.span,
+                        &expected,
+                        &actual,
+                        &format!("path.{name} {label}"),
+                    )?;
                 }
                 return Ok(vec![Type::Error]);
             }
@@ -14373,6 +14413,20 @@ fn validate_literal_byte_list(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_literal_byte_lists(
+    expr: &Expr,
+    signatures: &Signatures,
+    operation: &str,
+) -> Result<(), Diagnostic> {
+    let ExprKind::List(parts) = &expr.kind else {
+        return Ok(());
+    };
+    for part in parts {
+        validate_literal_byte_list(part, signatures, operation)?;
     }
     Ok(())
 }

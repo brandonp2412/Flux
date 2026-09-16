@@ -1023,13 +1023,11 @@ impl ControlFlowGraph {
                 )
                 .then_some(ControlFlowValueEffect::Pure)
                 .unwrap_or(ControlFlowValueEffect::MayEffect),
-                ControlFlowValueKind::RecordLiteral { fields } => all_pure(
-                    graph,
-                    fields.iter().map(|(_, value)| *value),
-                    visiting,
-                )
-                .then_some(ControlFlowValueEffect::Pure)
-                .unwrap_or(ControlFlowValueEffect::MayEffect),
+                ControlFlowValueKind::RecordLiteral { fields } => {
+                    all_pure(graph, fields.iter().map(|(_, value)| *value), visiting)
+                        .then_some(ControlFlowValueEffect::Pure)
+                        .unwrap_or(ControlFlowValueEffect::MayEffect)
+                }
                 ControlFlowValueKind::Match {
                     value,
                     guards,
@@ -3088,17 +3086,15 @@ impl<'a> ControlFlowBuilder<'a> {
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
-            ExprKind::RecordLiteral { fields } => {
-                ControlFlowValueKind::RecordLiteral {
-                    fields: fields
-                        .iter()
-                        .filter_map(|field| {
-                            self.lower_scalar_expr(producer, &field.value)
-                                .map(|value| (field.name.clone(), value))
-                        })
-                        .collect(),
-                }
-            }
+            ExprKind::RecordLiteral { fields } => ControlFlowValueKind::RecordLiteral {
+                fields: fields
+                    .iter()
+                    .filter_map(|field| {
+                        self.lower_scalar_expr(producer, &field.value)
+                            .map(|value| (field.name.clone(), value))
+                    })
+                    .collect(),
+            },
             ExprKind::StructLiteral {
                 name, base, fields, ..
             } => {
@@ -5312,9 +5308,9 @@ fn ir_value_is_discardable(
             base.is_none_or(|value| child(value, visiting))
                 && fields.iter().all(|(_, value)| child(*value, visiting))
         }
-        ControlFlowValueKind::RecordLiteral { fields } => fields
-            .iter()
-            .all(|(_, value)| child(*value, visiting)),
+        ControlFlowValueKind::RecordLiteral { fields } => {
+            fields.iter().all(|(_, value)| child(*value, visiting))
+        }
         ControlFlowValueKind::Field { base, .. } => child(*base, visiting),
         ControlFlowValueKind::Conditional {
             condition,

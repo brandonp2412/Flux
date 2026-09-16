@@ -429,7 +429,11 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
         let _ = writeln!(shape, "return-type\t{:?}", return_type);
     }
     for edge in cfg.edges() {
-        let _ = writeln!(shape, "edge\t{}\t{}\t{:?}", edge.from.0, edge.to.0, edge.kind);
+        let _ = writeln!(
+            shape,
+            "edge\t{}\t{}\t{:?}",
+            edge.from.0, edge.to.0, edge.kind
+        );
     }
     for value in cfg.values() {
         let _ = writeln!(
@@ -454,7 +458,11 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
             let _ = writeln!(shape, "node-value\t{}\t{}", node.id.0, value.0);
         }
         for definition in &node.definitions {
-            let _ = writeln!(shape, "definition\t{}\t{}\t{:?}", node.id.0, definition.name, definition.ty);
+            let _ = writeln!(
+                shape,
+                "definition\t{}\t{}\t{:?}",
+                node.id.0, definition.name, definition.ty
+            );
         }
         for read in &node.ownership.reads {
             let _ = writeln!(shape, "read\t{}\t{}", node.id.0, read);
@@ -463,10 +471,7 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
             let _ = writeln!(
                 shape,
                 "borrow\t{}\t{}\t{:?}\t{:?}",
-                node.id.0,
-                borrow.source,
-                borrow.kind,
-                borrow.source_definitions,
+                node.id.0, borrow.source, borrow.kind, borrow.source_definitions,
             );
         }
         for moved in &node.ownership.moves {
@@ -507,10 +512,7 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
             let _ = writeln!(
                 shape,
                 "drop\t{}\t{:?}\t{:?}\t{}",
-                node.id.0,
-                dropped.definition,
-                dropped.value,
-                dropped.name,
+                node.id.0, dropped.definition, dropped.value, dropped.name,
             );
         }
         if let Some(state) = cfg.borrow_state_before(node.id) {
@@ -547,42 +549,34 @@ fn normalized_cfg_shape_hash(cfg: &crate::ir::ControlFlowGraph) -> u64 {
         let _ = writeln!(
             shape,
             "borrow-end\t{}\t{}\t{:?}\t{}\t{:?}\t{}",
-            end.from.0,
-            end.to.0,
-            end.definition,
-            end.borrower,
-            end.source_definition,
-            end.source,
+            end.from.0, end.to.0, end.definition, end.borrower, end.source_definition, end.source,
         );
     }
     for lifetime in cfg.borrow_lifetimes() {
         let _ = writeln!(
             shape,
             "borrow-lifetime\t{:?}\t{}\t{:?}\t{}",
-            lifetime.definition,
-            lifetime.borrower,
-            lifetime.source_definition,
-            lifetime.source,
+            lifetime.definition, lifetime.borrower, lifetime.source_definition, lifetime.source,
         );
         for node in &lifetime.active_before {
-            let _ = writeln!(shape, "borrow-active\t{:?}\t{}", lifetime.definition, node.0);
+            let _ = writeln!(
+                shape,
+                "borrow-active\t{:?}\t{}",
+                lifetime.definition, node.0
+            );
         }
         for start in &lifetime.starts {
             let _ = writeln!(
                 shape,
                 "lifetime-start\t{:?}\t{}\t{}",
-                lifetime.definition,
-                start.from.0,
-                start.to.0,
+                lifetime.definition, start.from.0, start.to.0,
             );
         }
         for end in &lifetime.ends {
             let _ = writeln!(
                 shape,
                 "lifetime-end\t{:?}\t{}\t{}",
-                lifetime.definition,
-                end.from.0,
-                end.to.0,
+                lifetime.definition, end.from.0, end.to.0,
             );
         }
     }
@@ -700,12 +694,7 @@ fn prune_typed_ir_cache(directory: &Path, current: &Path) {
     );
 }
 
-fn prune_typed_ir_family(
-    directory: &Path,
-    current: &Path,
-    prefix: &str,
-    limit: usize,
-) {
+fn prune_typed_ir_family(directory: &Path, current: &Path, prefix: &str, limit: usize) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -713,9 +702,10 @@ fn prune_typed_ir_family(
         .filter_map(Result::ok)
         .filter(|entry| {
             entry.path() != current
-                && entry.file_name().to_str().is_some_and(|name| {
-                    name.starts_with(prefix) && name.ends_with(".manifest")
-                })
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with(".manifest"))
         })
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -5781,13 +5771,15 @@ mod tests {
             .expect("typed IR cache directory should contain function artifacts")
             .filter_map(Result::ok)
             .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("function-") && name.ends_with(".manifest"))
+                entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with("function-") && name.ends_with(".manifest")
+                })
             })
             .count();
-        assert_eq!(function_ir_entries, 2, "one function IR artifact should be published per function");
+        assert_eq!(
+            function_ir_entries, 2,
+            "one function IR artifact should be published per function"
+        );
         let ir_path = fs::read_dir(&ir_dir)
             .expect("typed IR cache directory should remain readable")
             .filter_map(Result::ok)
@@ -5801,8 +5793,12 @@ mod tests {
         let ir_manifest =
             fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
         assert!(ir_manifest.starts_with("flux-project-typed-ir-v4:"));
-        assert!(ir_manifest.contains("\nflux-project-typed-ir-v4\nlinux\nfunction\thelper\tmodule="));
-        assert!(ir_manifest.contains("function\tmain\tmodule=") && ir_manifest.contains("\tshape="));
+        assert!(
+            ir_manifest.contains("\nflux-project-typed-ir-v4\nlinux\nfunction\thelper\tmodule=")
+        );
+        assert!(
+            ir_manifest.contains("function\tmain\tmodule=") && ir_manifest.contains("\tshape=")
+        );
         assert!(ir_manifest.contains("\tnodes="));
         assert!(ir_manifest.contains("\tborrows="));
         assert!(ir_manifest.contains("\tdrops="));
@@ -5889,12 +5885,7 @@ mod tests {
         let function_ir_artifacts = fs::read_dir(&ir_dir)
             .expect("function IR artifacts should remain readable")
             .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("function-")
-            })
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
             .count();
         assert_eq!(
             function_ir_artifacts, 3,
@@ -5975,11 +5966,23 @@ mod tests {
             .collect::<Vec<_>>();
         let helper_manifests = manifests
             .iter()
-            .filter(|manifest| manifest.lines().any(|line| line.starts_with("function\thelper\t")))
+            .filter(|manifest| {
+                manifest
+                    .lines()
+                    .any(|line| line.starts_with("function\thelper\t"))
+            })
             .collect::<Vec<_>>();
-        assert_eq!(helper_manifests.len(), 2, "each module's helper needs its own artifact");
+        assert_eq!(
+            helper_manifests.len(),
+            2,
+            "each module's helper needs its own artifact"
+        );
         assert_ne!(helper_manifests[0], helper_manifests[1]);
-        assert!(helper_manifests.iter().all(|manifest| manifest.contains("\tmodule=")));
+        assert!(
+            helper_manifests
+                .iter()
+                .all(|manifest| manifest.contains("\tmodule="))
+        );
 
         let dependency = super::read_typed_ir_function_artifact(
             &cache_dir,
@@ -5990,14 +5993,17 @@ mod tests {
         )
         .expect("the exact function artifact should be discoverable");
         assert!(dependency.contains("function\thelper\tmodule=package.dep"));
-        assert!(super::read_typed_ir_function_artifact(
-            &cache_dir,
-            crate::codegen::NativeTarget::Linux,
-            "package.dep",
-            "helper",
-            0x4321,
-        )
-        .is_none(), "a changed function shape must be a cache miss");
+        assert!(
+            super::read_typed_ir_function_artifact(
+                &cache_dir,
+                crate::codegen::NativeTarget::Linux,
+                "package.dep",
+                "helper",
+                0x4321,
+            )
+            .is_none(),
+            "a changed function shape must be a cache miss"
+        );
 
         let dependency_path = fs::read_dir(&cache_dir)
             .expect("typed IR cache should remain readable")
@@ -6011,14 +6017,17 @@ mod tests {
             .path();
         fs::write(&dependency_path, "corrupt\npayload")
             .expect("corrupt artifact fixture should be writable");
-        assert!(super::read_typed_ir_function_artifact(
-            &cache_dir,
-            crate::codegen::NativeTarget::Linux,
-            "package.dep",
-            "helper",
-            0x1234,
-        )
-        .is_none(), "checksum failures must be treated as cache misses");
+        assert!(
+            super::read_typed_ir_function_artifact(
+                &cache_dir,
+                crate::codegen::NativeTarget::Linux,
+                "package.dep",
+                "helper",
+                0x1234,
+            )
+            .is_none(),
+            "checksum failures must be treated as cache misses"
+        );
 
         let _ = fs::remove_dir_all(root);
     }

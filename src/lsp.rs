@@ -1532,6 +1532,10 @@ fn add_qualified_namespace_completions(
                 "fn net.writeBytesTo(socket: i64, host: str, port: i64, bytes: i64[]) -> (i64, error)",
             ),
             (
+                "writeBytesToParts",
+                "fn net.writeBytesToParts(socket: i64, host: str, port: i64, parts: i64[][]) -> (i64, error)",
+            ),
+            (
                 "read",
                 "fn net.read(socket: i64, maxBytes: i64, callback: fn(i64, str) -> void) -> (i64, error)",
             ),
@@ -8901,12 +8905,15 @@ mod tests {
         ))
         .to_json();
         assert!(path_items.contains("fn path.isAbsolute(value: str) -> bool"));
-        assert!(path_items.contains(
-            "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error"
-        ));
-        assert!(path_items.contains(
-            "fn path.normalize(value: str, callback: fn(str) -> void) -> error"
-        ));
+        assert!(
+            path_items.contains(
+                "fn path.join(base: str, child: str, callback: fn(str) -> void) -> error"
+            )
+        );
+        assert!(
+            path_items
+                .contains("fn path.normalize(value: str, callback: fn(str) -> void) -> error")
+        );
 
         let directory_line = source
             .lines()
