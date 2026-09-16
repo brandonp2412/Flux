@@ -5624,6 +5624,7 @@ static inline struct flux__net_i64_error flux__net_send_text_with_timeout(int64_
 }
 static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64_t socket_handle, struct flux__list bytes, int64_t timeout_millis) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (bytes.len != 0 && bytes.data == NULL) return flux__net_result(-1, "writeBytesTimeout byte list has missing storage");
     if (timeout_millis < -1 || timeout_millis > INT_MAX) return flux__net_result(-1, "writeBytesTimeout timeoutMillis must be -1 or between 0 and 2147483647");
     int socket_type = 0;
     socklen_t type_length = sizeof(socket_type);
@@ -6470,6 +6471,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
         out.push_str("#ifndef FLUX_LIST_DEFINED\n#define FLUX_LIST_DEFINED\nstruct flux__list { void *data; size_t len; ptrdiff_t stride; };\n#endif\n");
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes_to(int64_t socket_handle, const char *host, int64_t port, struct flux__list bytes) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (bytes.len != 0 && bytes.data == NULL) return flux__net_result(-1, "sendBytesTo byte list has missing storage");
     if (port < 1 || port > 65535) return flux__net_result(-1, "sendBytesTo port must be between 1 and 65535");
     if (bytes.len > 65507) return flux__net_result(-1, "UDP binary datagram exceeds 65507 bytes");
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
@@ -8439,6 +8441,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     if runtime_usage.contains("flux__net_send_bytes(") {
         out.push_str(r#"static inline struct flux__net_i64_error flux__net_send_bytes(int64_t socket_handle, struct flux__list bytes) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__net_result(-1, "invalid socket handle");
+    if (bytes.len != 0 && bytes.data == NULL) return flux__net_result(-1, "writeBytes byte list has missing storage");
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__net_result(-1, "failed to inspect socket type");
     if (socket_type != SOCK_STREAM) return flux__net_result(-1, "writeBytes requires a TCP socket");
@@ -8465,6 +8468,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress(int64_t socket_handle, struct flux__list bytes, int64_t offset) {
     struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL };
     if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = "invalid socket handle"; return result; }
+    if (bytes.len != 0 && bytes.data == NULL) { result.v2 = "writeBytesFrom byte list has missing storage"; return result; }
     if (offset < 0) { result.v2 = "writeBytesFrom offset must be non-negative"; return result; }
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
     if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) { result.v2 = "failed to inspect socket type"; return result; }
@@ -8496,6 +8500,7 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
         out.push_str(r#"static inline struct flux__net_i64_bool_error flux__net_send_bytes_progress_with_timeout(int64_t socket_handle, struct flux__list bytes, int64_t offset, int64_t timeout_millis) {
     struct flux__net_i64_bool_error result = { .v0 = offset, .v1 = false, .v2 = NULL };
     if (socket_handle < 0 || socket_handle > INT_MAX) { result.v2 = "invalid socket handle"; return result; }
+    if (bytes.len != 0 && bytes.data == NULL) { result.v2 = "writeBytesFromTimeout byte list has missing storage"; return result; }
     if (offset < 0) { result.v2 = "writeBytesFromTimeout offset must be non-negative"; return result; }
     if (timeout_millis < -1 || timeout_millis > INT_MAX) { result.v2 = "writeBytesFromTimeout timeoutMillis must be -1 or between 0 and 2147483647"; return result; }
     int socket_type = 0; socklen_t type_length = sizeof(socket_type);
