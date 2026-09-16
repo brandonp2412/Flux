@@ -6002,6 +6002,24 @@ fn compute_borrow_states(graph: &ControlFlowGraph) -> Vec<ControlFlowBorrowState
         .collect()
 }
 
+/// Whether a normalized ownership node consumes one exact source definition
+/// through a typed call boundary. A consuming call may have no parallel
+/// `OwnershipMove` event, so implicit destruction must query the call's
+/// definition identity directly rather than falling back to the source name.
+fn ownership_node_consumes_definition(
+    ownership: &ControlFlowOwnership,
+    definition: ControlFlowDefinitionId,
+) -> bool {
+    ownership.calls.iter().any(|call| {
+        call.argument_kinds.iter().enumerate().any(|(index, kind)| {
+            *kind == OwnershipCallArgumentKind::Consuming
+                && call
+                    .consuming_argument_definitions_at(index)
+                    .contains(&definition)
+        })
+    })
+}
+
 fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, OwnershipDrop)> {
     let is_non_copy_storage = |ty: &Type| {
         matches!(ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
@@ -6037,12 +6055,13 @@ fn compute_drop_facts(graph: &ControlFlowGraph) -> Vec<(ControlFlowNodeId, Owner
             // on the same normalized evaluation node where `values` leaves
             // the live set; looking only at the incoming move state would
             // incorrectly manufacture a second drop for the consumed value.
-            if node
+            let consumed_by_move = node
                 .ownership
                 .moves
                 .iter()
-                .any(|movement| movement.source_definitions.contains(&definition))
-            {
+                .any(|movement| movement.source_definitions.contains(&definition));
+            let consumed_by_call = ownership_node_consumes_definition(&node.ownership, definition);
+            if consumed_by_move || consumed_by_call {
                 continue;
             }
             if live_after.contains(definition)
@@ -6347,7 +6366,7 @@ mod tests {
         ControlFlowDefinitionId, ControlFlowEdge, ControlFlowEdgeKind, ControlFlowMoveState,
         ControlFlowNode, ControlFlowNodeId, ControlFlowNodeKind, ControlFlowOwnership,
         OwnershipCall, OwnershipCallArgumentKind, OwnershipMove, OwnershipMovedBinding,
-        compute_move_states, insert_move_projection,
+        compute_move_states, insert_move_projection, ownership_node_consumes_definition,
     };
     use crate::diagnostic::SourceSpan;
 
@@ -6476,6 +6495,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Vec::<String>::new()]
         );
+    }
+
+    #[test]
+    fn consuming_call_drop_suppression_uses_definition_identity() {
+        let definition = ControlFlowDefinitionId::Parameter(3);
+        let sibling = ControlFlowDefinitionId::Parameter(4);
+        let span = SourceSpan::new(1, 1, 1);
+        let ownership = ControlFlowOwnership {
+            calls: vec![OwnershipCall {
+                callee: "consume".to_string(),
+                arguments: vec![],
+                argument_kinds: vec![OwnershipCallArgumentKind::Consuming],
+                argument_definitions: vec![vec![definition]],
+                borrowed_argument_definitions: vec![Vec::new()],
+                span,
+            }],
+            ..ControlFlowOwnership::default()
+        };
+
+        assert!(ownership_node_consumes_definition(&ownership, definition));
+        assert!(!ownership_node_consumes_definition(&ownership, sibling));
     }
 
     #[test]
