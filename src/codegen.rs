@@ -8054,6 +8054,14 @@ static inline struct flux__net_i64_error flux__websocket_accept(int64_t socket_h
 static inline struct flux__net_i64_error flux__websocket_connect(int64_t socket_handle, const char *host) {
     size_t host_length = 0;
     if (socket_handle < 0 || socket_handle > INT_MAX || host == NULL || !flux__websocket_bounded_length(host, 255, &host_length) || host_length == 0) return flux__websocket_result(-1, "invalid WebSocket client arguments");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__websocket_result(-1, "failed to inspect WebSocket socket type");
+    if (socket_type != SOCK_STREAM) return flux__websocket_result(-1, "WebSocket requires a TCP socket");
+    int accepting = 0; socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__websocket_result(-1, "failed to inspect WebSocket socket state");
+    if (accepting != 0) return flux__websocket_result(-1, "WebSocket requires a connected TCP socket");
+    struct sockaddr_storage peer; socklen_t peer_length = sizeof(peer);
+    if (getpeername((int)socket_handle, (struct sockaddr *)&peer, &peer_length) != 0) return flux__websocket_result(-1, "WebSocket requires a connected TCP socket");
     for (const unsigned char *part = (const unsigned char *)host; *part != '\0'; part += 1) if (*part <= 0x20 || *part == 0x7f) return flux__websocket_result(-1, "invalid WebSocket client host");
     unsigned char nonce[16]; FILE *random_source = fopen("/dev/urandom", "rb"); if (random_source == NULL || fread(nonce, 1, sizeof(nonce), random_source) != sizeof(nonce)) { if (random_source != NULL) fclose(random_source); return flux__websocket_result(-1, "failed to create WebSocket client nonce"); } fclose(random_source);
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; char key[25]; size_t key_length = 0; for (size_t index = 0; index < sizeof(nonce); index += 3) { unsigned value = (unsigned)nonce[index] << 16; if (index + 1 < sizeof(nonce)) value |= (unsigned)nonce[index + 1] << 8; if (index + 2 < sizeof(nonce)) value |= nonce[index + 2]; key[key_length++] = alphabet[(value >> 18) & 63]; key[key_length++] = alphabet[(value >> 12) & 63]; key[key_length++] = index + 1 < sizeof(nonce) ? alphabet[(value >> 6) & 63] : '='; key[key_length++] = index + 2 < sizeof(nonce) ? alphabet[value & 63] : '='; } key[key_length] = '\0';

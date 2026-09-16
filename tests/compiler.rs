@@ -52552,6 +52552,8 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket client surface should typecheck");
     let generated = compile_to_c(source).expect("WebSocket client surface should lower");
     assert!(generated.contains("flux__websocket_connect("));
+    assert!(generated.contains("WebSocket requires a TCP socket"));
+    assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("WebSocket client handshake has an invalid accept key"));
