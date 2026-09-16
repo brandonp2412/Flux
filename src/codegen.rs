@@ -5330,6 +5330,20 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
 #define FLUX__SQLITE_MAX_DATABASES 256
 struct flux__sqlite_slot { sqlite3 *database; uint32_t generation; };
 static struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];
+static inline void flux__sqlite_cleanup(void) {
+    for (uint32_t index = 0; index < FLUX__SQLITE_MAX_DATABASES; index += 1) {
+        struct flux__sqlite_slot *slot = &flux__sqlite_slots[index];
+        if (slot->database == NULL) continue;
+        sqlite3_close_v2(slot->database);
+        slot->database = NULL;
+    }
+}
+static inline void flux__sqlite_register_cleanup(void) {
+    static bool registered = false;
+    if (registered) return;
+    registered = true;
+    (void)atexit(flux__sqlite_cleanup);
+}
 static inline struct flux__sqlite_i64_error flux__sqlite_result(int64_t value, const char *error) { struct flux__sqlite_i64_error result = { .v0 = value, .v1 = error }; return result; }
 static inline struct flux__sqlite_slot *flux__sqlite_slot_for(int64_t handle) {
     if (handle <= 0) return NULL;
@@ -5353,6 +5367,7 @@ static inline struct flux__sqlite_i64_error flux__sqlite_register(sqlite3 *datab
     return flux__sqlite_result(-1, "too many open SQLite databases");
 }
 static inline struct flux__sqlite_i64_error flux__sqlite_open(const char *path) {
+    flux__sqlite_register_cleanup();
     sqlite3 *database = NULL;
     int result = sqlite3_open_v2(path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL);
     if (result != SQLITE_OK) {

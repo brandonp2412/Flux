@@ -12124,6 +12124,8 @@ fn main() -> i64 {{
     assert!(generated.contains("flux__sqlite_query("));
     assert!(generated.contains("flux__sqlite_close("));
     assert!(generated.contains("flux__sqlite_slot_for"));
+    assert!(generated.contains("flux__sqlite_register_cleanup"));
+    assert!(generated.contains("atexit(flux__sqlite_cleanup)"));
 
     let unused = r#"
 fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {
@@ -12203,6 +12205,43 @@ fn main() -> i64 {
             "invalid or closed SQLite database handle"
         ]
     );
+    assert!(database.is_file());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn sqlite_open_handles_are_closed_at_process_exit_without_explicit_close() {
+    let root = std::env::temp_dir().join(format!("flux-sqlite-cleanup-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("SQLite cleanup fixture should be writable");
+    let database = root.join("state.db");
+    let source_path = root.join("main.flux");
+    let database_path = database
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        "fn main() -> i64 {{\n    let (database, failure) = sqlite.open(\"{database_path}\")\n    print(failure)\n    print(sqlite.execute(database, \"CREATE TABLE item (value INTEGER)\"))\n    return 0\n}}\n"
+    );
+    fs::write(&source_path, source).expect("SQLite cleanup source should be writable");
+    let binary = root.join("sqlite-cleanup");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("SQLite cleanup binary should build");
+    assert!(
+        built.status.success(),
+        "SQLite cleanup build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("SQLite cleanup binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "nil\nnil");
     assert!(database.is_file());
     let _ = fs::remove_dir_all(&root);
 }
