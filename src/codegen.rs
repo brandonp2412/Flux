@@ -7709,8 +7709,14 @@ static const char *flux__preferences_get(const char *key, const char *fallback, 
     if (invalid != NULL || fallback == NULL || callback == NULL) return invalid == NULL ? "invalid preference read arguments" : invalid;
     const char *path = flux__preferences_path();
     if (path == NULL) return "preference path is unavailable";
-    FILE *file = fopen(path, "r");
-    if (file == NULL && errno != ENOENT) return "failed to open preferences";
+    int descriptor = open(path, O_RDONLY);
+    if (descriptor < 0 && errno != ENOENT) return "failed to open preferences";
+    FILE *file = NULL;
+    if (descriptor >= 0) {
+        (void)fchmod(descriptor, 0600);
+        file = fdopen(descriptor, "r");
+        if (file == NULL) { close(descriptor); return "failed to open preferences"; }
+    }
     char line[65538];
     char value[65537];
     bool found = false;
