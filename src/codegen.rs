@@ -7394,7 +7394,8 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
         out.push_str(r#"static inline const char *flux__time_format_zone(int64_t unix_ms, const char *zone, void (*callback)(const char *)) {
 #if defined(__GLIBC__)
     if (zone == NULL || zone[0] == '\0') return "time.formatZone zone must not be empty";
-    size_t zone_length = strlen(zone);
+    size_t zone_length = 0;
+    while (zone_length <= 128 && zone[zone_length] != '\0') zone_length += 1;
     if (zone_length > 128) return "time.formatZone zone is too long";
     for (size_t index = 0; index < zone_length; index += 1) {
         unsigned char byte = (unsigned char)zone[index];
@@ -7417,7 +7418,8 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
     char previous_zone_copy[129];
     bool had_previous_zone = previous_zone != NULL;
     if (had_previous_zone) {
-        size_t previous_length = strlen(previous_zone);
+        size_t previous_length = 0;
+        while (previous_length <= 128 && previous_zone[previous_length] != '\0') previous_length += 1;
         if (previous_length > 128) { __sync_lock_release(&flux_time_zone_transaction_lock); return "time.formatZone previous host zone is too long"; }
         memcpy(previous_zone_copy, previous_zone, previous_length + 1);
     }
@@ -7463,7 +7465,8 @@ static struct flux__worker_i64_error flux__time_start_timer(int64_t duration_ms,
 static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms, const char *zone) {
 #if defined(__GLIBC__)
     if (zone == NULL || zone[0] == '\0') return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone must not be empty" };
-    size_t zone_length = strlen(zone);
+    size_t zone_length = 0;
+    while (zone_length <= 128 && zone[zone_length] != '\0') zone_length += 1;
     if (zone_length > 128) return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset zone is too long" };
     for (size_t index = 0; index < zone_length; index += 1) {
         unsigned char byte = (unsigned char)zone[index];
@@ -7485,7 +7488,8 @@ static inline struct flux__time_i64_error flux__time_zone_offset(int64_t unix_ms
     char previous_zone_copy[129];
     bool had_previous_zone = previous_zone != NULL;
     if (had_previous_zone) {
-        size_t previous_length = strlen(previous_zone);
+        size_t previous_length = 0;
+        while (previous_length <= 128 && previous_zone[previous_length] != '\0') previous_length += 1;
         if (previous_length > 128) { __sync_lock_release(&flux_time_zone_transaction_lock); return (struct flux__time_i64_error){ .v0 = 0, .v1 = "time.zoneOffset previous host zone is too long" }; }
         memcpy(previous_zone_copy, previous_zone, previous_length + 1);
     }

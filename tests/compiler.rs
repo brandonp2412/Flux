@@ -958,6 +958,9 @@ fn main() -> i64 {
     check_source(source).expect("named-zone formatting should typecheck");
     let generated = compile_to_c(source).expect("named-zone formatting should lower");
     assert!(generated.contains("flux__time_format_zone("));
+    assert!(generated.contains("while (zone_length <= 128 && zone[zone_length] != '\\0')"));
+    assert!(generated.contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')"));
+    assert!(!generated.contains("size_t zone_length = strlen(zone)"));
     let root = std::env::temp_dir().join(format!("flux-zone-format-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("zone formatter fixture should be writable");
@@ -1018,6 +1021,9 @@ fn main() -> i64 {
     check_source(source).expect("named-zone offset should typecheck");
     let generated = compile_to_c(source).expect("named-zone offset should lower");
     assert!(generated.contains("flux__time_zone_offset("));
+    assert!(generated.contains("while (zone_length <= 128 && zone[zone_length] != '\\0')"));
+    assert!(generated.contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')"));
+    assert!(!generated.contains("size_t zone_length = strlen(zone)"));
     let root = std::env::temp_dir().join(format!("flux-zone-offset-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("zone offset fixture should be writable");
