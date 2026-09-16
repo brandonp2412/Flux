@@ -63,6 +63,16 @@ impl ProjectAnalysis {
                 && let Some(checksum) = header.strip_prefix(&header_prefix)
                 && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
             {
+                // The generated-C artifact and the typed-IR manifest are
+                // published independently. A manual cleanup, interrupted
+                // copy, or older compiler may therefore leave a valid native
+                // artifact without the durable IR metadata that tooling and
+                // future incremental consumers rely on. Repair only that
+                // exceptional case; ordinary cache hits remain bounded to a
+                // single artifact read and checksum validation.
+                if !typed_ir_manifest_is_current(self, target, native_target, fingerprint) {
+                    persist_typed_ir_manifest(self, target, native_target, fingerprint);
+                }
                 return Ok(generated.to_string());
             }
             // A corrupt or stale artifact is not usable, but leaving it in
@@ -297,6 +307,48 @@ fn persist_typed_ir_manifest(
             );
         }
     }
+}
+
+fn typed_ir_manifest_is_current(
+    analysis: &ProjectAnalysis,
+    target: &Path,
+    native_target: codegen::NativeTarget,
+    fingerprint: u64,
+) -> bool {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let path = root
+        .join(".flux")
+        .join("ir-cache")
+        .join(format!("ir-{fingerprint:016x}.manifest"));
+    let Ok(cached) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Some((header, manifest)) = cached.split_once('\n') else {
+        return false;
+    };
+    let prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{fingerprint:016x}:");
+    let Some(checksum) = header.strip_prefix(&prefix) else {
+        return false;
+    };
+    if checksum != format!("{:016x}", stable_bytes_hash(manifest.as_bytes())) {
+        return false;
+    }
+    manifest.starts_with(&format!(
+        "{PROJECT_TYPED_IR_CACHE_VERSION}\n{}\n",
+        native_target_cache_tag(native_target)
+    )) && analysis.program.functions.iter().all(|function| {
+        manifest.lines().any(|line| {
+            line.starts_with("function\t")
+                && line
+                    .split('\t')
+                    .nth(1)
+                    .is_some_and(|name| name == function.name)
+        })
+    })
 }
 
 /// Publish a separately addressable typed-IR artifact for one function.
@@ -5793,6 +5845,27 @@ mod tests {
         assert_eq!(
             function_ir_entries, 2,
             "one function IR artifact should be published per function"
+        );
+        // A valid native cache hit must repair independently cleaned IR
+        // metadata instead of silently leaving tooling without a manifest.
+        fs::remove_dir_all(&ir_dir).expect("typed IR cache should be removable");
+        let repaired_c = first
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("native cache hit should repair missing typed IR metadata");
+        assert_eq!(repaired_c, first_c);
+        let repaired_ir_entries = fs::read_dir(&ir_dir)
+            .expect("repaired typed IR directory should be readable")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("ir-")
+            })
+            .count();
+        assert_eq!(
+            repaired_ir_entries, 1,
+            "native cache hit should republish the aggregate typed IR manifest"
         );
         let ir_path = fs::read_dir(&ir_dir)
             .expect("typed IR cache directory should remain readable")
