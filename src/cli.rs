@@ -362,6 +362,18 @@ fn run() -> Result<(), CliError> {
     }
 
     match args[0].as_str() {
+        "registry" => {
+            if args.get(1).map(String::as_str) != Some("validate") || args.len() != 3 {
+                return Err(CliError::Message(
+                    "registry syntax is 'registry validate <index-directory>'".to_string(),
+                ));
+            }
+            let path = Path::new(&args[2]);
+            fluxc::package_ecosystem::validate_registry_index(path)
+                .map_err(|error| CliError::Message(error.to_string()))?;
+            println!("valid registry index: {}", path.display());
+            Ok(())
+        }
         "new" => {
             let path = require_target(&args)?;
             if args.len() != 2 {
@@ -10802,7 +10814,7 @@ fn usage() -> String {
     )
     .replace(
         &format!("usage: {command} new <directory> | {command} lock"),
-        &format!("usage: {command} new <directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} update <package-dir|flux.toml> | {command} outdated <package-dir|flux.toml> | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
+        &format!("usage: {command} new <directory> | {command} registry validate <index-directory> | {command} add <package-dir|flux.toml> <dependency> <requirement|--path path [--version requirement]|--git url --rev revision> | {command} remove <package-dir|flux.toml> <dependency> | {command} fetch <package-dir|flux.toml> [--offline] | {command} update <package-dir|flux.toml> | {command} outdated <package-dir|flux.toml> | {command} vendor <package-dir|flux.toml> [-o directory] [--offline] | {command} lock"),
     )
     .replace(
         &format!(" | {command} build android <package-dir|flux.toml>"),

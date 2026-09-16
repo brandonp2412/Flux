@@ -1,0 +1,29 @@
+name: Registry index
+
+on:
+  pull_request:
+    paths:
+      - "registry/**"
+      - "src/package_ecosystem.rs"
+      - "src/cli.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/registry-index.yml"
+  push:
+    branches: [main]
+    paths:
+      - "registry/**"
+      - "src/package_ecosystem.rs"
+      - "src/cli.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/registry-index.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate static registry index
+        run: cargo run --quiet -- registry validate registry
