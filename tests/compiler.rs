@@ -8212,6 +8212,7 @@ fn udp_scatter_gather_text_send_is_typed_tree_shaken_and_runnable() {
     let generated = compile_to_c(&source).expect("UDP scatter/gather text send should lower");
     assert!(generated.contains("#include <sys/uio.h>"));
     assert!(generated.contains("flux__net_send_text_to_parts("));
+    assert!(generated.contains("UDP peer host exceeds 65536 bytes"));
     assert!(generated.contains("message.msg_name = address->ai_addr"));
     assert!(generated.contains("sendmsg("));
 

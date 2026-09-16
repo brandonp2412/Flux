@@ -8969,7 +8969,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     }
     if runtime_usage.contains("flux__net_send_text_to_parts(") {
         out.push_str(r#"static inline const char *flux__net_send_text_to_parts(int64_t socket_handle, const char *host, int64_t port, struct flux__list parts) {
-    if (socket_handle < 0 || socket_handle > INT_MAX) return "invalid socket handle";
+    if (socket_handle < 0 || socket_handle > INT_MAX || host == NULL) return "invalid socket handle";
+    size_t host_length = 0;
+    while (host_length <= 65536 && host[host_length] != '\0') host_length += 1;
+    if (host_length > 65536) return "UDP peer host exceeds 65536 bytes";
     if (port < 1 || port > 65535) return "sendTextToParts port must be between 1 and 65535";
     int socket_type = 0;
     socklen_t type_length = sizeof(socket_type);

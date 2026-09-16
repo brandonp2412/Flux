@@ -1349,7 +1349,7 @@ Verified Milestone 28 structured pool-consumption follow-up: `worker.joinAny` le
 
 # Verified HTTP text-body UTF-8 follow-up: cancellation-aware fixed-length, chunked, and close-delimited HTTP request/response readers validate the complete bounded body as UTF-8 before lending it to Flux's callback-scoped `str`, while preserving NUL rejection, framing boundaries, partial-progress accounting, and binary-body separation. Native generated-code coverage pins the explicit request/response errors; owned byte buffers and binary HTTP bodies remain pending.
 
-# Verified UDP peer-text bounds follow-up: `net.sendTextTo` now validates both the borrowed host and payload with the same 65536-byte bounded scans used by the rest of the text socket surface before DNS resolution or socket transmission. Generated-C coverage pins both rejection paths, while the existing native loopback peer test remains green; owned byte buffers, queued backpressure, and task-integrated event-loop I/O remain open.
+# Verified UDP peer-text bounds follow-up: `net.sendTextTo` and `net.sendTextToParts` now validate borrowed hosts, payloads, and fragments with the same 65536-byte bounded scans used by the rest of the text socket surface before DNS resolution or socket transmission. Generated-C coverage pins the peer-host rejection paths, while the existing native loopback tests remain green; owned byte buffers, queued backpressure, and task-integrated event-loop I/O remain open.
 
 # Milestone 29 — Flux 1.0 stability
 
