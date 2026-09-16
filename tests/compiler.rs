@@ -5797,6 +5797,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__net_http_bounded_length(const char *value"));
     assert!(generated.contains("HTTP request body exceeds 65536 bytes"));
     assert!(generated.contains("HTTP request argument exceeds 65536 bytes"));
+    assert!(generated.contains(
+        "!flux__net_http_bounded_length(method, &method_length) || !flux__net_http_bounded_length(target, &target_length) || !flux__net_http_bounded_length(host, &host_length) || !flux__net_http_bounded_length(content_type, &content_type_length) || body == NULL"
+    ));
     assert!(generated.contains("Host: %s"));
     assert!(generated.contains("Content-Length: %zu"));
     assert!(generated.contains("Connection: %s"));
@@ -6926,6 +6929,9 @@ fn main() -> i64 {
     ));
     assert!(generated.contains(
         "if (content_type == NULL || body == NULL) return \"invalid HTTP response argument\";"
+    ));
+    assert!(generated.contains(
+        "if (content_type == NULL || body == NULL) return \"invalid HTTP response argument\"; size_t response_content_type_length = 0; if (!flux__net_http_bounded_length(content_type, &response_content_type_length)"
     ));
     assert!(generated.contains("#include <sys/socket.h>"));
 
