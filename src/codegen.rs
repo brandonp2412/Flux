@@ -6824,7 +6824,7 @@ static inline struct flux__net_i64_error flux__net_send_bytes_with_timeout(int64
     int ready = flux__net_poll_cancellable(&descriptor, 1, timeout_millis);
     if (ready == -2) return flux__net_progress_result(-1, false, "readBytesFromManyTimeout cancelled by worker scope");
     if (ready == 0) return flux__net_progress_result(0, false, NULL);
-    if (ready < 0 || (descriptor.revents & POLLNVAL) != 0) return flux__net_progress_result(-1, false, "failed to wait for UDP readability");
+    if (ready < 0 || (descriptor.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) return flux__net_progress_result(-1, false, "failed to wait for UDP readability");
     struct flux__net_i64_error result = flux__net_receive_bytes_from_many(socket_handle, max_bytes, max_count, callback);
     if (result.v1 != NULL) return flux__net_progress_result(result.v0, false, result.v1);
     return flux__net_progress_result(result.v0, true, NULL);
@@ -9233,14 +9233,10 @@ static inline const char *flux__websocket_close(int64_t session) { if (session <
     // compatibility helpers. Harden their Content-Length accumulator too;
     // otherwise a very long decimal header can wrap before the configured
     // body limit is checked.
-    let legacy_request_length =
-        "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\");";
-    let hardened_request_length =
-        "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
-    let legacy_response_length =
-        "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\");";
-    let hardened_response_length =
-        "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
+    let legacy_request_length = "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\");";
+    let hardened_request_length = "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP request body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
+    let legacy_response_length = "body_length = body_length * 10u + (size_t)(*digit - '0'); if (body_length > (size_t)max_body_bytes) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\");";
+    let hardened_response_length = "size_t digit_value = (size_t)(*digit - '0'); if (body_length > ((size_t)max_body_bytes - digit_value) / 10u) return flux__net_result(-1, \"HTTP response body exceeds maxBodyBytes\"); body_length = body_length * 10u + digit_value;";
     *out = out
         .replace(legacy_request_length, hardened_request_length)
         .replace(legacy_response_length, hardened_response_length);
@@ -21407,9 +21403,7 @@ fn emit_lambda_body_with_cfg(
     let constants = cfg_constant_values(&cfg);
     let proofs = cfg_checked_i64_proofs(&cfg);
     if let Some(expected) = expected {
-        emit_expr_for_expected_with_cfg_proofs(
-            body, expected, env, signatures, &proofs, &constants,
-        )
+        emit_expr_for_expected_with_cfg_proofs(body, expected, env, signatures, &proofs, &constants)
     } else {
         let rewritten = substitute_nested_ir_constant_arguments(body, &constants);
         Ok(emit_expr(&rewritten, env, signatures)?.code)
@@ -31949,10 +31943,7 @@ fn emit_block(
                                 context.checked_i64_cfg_proofs,
                                 context.cfg_constant_values,
                             )?;
-                            out.push_str(&format!(
-                                "{pad}    if ({}) {{\n",
-                                c_condition(&guard)
-                            ));
+                            out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
                             out.push_str(&format!("{pad}        {matched} = true;\n"));
                             let mut nested_mutable = mutable.clone();
                             emit_block(
@@ -32135,10 +32126,7 @@ fn emit_map_match(
                 context.checked_i64_cfg_proofs,
                 context.cfg_constant_values,
             )?;
-            out.push_str(&format!(
-                "{pad}        if ({}) {{\n",
-                c_condition(&guard)
-            ));
+            out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard)));
             out.push_str(&format!("{pad}            {matched} = true;\n"));
             let mut nested_mutable = mutable.clone();
             emit_block(
@@ -32401,10 +32389,7 @@ fn emit_match_expr_into(
                     checked_i64_cfg_proofs,
                     cfg_constant_values,
                 )?;
-                out.push_str(&format!(
-                    "{pad}            {target} = {};\n",
-                    arm_value
-                ));
+                out.push_str(&format!("{pad}            {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}            break;\n"));
             } else {
                 out.push_str(&format!(
@@ -32419,10 +32404,7 @@ fn emit_match_expr_into(
                     checked_i64_cfg_proofs,
                     cfg_constant_values,
                 )?;
-                out.push_str(&format!(
-                    "{pad}                {target} = {};\n",
-                    arm_value
-                ));
+                out.push_str(&format!("{pad}                {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}                break;\n"));
                 out.push_str(&format!("{pad}            }}\n"));
             }
@@ -33704,13 +33686,8 @@ fn emit_inline_sequence_reducer_application(
         local_c_name(&item.name)
     ));
     let reduced_ty = type_of_expr(body, &callback_env, signatures)?;
-    let reduced = emit_lambda_body_with_cfg(
-        body,
-        params,
-        Some(&reduced_ty),
-        &callback_env,
-        signatures,
-    )?;
+    let reduced =
+        emit_lambda_body_with_cfg(body, params, Some(&reduced_ty), &callback_env, signatures)?;
     out.push_str(&format!("{pad}    {target_name} = {reduced};\n"));
     out.push_str(&format!("{pad}}}\n"));
     Ok(true)
@@ -37233,7 +37210,13 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "json" {
-        let expected_args = if name == "encodeNull" { 1 } else if name == "validate" { 1 } else { 2 };
+        let expected_args = if name == "encodeNull" {
+            1
+        } else if name == "validate" {
+            1
+        } else {
+            2
+        };
         if !named_args.is_empty() || args.len() != expected_args {
             return Err(diag(span, "invalid JSON call reached code generation"));
         }
@@ -38309,7 +38292,10 @@ fn emit_qualified_call(
             }
             "normalize" => {
                 if args.len() != 2 {
-                    return Err(diag(span, "invalid path.normalize call reached code generation"));
+                    return Err(diag(
+                        span,
+                        "invalid path.normalize call reached code generation",
+                    ));
                 }
                 let value = emit_expr(&args[0], env, signatures)?;
                 let callback = emit_expr(&args[1], env, signatures)?;

@@ -59,7 +59,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__path_join(\"/tmp\", \"flux\", flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", false, flux__fn_show)"));
     assert!(generated.contains("flux__path_component(\"/tmp/flux\", true, flux__fn_show)"));
-    assert!(generated.contains("flux__path_normalize(\"/tmp/flux/../cache//./item\", flux__fn_show)"));
+    assert!(
+        generated.contains("flux__path_normalize(\"/tmp/flux/../cache//./item\", flux__fn_show)")
+    );
     assert!(generated.contains("strnlen(base, 65537)"));
     assert!(generated.contains("return length >= 3 && ((path[0] >= 'A'"));
 
@@ -91,10 +93,8 @@ fn main() -> i64 {
     );
     let _ = fs::remove_dir_all(&root);
 
-    let shaken = compile_to_c(
-        "fn main() -> i64 {\n    return 0\n}\n",
-    )
-    .expect("path-free source should compile");
+    let shaken = compile_to_c("fn main() -> i64 {\n    return 0\n}\n")
+        .expect("path-free source should compile");
     assert!(!shaken.contains("flux__path_join"));
     assert!(!shaken.contains("flux__path_is_absolute"));
     assert!(!shaken.contains("flux__path_normalize"));
@@ -503,10 +503,15 @@ fn main() -> i64 {
                 && matches!(event, ControlFlowOwnershipEvent::Move(movement) if movement.source == "values")
         })
         .expect("drop move should be present in the graph stream");
-    assert!(move_index < drop_index, "moves must precede calls at one node");
-    assert!(events[..=drop_index]
-        .iter()
-        .all(|(node, _)| node.0 <= drop_node.0));
+    assert!(
+        move_index < drop_index,
+        "moves must precede calls at one node"
+    );
+    assert!(
+        events[..=drop_index]
+            .iter()
+            .all(|(node, _)| node.0 <= drop_node.0)
+    );
 }
 
 #[test]
@@ -960,7 +965,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("named-zone formatting should lower");
     assert!(generated.contains("flux__time_format_zone("));
     assert!(generated.contains("while (zone_length <= 128 && zone[zone_length] != '\\0')"));
-    assert!(generated.contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')"));
+    assert!(
+        generated
+            .contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')")
+    );
     assert!(!generated.contains("size_t zone_length = strlen(zone)"));
     let root = std::env::temp_dir().join(format!("flux-zone-format-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -1023,7 +1031,10 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("named-zone offset should lower");
     assert!(generated.contains("flux__time_zone_offset("));
     assert!(generated.contains("while (zone_length <= 128 && zone[zone_length] != '\\0')"));
-    assert!(generated.contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')"));
+    assert!(
+        generated
+            .contains("while (previous_length <= 128 && previous_zone[previous_length] != '\\0')")
+    );
     assert!(!generated.contains("size_t zone_length = strlen(zone)"));
     let root = std::env::temp_dir().join(format!("flux-zone-offset-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -12003,7 +12014,11 @@ fn main() -> i64 {{
     assert!(generated.contains("#include <sys/stat.h>"));
     assert!(generated.contains("#include <dirent.h>"));
     assert!(generated.contains("static inline bool flux__fs_exists(const char *path)"));
-    assert!(generated.contains("static inline bool flux__fs_bounded_length(const char *value, size_t *length)"));
+    assert!(
+        generated.contains(
+            "static inline bool flux__fs_bounded_length(const char *value, size_t *length)"
+        )
+    );
     assert!(generated.contains("flux__fs_bounded_length(path, &length)"));
     assert!(generated.contains("static inline bool flux__fs_is_file(const char *path)"));
     assert!(generated.contains("static inline bool flux__fs_is_directory(const char *path)"));
@@ -12362,7 +12377,9 @@ fn main() -> i64 {{
     let generated = compile_to_c(&source).expect("file.read should lower natively");
     assert!(generated.contains("flux__fs_read_text"));
     assert!(generated.contains("int extra = fgetc(file)"));
-    assert!(generated.contains("if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; }"));
+    assert!(generated.contains(
+        "if (ferror(file)) { free(buffer); fclose(file); return \"failed to read file\"; }"
+    ));
 
     let source_path = root.join("main.flux");
     fs::write(&source_path, &source).expect("file read source should be writable");
@@ -12585,9 +12602,8 @@ fn filesystem_path_inputs_are_bounded_before_native_calls() {
     let source_path = root.join("main.flux");
     let binary = root.join("bounds");
     let overlong = "a".repeat(65_537);
-    let source = format!(
-        "fn main() -> i64 {{\n    print(fs.exists(\"{overlong}\"))\n    return 0\n}}\n"
-    );
+    let source =
+        format!("fn main() -> i64 {{\n    print(fs.exists(\"{overlong}\"))\n    return 0\n}}\n");
     fs::write(&source_path, source).expect("filesystem bounds source should be writable");
     let built = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("build")
@@ -19653,9 +19669,15 @@ fn main() -> i64 {
     let output = Command::new(&exe_path)
         .output()
         .expect("JSON validation program should run");
-    assert!(output.status.success(), "JSON validation should exit cleanly");
+    assert!(
+        output.status.success(),
+        "JSON validation should exit cleanly"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("nil\n"), "valid JSON should return nil: {stdout:?}");
+    assert!(
+        stdout.starts_with("nil\n"),
+        "valid JSON should return nil: {stdout:?}"
+    );
     assert!(
         stdout.contains("JSON primitive is invalid"),
         "invalid JSON should return an error: {stdout:?}"
@@ -21036,9 +21058,11 @@ fn main() -> i64 {{
     );
     check_source(&source).expect("whitespace nesting boundary should typecheck");
     let generated = compile_to_c(&source).expect("whitespace nesting boundary should lower");
-    let root = std::env::temp_dir().join(format!("flux-json-depth-whitespace-{}", std::process::id()));
+    let root =
+        std::env::temp_dir().join(format!("flux-json-depth-whitespace-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temporary JSON whitespace-depth directory should be writable");
+    fs::create_dir_all(&root)
+        .expect("temporary JSON whitespace-depth directory should be writable");
     let c_path = root.join("json-depth-whitespace.c");
     let exe_path = root.join("json-depth-whitespace");
     fs::write(&c_path, generated).expect("JSON whitespace-depth C should be writable");
@@ -21049,10 +21073,19 @@ fn main() -> i64 {{
         .arg(&exe_path)
         .output()
         .expect("clang should compile JSON whitespace-depth code");
-    assert!(compile.status.success(), "JSON whitespace-depth C should compile: {}", String::from_utf8_lossy(&compile.stderr));
-    let output = Command::new(&exe_path).output().expect("JSON whitespace-depth program should run");
+    assert!(
+        compile.status.success(),
+        "JSON whitespace-depth C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("JSON whitespace-depth program should run");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "JSON nesting exceeds 128 levels\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "JSON nesting exceeds 128 levels\n"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -38258,9 +38291,11 @@ app Responsive(width: 720, height: 480)
     )
     .expect("Windows breakpoint bindings should lower to native C");
     assert!(generated.contains("flux__ui_window_width < INT64_C(600)"));
-    assert!(generated.contains(
-        "flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840)"
-    ));
+    assert!(
+        generated.contains(
+            "flux__ui_window_width >= INT64_C(600) && flux__ui_window_width < INT64_C(840)"
+        )
+    );
     assert!(generated.contains("flux__ui_window_width >= INT64_C(840)"));
     assert!(generated.contains("WM_SIZE"));
 }
@@ -45619,9 +45654,11 @@ fn main() -> i64 { 0 }
 "##;
     let diagnostics = check_source_all(source)
         .expect_err("camelCase and snake_case aliases must not define two properties");
-    assert!(diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.message.contains("duplicate view property 'text_color'")));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("duplicate view property 'text_color'")
+    }));
 }
 
 #[test]
@@ -52686,6 +52723,7 @@ fn main() -> i64 {
     let generated = compile_to_c(source).expect("timed binary UDP receive should lower");
     assert!(generated.contains("flux__net_receive_bytes_from_many_with_timeout("));
     assert!(generated.contains(", 1, INT64_C(25),"));
+    assert!(generated.contains("POLLNVAL | POLLERR | POLLHUP"));
     assert!(generated.contains("readBytesFromManyTimeout requires a nonblocking UDP socket"));
     assert!(generated.contains("readBytesFromManyTimeout maxBytes must be between 1 and 65536"));
 }
@@ -52788,7 +52826,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__websocket_bounded_length(host, 255, &host_length)"));
     assert!(generated.contains("/dev/urandom"));
     assert!(generated.contains("flux__websocket_response_header(response, response_length, \"Sec-WebSocket-Accept\", expected, false)"));
-    assert!(generated.contains("while (cursor + 1 < limit && !(cursor[0] == '\\r' && cursor[1] == '\\n')) cursor += 1"));
+    assert!(generated.contains(
+        "while (cursor + 1 < limit && !(cursor[0] == '\\r' && cursor[1] == '\\n')) cursor += 1"
+    ));
     assert!(!generated.contains("const char *line_end = strstr(cursor, \"\\r\\n\")"));
     assert!(generated.contains("HTTP/1.1 101 Switching Protocols"));
     assert!(generated.contains("flux__websocket_is_client(session)"));
