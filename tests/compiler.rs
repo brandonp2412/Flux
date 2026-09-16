@@ -52485,6 +52485,8 @@ fn main() -> i64 {
     check_source(source).expect("WebSocket server surface should typecheck");
     let generated = compile_to_c(source).expect("WebSocket server surface should lower");
     assert!(generated.contains("flux__websocket_accept("));
+    assert!(generated.contains("WebSocket requires a TCP socket"));
+    assert!(generated.contains("WebSocket requires a connected TCP socket"));
     assert!(generated.contains("flux__websocket_read_text("));
     assert!(generated.contains("Sec-WebSocket-Accept"));
     assert!(generated.contains("WebSocket handshake is missing required upgrade headers"));

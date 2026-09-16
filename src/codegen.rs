@@ -8031,6 +8031,12 @@ static inline const char *flux__websocket_write_ping(int64_t session, const char
 static inline const char *flux__websocket_write_pong(int64_t session, const char *value) { size_t length = 0; if (!flux__websocket_bounded_length(value, 125, &length)) return "WebSocket pong payload exceeds 125 bytes"; return flux__websocket_write_control(session, 10, (const unsigned char *)value, length); }
 static inline struct flux__net_i64_error flux__websocket_accept(int64_t socket_handle) {
     if (socket_handle < 0 || socket_handle > INT_MAX) return flux__websocket_result(-1, "invalid WebSocket socket");
+    int socket_type = 0; socklen_t type_length = sizeof(socket_type);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_TYPE, &socket_type, &type_length) != 0) return flux__websocket_result(-1, "failed to inspect WebSocket socket type");
+    if (socket_type != SOCK_STREAM) return flux__websocket_result(-1, "WebSocket requires a TCP socket");
+    int accepting = 0; socklen_t accepting_length = sizeof(accepting);
+    if (getsockopt((int)socket_handle, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &accepting_length) != 0) return flux__websocket_result(-1, "failed to inspect WebSocket socket state");
+    if (accepting != 0) return flux__websocket_result(-1, "WebSocket requires a connected TCP socket");
     char request[65537]; size_t length = 0;
     while (length < 65536) { if (!flux__websocket_read_all((int)socket_handle, request + length, 1)) return flux__websocket_result(-1, "failed to receive WebSocket handshake"); length += 1; request[length] = '\0'; if (length >= 4 && memcmp(request + length - 4, "\r\n\r\n", 4) == 0) break; }
     if (length == 65536 && memcmp(request + length - 4, "\r\n\r\n", 4) != 0) return flux__websocket_result(-1, "WebSocket handshake exceeds 65536 bytes");
