@@ -36820,6 +36820,71 @@ app Actions
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_rich_text_markup() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-rich-text-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary rich-text patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        richText: "<b>Horse</b> <i>Tinder</i>"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial rich-text source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial rich-text analysis should succeed");
+
+    let updated = initial.replace(
+        "<b>Horse</b> <i>Tinder</i>",
+        "<b>Flux</b> <u>&amp; friends</u>",
+    );
+    fs::write(&entry, &updated).expect("updated rich-text source should be writable");
+    let entry = fs::canonicalize(entry).expect("rich-text patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated rich-text analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("valid rich-text edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "title");
+    assert_eq!(patch[0].property, "rich_text");
+    assert_eq!(patch[0].value, "<b>Flux</b> <u>&amp; friends</u>");
+
+    let generated = second
+        .emit_c()
+        .expect("rich-text patch fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"rich_text\") == 0 && flux__ui_title != NULL"));
+    assert!(generated.contains("gtk_label_set_markup(GTK_LABEL(flux__ui_title), value)"));
+
+    let invalid = updated.replace(
+        "<b>Flux</b> <u>&amp; friends</u>",
+        "<span>unsupported</span>",
+    );
+    fs::write(&entry, invalid).expect("invalid rich-text edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("unsupported rich-text markup remains parseable and type-correct");
+    assert!(
+        third.development_ui_string_patch_from(&second).is_none(),
+        "unsupported rich-text markup must retain controlled restart/codegen validation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_variants_with_explicit_override_precedence() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-variant-patch-{}",

@@ -1923,6 +1923,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "variant" => {
             element.kind == "Text" && !development_ui_element_has_property(element, "rich_text")
         }
+        "rich_text" => element.kind == "Text",
         "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
@@ -2202,6 +2203,9 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "font_family" && value.is_empty() {
+                    return None;
+                }
+                if property_name == "rich_text" && !codegen::valid_portable_rich_text(value) {
                     return None;
                 }
                 if matches!(

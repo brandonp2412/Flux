@@ -14972,6 +14972,12 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
                     c_string(&element.name)
                 ));
+                if view_property(element, "rich_text").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"rich_text\") == 0 && {widget} != NULL) gtk_label_set_markup(GTK_LABEL({widget}), value);",
+                        c_string(&element.name)
+                    ));
+                }
                 if view_property(element, "text_align").is_some() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"text_align\") == 0 && {widget} != NULL) {{ GtkJustification justify = GTK_JUSTIFY_LEFT; bool justify_valid = true; if (strcmp(value, \"left\") == 0) justify = GTK_JUSTIFY_LEFT; else if (strcmp(value, \"center\") == 0) justify = GTK_JUSTIFY_CENTER; else if (strcmp(value, \"right\") == 0) justify = GTK_JUSTIFY_RIGHT; else if (strcmp(value, \"fill\") == 0) justify = GTK_JUSTIFY_FILL; else justify_valid = false; if (justify_valid) gtk_label_set_justify(GTK_LABEL({widget}), justify); }}",
@@ -21289,7 +21295,7 @@ fn emit_grid_sizing(
     Ok(())
 }
 
-fn valid_portable_rich_text(markup: &str) -> bool {
+pub(crate) fn valid_portable_rich_text(markup: &str) -> bool {
     let bytes = markup.as_bytes();
     let mut index = 0;
     let mut stack: Vec<&str> = Vec::new();
