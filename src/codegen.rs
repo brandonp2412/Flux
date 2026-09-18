@@ -136,6 +136,8 @@ impl FunctionCodegenCache {
 pub struct FunctionCodegenStats {
     pub reused_functions: usize,
     pub regenerated_functions: usize,
+    pub reused_helpers: usize,
+    pub regenerated_helpers: usize,
 }
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
@@ -1445,13 +1447,40 @@ fn emit_c_for_target_with_source_metadata_impl(
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
     let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
     let mut generated_body = String::new();
-    for helper in &function_helpers {
-        emit_function_helper(&mut generated_body, helper, signatures, source_paths)?;
-        generated_body.push('\n');
-    }
-    let mut temp_counter = 0usize;
     let mut codegen_stats = FunctionCodegenStats::default();
     let mut used_cache_keys = HashSet::new();
+    for helper in &function_helpers {
+        let cache_key = FunctionCodegenCacheKey {
+            identity: function_helper_codegen_cache_identity(helper, source_paths),
+            incoming_temp_counter: 0,
+        };
+        if let Some(cached) = function_cache
+            .as_deref_mut()
+            .and_then(|cache| cache.entries.get(&cache_key).cloned())
+        {
+            generated_body.push_str(&cached.generated);
+            codegen_stats.reused_helpers += 1;
+            used_cache_keys.insert(cache_key);
+            continue;
+        }
+
+        let mut generated_helper = String::new();
+        emit_function_helper(&mut generated_helper, helper, signatures, source_paths)?;
+        generated_helper.push('\n');
+        codegen_stats.regenerated_helpers += 1;
+        if let Some(cache) = function_cache.as_deref_mut() {
+            cache.entries.insert(
+                cache_key.clone(),
+                CachedFunctionCodegen {
+                    generated: generated_helper.clone(),
+                    next_temp_counter: 0,
+                },
+            );
+            used_cache_keys.insert(cache_key);
+        }
+        generated_body.push_str(&generated_helper);
+    }
+    let mut temp_counter = 0usize;
     for function in &program.functions {
         if reachable_functions.contains(&function.name) && function.foreign_symbol.is_none() {
             let cfg = function_ir
@@ -1929,10 +1958,24 @@ fn function_codegen_cache_identity(
     source_paths: &HashMap<SourceId, String>,
 ) -> String {
     format!(
-        "{:?}|source_path={}",
+        "function:{:?}|source_path={}",
         function,
         source_paths
             .get(&function.span.source_id)
+            .map(String::as_str)
+            .unwrap_or_default()
+    )
+}
+
+fn function_helper_codegen_cache_identity(
+    helper: &Expr,
+    source_paths: &HashMap<SourceId, String>,
+) -> String {
+    format!(
+        "helper:{:?}|source_path={}",
+        helper,
+        source_paths
+            .get(&helper.span.source_id)
             .map(String::as_str)
             .unwrap_or_default()
     )

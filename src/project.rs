@@ -1075,6 +1075,8 @@ pub enum ProjectCodegenOutcome {
     Incremental {
         reused_functions: usize,
         regenerated_functions: usize,
+        reused_helpers: usize,
+        regenerated_helpers: usize,
     },
     Full,
 }
@@ -1413,6 +1415,7 @@ impl ProjectAnalysisCache {
         self.generated_c.insert(cache_key, generated.clone());
         self.last_codegen_outcome = Some(
             if stats.reused_functions > 0
+                || stats.reused_helpers > 0
                 || matches!(
                     self.last_outcome,
                     Some(ProjectAnalysisOutcome::Incremental { .. })
@@ -1421,6 +1424,8 @@ impl ProjectAnalysisCache {
                 ProjectCodegenOutcome::Incremental {
                     reused_functions: stats.reused_functions,
                     regenerated_functions: stats.regenerated_functions,
+                    reused_helpers: stats.reused_helpers,
+                    regenerated_helpers: stats.regenerated_helpers,
                 }
             } else {
                 ProjectCodegenOutcome::Full

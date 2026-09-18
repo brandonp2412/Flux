@@ -32262,7 +32262,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &[
             "version-two",
             "reload: incremental analysis rechecked 1 module",
-            "reload: incremental codegen reused 1 function and regenerated 1",
+            "reload: incremental codegen reused 1 function and 0 generated helpers, regenerated 1 function and 0 generated helpers",
             "reload: state boundary root compatible • preserved 0 • reset 0 • dropped 0",
             "reload: rebuilt and restarted after source change",
             "reload: ready in ",
@@ -32276,6 +32276,8 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"codegen\":\"incremental\""));
     assert!(status.contains("\"reused_functions\":1"));
     assert!(status.contains("\"regenerated_functions\":1"));
+    assert!(status.contains("\"reused_helpers\":0"));
+    assert!(status.contains("\"regenerated_helpers\":0"));
     assert!(status.contains("\"analysis_ms\":"));
     assert!(status.contains("\"codegen_ms\":"));
     assert!(status.contains("\"native_ms\":"));
@@ -36594,6 +36596,8 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
         Some(fluxc::project::ProjectCodegenOutcome::Incremental {
             reused_functions: 1,
             regenerated_functions: 1,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
         })
     );
     assert_eq!(
@@ -36686,6 +36690,8 @@ fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
         Some(fluxc::project::ProjectCodegenOutcome::Incremental {
             reused_functions: 1,
             regenerated_functions: 1,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
         })
     );
     assert_eq!(
@@ -36706,6 +36712,71 @@ fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
     assert_eq!(
         third_cache.last_codegen_outcome(),
         Some(fluxc::project::ProjectCodegenOutcome::Cached)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_codegen_cache_reuses_generated_helpers_across_cache_restarts() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-durable-helper-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("durable helper-codegen project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(
+        &dependency,
+        "pub fn add(left: i64, right: i64) -> i64 { left + right }\n",
+    )
+    .expect("helper dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 {\n    let plusTwo: fn(i64) -> i64 = bind(add, 2)\n    return plusTwo(40)\n}\n",
+    )
+    .expect("helper entry should be writable");
+
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = first_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial helper source should analyze");
+    let first_c = first_cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial helper source should emit C");
+    assert_eq!(
+        first_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    fs::write(
+        &dependency,
+        "pub fn add(left: i64, right: i64) -> i64 { left + right + 1 }\n",
+    )
+    .expect("updated helper dependency should be writable");
+    let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
+    let second = second_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated helper source should analyze in a fresh cache");
+    let second_c = second_cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated helper source should reuse durable helper codegen");
+    assert_ne!(first_c, second_c);
+    assert_eq!(
+        second_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 1,
+            regenerated_functions: 1,
+            reused_helpers: 1,
+            regenerated_helpers: 0,
+        })
+    );
+    assert_eq!(
+        second_c,
+        second
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("durable helper codegen should match a fresh full emission")
     );
 
     let _ = fs::remove_dir_all(root);

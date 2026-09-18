@@ -5453,9 +5453,14 @@ fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -
         fluxc::project::ProjectCodegenOutcome::Incremental {
             reused_functions,
             regenerated_functions,
+            reused_helpers,
+            regenerated_helpers,
         } => format!(
-            "incremental codegen reused {reused_functions} function{} and regenerated {regenerated_functions}",
-            if reused_functions == 1 { "" } else { "s" }
+            "incremental codegen reused {reused_functions} function{} and {reused_helpers} generated helper{}, regenerated {regenerated_functions} function{} and {regenerated_helpers} generated helper{}",
+            if reused_functions == 1 { "" } else { "s" },
+            if reused_helpers == 1 { "" } else { "s" },
+            if regenerated_functions == 1 { "" } else { "s" },
+            if regenerated_helpers == 1 { "" } else { "s" }
         ),
         fluxc::project::ProjectCodegenOutcome::Full => "codegen emitted full C".to_string(),
     }
@@ -5497,8 +5502,10 @@ fn write_development_status_with_build(
         Some(fluxc::project::ProjectCodegenOutcome::Incremental {
             reused_functions,
             regenerated_functions,
+            reused_helpers,
+            regenerated_helpers,
         }) => format!(
-            ",\"codegen\":\"incremental\",\"reused_functions\":{reused_functions},\"regenerated_functions\":{regenerated_functions}"
+            ",\"codegen\":\"incremental\",\"reused_functions\":{reused_functions},\"regenerated_functions\":{regenerated_functions},\"reused_helpers\":{reused_helpers},\"regenerated_helpers\":{regenerated_helpers}"
         ),
         Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"".to_string(),
         None => String::new(),
