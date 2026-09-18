@@ -15,6 +15,8 @@ use fluxc::{Diagnostic, DiagnosticSource, TerminalRenderOptions};
 
 const FLUX_GDB_SUPPORT: &str = include_str!("../tools/flux-gdb.py");
 const COVERAGE_COMPILATION_DIR: &str = "/__flux_coverage__";
+const NATIVE_CACHE_RETAINED_ARTIFACTS: usize = 32;
+const NATIVE_CACHE_PRUNE_GRACE: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
 enum CliError {
@@ -10429,6 +10431,14 @@ fn build_native_configured(
                 } else if write_native_cache_metadata(&object_cache).is_err() {
                     let _ = fs::remove_file(&object_cache);
                     let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
+                } else {
+                    prune_native_cache_directory(
+                        object_cache.parent(),
+                        Some("o"),
+                        &object_cache,
+                        NATIVE_CACHE_RETAINED_ARTIFACTS,
+                        NATIVE_CACHE_PRUNE_GRACE,
+                    );
                 }
             }
         }
@@ -10494,6 +10504,14 @@ fn build_native_configured(
             } else if write_native_cache_metadata(&cache).is_err() {
                 let _ = fs::remove_file(&cache);
                 let _ = fs::remove_file(native_cache_metadata_path(&cache));
+            } else {
+                prune_native_cache_directory(
+                    cache.parent(),
+                    None,
+                    &cache,
+                    NATIVE_CACHE_RETAINED_ARTIFACTS,
+                    NATIVE_CACHE_PRUNE_GRACE,
+                );
             }
         }
     }
@@ -10991,6 +11009,58 @@ fn collect_sysroot_cache_entries(
     }
 }
 
+fn prune_native_cache_directory(
+    directory: Option<&Path>,
+    extension: Option<&str>,
+    protected: &Path,
+    retained: usize,
+    grace: Duration,
+) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut artifacts = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path.extension().and_then(|value| value.to_str()) == extension
+                && path != protected
+        })
+        .filter_map(|path| {
+            let modified = fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    let mut remaining = artifacts.len().saturating_add(1);
+    if remaining <= retained {
+        return;
+    }
+    artifacts.sort_by(|(left_modified, left_path), (right_modified, right_path)| {
+        left_modified
+            .cmp(right_modified)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    let now = SystemTime::now();
+    for (modified, path) in artifacts {
+        if remaining <= retained {
+            break;
+        }
+        if now.duration_since(modified).unwrap_or_default() < grace {
+            continue;
+        }
+        let _ = fs::remove_file(native_cache_metadata_path(&path));
+        if fs::remove_file(path).is_ok() {
+            remaining = remaining.saturating_sub(1);
+        }
+    }
+}
+
 fn native_build_cache_dir() -> PathBuf {
     if let Some(path) = env::var_os("FLUX_CACHE_DIR") {
         return PathBuf::from(path).join("native");
@@ -11086,9 +11156,9 @@ mod tests {
         native_cache_entry_is_valid, native_object_cache_path_configured,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, profile_options, profile_report_addresses,
-        publish_registry_package_command, registry_publish_options, select_android_run_target,
-        split_symbols_options, stage_android_package_assets, stage_package_assets,
-        symbolize_options, test_options, validate_android_publish_manifest,
+        prune_native_cache_directory, publish_registry_package_command, registry_publish_options,
+        select_android_run_target, split_symbols_options, stage_android_package_assets,
+        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
         validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
         web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
         windows_publish_options, write_native_cache_metadata,
@@ -12242,6 +12312,50 @@ app OverlayDemo(title: "Overlay")
                 "-lmediandk".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn native_cache_pruning_bounds_artifacts_and_sidecars() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-native-cache-prune-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("cache prune directory should be writable");
+
+        let first = root.join("first.o");
+        let second = root.join("second.o");
+        let protected = root.join("protected.o");
+        for path in [&first, &second, &protected] {
+            std::fs::write(path, path.to_string_lossy().as_bytes())
+                .expect("cache artifact should be writable");
+            write_native_cache_metadata(path).expect("cache metadata should be writable");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        prune_native_cache_directory(
+            Some(&root),
+            Some("o"),
+            &protected,
+            2,
+            std::time::Duration::ZERO,
+        );
+
+        assert!(!first.exists(), "oldest cache artifact should be pruned");
+        assert!(
+            !super::native_cache_metadata_path(&first).exists(),
+            "pruning must remove the artifact sidecar"
+        );
+        assert!(second.exists(), "newer cache artifact should be retained");
+        assert!(
+            protected.exists(),
+            "active cache artifact must remain protected"
+        );
+        assert!(super::native_cache_metadata_path(&second).exists());
+        assert!(super::native_cache_metadata_path(&protected).exists());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
