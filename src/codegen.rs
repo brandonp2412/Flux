@@ -138,6 +138,8 @@ pub struct FunctionCodegenStats {
     pub regenerated_functions: usize,
     pub reused_helpers: usize,
     pub regenerated_helpers: usize,
+    pub reused_application_fragments: usize,
+    pub regenerated_application_fragments: usize,
 }
 
 pub fn emit_c(program: &Program, signatures: &Signatures) -> Result<String, Diagnostic> {
@@ -1524,22 +1526,46 @@ fn emit_c_for_target_with_source_metadata_impl(
             generated_body.push_str(&generated_function);
         }
     }
-    if let Some(cache) = function_cache.as_deref_mut() {
-        cache.entries.retain(|key, _| used_cache_keys.contains(key));
-    }
     let mut application_body = String::new();
     if program.application.is_some() {
-        match target {
-            NativeTarget::Linux => {
-                emit_linux_gtk_application(&mut application_body, program, signatures)?
+        let cache_key = FunctionCodegenCacheKey {
+            identity: application_codegen_cache_identity(program, target),
+            incoming_temp_counter: 0,
+        };
+        if let Some(cached) = function_cache
+            .as_deref_mut()
+            .and_then(|cache| cache.entries.get(&cache_key).cloned())
+        {
+            application_body.push_str(&cached.generated);
+            codegen_stats.reused_application_fragments += 1;
+            used_cache_keys.insert(cache_key);
+        } else {
+            match target {
+                NativeTarget::Linux => {
+                    emit_linux_gtk_application(&mut application_body, program, signatures)?
+                }
+                NativeTarget::Android => {
+                    emit_android_native_application(&mut application_body, program, signatures)?
+                }
+                NativeTarget::Windows => {
+                    emit_windows_native_application(&mut application_body, program, signatures)?
+                }
             }
-            NativeTarget::Android => {
-                emit_android_native_application(&mut application_body, program, signatures)?
-            }
-            NativeTarget::Windows => {
-                emit_windows_native_application(&mut application_body, program, signatures)?
+            codegen_stats.regenerated_application_fragments += 1;
+            if let Some(cache) = function_cache.as_deref_mut() {
+                cache.entries.insert(
+                    cache_key.clone(),
+                    CachedFunctionCodegen {
+                        generated: application_body.clone(),
+                        next_temp_counter: 0,
+                    },
+                );
+                used_cache_keys.insert(cache_key);
             }
         }
+    }
+    if let Some(cache) = function_cache.as_deref_mut() {
+        cache.entries.retain(|key, _| used_cache_keys.contains(key));
     }
     let runtime_usage = format!("{generated_body}{application_body}");
     if target != NativeTarget::Windows && runtime_usage.contains("flux__windows_") {
@@ -1977,6 +2003,22 @@ fn function_helper_codegen_cache_identity(
             .get(&helper.span.source_id)
             .map(String::as_str)
             .unwrap_or_default()
+    )
+}
+
+fn application_codegen_cache_identity(program: &Program, target: NativeTarget) -> String {
+    format!(
+        "application:{target:?}|imports={:?}|aliases={:?}|interfaces={:?}|implementations={:?}|structs={:?}|enums={:?}|constants={:?}|application={:?}|routes={:?}|views={:?}",
+        program.imports,
+        program.aliases,
+        program.interfaces,
+        program.implementations,
+        program.structs,
+        program.enums,
+        program.constants,
+        program.application,
+        program.routes,
+        program.views
     )
 }
 

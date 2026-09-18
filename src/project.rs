@@ -1077,6 +1077,8 @@ pub enum ProjectCodegenOutcome {
         regenerated_functions: usize,
         reused_helpers: usize,
         regenerated_helpers: usize,
+        reused_application_fragments: usize,
+        regenerated_application_fragments: usize,
     },
     Full,
 }
@@ -1416,6 +1418,7 @@ impl ProjectAnalysisCache {
         self.last_codegen_outcome = Some(
             if stats.reused_functions > 0
                 || stats.reused_helpers > 0
+                || stats.reused_application_fragments > 0
                 || matches!(
                     self.last_outcome,
                     Some(ProjectAnalysisOutcome::Incremental { .. })
@@ -1426,6 +1429,8 @@ impl ProjectAnalysisCache {
                     regenerated_functions: stats.regenerated_functions,
                     reused_helpers: stats.reused_helpers,
                     regenerated_helpers: stats.regenerated_helpers,
+                    reused_application_fragments: stats.reused_application_fragments,
+                    regenerated_application_fragments: stats.regenerated_application_fragments,
                 }
             } else {
                 ProjectCodegenOutcome::Full

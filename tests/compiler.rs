@@ -32262,7 +32262,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         &[
             "version-two",
             "reload: incremental analysis rechecked 1 module",
-            "reload: incremental codegen reused 1 function and 0 generated helpers, regenerated 1 function and 0 generated helpers",
+            "reload: incremental codegen reused 1 function, 0 generated helpers, and 0 application fragments; regenerated 1 function, 0 generated helpers, and 0 application fragments",
             "reload: state boundary root compatible • preserved 0 • reset 0 • dropped 0",
             "reload: rebuilt and restarted after source change",
             "reload: ready in ",
@@ -32278,6 +32278,8 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"regenerated_functions\":1"));
     assert!(status.contains("\"reused_helpers\":0"));
     assert!(status.contains("\"regenerated_helpers\":0"));
+    assert!(status.contains("\"reused_application_fragments\":0"));
+    assert!(status.contains("\"regenerated_application_fragments\":0"));
     assert!(status.contains("\"analysis_ms\":"));
     assert!(status.contains("\"codegen_ms\":"));
     assert!(status.contains("\"native_ms\":"));
@@ -36598,6 +36600,8 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
             regenerated_functions: 1,
             reused_helpers: 0,
             regenerated_helpers: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
         })
     );
     assert_eq!(
@@ -36692,6 +36696,8 @@ fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
             regenerated_functions: 1,
             reused_helpers: 0,
             regenerated_helpers: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
         })
     );
     assert_eq!(
@@ -36763,6 +36769,8 @@ fn project_codegen_cache_reuses_later_functions_when_temp_counts_shift() {
             regenerated_functions: 1,
             reused_helpers: 0,
             regenerated_helpers: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
         }),
         "a changed function's local temporary count must not invalidate later functions"
     );
@@ -36829,6 +36837,8 @@ fn project_codegen_cache_reuses_generated_helpers_across_cache_restarts() {
             regenerated_functions: 1,
             reused_helpers: 1,
             regenerated_helpers: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
         })
     );
     assert_eq!(
@@ -36836,6 +36846,65 @@ fn project_codegen_cache_reuses_generated_helpers_across_cache_restarts() {
         second
             .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
             .expect("durable helper codegen should match a fresh full emission")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_codegen_cache_reuses_application_fragment_across_cache_restarts() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-durable-application-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("durable application-codegen project should be writable");
+    let entry = root.join("main.flux");
+    let initial = "pub fn helper() -> i64 { 1 }\n\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"ready\"\n}\napp Screen\n";
+    fs::write(&entry, initial).expect("initial application-codegen source should be writable");
+
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = first_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial application source should analyze");
+    let first_c = first_cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial application source should emit C");
+    assert_eq!(
+        first_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    let updated = initial.replace("{ 1 }", "{ 2 }");
+    fs::write(&entry, updated).expect("updated application-codegen source should be writable");
+    let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
+    let second = second_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated application source should analyze in a fresh cache");
+    assert_eq!(
+        second_cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+    );
+    let second_c = second_cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated application source should reuse durable application codegen");
+    assert_ne!(first_c, second_c);
+    assert_eq!(
+        second_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 0,
+            regenerated_functions: 1,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_application_fragments: 1,
+            regenerated_application_fragments: 0,
+        })
+    );
+    assert_eq!(
+        second_c,
+        second
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("durable application codegen should match a fresh full emission")
     );
 
     let _ = fs::remove_dir_all(root);
