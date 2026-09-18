@@ -49877,7 +49877,10 @@ app Screen(theme: "dark")
     check_source(dark).expect("dark application theme should typecheck");
     let generated = compile_to_c(dark).expect("dark application theme should lower natively");
     assert!(generated.contains(
-        "g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\", TRUE, NULL)"
+        "g_object_get(flux__ui_settings, \"gtk-application-prefer-dark-theme\", &flux__ui_system_prefer_dark_theme, NULL)"
+    ));
+    assert!(generated.contains(
+        "g_object_set(flux__ui_settings, \"gtk-application-prefer-dark-theme\", TRUE, NULL)"
     ));
 
     let system = r#"
@@ -49888,9 +49891,13 @@ view Screen {
 app Screen(theme: "system")
 "#;
     let generated = compile_to_c(system).expect("system theme should preserve platform choice");
-    assert!(!generated.contains(
-        "g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\""
+    assert!(generated.contains(
+        "g_object_get(flux__ui_settings, \"gtk-application-prefer-dark-theme\", &flux__ui_system_prefer_dark_theme, NULL)"
     ));
+    assert!(
+        !generated
+            .contains("g_object_set(flux__ui_settings, \"gtk-application-prefer-dark-theme\"")
+    );
 
     let invalid = r#"
 view Screen {
@@ -61479,9 +61486,13 @@ app Screen(theme: "system")
             "g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", TRUE, NULL)"
         )
     );
-    assert!(generated.contains("strcmp(value, \"light\") == 0 || strcmp(value, \"system\") == 0"));
+    assert!(generated.contains("else if (strcmp(value, \"light\") == 0)"));
     assert!(generated.contains(
         "g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", FALSE, NULL)"
+    ));
+    assert!(generated.contains("else if (strcmp(value, \"system\") == 0)"));
+    assert!(generated.contains(
+        "g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", flux__ui_system_prefer_dark_theme, NULL)"
     ));
 }
 
