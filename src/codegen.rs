@@ -14673,9 +14673,10 @@ fn emit_linux_gtk_application(
         }
     }
     out.push('\n');
-    out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0';");
+    out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
     for element in &view.elements {
         let widget = ui_widget_c_name(&element.name);
+        let host = linux_ui_host_c_name(element);
         match element.kind.as_str() {
             "Text" => out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
@@ -14685,6 +14686,49 @@ fn emit_linux_gtk_application(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_button_set_label(GTK_BUTTON({widget}), value);",
                 c_string(&element.name)
             )),
+            "Header" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
+                c_string(&element.name)
+            )),
+            "Toggle" | "Radio" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"label\") == 0 && {widget} != NULL) gtk_check_button_set_label(GTK_CHECK_BUTTON({widget}), value);",
+                c_string(&element.name)
+            )),
+            "Nav" | "Chart" | "Content" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"label\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
+                c_string(&element.name)
+            )),
+            "Card" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"title\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
+                c_string(&element.name)
+            )),
+            "Image" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"alt\") == 0 && {widget} != NULL) gtk_picture_set_alternative_text(GTK_PICTURE({widget}), value);",
+                c_string(&element.name)
+            )),
+            "TextInput" => {
+                if view_property(element, "validation_state").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "validation_message").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_widget_set_tooltip_text({widget}, (value != NULL && value[0] != '\\0') ? value : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+                        c_string(&element.name)
+                    ));
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if !multiline {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_entry_set_icon_from_icon_name(GTK_ENTRY({widget}), GTK_ENTRY_ICON_SECONDARY, (value != NULL && value[0] != '\\0') ? \"dialog-information-symbolic\" : NULL); gtk_entry_set_icon_tooltip_text(GTK_ENTRY({widget}), GTK_ENTRY_ICON_SECONDARY, value); }}",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
         if view_property(element, "tooltip").is_some() {
@@ -14703,6 +14747,94 @@ fn emit_linux_gtk_application(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), value);",
                 c_string(&element.name)
             ));
+        }
+        if view_property(element, "accessibility_label").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_label\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_LABEL, value, -1);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "accessibility_description").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "accessibility_value").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_value\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "visible").is_some() {
+            if view_property(element, "layout_transition_ms").is_some() {
+                let layout = linux_ui_layout_c_name(element);
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), bool_value);",
+                    c_string(&element.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_visible({host}, bool_value);",
+                    c_string(&element.name)
+                ));
+            }
+        }
+        if view_property(element, "clip").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"clip\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_overflow({host}, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "accessibility_hidden").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_hidden\") == 0 && bool_value_valid && {host} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "focusable").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"focusable\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_focusable({host}, bool_value);",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "enabled").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"enabled\") == 0 && bool_value_valid && {widget} != NULL) gtk_widget_set_sensitive({widget}, bool_value);",
+                c_string(&element.name)
+            ));
+        }
+        match element.kind.as_str() {
+            "Text" => {
+                for (property, setter) in [
+                    ("selectable", "gtk_label_set_selectable"),
+                    ("wrap", "gtk_label_set_wrap"),
+                ] {
+                    if view_property(element, property).is_some() {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"{property}\") == 0 && bool_value_valid && {widget} != NULL) {setter}(GTK_LABEL({widget}), bool_value);",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
+            }
+            "Image" => {
+                if view_property(element, "can_shrink").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"can_shrink\") == 0 && bool_value_valid && {widget} != NULL) gtk_picture_set_can_shrink(GTK_PICTURE({widget}), bool_value);",
+                        c_string(&element.name)
+                    ));
+                }
+            }
+            "Button" => {
+                if view_property(element, "primary").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"primary\") == 0 && bool_value_valid && {widget} != NULL) {{ if (bool_value) gtk_widget_add_css_class({widget}, \"suggested-action\"); else gtk_widget_remove_css_class({widget}, \"suggested-action\"); }}",
+                        c_string(&element.name)
+                    ));
+                }
+            }
+            _ => {}
         }
     }
     out.push_str(" free(name); free(property); free(value); } fclose(file); remove(path); }\n\n");

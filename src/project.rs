@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ast::{Expr, ExprKind, Program, UnaryOp, ViewElement};
+use crate::ast::{Expr, ExprKind, Program, Type, UnaryOp, ViewElement};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, formatter, parser, typecheck};
 
@@ -40,6 +40,14 @@ pub struct DevelopmentUiStringPatch {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentStateBoundary {
+    pub root_compatible: bool,
+    pub preserved: Vec<String>,
+    pub reset: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectAnalysis {
     pub program: Program,
@@ -54,6 +62,13 @@ impl ProjectAnalysis {
             version: DEVELOPMENT_ABI_VERSION,
             fingerprint: development_abi_fingerprint(self),
         }
+    }
+
+    pub fn development_state_boundary_from(
+        &self,
+        previous: &ProjectAnalysis,
+    ) -> DevelopmentStateBoundary {
+        development_state_boundary(self, previous)
     }
 
     pub fn development_ui_string_patch_from(
@@ -1865,25 +1880,70 @@ fn module_type_surface(
     surface
 }
 
+fn development_ui_element_has_property(element: &ViewElement, property: &str) -> bool {
+    element
+        .properties
+        .iter()
+        .any(|candidate| typecheck::source_name_to_internal(&candidate.name) == property)
+}
+
 fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "text" => {
-            matches!(element.kind.as_str(), "Text" | "Button")
+            matches!(element.kind.as_str(), "Text" | "Button" | "Header")
                 && (element.kind != "Text"
-                    || !element
-                        .properties
-                        .iter()
-                        .any(|property| property.name == "rich_text"))
+                    || !element.properties.iter().any(|property| {
+                        typecheck::source_name_to_internal(&property.name) == "rich_text"
+                    }))
         }
-        "tooltip" => element.kind != "TextInput",
+        "label" => matches!(
+            element.kind.as_str(),
+            "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
+        ),
+        "title" => element.kind == "Card",
+        "alt" => element.kind == "Image",
+        "tooltip" => {
+            element.kind != "TextInput"
+                || !development_ui_element_has_property(element, "validation_message")
+        }
         "placeholder" => {
             element.kind == "TextInput"
                 && element
                     .properties
                     .iter()
-                    .find(|property| property.name == "multiline")
+                    .find(|property| {
+                        typecheck::source_name_to_internal(&property.name) == "multiline"
+                    })
                     .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
         }
+        "validation_state" => element.kind == "TextInput",
+        "validation_message" => {
+            element.kind == "TextInput"
+                && !development_ui_element_has_property(element, "tooltip")
+                && ![
+                    "accessibility_description",
+                    "accessibility_action_label",
+                    "accessibility_long_press_label",
+                    "accessibility_actions",
+                ]
+                .iter()
+                .any(|property| development_ui_element_has_property(element, property))
+        }
+        "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
+        _ => false,
+    }
+}
+
+fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
+    match property {
+        "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
+        "selectable" | "wrap" => element.kind == "Text",
+        "enabled" => matches!(
+            element.kind.as_str(),
+            "Button" | "TextInput" | "Toggle" | "Radio"
+        ),
+        "primary" => element.kind == "Button",
+        "can_shrink" => element.kind == "Image",
         _ => false,
     }
 }
@@ -1900,16 +1960,28 @@ fn development_ui_string_literals(
     let mut literals = BTreeMap::new();
     for element in &view.elements {
         for property in &element.properties {
-            if !development_ui_string_property_is_patchable(element, &property.name) {
-                continue;
-            }
-            let ExprKind::Str(value) = &property.value.kind else {
+            let property_name = typecheck::source_name_to_internal(&property.name);
+            let value = if development_ui_string_property_is_patchable(element, &property_name) {
+                let ExprKind::Str(value) = &property.value.kind else {
+                    continue;
+                };
+                if value.as_bytes().contains(&0) {
+                    return None;
+                }
+                value.clone()
+            } else if development_ui_bool_property_is_patchable(element, &property_name) {
+                let ExprKind::Bool(value) = property.value.kind else {
+                    continue;
+                };
+                if value {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                }
+            } else {
                 continue;
             };
-            if value.as_bytes().contains(&0) {
-                return None;
-            }
-            literals.insert((element.name.clone(), property.name.clone()), value.clone());
+            literals.insert((element.name.clone(), property_name), value);
         }
     }
     Some(literals)
@@ -1929,10 +2001,12 @@ fn development_ui_string_masked_sources(
         .iter()
         .flat_map(|element| {
             element.properties.iter().filter(move |property| {
-                development_ui_string_property_is_patchable(element, &property.name)
+                let property_name = typecheck::source_name_to_internal(&property.name);
+                development_ui_string_property_is_patchable(element, &property_name)
+                    || development_ui_bool_property_is_patchable(element, &property_name)
             })
         })
-        .filter(|property| matches!(property.value.kind, ExprKind::Str(_)))
+        .filter(|property| matches!(property.value.kind, ExprKind::Str(_) | ExprKind::Bool(_)))
         .map(|property| property.value.span)
         .collect::<Vec<_>>();
 
@@ -1972,6 +2046,105 @@ fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usiz
     let end = start.checked_add(span.length)?;
     (end <= source.len() && source.is_char_boundary(start) && source.is_char_boundary(end))
         .then_some((start, end))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevelopmentStateContract {
+    ty: Type,
+    text_input_owned: bool,
+}
+
+fn development_root_state_contracts(
+    analysis: &ProjectAnalysis,
+) -> (Option<String>, BTreeMap<String, DevelopmentStateContract>) {
+    let Some(application) = analysis.program.application.as_ref() else {
+        return (None, BTreeMap::new());
+    };
+    let Some(view) = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+    else {
+        return (Some(application.view_name.clone()), BTreeMap::new());
+    };
+    let states = view
+        .states
+        .iter()
+        .map(|state| {
+            let ty = analysis.signatures.canonical_type(&state.ty);
+            let text_input_owned =
+                ty == Type::Str && development_state_accepts_text_input_value(view, &state.name);
+            (
+                state.name.clone(),
+                DevelopmentStateContract {
+                    ty,
+                    text_input_owned,
+                },
+            )
+        })
+        .collect();
+    (Some(view.name.clone()), states)
+}
+
+fn development_state_accepts_text_input_value(
+    view: &crate::ast::ViewDef,
+    state_name: &str,
+) -> bool {
+    view.elements.iter().any(|element| {
+        element.kind == "TextInput"
+            && ["on_change", "on_submit"].iter().any(|property_name| {
+                element.properties.iter().any(|property| {
+                    typecheck::source_name_to_internal(&property.name) == *property_name
+                        && property.transition.as_ref().is_some_and(|transition| {
+                            transition.state == state_name && transition.event_value.is_some()
+                        })
+                })
+            })
+    })
+}
+
+fn development_state_boundary(
+    current: &ProjectAnalysis,
+    previous: &ProjectAnalysis,
+) -> DevelopmentStateBoundary {
+    let (current_root, current_states) = development_root_state_contracts(current);
+    let (previous_root, previous_states) = development_root_state_contracts(previous);
+    let root_compatible = current_root == previous_root;
+
+    if !root_compatible {
+        return DevelopmentStateBoundary {
+            root_compatible,
+            preserved: Vec::new(),
+            reset: current_states.keys().cloned().collect(),
+            dropped: previous_states.keys().cloned().collect(),
+        };
+    }
+
+    let preserved = current_states
+        .iter()
+        .filter_map(|(name, contract)| {
+            (previous_states.get(name) == Some(contract)).then_some(name.clone())
+        })
+        .collect();
+    let reset = current_states
+        .iter()
+        .filter_map(|(name, contract)| {
+            (previous_states.get(name) != Some(contract)).then_some(name.clone())
+        })
+        .collect();
+    let dropped = previous_states
+        .keys()
+        .filter(|name| !current_states.contains_key(*name))
+        .cloned()
+        .collect();
+
+    DevelopmentStateBoundary {
+        root_compatible,
+        preserved,
+        reset,
+        dropped,
+    }
 }
 
 fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {

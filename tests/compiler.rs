@@ -32263,6 +32263,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
             "version-two",
             "reload: incremental analysis rechecked 1 module",
             "reload: incremental codegen reused 1 function and regenerated 1",
+            "reload: state boundary root compatible • preserved 0 • reset 0 • dropped 0",
             "reload: rebuilt and restarted after source change",
             "reload: ready in ",
         ],
@@ -32283,6 +32284,10 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"abi_compatible\":true"));
     assert!(status.contains("\"abi_version\":1"));
     assert!(status.contains("\"abi_fingerprint\":\""));
+    assert!(status.contains("\"state_root_compatible\":true"));
+    assert!(status.contains("\"state_preserved\":0"));
+    assert!(status.contains("\"state_reset\":0"));
+    assert!(status.contains("\"state_dropped\":0"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -32317,6 +32322,10 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     let status =
         fs::read_to_string(&status_path).expect("structural run status should be readable");
     assert!(status.contains("\"abi_compatible\":false"));
+    assert!(status.contains("\"state_root_compatible\":true"));
+    assert!(status.contains("\"state_preserved\":0"));
+    assert!(status.contains("\"state_reset\":0"));
+    assert!(status.contains("\"state_dropped\":0"));
 
     let _ = runner.kill();
     let _ = runner.wait();
@@ -36294,6 +36303,104 @@ app Screen
 }
 
 #[test]
+fn development_state_boundary_preserves_only_name_type_and_ownership_compatible_state() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-state-boundary-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary state boundary project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state enabled: bool = true
+    state count: i64 = 12
+    state message: str = "ready"
+    state obsolete: bool = false
+    Text messageLabel at 1,1
+        text: message
+    Text countLabel at 2,1
+        text: "Count"
+        size: count
+    Text enabledLabel at 3,1
+        text: "Enabled"
+        visible: enabled
+    Text obsoleteLabel at 4,1
+        text: "Old"
+        wrap: obsolete
+}
+app Screen
+"#;
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state enabled: bool = false
+    state count: bool = false
+    state message: str = "new initializer"
+    state fresh: i64 = 18
+    TextInput messageInput at 1,1
+        text: message
+        onChange: message, value => value
+    Button countControl at 2,1
+        text: "Count"
+        enabled: count
+    Text enabledLabel at 3,1
+        text: "Enabled"
+        visible: enabled
+    Text freshLabel at 4,1
+        text: "Fresh"
+        size: fresh
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial state boundary source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial state boundary analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated state boundary source should be writable");
+    let entry = fs::canonicalize(entry).expect("state boundary entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated state boundary analysis should succeed");
+    assert_ne!(
+        second.development_abi(),
+        first.development_abi(),
+        "state contract and element changes should cross the development ABI boundary"
+    );
+    let boundary = second.development_state_boundary_from(&first);
+    assert!(boundary.root_compatible);
+    assert_eq!(boundary.preserved, vec!["enabled"]);
+    assert_eq!(boundary.reset, vec!["count", "fresh", "message"]);
+    assert_eq!(boundary.dropped, vec!["obsolete"]);
+
+    let renamed = updated
+        .replace("view Screen", "view Next")
+        .replace("app Screen", "app Next");
+    fs::write(&entry, renamed).expect("renamed root source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("renamed root analysis should succeed");
+    let renamed_boundary = third.development_state_boundary_from(&second);
+    assert!(!renamed_boundary.root_compatible);
+    assert!(renamed_boundary.preserved.is_empty());
+    assert_eq!(
+        renamed_boundary.reset,
+        vec!["count", "enabled", "fresh", "message"]
+    );
+    assert_eq!(
+        renamed_boundary.dropped,
+        vec!["count", "enabled", "fresh", "message"]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_accepts_only_supported_static_root_edits() {
     let root =
         std::env::temp_dir().join(format!("flux-development-ui-patch-{}", std::process::id()));
@@ -36395,6 +36502,371 @@ app Screen
     assert!(
         third.development_ui_string_patch_from(&second).is_none(),
         "function body edits must fall back to rebuilding rather than data-only UI patching"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-ui-property-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto auto auto
+    Toggle toggle at 1,1
+        label: "Toggle before"
+        accessibilityLabel: "Toggle accessible before"
+        accessibilityDescription: "Toggle description before"
+        accessibilityValue: "off"
+    Radio radio at 2,1
+        label: "Radio before"
+    Nav navigation at 3,1
+        label: "Nav before"
+    Chart chart at 4,1
+        label: "Chart before"
+    Card card at 5,1
+        title: "Card before"
+    Header header at 6,1
+        text: "Header before"
+    Content content at 7,1
+        label: "Content before"
+    Image image at 8,1
+        source: "image.png"
+        alt: "Image before"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development property patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development property patch analysis should succeed");
+
+    let updated = initial
+        .replace("Toggle before", "Toggle after")
+        .replace("Toggle accessible before", "Toggle accessible after")
+        .replace("Toggle description before", "Toggle description after")
+        .replace("\"off\"", "\"on\"")
+        .replace("Radio before", "Radio after")
+        .replace("Nav before", "Nav after")
+        .replace("Chart before", "Chart after")
+        .replace("Card before", "Card after")
+        .replace("Header before", "Header after")
+        .replace("Content before", "Content after")
+        .replace("Image before", "Image after");
+    fs::write(&entry, &updated).expect("development property patch edit should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("development property patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated development property patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("native string property edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for (element, property, value) in [
+        ("toggle", "label", "Toggle after"),
+        ("toggle", "accessibility_label", "Toggle accessible after"),
+        (
+            "toggle",
+            "accessibility_description",
+            "Toggle description after",
+        ),
+        ("toggle", "accessibility_value", "on"),
+        ("radio", "label", "Radio after"),
+        ("navigation", "label", "Nav after"),
+        ("chart", "label", "Chart after"),
+        ("card", "title", "Card after"),
+        ("header", "text", "Header after"),
+        ("content", "label", "Content after"),
+        ("image", "alt", "Image after"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 11);
+
+    let generated = second
+        .emit_c()
+        .expect("native string property patch fixture should lower for Linux");
+    assert!(
+        generated.contains("gtk_check_button_set_label(GTK_CHECK_BUTTON(flux__ui_toggle), value)")
+    );
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_navigation), value)"));
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_card), value)"));
+    assert!(
+        generated.contains("gtk_picture_set_alternative_text(GTK_PICTURE(flux__ui_image), value)")
+    );
+    assert!(generated.contains("strcmp(property, \"accessibility_label\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, value, -1"));
+    assert!(generated.contains("strcmp(property, \"accessibility_description\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1"));
+    assert!(generated.contains("strcmp(property, \"accessibility_value\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_covers_safe_static_boolean_properties() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-ui-bool-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development bool patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text label at 1,1
+        text: "Label"
+        visible: true
+        clip: false
+        focusable: true
+        accessibilityHidden: false
+        selectable: true
+        wrap: true
+    Button action at 2,1
+        text: "Action"
+        visible: true
+        layoutTransitionMs: 120
+        enabled: true
+        primary: false
+    Image image at 3,1
+        source: "image.png"
+        canShrink: true
+}
+app Screen
+"#;
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text label at 1,1
+        text: "Label"
+        visible: false
+        clip: true
+        focusable: false
+        accessibilityHidden: true
+        selectable: false
+        wrap: false
+    Button action at 2,1
+        text: "Action"
+        visible: false
+        layoutTransitionMs: 120
+        enabled: false
+        primary: true
+    Image image at 3,1
+        source: "image.png"
+        canShrink: false
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development bool patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development bool patch analysis should succeed");
+
+    fs::write(&entry, updated).expect("development bool patch edit should be writable");
+    let entry = fs::canonicalize(entry).expect("development bool patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated development bool patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe static boolean edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for (element, property, value) in [
+        ("label", "visible", "0"),
+        ("label", "clip", "1"),
+        ("label", "focusable", "0"),
+        ("label", "accessibility_hidden", "1"),
+        ("label", "selectable", "0"),
+        ("label", "wrap", "0"),
+        ("action", "visible", "0"),
+        ("action", "enabled", "0"),
+        ("action", "primary", "1"),
+        ("image", "can_shrink", "0"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 10);
+
+    let generated = second
+        .emit_c()
+        .expect("native boolean property patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"visible\") == 0 && bool_value_valid && flux__ui_label != NULL"
+    ));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_label, bool_value)"));
+    assert!(generated.contains(
+        "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_overflow(flux__ui_label, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE)"
+    ));
+    assert!(generated.contains("gtk_widget_set_focusable(flux__ui_label, bool_value)"));
+    assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1"));
+    assert!(generated.contains("gtk_label_set_selectable(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
+    assert!(generated.contains(
+        "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
+    ));
+    assert!(
+        generated.contains("gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_image), bool_value)")
+    );
+
+    let dynamic = updated.replace("visible: false", "visible: windowIsCompact");
+    fs::write(&entry, dynamic).expect("dynamic bool edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic bool edit should analyze");
+    assert!(
+        third.development_ui_string_patch_from(&second).is_none(),
+        "changing a static patchable bool into a runtime expression must fall back to rebuild"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_handles_disjoint_text_input_validation_and_tooltips() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-input-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary TextInput patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput email at 1,1
+        validationState: "error"
+        validationMessage: "Before validation"
+    TextInput search at 2,1
+        tooltip: "Before tooltip"
+}
+app Form
+"#;
+    let updated = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput email at 1,1
+        validationState: "success"
+        validationMessage: "After validation"
+    TextInput search at 2,1
+        tooltip: "After tooltip"
+}
+app Form
+"#;
+    fs::write(&entry, initial).expect("initial TextInput patch source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput patch source should analyze");
+
+    fs::write(&entry, updated).expect("updated TextInput patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("TextInput patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated TextInput patch source should analyze");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("disjoint TextInput validation and tooltip edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(
+        patch.get(&("email".to_string(), "validation_state".to_string())),
+        Some(&"success".to_string())
+    );
+    assert_eq!(
+        patch.get(&("email".to_string(), "validation_message".to_string())),
+        Some(&"After validation".to_string())
+    );
+    assert_eq!(
+        patch.get(&("search".to_string(), "tooltip".to_string())),
+        Some(&"After tooltip".to_string())
+    );
+    assert_eq!(patch.len(), 3);
+
+    let generated = second
+        .emit_c()
+        .expect("TextInput patch fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"validation_state\") == 0 && flux__ui_email != NULL")
+    );
+    assert!(
+        generated.contains("gtk_widget_remove_css_class(flux__ui_email, \"flux-input-error\")")
+    );
+    assert!(generated.contains("const char *validation = flux__ui_validation_state(value)"));
+    assert!(
+        generated
+            .contains("strcmp(property, \"validation_message\") == 0 && flux__ui_email != NULL")
+    );
+    assert!(generated.contains(
+        "gtk_entry_set_icon_from_icon_name(GTK_ENTRY(flux__ui_email), GTK_ENTRY_ICON_SECONDARY"
+    ));
+    assert!(generated.contains("strcmp(property, \"tooltip\") == 0 && flux__ui_search != NULL"));
+
+    let conflicting_initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        tooltip: "General help"
+        validationMessage: "Before validation"
+}
+app Form
+"#;
+    let conflicting_updated = conflicting_initial.replace("Before validation", "After validation");
+    fs::write(&entry, conflicting_initial)
+        .expect("conflicting TextInput source should be writable");
+    cache.invalidate_path(&entry);
+    let conflict_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("conflicting TextInput source should analyze");
+    fs::write(&entry, conflicting_updated).expect("conflicting TextInput edit should be writable");
+    cache.invalidate_path(&entry);
+    let conflict_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("conflicting TextInput edit should analyze");
+    assert!(
+        conflict_second
+            .development_ui_string_patch_from(&conflict_first)
+            .is_none(),
+        "validation-message edits that interact with an explicit tooltip must use controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
