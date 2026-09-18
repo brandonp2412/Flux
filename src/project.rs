@@ -1933,6 +1933,12 @@ fn development_application_metadata_patch_value(
             };
             (!value.as_bytes().contains(&0)).then(|| value.clone())
         }
+        "layout_direction" => {
+            let ExprKind::Str(value) = &field.value.kind else {
+                return None;
+            };
+            matches!(value.as_str(), "system" | "ltr" | "rtl").then(|| value.clone())
+        }
         "resizable" => {
             let ExprKind::Bool(value) = field.value.kind else {
                 return None;

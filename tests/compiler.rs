@@ -39572,6 +39572,74 @@ app Screen(title: "Before", width: 640, height: 480, resizable: true)
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_application_layout_direction() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-layout-direction-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary layout-direction patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(layoutDirection: "ltr")
+"#;
+    fs::write(&entry, initial).expect("initial layout-direction source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial layout-direction analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("layout-direction entry should canonicalize");
+    let rtl = initial.replace("layoutDirection: \"ltr\"", "layoutDirection: \"rtl\"");
+    fs::write(&entry, rtl).expect("RTL layout-direction source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("RTL layout-direction analysis should succeed");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "layout-direction values must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("RTL layout-direction edit should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "__application__".to_string(),
+            property: "layout_direction".to_string(),
+            value: "rtl".to_string(),
+        }]
+    );
+
+    let system = initial.replace("layoutDirection: \"ltr\"", "layoutDirection: \"system\"");
+    fs::write(&entry, system).expect("system layout-direction source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("system layout-direction analysis should succeed");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("system layout-direction edit should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "__application__".to_string(),
+            property: "layout_direction".to_string(),
+            value: "system".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_root_grid_spacing() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-grid-spacing-patch-{}",
@@ -61203,6 +61271,33 @@ app Screen(title: "Flux", width: 640, height: 480, resizable: true)
     assert!(generated.contains("gtk_window_set_resizable(hot_window"));
     assert!(generated.contains("gtk_window_get_default_size(hot_window"));
     assert!(generated.contains("gtk_window_set_default_size(hot_window"));
+}
+
+#[test]
+fn linux_hot_reload_patch_updates_layout_direction_in_process() {
+    let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(layoutDirection: "rtl")
+"#;
+    let program = fluxc::parser::parse(source).expect("layout-direction fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("layout-direction fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("layout-direction fixture should lower for Linux");
+
+    assert!(generated.contains("strcmp(property, \"layout_direction\") == 0"));
+    assert!(generated.contains("gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_LTR)"));
+    assert!(generated.contains("gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_RTL)"));
+    assert!(generated.contains("gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_NONE)"));
 }
 
 #[test]
