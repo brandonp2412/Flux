@@ -1638,7 +1638,14 @@ fn windows_backend_validates_against_available_wine_headers() {
         return;
     }
     let source = r#"
+fn secureValue(value: str) -> void {
+    print(value)
+}
+
 fn stopAfterStart() -> void {
+    print(windows.secureStore("session", "secret"))
+    print(windows.secureRead("session", secureValue))
+    print(windows.secureRemove("session"))
     process.exit(0)
 }
 
@@ -1705,7 +1712,7 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
             .args(["-o"])
             .arg(&binary)
             .arg(&c_path)
-            .args(["-luser32", "-lgdi32", "-lcomctl32", "-lole32"])
+            .args(["-luser32", "-lgdi32", "-lcomctl32", "-lole32", "-ladvapi32"])
             .output()
             .expect("winegcc should run for Windows executable validation");
         assert!(
@@ -2231,6 +2238,7 @@ fn main() -> i64 {
     }
     assert!(generated.contains("flux__windows_message_box(\"Flux\", \"Native Windows\")"));
     assert!(generated.contains("flux__windows_open(\"https://example.com\")"));
+    assert!(!generated.contains("#include <wincred.h>"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 
@@ -2245,6 +2253,75 @@ fn main() -> i64 {
         linux_error
             .message
             .contains("windows.* platform APIs require the Windows target")
+    );
+}
+
+#[test]
+fn windows_secure_storage_uses_application_scoped_credential_manager_values() {
+    let source = r#"
+fn secureValue(value: str) -> void {
+    print(value)
+}
+
+fn started() -> void {
+    print(windows.secureStore("session", "opaque"))
+    print(windows.secureRead("session", secureValue))
+    print(windows.secureRemove("session"))
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Secure"
+}
+app Screen(id: "nz.flux.secure", onStart: started)
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows secure storage source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows secure storage source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows secure storage should lower for an application target");
+    for native_api in [
+        "CredWriteW(",
+        "CredReadW(",
+        "CredDeleteW(",
+        "SecureZeroMemory(",
+    ] {
+        assert!(generated.contains(native_api), "missing {native_api}");
+    }
+    assert!(generated.contains("#include <wincred.h>"));
+    assert!(
+        generated.contains("flux__win_application_identity(void) { return \"nz.flux.secure\"; }")
+    );
+    assert!(generated.contains("L\"Flux/%ls/%ls\""));
+    assert!(generated.contains("flux__windows_secure_store(\"session\", \"opaque\")"));
+    assert!(generated.contains("flux__windows_secure_read(\"session\", flux__fn_secureValue)"));
+    assert!(generated.contains("flux__windows_secure_remove(\"session\")"));
+    assert!(!generated.contains("app/flux/runtime/FluxSecureStorage"));
+
+    let headless = fluxc::parser::parse(
+        "fn main() -> i64 {\n    print(windows.secureStore(\"session\", \"opaque\"))\n    return 0\n}\n",
+    )
+    .expect("headless secure source should parse");
+    let headless_signatures = fluxc::typecheck::check(&headless)
+        .expect("secure storage capability should typecheck before target selection");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &headless,
+        &headless_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows secure storage should require application identity");
+    assert!(
+        error
+            .message
+            .contains("windows secure storage requires an application target")
     );
 }
 

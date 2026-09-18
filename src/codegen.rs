@@ -1590,6 +1590,12 @@ fn emit_c_for_target_with_source_metadata_impl(
             "windows.* platform APIs require the Windows target",
         ));
     }
+    if runtime_usage.contains("flux__windows_secure_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "windows secure storage requires an application target",
+        ));
+    }
     if target != NativeTarget::Android && runtime_usage.contains("flux__android_") {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -2499,6 +2505,9 @@ fn emit_runtime_prelude(
     }
     if uses_windows {
         out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
+        if runtime_usage.contains("flux__windows_secure_") {
+            out.push_str("#include <wincred.h>\n");
+        }
         if runtime_usage.contains("IAccPropServices") {
             out.push_str("#include <initguid.h>\n#include <oleacc.h>\n");
         }
@@ -2545,6 +2554,11 @@ fn emit_runtime_prelude(
     let uses_windows_beep = runtime_usage.contains("flux__windows_beep(");
     let uses_windows_screen_width = runtime_usage.contains("flux__windows_screen_width(");
     let uses_windows_screen_height = runtime_usage.contains("flux__windows_screen_height(");
+    let uses_windows_secure_store = runtime_usage.contains("flux__windows_secure_store(");
+    let uses_windows_secure_read = runtime_usage.contains("flux__windows_secure_read(");
+    let uses_windows_secure_remove = runtime_usage.contains("flux__windows_secure_remove(");
+    let uses_windows_secure_storage =
+        uses_windows_secure_store || uses_windows_secure_read || uses_windows_secure_remove;
     let uses_clipboard_set_text = runtime_usage.contains("flux__clipboard_set_text(");
     let uses_clipboard_read_text = runtime_usage.contains("flux__clipboard_read_text(");
     let uses_menu_show = runtime_usage.contains("flux__menu_show(");
@@ -3821,6 +3835,18 @@ fn emit_runtime_prelude(
     }
     if uses_windows_screen_height && uses_windows {
         out.push_str("static int64_t flux__windows_screen_height(void) { return (int64_t)GetSystemMetrics(SM_CYSCREEN); }\n");
+    }
+    if uses_windows_secure_storage && uses_windows {
+        out.push_str("const char *flux__win_application_identity(void);\nstatic wchar_t *flux__windows_secure_target(const char *key) { if (key == NULL || key[0] == '\\0') return NULL; size_t key_length = 0; while (key_length <= 1024 && key[key_length] != '\\0') key_length += 1; if (key_length > 1024) return NULL; const char *identity = flux__win_application_identity(); if (identity == NULL || identity[0] == '\\0') return NULL; wchar_t *wide_identity = flux__windows_utf8_to_wide(identity); wchar_t *wide_key = flux__windows_utf8_to_wide(key); if (wide_identity == NULL || wide_key == NULL) { free(wide_identity); free(wide_key); return NULL; } size_t identity_length = wcslen(wide_identity); size_t wide_key_length = wcslen(wide_key); size_t total = 5 + identity_length + 1 + wide_key_length; if (total > CRED_MAX_GENERIC_TARGET_NAME_LENGTH) { free(wide_identity); free(wide_key); return NULL; } wchar_t *target = (wchar_t *)malloc((total + 1) * sizeof(wchar_t)); if (target == NULL) { free(wide_identity); free(wide_key); return NULL; } int written = swprintf(target, total + 1, L\"Flux/%ls/%ls\", wide_identity, wide_key); free(wide_identity); free(wide_key); if (written < 0 || (size_t)written != total) { free(target); return NULL; } return target; }\n");
+    }
+    if uses_windows_secure_store && uses_windows {
+        out.push_str("static bool flux__windows_secure_store(const char *key, const char *value) { if (value == NULL) return false; size_t value_length = 0; while (value_length <= CRED_MAX_CREDENTIAL_BLOB_SIZE && value[value_length] != '\\0') value_length += 1; if (value_length > CRED_MAX_CREDENTIAL_BLOB_SIZE) return false; wchar_t *target = flux__windows_secure_target(key); if (target == NULL) return false; CREDENTIALW credential = {0}; credential.Type = CRED_TYPE_GENERIC; credential.TargetName = target; credential.CredentialBlobSize = (DWORD)value_length; credential.CredentialBlob = (LPBYTE)(const void *)value; credential.Persist = CRED_PERSIST_LOCAL_MACHINE; credential.UserName = L\"Flux\"; bool stored = CredWriteW(&credential, 0) != 0; free(target); return stored; }\n");
+    }
+    if uses_windows_secure_read && uses_windows {
+        out.push_str("static bool flux__windows_secure_read(const char *key, void (*callback)(const char *)) { if (callback == NULL) return false; wchar_t *target = flux__windows_secure_target(key); if (target == NULL) return false; PCREDENTIALW credential = NULL; bool found = false; if (CredReadW(target, CRED_TYPE_GENERIC, 0, &credential) && credential != NULL && credential->CredentialBlobSize <= CRED_MAX_CREDENTIAL_BLOB_SIZE && memchr(credential->CredentialBlob, '\\0', credential->CredentialBlobSize) == NULL) { size_t length = (size_t)credential->CredentialBlobSize; char *value = (char *)malloc(length + 1); if (value != NULL) { memcpy(value, credential->CredentialBlob, length); value[length] = '\\0'; wchar_t *validated = flux__windows_utf8_to_wide(value); if (validated != NULL) { free(validated); callback(value); found = true; } SecureZeroMemory(value, length + 1); free(value); } } if (credential != NULL) { if (credential->CredentialBlob != NULL && credential->CredentialBlobSize > 0) SecureZeroMemory(credential->CredentialBlob, credential->CredentialBlobSize); CredFree(credential); } free(target); return found; }\n");
+    }
+    if uses_windows_secure_remove && uses_windows {
+        out.push_str("static bool flux__windows_secure_remove(const char *key) { wchar_t *target = flux__windows_secure_target(key); if (target == NULL) return false; bool removed = CredDeleteW(target, CRED_TYPE_GENERIC, 0) != 0; if (!removed && GetLastError() == ERROR_NOT_FOUND) removed = true; free(target); return removed; }\n");
     }
     if uses_clipboard_set_text && uses_windows {
         out.push_str("static void flux__clipboard_set_text(const char *text) { wchar_t *wide = flux__windows_utf8_to_wide(text); if (wide == NULL) return; SIZE_T bytes = (wcslen(wide) + 1) * sizeof(wchar_t); HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes); if (memory == NULL) { free(wide); return; } wchar_t *target = (wchar_t *)GlobalLock(memory); if (target == NULL) { GlobalFree(memory); free(wide); return; } memcpy(target, wide, bytes); GlobalUnlock(memory); free(wide); if (!OpenClipboard(flux__windows_active_window)) { GlobalFree(memory); return; } if (!EmptyClipboard() || SetClipboardData(CF_UNICODETEXT, memory) == NULL) GlobalFree(memory); CloseClipboard(); }\n");
@@ -13573,7 +13599,8 @@ fn emit_windows_native_application(
     let on_configuration_changed =
         application_metadata_function(application, "on_configuration_changed");
     out.push_str(&format!(
-        "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
+        "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\nconst char *flux__win_application_identity(void) {{ return {}; }}\n",
+        c_string(&application_id)
     ));
     out.push_str("static bool flux__win_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
     if uses_dynamic_layout_constraints {
@@ -39964,10 +39991,33 @@ fn emit_qualified_call(
                 vec![Type::I64],
                 None,
             )),
-            _ => Err(diag(
-                span,
-                "invalid windows platform call reached code generation",
-            )),
+            _ => {
+                let binding = crate::windows_bindings::binding_named(name).ok_or_else(|| {
+                    diag(
+                        span,
+                        "invalid windows platform call reached code generation",
+                    )
+                })?;
+                if args.len() != binding.params.len() {
+                    return Err(diag(
+                        span,
+                        "invalid windows platform call reached code generation",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let returns = match binding.returns {
+                    crate::windows_bindings::WindowsBindingReturn::I64 => vec![Type::I64],
+                    crate::windows_bindings::WindowsBindingReturn::Bool => vec![Type::Bool],
+                };
+                Ok((
+                    format!("{}({})", binding.runtime_symbol(), values.join(", ")),
+                    returns,
+                    None,
+                ))
+            }
         };
     }
     if namespace == "locale" {

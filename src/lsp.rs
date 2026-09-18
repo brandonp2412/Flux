@@ -11652,6 +11652,9 @@ mod tests {
             "fn windows.uptimeMillis() -> i64",
             "fn windows.open(target: str) -> bool",
             "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
+            "fn windows.secureStore(key: str, value: str) -> bool",
+            "fn windows.secureRead(key: str, callback: fn(str) -> void) -> bool",
+            "fn windows.secureRemove(key: str) -> bool",
         ] {
             assert!(
                 items.contains(expected),
@@ -11660,7 +11663,7 @@ mod tests {
         }
 
         let uri = "file:///tmp/windows-platform-signatures.flux";
-        let source = "fn main() -> i64 {\n    print(windows.processId())\n    print(windows.uptimeMillis())\n    print(windows.open(\"https://example.com\"))\n    print(windows.beep(440, 25))\n    return 0\n}\n";
+        let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    print(windows.processId())\n    print(windows.uptimeMillis())\n    print(windows.open(\"https://example.com\"))\n    print(windows.beep(440, 25))\n    print(windows.secureStore(\"session\", \"opaque\"))\n    print(windows.secureRead(\"session\", show))\n    print(windows.secureRemove(\"session\"))\n    return 0\n}\n";
         let documents = HashMap::from([(uri.to_string(), source.to_string())]);
         for (needle, expected) in [
             ("windows.processId(", "fn windows.processId() -> i64"),
@@ -11669,6 +11672,18 @@ mod tests {
             (
                 "windows.beep(",
                 "fn windows.beep(frequencyHz: i64, durationMs: i64) -> bool",
+            ),
+            (
+                "windows.secureStore(",
+                "fn windows.secureStore(key: str, value: str) -> bool",
+            ),
+            (
+                "windows.secureRead(",
+                "fn windows.secureRead(key: str, callback: fn(str) -> void) -> bool",
+            ),
+            (
+                "windows.secureRemove(",
+                "fn windows.secureRemove(key: str) -> bool",
             ),
         ] {
             let line_index = source

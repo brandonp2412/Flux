@@ -2,6 +2,7 @@
 pub enum WindowsBindingType {
     I64,
     Str,
+    StrCallback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,35 @@ const BEEP: &[WindowsBindingParam] = &[
         ty: WindowsBindingType::I64,
     },
 ];
+const SECURE_KEY_VALUE: &[WindowsBindingParam] = &[
+    WindowsBindingParam {
+        name: "key",
+        signature: "key: str",
+        ty: WindowsBindingType::Str,
+    },
+    WindowsBindingParam {
+        name: "value",
+        signature: "value: str",
+        ty: WindowsBindingType::Str,
+    },
+];
+const SECURE_KEY_CALLBACK: &[WindowsBindingParam] = &[
+    WindowsBindingParam {
+        name: "key",
+        signature: "key: str",
+        ty: WindowsBindingType::Str,
+    },
+    WindowsBindingParam {
+        name: "callback",
+        signature: "callback: fn(str) -> void",
+        ty: WindowsBindingType::StrCallback,
+    },
+];
+const SECURE_KEY: &[WindowsBindingParam] = &[WindowsBindingParam {
+    name: "key",
+    signature: "key: str",
+    ty: WindowsBindingType::Str,
+}];
 
 pub const WINDOWS_BINDINGS: &[WindowsBinding] = &[
     WindowsBinding {
@@ -80,6 +110,21 @@ pub const WINDOWS_BINDINGS: &[WindowsBinding] = &[
         name: "screenHeight",
         params: NO_PARAMS,
         returns: WindowsBindingReturn::I64,
+    },
+    WindowsBinding {
+        name: "secureStore",
+        params: SECURE_KEY_VALUE,
+        returns: WindowsBindingReturn::Bool,
+    },
+    WindowsBinding {
+        name: "secureRead",
+        params: SECURE_KEY_CALLBACK,
+        returns: WindowsBindingReturn::Bool,
+    },
+    WindowsBinding {
+        name: "secureRemove",
+        params: SECURE_KEY,
+        returns: WindowsBindingReturn::Bool,
     },
 ];
 
