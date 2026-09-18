@@ -15916,13 +15916,8 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        for (property_name, maximum_name, horizontal) in [
-            ("min_width", "max_width", true),
-            ("min_height", "max_height", false),
-        ] {
-            if view_property(element, property_name).is_some()
-                && view_property(element, maximum_name).is_none()
-            {
+        for (property_name, horizontal) in [("min_width", true), ("min_height", false)] {
+            if view_property(element, property_name).is_some() {
                 let layout = linux_ui_layout_c_name(element);
                 let fixed = if horizontal {
                     view.grid
@@ -15952,21 +15947,11 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
-        for (property_name, minimum_name, setter) in [
-            (
-                "max_width",
-                "min_width",
-                "flux_size_constraint_set_max_width",
-            ),
-            (
-                "max_height",
-                "min_height",
-                "flux_size_constraint_set_max_height",
-            ),
+        for (property_name, setter) in [
+            ("max_width", "flux_size_constraint_set_max_width"),
+            ("max_height", "flux_size_constraint_set_max_height"),
         ] {
-            if view_property(element, property_name).is_some()
-                && view_property(element, minimum_name).is_none()
-            {
+            if view_property(element, property_name).is_some() {
                 let constraint = linux_ui_constraint_c_name(element);
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {constraint} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {setter}({constraint}, (int)integer_value); }}",

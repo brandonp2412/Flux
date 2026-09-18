@@ -2106,10 +2106,26 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         | "skew_y_degrees"
         | "transform_origin_x_percent"
         | "transform_origin_y_percent" => development_ui_transform_is_static_literal(element),
-        "min_width" => !development_ui_element_has_property(element, "max_width"),
-        "min_height" => !development_ui_element_has_property(element, "max_height"),
-        "max_width" => !development_ui_element_has_property(element, "min_width"),
-        "max_height" => !development_ui_element_has_property(element, "min_height"),
+        "min_width" => element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "max_width")
+            .is_none_or(|property| development_ui_i64_literal_value(&property.value).is_some()),
+        "min_height" => element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "max_height")
+            .is_none_or(|property| development_ui_i64_literal_value(&property.value).is_some()),
+        "max_width" => element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "min_width")
+            .is_none_or(|property| development_ui_i64_literal_value(&property.value).is_some()),
+        "max_height" => element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "min_height")
+            .is_none_or(|property| development_ui_i64_literal_value(&property.value).is_some()),
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
         "border_width" => ![
             "border_top_width",
@@ -2192,6 +2208,25 @@ fn development_ui_string_literals(
 
     let mut literals = BTreeMap::new();
     for element in &view.elements {
+        for (minimum_name, maximum_name) in
+            [("min_width", "max_width"), ("min_height", "max_height")]
+        {
+            let minimum = element.properties.iter().find(|property| {
+                typecheck::source_name_to_internal(&property.name) == minimum_name
+            });
+            let maximum = element.properties.iter().find(|property| {
+                typecheck::source_name_to_internal(&property.name) == maximum_name
+            });
+            if let (Some(minimum), Some(maximum)) = (minimum, maximum)
+                && let (Some(minimum), Some(maximum)) = (
+                    development_ui_i64_literal_value(&minimum.value),
+                    development_ui_i64_literal_value(&maximum.value),
+                )
+                && minimum > maximum
+            {
+                return None;
+            }
+        }
         for property in &element.properties {
             let property_name = typecheck::source_name_to_internal(&property.name);
             if development_ui_string_list_property_is_patchable(element, &property_name) {

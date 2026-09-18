@@ -39690,11 +39690,74 @@ app Screen
     let constrained_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("constrained minimum-size edit should analyze");
+    let constrained_patch = constrained_second
+        .development_ui_string_patch_from(&constrained_first)
+        .expect("literal minimum-size edits paired with a literal maximum should hot-apply");
+    assert_eq!(
+        constrained_patch,
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "min_width".to_string(),
+            value: "100".to_string(),
+        }]
+    );
+    let constrained_generated = constrained_second
+        .emit_c()
+        .expect("constrained minimum-size patch fixture should lower for Linux");
     assert!(
-        constrained_second
+        constrained_generated
+            .contains("strcmp(property, \"min_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(constrained_generated.contains(
+        "gtk_widget_set_size_request(flux__ui_constraint_label, (int)patched_size, current_height)"
+    ));
+
+    let invalid_pair = constrained_initial.replace("minWidth: 80", "minWidth: 220");
+    fs::write(&entry, invalid_pair).expect("invalid constrained minimum edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_pair = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid constrained minimum remains semantically typed");
+    assert!(
+        invalid_pair
             .development_ui_string_patch_from(&constrained_first)
             .is_none(),
-        "minimum-size edits paired with a maximum must retain controlled restart"
+        "a literal minimum above its maximum must fall back to normal target validation"
+    );
+    assert!(
+        invalid_pair.emit_c().is_err(),
+        "a literal minimum above its maximum must still fail native validation"
+    );
+
+    let dynamic_maximum = r#"view Screen {
+    grid columns: 120
+    grid rows: auto
+    state limit: i64 = 200
+    Text label at 1,1
+        text: "Sized"
+        minWidth: 80
+        maxWidth: limit
+}
+app Screen
+"#;
+    fs::write(&entry, dynamic_maximum)
+        .expect("dynamic-maximum minimum-size source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic-maximum minimum-size source should analyze");
+    let dynamic_updated = dynamic_maximum.replace("minWidth: 80", "minWidth: 100");
+    fs::write(&entry, dynamic_updated)
+        .expect("dynamic-maximum minimum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic-maximum minimum-size edit should analyze");
+    assert!(
+        dynamic_second
+            .development_ui_string_patch_from(&dynamic_first)
+            .is_none(),
+        "minimum-size edits paired with a dynamic maximum must retain normal rebuild validation"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -39796,11 +39859,43 @@ app Screen
     let constrained_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("constrained maximum-size edit should analyze");
+    let constrained_patch = constrained_second
+        .development_ui_string_patch_from(&constrained_first)
+        .expect("literal maximum-size edits paired with a literal minimum should hot-apply");
+    assert_eq!(
+        constrained_patch,
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "max_width".to_string(),
+            value: "180".to_string(),
+        }]
+    );
+    let constrained_generated = constrained_second
+        .emit_c()
+        .expect("constrained maximum-size patch fixture should lower for Linux");
     assert!(
-        constrained_second
+        constrained_generated
+            .contains("strcmp(property, \"max_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(constrained_generated.contains(
+        "flux_size_constraint_set_max_width(flux__ui_constraint_label, (int)integer_value)"
+    ));
+
+    let invalid_pair = constrained_initial.replace("maxWidth: 200", "maxWidth: 60");
+    fs::write(&entry, invalid_pair).expect("invalid constrained maximum edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_pair = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid constrained maximum remains semantically typed");
+    assert!(
+        invalid_pair
             .development_ui_string_patch_from(&constrained_first)
             .is_none(),
-        "maximum-size edits paired with a minimum must retain controlled restart"
+        "a literal maximum below its minimum must fall back to normal target validation"
+    );
+    assert!(
+        invalid_pair.emit_c().is_err(),
+        "a literal maximum below its minimum must still fail native validation"
     );
 
     let _ = fs::remove_dir_all(root);
