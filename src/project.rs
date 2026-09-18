@@ -1901,7 +1901,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
         ),
         "title" => element.kind == "Card",
-        "alt" => element.kind == "Image",
+        "alt" | "fit" => element.kind == "Image",
         "tooltip" => {
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
@@ -2000,6 +2000,15 @@ fn development_ui_string_literals(
                     let valid = matches!(
                         value.as_str(),
                         "text" | "email" | "number" | "decimal" | "phone" | "url"
+                    );
+                    if !valid {
+                        return None;
+                    }
+                }
+                if property_name == "fit" {
+                    let valid = matches!(
+                        value.as_str(),
+                        "fill" | "contain" | "cover" | "scaleDown" | "scale_down"
                     );
                     if !valid {
                         return None;

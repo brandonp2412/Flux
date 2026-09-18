@@ -36651,6 +36651,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         primary: false
     Image image at 3,1
         source: "image.png"
+        fit: "contain"
         canShrink: true
     TextInput input at 4,1
         readOnly: false
@@ -36684,6 +36685,7 @@ app Screen
         primary: true
     Image image at 3,1
         source: "image.png"
+        fit: "cover"
         canShrink: false
     TextInput input at 4,1
         readOnly: true
@@ -36729,6 +36731,7 @@ app Screen
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
+        ("image", "fit", "cover"),
         ("image", "can_shrink", "0"),
         ("input", "read_only", "1"),
         ("input", "password", "1"),
@@ -36743,7 +36746,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 16);
+    assert_eq!(patch.len(), 17);
 
     let generated = second
         .emit_c()
@@ -36768,6 +36771,10 @@ app Screen
     ));
     assert!(
         generated.contains("gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_image), bool_value)")
+    );
+    assert!(generated.contains("strcmp(property, \"fit\") == 0"));
+    assert!(
+        generated.contains("gtk_picture_set_content_fit(GTK_PICTURE(flux__ui_image), content_fit)")
     );
     assert!(
         generated.contains("gtk_editable_set_editable(GTK_EDITABLE(flux__ui_input), !bool_value)")
@@ -36802,6 +36809,51 @@ app Screen
     assert!(
         third.development_ui_string_patch_from(&second).is_none(),
         "changing a static patchable bool into a runtime expression must fall back to rebuild"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_defers_invalid_image_fit_literals() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-invalid-image-fit-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary invalid Image.fit patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Image preview at 1,1
+        source: "image.png"
+        fit: "contain"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial Image.fit patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Image.fit patch analysis should succeed");
+    let entry = fs::canonicalize(entry).expect("Image.fit patch entry should canonicalize");
+
+    let invalid = initial.replace("fit: \"contain\"", "fit: \"stretchMaybe\"");
+    fs::write(&entry, invalid).expect("invalid Image.fit source should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid Image.fit remains semantically a string");
+    assert!(
+        invalid.development_ui_string_patch_from(&first).is_none(),
+        "target-invalid Image.fit must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid Image.fit must still reach native validation"
     );
 
     let _ = fs::remove_dir_all(root);
