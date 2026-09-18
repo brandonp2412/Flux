@@ -1931,16 +1931,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "drag_text" => true,
         "context_menu_label" => true,
         "shortcut_scope" => development_ui_element_has_property(element, "shortcut"),
-        "placeholder" => {
-            element.kind == "TextInput"
-                && element
-                    .properties
-                    .iter()
-                    .find(|property| {
-                        typecheck::source_name_to_internal(&property.name) == "multiline"
-                    })
-                    .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
-        }
+        "placeholder" => element.kind == "TextInput",
         "keyboard_type" => element.kind == "TextInput",
         "validation_state" => element.kind == "TextInput",
         "validation_message" => {

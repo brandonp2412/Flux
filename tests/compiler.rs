@@ -39087,6 +39087,66 @@ app Shortcuts
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_multiline_placeholder() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-multiline-placeholder-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary multiline-placeholder patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Notes {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput body at 1,1
+        multiline: true
+        placeholder: "Before"
+}
+app Notes
+"#;
+    fs::write(&entry, initial).expect("initial multiline placeholder source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial multiline placeholder analysis should succeed");
+
+    let updated = initial.replace("placeholder: \"Before\"", "placeholder: \"After\"");
+    fs::write(&entry, updated).expect("updated multiline placeholder source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("multiline placeholder patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated multiline placeholder analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("multiline placeholder edits should hot-apply to the existing native text view");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "body");
+    assert_eq!(patch[0].property, "placeholder");
+    assert_eq!(patch[0].value, "After");
+
+    let generated = second
+        .emit_c()
+        .expect("multiline placeholder patch fixture should lower for Linux");
+    assert!(generated.contains("static GtkWidget *flux__ui_placeholder_body = NULL"));
+    assert!(generated.contains(
+        "gtk_text_view_add_overlay(GTK_TEXT_VIEW(flux__ui_body), flux__ui_placeholder_body, 6, 6)"
+    ));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_buffer_body, \"changed\", G_CALLBACK(flux__ui_placeholder_changed_body), NULL)"
+    ));
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_placeholder_body), value)"));
+    assert!(generated.contains(
+        "gtk_widget_set_visible(flux__ui_placeholder_body, value_length > 0 && gtk_text_buffer_get_char_count(buffer) == 0)"
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",
@@ -44110,7 +44170,7 @@ app Form
         "multiline max-length support must disappear when maxLength is omitted"
     );
 
-    let unsupported_placeholder = r#"
+    let multiline_placeholder = r#"
 view Form {
     grid columns: 1fr
     grid rows: auto
@@ -44120,15 +44180,19 @@ view Form {
 }
 app Form
 "#;
-    check_source(unsupported_placeholder)
-        .expect("multiline placeholder restriction should typecheck generically");
-    let error = compile_to_c(unsupported_placeholder)
-        .expect_err("unsupported multiline placeholder must fail explicitly");
-    assert!(
-        error
-            .message
-            .contains("TextInput.placeholder is not yet supported")
-    );
+    let generated = compile_to_c(multiline_placeholder)
+        .expect("multiline placeholder should lower to a native TextView overlay");
+    assert!(generated.contains("static GtkWidget *flux__ui_placeholder_query = NULL"));
+    assert!(generated.contains("flux__ui_placeholder_query = gtk_label_new(\"Notes\")"));
+    assert!(generated.contains(
+        "gtk_text_view_add_overlay(GTK_TEXT_VIEW(flux__ui_query), flux__ui_placeholder_query, 6, 6)"
+    ));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_buffer_query, \"changed\", G_CALLBACK(flux__ui_placeholder_changed_query), NULL)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_visible(flux__ui_placeholder_query, placeholder != NULL && placeholder[0] != '\\0' && gtk_text_buffer_get_char_count(buffer) == 0)"
+    ));
 }
 
 #[test]

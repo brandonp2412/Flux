@@ -14706,6 +14706,17 @@ fn emit_linux_gtk_application(
             "static GtkWidget *{} = NULL;\n",
             ui_widget_c_name(&element.name)
         ));
+        let multiline_text_input_placeholder = element.kind == "TextInput"
+            && view_property(element, "placeholder").is_some()
+            && view_property(element, "multiline")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false);
+        if multiline_text_input_placeholder {
+            out.push_str(&format!(
+                "static GtkWidget *flux__ui_placeholder_{} = NULL;\n",
+                element.name
+            ));
+        }
         if linux_passive_action_host(element) {
             out.push_str(&format!(
                 "static GtkWidget *{} = NULL;\n",
@@ -15140,16 +15151,24 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
-        if element.kind == "TextInput"
-            && view_property(element, "placeholder").is_some()
-            && !view_property(element, "multiline")
+        if element.kind == "TextInput" && view_property(element, "placeholder").is_some() {
+            let multiline = view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
-                .unwrap_or(false)
-        {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), value);",
-                c_string(&element.name)
-            ));
+                .unwrap_or(false);
+            if multiline {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL && flux__ui_placeholder_{} != NULL) {{ gtk_label_set_text(GTK_LABEL(flux__ui_placeholder_{}), value); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_widget_set_visible(flux__ui_placeholder_{}, value_length > 0 && gtk_text_buffer_get_char_count(buffer) == 0); }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
+            } else {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), value);",
+                    c_string(&element.name)
+                ));
+            }
         }
         if view_property(element, "accessibility_label").is_some() {
             out.push_str(&format!(
@@ -15685,6 +15704,15 @@ fn emit_linux_gtk_application(
                 }
                 None => false,
             };
+            if multiline && view_property(element, "placeholder").is_some() {
+                out.push_str(&format!(
+                    "static void flux__ui_placeholder_changed_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data; if (flux__ui_placeholder_{} == NULL) return; const char *placeholder = gtk_label_get_text(GTK_LABEL(flux__ui_placeholder_{})); gtk_widget_set_visible(flux__ui_placeholder_{}, placeholder != NULL && placeholder[0] != '\\0' && gtk_text_buffer_get_char_count(buffer) == 0); }}\n",
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
+            }
             if multiline && let Some(property) = view_property(element, "max_length") {
                 let Some(max_length) = static_expr_i64(&property.value, signatures) else {
                     return Err(diag(
@@ -16578,12 +16606,6 @@ fn emit_linux_gtk_application(
                 };
                 let multiline_buffer = format!("flux__ui_buffer_{}", element.name);
                 if multiline {
-                    if let Some(property) = view_property(element, "placeholder") {
-                        return Err(diag(
-                            property.value.span,
-                            "TextInput.placeholder is not yet supported for multiline Linux GTK input",
-                        ));
-                    }
                     out.push_str(&format!("    {variable} = gtk_text_view_new();\n"));
                     out.push_str(&format!(
                         "    gtk_widget_add_css_class({variable}, \"flux-input\");\n"
@@ -16597,6 +16619,22 @@ fn emit_linux_gtk_application(
                     out.push_str(&format!(
                         "    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW({variable}), GTK_WRAP_WORD_CHAR);\n"
                     ));
+                    if let Some(property) = view_property(element, "placeholder") {
+                        let placeholder = ui_expr_c(&property.value, view, signatures)?;
+                        out.push_str(&format!(
+                            "    flux__ui_placeholder_{} = gtk_label_new({placeholder});\n    gtk_widget_add_css_class(flux__ui_placeholder_{}, \"dim-label\");\n    gtk_widget_set_can_target(flux__ui_placeholder_{}, FALSE);\n    gtk_widget_set_halign(flux__ui_placeholder_{}, GTK_ALIGN_START);\n    gtk_widget_set_valign(flux__ui_placeholder_{}, GTK_ALIGN_START);\n    gtk_label_set_xalign(GTK_LABEL(flux__ui_placeholder_{}), 0.0f);\n    gtk_label_set_wrap(GTK_LABEL(flux__ui_placeholder_{}), TRUE);\n    gtk_text_view_add_overlay(GTK_TEXT_VIEW({variable}), flux__ui_placeholder_{}, 6, 6);\n    g_signal_connect({multiline_buffer}, \"changed\", G_CALLBACK(flux__ui_placeholder_changed_{}), NULL);\n    flux__ui_placeholder_changed_{}({multiline_buffer}, NULL);\n",
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                            element.name,
+                        ));
+                    }
                 } else {
                     out.push_str(&format!("    {variable} = gtk_entry_new();\n"));
                     out.push_str(&format!(
@@ -20341,9 +20379,21 @@ fn emit_ui_refresh(
             "TextInput" => {
                 if let Some(property) = view_property(element, "placeholder") {
                     let value = ui_expr_c(&property.value, view, signatures)?;
-                    out.push_str(&format!(
-                        "    if ({widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), {value});\n"
-                    ));
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if multiline {
+                        out.push_str(&format!(
+                            "    if ({widget} != NULL && flux__ui_placeholder_{} != NULL) {{ const char *placeholder = {value}; gtk_label_set_text(GTK_LABEL(flux__ui_placeholder_{}), placeholder); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_widget_set_visible(flux__ui_placeholder_{}, placeholder != NULL && placeholder[0] != '\\0' && gtk_text_buffer_get_char_count(buffer) == 0); }}\n",
+                            element.name,
+                            element.name,
+                            element.name,
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "    if ({widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), {value});\n"
+                        ));
+                    }
                 }
                 if let Some(property) = view_property(element, "enabled") {
                     let value = ui_expr_c(&property.value, view, signatures)?;
