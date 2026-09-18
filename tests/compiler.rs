@@ -36643,6 +36643,11 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         accessibilityHidden: false
         selectable: true
         wrap: true
+        textAlign: "left"
+        wrapMode: "word"
+        ellipsize: "none"
+        maxLines: 1
+        maxWidthChars: 20
     Button action at 2,1
         text: "Action"
         visible: true
@@ -36679,6 +36684,11 @@ app Screen
         accessibilityHidden: true
         selectable: false
         wrap: false
+        textAlign: "center"
+        wrapMode: "wordChar"
+        ellipsize: "end"
+        maxLines: 2
+        maxWidthChars: 40
     Button action at 2,1
         text: "Action"
         visible: false
@@ -36732,6 +36742,11 @@ app Screen
         ("label", "accessibility_hidden", "1"),
         ("label", "selectable", "0"),
         ("label", "wrap", "0"),
+        ("label", "text_align", "center"),
+        ("label", "wrap_mode", "wordChar"),
+        ("label", "ellipsize", "end"),
+        ("label", "max_lines", "2"),
+        ("label", "max_width_chars", "40"),
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
@@ -36753,7 +36768,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 20);
+    assert_eq!(patch.len(), 25);
 
     let generated = second
         .emit_c()
@@ -36772,6 +36787,20 @@ app Screen
     assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1"));
     assert!(generated.contains("gtk_label_set_selectable(GTK_LABEL(flux__ui_label), bool_value)"));
     assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("strcmp(property, \"text_align\") == 0"));
+    assert!(generated.contains("gtk_label_set_justify(GTK_LABEL(flux__ui_label), justify)"));
+    assert!(generated.contains("strcmp(property, \"wrap_mode\") == 0"));
+    assert!(generated.contains("gtk_label_set_wrap_mode(GTK_LABEL(flux__ui_label), wrap_mode)"));
+    assert!(generated.contains("strcmp(property, \"ellipsize\") == 0"));
+    assert!(generated.contains("gtk_label_set_ellipsize(GTK_LABEL(flux__ui_label), ellipsize)"));
+    assert!(generated.contains("strcmp(property, \"max_lines\") == 0"));
+    assert!(
+        generated.contains("gtk_label_set_lines(GTK_LABEL(flux__ui_label), (int)integer_value)")
+    );
+    assert!(generated.contains("strcmp(property, \"max_width_chars\") == 0"));
+    assert!(generated.contains(
+        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_label), integer_value == 0 ? -1 : (int)integer_value)"
+    ));
     assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
     assert!(generated.contains(
         "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
@@ -36868,6 +36897,63 @@ app Screen
         invalid.emit_c().is_err(),
         "target-invalid Image.fit must still reach native validation"
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_defers_invalid_text_layout_literals() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-invalid-text-layout-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary invalid Text layout patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Label"
+        textAlign: "left"
+        wrapMode: "word"
+        ellipsize: "none"
+        maxLines: 1
+        maxWidthChars: 20
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial Text layout patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Text layout patch analysis should succeed");
+    let entry = fs::canonicalize(entry).expect("Text layout patch entry should canonicalize");
+
+    for (from, to) in [
+        ("textAlign: \"left\"", "textAlign: \"diagonal\""),
+        ("wrapMode: \"word\"", "wrapMode: \"maybe\""),
+        ("ellipsize: \"none\"", "ellipsize: \"around\""),
+        ("maxLines: 1", "maxLines: 0"),
+        ("maxWidthChars: 20", "maxWidthChars: -1"),
+    ] {
+        let invalid = initial.replace(from, to);
+        fs::write(&entry, invalid).expect("invalid Text layout source should be writable");
+        cache.invalidate_path(&entry);
+        let invalid = cache
+            .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+            .expect("invalid Text layout value remains semantically well typed");
+        assert!(
+            invalid.development_ui_string_patch_from(&first).is_none(),
+            "target-invalid Text layout property must use normal rebuild validation"
+        );
+        assert!(
+            invalid.emit_c().is_err(),
+            "target-invalid Text layout property must still reach native validation"
+        );
+    }
 
     let _ = fs::remove_dir_all(root);
 }

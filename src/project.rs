@@ -1904,6 +1904,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
+        "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
@@ -1974,6 +1975,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
                     })
                     .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
         }
+        "max_lines" | "max_width_chars" => element.kind == "Text",
         _ => false,
     }
 }
@@ -2016,6 +2018,25 @@ fn development_ui_string_literals(
                         return None;
                     }
                 }
+                if property_name == "text_align" {
+                    let valid = matches!(value.as_str(), "left" | "center" | "right" | "fill");
+                    if !valid {
+                        return None;
+                    }
+                }
+                if property_name == "wrap_mode" {
+                    let valid =
+                        matches!(value.as_str(), "word" | "char" | "wordChar" | "word_char");
+                    if !valid {
+                        return None;
+                    }
+                }
+                if property_name == "ellipsize" {
+                    let valid = matches!(value.as_str(), "none" | "start" | "middle" | "end");
+                    if !valid {
+                        return None;
+                    }
+                }
                 value.clone()
             } else if development_ui_bool_property_is_patchable(element, &property_name) {
                 let ExprKind::Bool(value) = property.value.kind else {
@@ -2031,6 +2052,13 @@ fn development_ui_string_literals(
                     continue;
                 };
                 if property_name == "max_length" && !(0..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if property_name == "max_lines" && !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if property_name == "max_width_chars" && !(0..=i64::from(i32::MAX)).contains(&value)
+                {
                     return None;
                 }
                 value.to_string()

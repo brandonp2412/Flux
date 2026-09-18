@@ -14678,10 +14678,42 @@ fn emit_linux_gtk_application(
         let widget = ui_widget_c_name(&element.name);
         let host = linux_ui_host_c_name(element);
         match element.kind.as_str() {
-            "Text" => out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
-                c_string(&element.name)
-            )),
+            "Text" => {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
+                    c_string(&element.name)
+                ));
+                if view_property(element, "text_align").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"text_align\") == 0 && {widget} != NULL) {{ GtkJustification justify = GTK_JUSTIFY_LEFT; bool justify_valid = true; if (strcmp(value, \"left\") == 0) justify = GTK_JUSTIFY_LEFT; else if (strcmp(value, \"center\") == 0) justify = GTK_JUSTIFY_CENTER; else if (strcmp(value, \"right\") == 0) justify = GTK_JUSTIFY_RIGHT; else if (strcmp(value, \"fill\") == 0) justify = GTK_JUSTIFY_FILL; else justify_valid = false; if (justify_valid) gtk_label_set_justify(GTK_LABEL({widget}), justify); }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "wrap_mode").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"wrap_mode\") == 0 && {widget} != NULL) {{ PangoWrapMode wrap_mode = PANGO_WRAP_WORD; bool wrap_mode_valid = true; if (strcmp(value, \"word\") == 0) wrap_mode = PANGO_WRAP_WORD; else if (strcmp(value, \"char\") == 0) wrap_mode = PANGO_WRAP_CHAR; else if (strcmp(value, \"wordChar\") == 0 || strcmp(value, \"word_char\") == 0) wrap_mode = PANGO_WRAP_WORD_CHAR; else wrap_mode_valid = false; if (wrap_mode_valid) gtk_label_set_wrap_mode(GTK_LABEL({widget}), wrap_mode); }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "ellipsize").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"ellipsize\") == 0 && {widget} != NULL) {{ PangoEllipsizeMode ellipsize = PANGO_ELLIPSIZE_NONE; bool ellipsize_valid = true; if (strcmp(value, \"none\") == 0) ellipsize = PANGO_ELLIPSIZE_NONE; else if (strcmp(value, \"start\") == 0) ellipsize = PANGO_ELLIPSIZE_START; else if (strcmp(value, \"middle\") == 0) ellipsize = PANGO_ELLIPSIZE_MIDDLE; else if (strcmp(value, \"end\") == 0) ellipsize = PANGO_ELLIPSIZE_END; else ellipsize_valid = false; if (ellipsize_valid) gtk_label_set_ellipsize(GTK_LABEL({widget}), ellipsize); }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "max_lines").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"max_lines\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) gtk_label_set_lines(GTK_LABEL({widget}), (int)integer_value); }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "max_width_chars").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"max_width_chars\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_label_set_max_width_chars(GTK_LABEL({widget}), integer_value == 0 ? -1 : (int)integer_value); }}",
+                        c_string(&element.name)
+                    ));
+                }
+            }
             "Button" => out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_button_set_label(GTK_BUTTON({widget}), value);",
                 c_string(&element.name)
