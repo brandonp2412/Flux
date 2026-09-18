@@ -1891,7 +1891,6 @@ fn module_type_surface(
                 view.grid.gap.map(|_| 0_u32),
                 view.grid.padding.map(|_| 0_u32),
                 view.grid.scroll,
-                view.grid.overlay,
             )
         )
         .expect("writing a String cannot fail");

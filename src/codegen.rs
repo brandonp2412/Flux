@@ -2256,7 +2256,6 @@ fn application_codegen_cache_identity(
                     view.grid.gap,
                     view.grid.padding,
                     view.grid.scroll,
-                    view.grid.overlay,
                 ),
                 elements,
             )

@@ -39924,6 +39924,85 @@ app Screen
 }
 
 #[test]
+fn development_abi_ignores_validation_only_grid_overlay_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-overlay-abi-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary overlay ABI project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr 1fr
+    grid rows: auto
+    grid overlay: true
+    Text first at 1,1
+        text: "first"
+    Text second at 1,2
+        text: "second"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial overlay ABI source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial overlay ABI analysis should succeed");
+    let first_c = cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial overlay ABI source should lower");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    let entry = fs::canonicalize(entry).expect("overlay ABI entry should canonicalize");
+    fs::write(
+        &entry,
+        initial.replace("grid overlay: true", "grid overlay: false"),
+    )
+    .expect("updated overlay ABI source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("disabled overlay remains valid for non-overlapping siblings");
+    let second_c = cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated overlay ABI source should lower");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "validation-only grid overlay changes must not cross the development ABI boundary"
+    );
+    assert_eq!(
+        second_c, first_c,
+        "grid overlay is validation-only and must not alter emitted native code"
+    );
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 0,
+            regenerated_functions: 0,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_runtime_fragments: 1,
+            regenerated_runtime_fragments: 0,
+            reused_application_fragments: 1,
+            regenerated_application_fragments: 0,
+        }),
+        "validation-only overlay changes should reuse the native application fragment"
+    );
+    assert!(
+        second.development_ui_string_patch_from(&first).is_none(),
+        "overlay changes should take the identical-code path rather than emit a UI value patch"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-property-patch-{}",

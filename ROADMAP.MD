@@ -1422,6 +1422,8 @@ Verified Milestone 29 system-theme restoration follow-up: Linux applications sna
 
 Verified Milestone 29 live-runner hot-apply follow-up: the native Linux development runner now has end-to-end regression coverage that starts a real GTK application under a virtual display, edits a static UI value on disk, observes the `in_process_string` reload status, and proves the application's `onStart` callback is not invoked again. This pins the save watcher, incremental analysis, patch-file dispatch, SIGUSR1 delivery, GTK-side patch application path, and no-restart contract together instead of testing those layers only in isolation.
 
+Verified Milestone 29 validation-only overlay follow-up: `grid overlay` is now excluded from the development ABI and native application-fragment cache identity because it only controls compile-time sibling-overlap validation and is never consumed by native codegen. Toggling it on a layout that remains valid therefore keeps the running process and emitted native code unchanged while reusing the application/runtime fragments; layouts that become invalid when overlay is disabled still fail during analysis as before.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
