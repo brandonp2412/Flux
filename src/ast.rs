@@ -447,6 +447,7 @@ pub struct GridLayout {
     pub flow: Option<FlowDirection>,
     pub flow_line: Option<usize>,
     pub gap: Option<u32>,
+    pub gap_line: Option<usize>,
     pub padding: Option<u32>,
     pub padding_line: Option<usize>,
     pub scroll: Option<bool>,

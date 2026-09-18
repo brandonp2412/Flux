@@ -1888,8 +1888,8 @@ fn module_type_surface(
                 &view.grid.columns,
                 &view.grid.rows,
                 view.grid.flow,
-                view.grid.gap,
-                view.grid.padding,
+                view.grid.gap.map(|_| 0_u32),
+                view.grid.padding.map(|_| 0_u32),
                 view.grid.scroll,
                 view.grid.overlay,
             )
@@ -1921,6 +1921,7 @@ fn module_type_surface(
 }
 
 const DEVELOPMENT_APPLICATION_PATCH_ELEMENT: &str = "__application__";
+const DEVELOPMENT_GRID_PATCH_ELEMENT: &str = "__grid__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2234,6 +2235,21 @@ fn development_ui_string_literals(
                 typecheck::source_name_to_internal(&field.name),
             ),
             value,
+        );
+    }
+    for (property, value) in [("gap", view.grid.gap), ("padding", view.grid.padding)] {
+        let Some(value) = value else {
+            continue;
+        };
+        if value > i32::MAX as u32 {
+            return None;
+        }
+        literals.insert(
+            (
+                DEVELOPMENT_GRID_PATCH_ELEMENT.to_string(),
+                property.to_string(),
+            ),
+            value.to_string(),
         );
     }
 
@@ -2581,10 +2597,66 @@ fn development_ui_string_masked_sources(
             for (start, end) in ranges {
                 text.replace_range(start..end, "\"__flux_hot_string__\"");
             }
+            if source.source_id == view.name_span.source_id {
+                for (line, property) in [
+                    (view.grid.gap_line, "gap"),
+                    (view.grid.padding_line, "padding"),
+                ] {
+                    let Some(line) = line else {
+                        continue;
+                    };
+                    let (start, end) = development_grid_literal_byte_range(&text, line, property)?;
+                    text.replace_range(start..end, "0");
+                }
+            }
             let canonical = formatter::format_source(&text).ok()?;
             Some((source.path.clone(), source.module_name.clone(), canonical))
         })
         .collect()
+}
+
+fn development_grid_literal_byte_range(
+    source: &str,
+    line: usize,
+    property: &str,
+) -> Option<(usize, usize)> {
+    let line_start = if line <= 1 {
+        0
+    } else {
+        source
+            .char_indices()
+            .filter(|(_, ch)| *ch == char::from(10))
+            .nth(line - 2)
+            .map(|(index, _)| index + 1)?
+    };
+    let line_end = source[line_start..]
+        .find(char::from(10))
+        .map(|offset| line_start + offset)
+        .unwrap_or(source.len());
+    let raw = &source[line_start..line_end];
+    let trimmed = raw.trim_start();
+    let indentation = raw.len().checked_sub(trimmed.len())?;
+    let grid_prefix = format!("grid {property}:");
+    let flow_prefix = format!("flow {property}:");
+    let prefix = if trimmed.starts_with(&grid_prefix) {
+        grid_prefix.as_str()
+    } else if trimmed.starts_with(&flow_prefix) {
+        flow_prefix.as_str()
+    } else {
+        return None;
+    };
+    let rest = &trimmed[prefix.len()..];
+    let value = rest.trim_start();
+    let whitespace = rest.len().checked_sub(value.len())?;
+    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || !value[digits..].trim().is_empty() {
+        return None;
+    }
+    let start = line_start
+        .checked_add(indentation)?
+        .checked_add(prefix.len())?
+        .checked_add(whitespace)?;
+    Some((start, start.checked_add(digits)?))
 }
 
 fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usize)> {

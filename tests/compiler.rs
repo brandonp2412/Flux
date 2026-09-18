@@ -39572,6 +39572,68 @@ app Screen(title: "Before", width: 640, height: 480, resizable: true)
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_root_grid_spacing() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-grid-spacing-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary grid spacing patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    grid gap: 12
+    grid padding: 20
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial grid spacing source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial grid spacing analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("grid spacing entry should canonicalize");
+    let updated = initial
+        .replace("grid gap: 12", "grid gap: 24")
+        .replace("grid padding: 20", "grid padding: 32");
+    fs::write(&entry, updated).expect("updated grid spacing source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated grid spacing analysis should succeed");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "literal root-grid spacing values must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("root-grid spacing edits should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "gap".to_string(),
+                value: "24".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "padding".to_string(),
+                value: "32".to_string(),
+            },
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-property-patch-{}",
@@ -61141,6 +61203,40 @@ app Screen(title: "Flux", width: 640, height: 480, resizable: true)
     assert!(generated.contains("gtk_window_set_resizable(hot_window"));
     assert!(generated.contains("gtk_window_get_default_size(hot_window"));
     assert!(generated.contains("gtk_window_set_default_size(hot_window"));
+}
+
+#[test]
+fn linux_hot_reload_patch_updates_root_grid_spacing_in_process() {
+    let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    grid gap: 12
+    grid padding: 20
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("grid spacing fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("grid spacing fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("grid spacing fixture should lower for Linux");
+
+    assert!(generated.contains("static GtkWidget *flux__ui_root_grid = NULL"));
+    assert!(generated.contains("flux__ui_root_grid = grid"));
+    assert!(generated.contains("strcmp(name, \"__grid__\") == 0"));
+    assert!(generated.contains("strcmp(property, \"gap\") == 0"));
+    assert!(generated.contains("gtk_grid_set_column_spacing(GTK_GRID(flux__ui_root_grid)"));
+    assert!(generated.contains("gtk_grid_set_row_spacing(GTK_GRID(flux__ui_root_grid)"));
+    assert!(generated.contains("strcmp(property, \"padding\") == 0"));
+    assert!(generated.contains("gtk_widget_set_margin_top(flux__ui_root_grid"));
+    assert!(generated.contains("gtk_widget_set_margin_end(flux__ui_root_grid"));
 }
 
 #[test]

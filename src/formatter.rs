@@ -282,23 +282,24 @@ fn format_view(view: &crate::ast::ViewDef, lines: &mut HashMap<usize, String>) {
         );
     }
     if let Some(gap) = view.grid.gap {
-        let gap_line = view
-            .states
-            .first()
-            .map(|state| state.line.saturating_sub(1))
-            .into_iter()
-            .chain(
-                view.derived
-                    .first()
-                    .map(|derived| derived.line.saturating_sub(1)),
-            )
-            .chain(
-                view.elements
-                    .first()
-                    .map(|element| element.line.saturating_sub(1)),
-            )
-            .min()
-            .unwrap_or(view.line + 3);
+        let gap_line = view.grid.gap_line.unwrap_or_else(|| {
+            view.states
+                .first()
+                .map(|state| state.line.saturating_sub(1))
+                .into_iter()
+                .chain(
+                    view.derived
+                        .first()
+                        .map(|derived| derived.line.saturating_sub(1)),
+                )
+                .chain(
+                    view.elements
+                        .first()
+                        .map(|element| element.line.saturating_sub(1)),
+                )
+                .min()
+                .unwrap_or(view.line + 3)
+        });
         lines.insert(
             gap_line,
             format!(

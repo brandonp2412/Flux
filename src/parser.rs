@@ -2241,6 +2241,7 @@ fn parse_view_declaration(lines: &[Line], index: &mut usize) -> Result<ViewDef, 
                 line.number,
                 label,
             )?);
+            grid.gap_line = Some(line.number);
             *index += 1;
             continue;
         }

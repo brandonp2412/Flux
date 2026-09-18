@@ -66,7 +66,7 @@ Acceptance for the development loop:
 - no reload hotkey is required;
 - `flux run` notices the save and reports that it is compiling;
 - supported ABI-compatible static UI edits apply directly to the running native window without a restart;
-- application title, default width/height, and resizability changes are included in that in-process Linux hot-apply path;
+- application title, default width/height, resizability, and root-grid gap/padding changes are included in that in-process Linux hot-apply path;
 - compatible edits that still require native code replacement rebuild automatically and use a controlled restart with compatible root-view state restored;
 - introducing a compile error leaves the last good app running and reports diagnostics;
 - fixing and saving the error causes the next successful hot apply or replacement build automatically.
