@@ -10808,6 +10808,10 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const LOCALE_LANGUAGE_BUFFER: &str =
         "static _Thread_local char flux__locale_language_buffer[32];";
     const LOCALE_REGION_BUFFER: &str = "static _Thread_local char flux__locale_region_buffer[32];";
+    const JSON_CAPTURE_VALUE: &str = "static _Thread_local const char *flux__json_capture_value;";
+    const JSON_TOKEN_BUFFER: &str = "static _Thread_local char flux__json_token_buffer[65537];";
+    const JSON_CAPTURE_BUFFER: &str =
+        "static _Thread_local char flux__json_capture_buffer[393217];";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -11046,6 +11050,31 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             1,
         );
         definitions.push_str("_Thread_local char flux__locale_region_buffer[32];\n");
+        isolated = true;
+    }
+
+    if prefix.contains(JSON_CAPTURE_VALUE) {
+        partition_prefix = partition_prefix.replace(
+            JSON_CAPTURE_VALUE,
+            "extern _Thread_local const char *flux__json_capture_value;",
+        );
+        definitions.push_str("\n_Thread_local const char *flux__json_capture_value = NULL;\n");
+        isolated = true;
+    }
+    if prefix.contains(JSON_TOKEN_BUFFER) {
+        partition_prefix = partition_prefix.replace(
+            JSON_TOKEN_BUFFER,
+            "extern _Thread_local char flux__json_token_buffer[65537];",
+        );
+        definitions.push_str("_Thread_local char flux__json_token_buffer[65537];\n");
+        isolated = true;
+    }
+    if prefix.contains(JSON_CAPTURE_BUFFER) {
+        partition_prefix = partition_prefix.replace(
+            JSON_CAPTURE_BUFFER,
+            "extern _Thread_local char flux__json_capture_buffer[393217];",
+        );
+        definitions.push_str("_Thread_local char flux__json_capture_buffer[393217];\n");
         isolated = true;
     }
 
@@ -11406,10 +11435,66 @@ fn native_source_line_path(line: &str) -> Option<&str> {
     (end > start).then_some(&line[start + 1..end])
 }
 
+fn native_partition_safety_line(line: &str, block_comment: &mut bool) -> String {
+    let bytes = line.as_bytes();
+    let mut sanitized = Vec::with_capacity(bytes.len());
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if *block_comment {
+            sanitized.push(b' ');
+            if byte == b'*' && bytes.get(cursor + 1) == Some(&b'/') {
+                sanitized.push(b' ');
+                *block_comment = false;
+                cursor += 2;
+            } else {
+                cursor += 1;
+            }
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            sanitized.push(b' ');
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(cursor + 1) == Some(&b'/') {
+            sanitized.resize(bytes.len(), b' ');
+            break;
+        }
+        if byte == b'/' && bytes.get(cursor + 1) == Some(&b'*') {
+            sanitized.push(b' ');
+            sanitized.push(b' ');
+            *block_comment = true;
+            cursor += 2;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            sanitized.push(b' ');
+            quote = Some(byte);
+            cursor += 1;
+            continue;
+        }
+        sanitized.push(byte);
+        cursor += 1;
+    }
+    String::from_utf8(sanitized).expect("sanitized generated C remains UTF-8")
+}
+
 fn native_prefix_is_module_partition_safe(prefix: &str) -> bool {
     let mut depth = 0i32;
+    let mut block_comment = false;
     for line in prefix.lines() {
-        let trimmed = line.trim();
+        let sanitized = native_partition_safety_line(line, &mut block_comment);
+        let trimmed = sanitized.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -11457,7 +11542,7 @@ fn native_prefix_is_module_partition_safe(prefix: &str) -> bool {
             }
         }
     }
-    depth == 0
+    depth == 0 && !block_comment
 }
 
 fn build_native_configured(
@@ -13854,6 +13939,41 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the locale region buffer must have exactly one thread-local definition"
+        );
+
+        let json = "#include <stdint.h>\nstatic _Thread_local const char *flux__json_capture_value;\nstatic _Thread_local char flux__json_token_buffer[65537];\nstatic _Thread_local char flux__json_capture_buffer[393217];\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let json_units = partition_native_c_by_source(json)
+            .expect("JSON thread-local scratch state should move into one shared runtime unit");
+        assert_eq!(json_units.len(), 3);
+        assert_eq!(
+            json_units
+                .iter()
+                .filter(|unit| unit.lines().any(
+                    |line| line == "_Thread_local const char *flux__json_capture_value = NULL;"
+                ))
+                .count(),
+            1,
+            "the JSON capture pointer must have exactly one external thread-local definition"
+        );
+        assert_eq!(
+            json_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "_Thread_local char flux__json_token_buffer[65537];"))
+                .count(),
+            1,
+            "the JSON token scratch buffer must have exactly one external thread-local definition"
+        );
+        assert_eq!(
+            json_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "_Thread_local char flux__json_capture_buffer[393217];"))
+                .count(),
+            1,
+            "the JSON capture scratch buffer must have exactly one external thread-local definition"
         );
     }
 

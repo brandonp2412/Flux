@@ -34905,6 +34905,119 @@ fn native_module_object_cache_reuses_preferences_runtime() {
 }
 
 #[test]
+fn native_module_object_cache_isolates_json_thread_local_buffers() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-json-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native JSON module cache fixture should be writable");
+    let parser = root.join("parser.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &parser,
+        "fn token(_kind: str, _value: str) -> void {\n}\n\npub fn parseRemote() -> error {\n    return json.parse(\"{\\\"value\\\":1}\", token)\n}\n",
+    )
+    .expect("JSON producer module should be writable");
+    fs::write(
+        &main,
+        "import \"parser.flux\"\n\nfn main() -> i64 {\n    let parseError: error = parseRemote()\n    if parseError != nil:\n        return 1\n    return 0\n}\n",
+    )
+    .expect("JSON consumer module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("JSON module-object build should run");
+    assert!(
+        built.status.success(),
+        "JSON module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("JSON module-object binary should run");
+    assert!(
+        first_run.status.success(),
+        "JSON module-object binary failed: {}{}",
+        String::from_utf8_lossy(&first_run.stdout),
+        String::from_utf8_lossy(&first_run.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native JSON object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 4,
+        "JSON callback, parser, consumer, and shared thread-local state should compile independently"
+    );
+
+    fs::write(
+        &parser,
+        "fn token(_kind: str, _value: str) -> void {\n}\n\npub fn parseRemote() -> error {\n    return json.parse(\"{\\\"value\\\":2}\", token)\n}\n",
+    )
+    .expect("changed JSON producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed JSON module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed JSON module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed JSON module-object binary should run");
+    assert!(second_run.status.success());
+
+    let second_objects = object_names();
+    let added = second_objects
+        .iter()
+        .filter(|object| !first_objects.contains(object))
+        .count();
+    assert_eq!(
+        added, 1,
+        "a JSON parser body edit with an unchanged runtime/helper surface should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged JSON callback, consumer, and shared thread-local state should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_isolates_deterministic_test_clock() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-time-module-cache-{}-{}",
