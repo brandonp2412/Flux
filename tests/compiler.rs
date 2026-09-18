@@ -36746,6 +36746,14 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         accessibilityHidden: false
         selectable: true
         wrap: true
+        size: 16
+        bold: true
+        italic: false
+        underline: true
+        strikethrough: false
+        fontFamily: "Sans"
+        letterSpacing: 1
+        lineHeightPercent: 110
         textAlign: "left"
         wrapMode: "word"
         ellipsize: "none"
@@ -36801,6 +36809,14 @@ app Screen
         accessibilityHidden: true
         selectable: false
         wrap: false
+        size: 20
+        bold: false
+        italic: true
+        underline: false
+        strikethrough: true
+        fontFamily: "Serif"
+        letterSpacing: 2
+        lineHeightPercent: 125
         textAlign: "center"
         wrapMode: "wordChar"
         ellipsize: "end"
@@ -36873,6 +36889,14 @@ app Screen
         ("label", "accessibility_hidden", "1"),
         ("label", "selectable", "0"),
         ("label", "wrap", "0"),
+        ("label", "size", "20"),
+        ("label", "bold", "0"),
+        ("label", "italic", "1"),
+        ("label", "underline", "0"),
+        ("label", "strikethrough", "1"),
+        ("label", "font_family", "Serif"),
+        ("label", "letter_spacing", "2"),
+        ("label", "line_height_percent", "125"),
         ("label", "text_align", "center"),
         ("label", "wrap_mode", "wordChar"),
         ("label", "ellipsize", "end"),
@@ -36910,7 +36934,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 36);
+    assert_eq!(patch.len(), 44);
 
     let generated = second
         .emit_c()
@@ -36929,6 +36953,32 @@ app Screen
     assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1"));
     assert!(generated.contains("gtk_label_set_selectable(GTK_LABEL(flux__ui_label), bool_value)"));
     assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("strcmp(property, \"size\") == 0"));
+    assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
+    assert!(generated.contains("strcmp(property, \"bold\") == 0"));
+    assert!(
+        generated.contains(
+            "pango_attr_weight_new(bool_value ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
+        )
+    );
+    assert!(generated.contains("strcmp(property, \"italic\") == 0"));
+    assert!(
+        generated
+            .contains("pango_attr_style_new(bool_value ? PANGO_STYLE_ITALIC : PANGO_STYLE_NORMAL)")
+    );
+    assert!(generated.contains("strcmp(property, \"underline\") == 0"));
+    assert!(generated.contains(
+        "pango_attr_underline_new(bool_value ? PANGO_UNDERLINE_SINGLE : PANGO_UNDERLINE_NONE)"
+    ));
+    assert!(generated.contains("strcmp(property, \"strikethrough\") == 0"));
+    assert!(generated.contains("pango_attr_strikethrough_new(bool_value)"));
+    assert!(generated.contains("strcmp(property, \"font_family\") == 0"));
+    assert!(generated.contains("pango_attr_family_new(value)"));
+    assert!(generated.contains("strcmp(property, \"letter_spacing\") == 0"));
+    assert!(generated.contains("pango_attr_letter_spacing_new((int)integer_value * PANGO_SCALE)"));
+    assert!(generated.contains("strcmp(property, \"line_height_percent\") == 0"));
+    assert!(generated.contains("pango_attr_line_height_new((double)integer_value / 100.0)"));
+    assert!(generated.contains("pango_attr_list_change(patched_attrs"));
     assert!(generated.contains("strcmp(property, \"text_align\") == 0"));
     assert!(generated.contains("gtk_label_set_justify(GTK_LABEL(flux__ui_label), justify)"));
     assert!(generated.contains("strcmp(property, \"wrap_mode\") == 0"));
@@ -37180,6 +37230,73 @@ app Screen
         assert!(
             invalid.emit_c().is_err(),
             "target-invalid Text layout property must still reach native validation"
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_defers_invalid_text_typography_literals() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-invalid-text-typography-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary invalid text typography patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Label"
+        size: 16
+        fontFamily: "Sans"
+        letterSpacing: 1
+        lineHeightPercent: 110
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text typography patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text typography patch analysis should succeed");
+
+    for (from, to, label) in [
+        ("size: 16", "size: 0", "size"),
+        ("fontFamily: \"Sans\"", "fontFamily: \"\"", "font family"),
+        (
+            "letterSpacing: 1",
+            "letterSpacing: 2097152",
+            "letter spacing",
+        ),
+        (
+            "lineHeightPercent: 110",
+            "lineHeightPercent: 0",
+            "line height",
+        ),
+    ] {
+        let invalid_source = initial.replace(from, to);
+        fs::write(&entry, invalid_source)
+            .unwrap_or_else(|error| panic!("invalid {label} source should be writable: {error}"));
+        let canonical =
+            fs::canonicalize(&entry).expect("invalid text typography entry should canonicalize");
+        cache.invalidate_path(&canonical);
+        let invalid = cache
+            .analyze_with_overlays(&canonical, &std::collections::HashMap::new())
+            .unwrap_or_else(|diagnostics| {
+                panic!("invalid {label} should remain semantically typed: {diagnostics:?}")
+            });
+        assert!(
+            invalid.development_ui_string_patch_from(&first).is_none(),
+            "target-invalid {label} must use normal rebuild validation"
+        );
+        assert!(
+            invalid.emit_c().is_err(),
+            "target-invalid {label} must still reach native validation"
         );
     }
 

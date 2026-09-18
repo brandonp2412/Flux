@@ -1904,7 +1904,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
-        "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
+        "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
@@ -1950,7 +1950,9 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
-        "selectable" | "wrap" => element.kind == "Text",
+        "selectable" | "wrap" | "bold" | "italic" | "underline" | "strikethrough" => {
+            element.kind == "Text"
+        }
         "enabled" => matches!(
             element.kind.as_str(),
             "Button" | "TextInput" | "Toggle" | "Radio"
@@ -1981,8 +1983,10 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
 fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "max_length" => element.kind == "TextInput",
-        "max_lines" | "max_width_chars" => element.kind == "Text",
-        "size" => element.kind == "Button",
+        "max_lines" | "max_width_chars" | "letter_spacing" | "line_height_percent" => {
+            element.kind == "Text"
+        }
+        "size" => matches!(element.kind.as_str(), "Text" | "Button"),
         "focus_scope" => true,
         "min_width" => !development_ui_element_has_property(element, "max_width"),
         "min_height" => !development_ui_element_has_property(element, "max_height"),
@@ -2011,6 +2015,9 @@ fn development_ui_string_literals(
                     continue;
                 };
                 if value.as_bytes().contains(&0) {
+                    return None;
+                }
+                if property_name == "font_family" && value.is_empty() {
                     return None;
                 }
                 if property_name == "keyboard_type" {
@@ -2086,6 +2093,16 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if property_name == "letter_spacing"
+                    && !(i64::from(i32::MIN) / 1024..=i64::from(i32::MAX) / 1024).contains(&value)
+                {
+                    return None;
+                }
+                if property_name == "line_height_percent"
+                    && !(1..=i64::from(i32::MAX)).contains(&value)
+                {
                     return None;
                 }
                 if matches!(
