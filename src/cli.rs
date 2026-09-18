@@ -5076,6 +5076,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         "development process started",
     );
     let mut status_state = "running";
+    let mut last_analysis_outcome = None;
+    let mut last_codegen_outcome = None;
+    let mut last_reload_timing = None;
     eprintln!(
         "run: started ({}) • watching {} source file{} • press q then Enter to quit",
         mode.name(),
@@ -5096,12 +5099,15 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         {
             child = None;
             if status_state != "compile_error" {
-                write_development_status(
+                write_development_status_with_build(
                     target,
                     "exited",
                     generation,
                     mode,
                     "application exited; waiting for source changes",
+                    last_analysis_outcome,
+                    last_codegen_outcome,
+                    last_reload_timing,
                 );
                 status_state = "exited";
             }
@@ -5207,15 +5213,18 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
+        last_analysis_outcome = analysis_outcome;
+        last_codegen_outcome = codegen_outcome;
+        last_reload_timing = Some(timing);
         write_development_status_with_build(
             target,
             "restarted",
             generation,
             mode,
             "rebuilt and restarted after source change",
-            analysis_outcome,
-            codegen_outcome,
-            Some(timing),
+            last_analysis_outcome,
+            last_codegen_outcome,
+            last_reload_timing,
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
@@ -10552,7 +10561,6 @@ fn build_native_configured(
         && native_target.sysroot.is_none()
         && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
         && !sqlite
-        && !crypto
     {
         partition_native_c_by_source(c_source)
     } else {
@@ -10580,8 +10588,11 @@ fn build_native_configured(
             let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
         }
 
-        if object_is_cached {
-            objects.push(object_cache);
+        if object_is_cached
+            && let Some(object) = stage_native_cached_object(&object_cache, output, unit_source)
+        {
+            temporary_objects.push(object.clone());
+            objects.push(object);
             continue;
         }
 
@@ -10758,6 +10769,17 @@ fn native_temporary_object_path(output: &Path, c_source: &str) -> PathBuf {
         std::process::id(),
         reproducibility_hash(c_source.as_bytes())
     ))
+}
+
+fn stage_native_cached_object(cache: &Path, output: &Path, c_source: &str) -> Option<PathBuf> {
+    let staged = native_temporary_object_path(output, c_source);
+    let _ = fs::remove_file(&staged);
+    if fs::copy(cache, &staged).is_ok() {
+        Some(staged)
+    } else {
+        let _ = fs::remove_file(&staged);
+        None
+    }
 }
 
 fn install_native_artifact(source: &Path, output: &Path) -> std::io::Result<()> {
@@ -11392,10 +11414,11 @@ mod tests {
         package_options, parse_adb_devices, partition_native_c_by_source, profile_options,
         profile_report_addresses, prune_native_cache_directory, publish_registry_package_command,
         registry_publish_options, select_android_run_target, split_symbols_options,
-        stage_android_package_assets, stage_package_assets, symbolize_options, test_options,
-        validate_android_publish_manifest, validate_msix_certificate, validate_msix_publisher,
-        waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
-        windows_native_system_libraries, windows_publish_options, write_native_cache_metadata,
+        stage_android_package_assets, stage_native_cached_object, stage_package_assets,
+        symbolize_options, test_options, validate_android_publish_manifest,
+        validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
+        web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
+        windows_publish_options, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -12573,6 +12596,30 @@ app OverlayDemo(title: "Overlay")
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn cached_native_objects_are_staged_before_linking() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-native-cache-stage-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("cache staging directory should be writable");
+        let cache = root.join("cached.o");
+        let output = root.join("program");
+        std::fs::write(&cache, b"cached-object").expect("cached object should be writable");
+
+        let staged = stage_native_cached_object(&cache, &output, "module source")
+            .expect("valid cached objects should stage for an active link");
+        std::fs::remove_file(&cache).expect("cache eviction fixture should remove original object");
+
+        assert_eq!(
+            std::fs::read(&staged).expect("staged link object should survive cache eviction"),
+            b"cached-object"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -33641,6 +33641,113 @@ fn native_module_object_cache_reuses_named_value_type_abi() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_crypto_linked_module() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-crypto-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native crypto module cache fixture should be writable");
+    let digest = root.join("digest.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &digest,
+        "fn show(value: str) -> void {\n    print(value)\n}\n\npub fn hash(value: str) -> i64 {\n    print(crypto.sha256(value, show))\n    return 1\n}\n",
+    )
+    .expect("crypto module should be writable");
+    fs::write(
+        &main,
+        "import \"digest.flux\"\n\nfn main() -> i64 {\n    print(hash(\"abc\"))\n    return 0\n}\n",
+    )
+    .expect("crypto consumer should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first crypto module-object build should run");
+    assert!(
+        built.status.success(),
+        "first crypto module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first crypto module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&first_run.stdout),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nnil\n1\n"
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native crypto module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(first_objects.len(), 2);
+
+    fs::write(
+        &digest,
+        "fn show(value: str) -> void {\n    print(value)\n}\n\npub fn hash(value: str) -> i64 {\n    print(crypto.sha256(value, show))\n    return 2\n}\n",
+    )
+    .expect("changed crypto module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed crypto module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed crypto module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed crypto module-object binary should run");
+    assert!(second_run.status.success());
+    assert!(String::from_utf8_lossy(&second_run.stdout).ends_with("nil\n2\n"));
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        3,
+        "a body-only crypto module edit should add one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged crypto consumer object should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-module-cache-{}-{}",
