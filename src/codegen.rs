@@ -15540,21 +15540,19 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if view_property(element, "read_only").is_some() {
-                    let multiline = view_property(element, "multiline")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(false);
-                    if multiline {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_text_view_set_editable(GTK_TEXT_VIEW({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
-                            c_string(&element.name)
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_editable_set_editable(GTK_EDITABLE({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
-                            c_string(&element.name)
-                        ));
-                    }
+                let multiline = view_property(element, "multiline")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                if multiline {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_text_view_set_editable(GTK_TEXT_VIEW({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
+                        c_string(&element.name)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_editable_set_editable(GTK_EDITABLE({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
+                        c_string(&element.name)
+                    ));
                 }
                 if view_property(element, "submit_on_enter").is_some()
                     && view_property(element, "on_submit").is_some()

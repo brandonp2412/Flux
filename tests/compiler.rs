@@ -41507,6 +41507,131 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_read_only_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-read-only-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary readOnly lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    state locked: bool = false
+    TextInput single at 1,1
+        text: "Single"
+    TextInput notes at 2,1
+        text: "Notes"
+        multiline: true
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial readOnly lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial readOnly lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("readOnly lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"read_only\") == 0 && bool_value_valid && flux__ui_single != NULL"
+    ));
+    assert!(
+        generated.contains("gtk_editable_set_editable(GTK_EDITABLE(flux__ui_single), !bool_value)")
+    );
+    assert!(generated.contains(
+        "strcmp(property, \"read_only\") == 0 && bool_value_valid && flux__ui_notes != NULL"
+    ));
+    assert!(
+        generated
+            .contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_notes), !bool_value)")
+    );
+
+    let entry = fs::canonicalize(entry).expect("readOnly lifecycle entry should canonicalize");
+    let explicit_default = initial
+        .replace(
+            "        text: \"Single\"\n",
+            "        text: \"Single\"\n        readOnly: false\n",
+        )
+        .replace(
+            "        text: \"Notes\"\n",
+            "        text: \"Notes\"\n        readOnly: false\n",
+        );
+    fs::write(&entry, &explicit_default).expect("explicit readOnly defaults should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit readOnly defaults should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding readOnly: false should be an in-process no-op"
+    );
+
+    let locked = explicit_default.replace("readOnly: false", "readOnly: true");
+    fs::write(&entry, locked).expect("locked readOnly lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("locked readOnly lifecycle source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let locked_patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("readOnly: true should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for element in ["single", "notes"] {
+        assert_eq!(
+            locked_patch.get(&(element.to_string(), "read_only".to_string())),
+            Some(&"1".to_string())
+        );
+    }
+    assert_eq!(locked_patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed readOnly source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed readOnly lifecycle source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    let restored_patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing readOnly should restore the implicit false value")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for element in ["single", "notes"] {
+        assert_eq!(
+            restored_patch.get(&(element.to_string(), "read_only".to_string())),
+            Some(&"0".to_string())
+        );
+    }
+    assert_eq!(restored_patch.len(), 2);
+
+    let dynamic = initial.replace(
+        "        text: \"Single\"\n",
+        "        text: \"Single\"\n        readOnly: locked\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic readOnly source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic readOnly source should analyze");
+    assert_ne!(dynamic.development_abi(), fourth.development_abi());
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven readOnly declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
