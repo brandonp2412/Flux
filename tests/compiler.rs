@@ -37387,6 +37387,112 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_unconstrained_maximum_sizes() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-maximum-size-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary maximum-size patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 240
+    grid rows: 120
+    Text label at 1,1
+        text: "Sized"
+        maxWidth: 200
+        maxHeight: 80
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial maximum-size patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial maximum-size patch analysis should succeed");
+
+    let updated = initial
+        .replace("maxWidth: 200", "maxWidth: 180")
+        .replace("maxHeight: 80", "maxHeight: 70");
+    fs::write(&entry, &updated).expect("updated maximum-size patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("maximum-size patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated maximum-size patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("unconstrained maximum sizes should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("label".to_string(), "max_width".to_string())),
+        Some(&"180".to_string())
+    );
+    assert_eq!(
+        patch.get(&("label".to_string(), "max_height".to_string())),
+        Some(&"70".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = second
+        .emit_c()
+        .expect("maximum-size patch fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("strcmp(property, \"max_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(generated.contains(
+        "flux_size_constraint_set_max_width(flux__ui_constraint_label, (int)integer_value)"
+    ));
+    assert!(generated.contains(
+        "flux_size_constraint_set_max_height(flux__ui_constraint_label, (int)integer_value)"
+    ));
+
+    let invalid = updated.replace("maxWidth: 180", "maxWidth: 0");
+    fs::write(&entry, invalid).expect("invalid maximum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid maximum size remains semantically an i64");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid maximum size must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid maximum size must still reach native validation"
+    );
+
+    let constrained_initial =
+        initial.replace("maxWidth: 200", "minWidth: 80\n        maxWidth: 200");
+    fs::write(&entry, &constrained_initial)
+        .expect("constrained maximum-size source should be writable");
+    cache.invalidate_path(&entry);
+    let constrained_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("constrained maximum-size source should analyze");
+    let constrained_updated = constrained_initial.replace("maxWidth: 200", "maxWidth: 180");
+    fs::write(&entry, constrained_updated)
+        .expect("constrained maximum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let constrained_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("constrained maximum-size edit should analyze");
+    assert!(
+        constrained_second
+            .development_ui_string_patch_from(&constrained_first)
+            .is_none(),
+        "maximum-size edits paired with a minimum must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_restarts_for_selection_state_with_callbacks() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-selection-handler-patch-{}",

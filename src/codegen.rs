@@ -13105,6 +13105,14 @@ static void flux_size_constraint_set_limits(GtkWidget *widget, int max_width, in
     if (self->max_width == max_width && self->max_height == max_height) return;
     self->max_width = max_width; self->max_height = max_height; gtk_widget_queue_resize(widget);
 }
+static void flux_size_constraint_set_max_width(GtkWidget *widget, int max_width) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)widget;
+    flux_size_constraint_set_limits(widget, max_width, self->max_height);
+}
+static void flux_size_constraint_set_max_height(GtkWidget *widget, int max_height) {
+    FluxSizeConstraint *self = (FluxSizeConstraint *)widget;
+    flux_size_constraint_set_limits(widget, self->max_width, max_height);
+}
 "#,
     );
 }
@@ -15051,6 +15059,28 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {layout} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ int current_width = -1; int current_height = -1; gtk_widget_get_size_request({layout}, &current_width, &current_height); long long patched_size = integer_value;{fixed_floor} {setter} }} }}",
                     c_string(&element.name),
                     setter = setter.replace("{layout}", &layout)
+                ));
+            }
+        }
+        for (property_name, minimum_name, setter) in [
+            (
+                "max_width",
+                "min_width",
+                "flux_size_constraint_set_max_width",
+            ),
+            (
+                "max_height",
+                "min_height",
+                "flux_size_constraint_set_max_height",
+            ),
+        ] {
+            if view_property(element, property_name).is_some()
+                && view_property(element, minimum_name).is_none()
+            {
+                let constraint = linux_ui_constraint_c_name(element);
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {constraint} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {setter}({constraint}, (int)integer_value); }}",
+                    c_string(&element.name)
                 ));
             }
         }
