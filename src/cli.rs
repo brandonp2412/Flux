@@ -10655,18 +10655,26 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
         return partition_native_single_source_functions(&prefix, &body);
     }
 
-    Some(
-        order
-            .into_iter()
-            .filter_map(|source| bodies.remove(&source))
-            .map(|body| {
-                let mut unit = String::with_capacity(prefix.len() + body.len());
-                unit.push_str(&prefix);
-                unit.push_str(&body);
-                unit
-            })
-            .collect(),
-    )
+    let mut units = Vec::new();
+    for source in order {
+        let body = bodies.remove(&source)?;
+        if native_body_contains_program_entry(&body)
+            && let Some(function_units) = partition_native_single_source_functions(&prefix, &body)
+        {
+            units.extend(function_units);
+            continue;
+        }
+        let mut unit = String::with_capacity(prefix.len() + body.len());
+        unit.push_str(&prefix);
+        unit.push_str(&body);
+        units.push(unit);
+    }
+    Some(units)
+}
+
+fn native_body_contains_program_entry(body: &str) -> bool {
+    body.lines()
+        .any(|line| line.trim_start().starts_with("int main("))
 }
 
 fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
@@ -13129,6 +13137,36 @@ app OverlayDemo(title: "Overlay")
                 )
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn native_module_partitioning_splits_root_functions_from_program_runtime() {
+        let generated = "#include <stdint.h>\nint64_t flux__fn_imported(void);\nstatic inline int64_t flux__fn_local(void);\n#line 1 \"/tmp/imported.flux\"\nint64_t flux__fn_imported(void) { return 3; }\n#line 1 \"/tmp/main.flux\"\nstatic inline int64_t flux__fn_local(void) { return flux__fn_imported() + 4; }\n#line 5 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_local(); }\n";
+        let units = partition_native_c_by_source(generated)
+            .expect("root functions should split from a multi-source program runtime");
+        assert_eq!(units.len(), 3);
+        assert_eq!(
+            units
+                .iter()
+                .filter(|unit| unit.contains("flux__fn_imported(void) { return 3; }"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            units
+                .iter()
+                .filter(|unit| unit
+                    .contains("flux__fn_local(void) { return flux__fn_imported() + 4; }"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            units
+                .iter()
+                .filter(|unit| unit.contains("int main(void)"))
+                .count(),
+            1
         );
     }
 

@@ -34221,6 +34221,101 @@ fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_linux_ui_runtime_for_root_function_edit() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-ui-root-function-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native UI root function cache fixture should be writable");
+    let hooks = root.join("hooks.flux");
+    let main = root.join("main.flux");
+    fs::write(&hooks, "pub fn hook() -> void {\n    print(\"hook\")\n}\n")
+        .expect("UI imported hook module should be writable");
+    fs::write(
+        &main,
+        "import \"hooks.flux\"\n\nfn startup() -> void {\n    hook()\n    print(\"started\")\n}\n\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"ready\"\n}\n\napp Screen(title: \"UI root function cache\", onStart: startup)\n",
+    )
+    .expect("UI root function entry module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first UI root function-object build should run");
+    assert!(
+        built.status.success(),
+        "first UI root function-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native UI root function object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the imported hook, root startup function, and root UI runtime should compile independently"
+    );
+
+    fs::write(
+        &main,
+        "import \"hooks.flux\"\n\nfn startup() -> void {\n    hook()\n    print(\"changed\")\n}\n\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"ready\"\n}\n\napp Screen(title: \"UI root function cache\", onStart: startup)\n",
+    )
+    .expect("changed UI root function entry module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed UI root function-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed UI root function-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "a body-only root startup edit should add exactly one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged imported hook and root UI runtime objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
