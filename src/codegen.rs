@@ -16225,9 +16225,7 @@ fn emit_linux_gtk_application(
                 }
             }
             "Toggle" => {
-                if view_property(element, "checked").is_some()
-                    && view_property(element, "on_change").is_none()
-                {
+                if view_property(element, "on_change").is_none() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"checked\") == 0 && bool_value_valid && {widget} != NULL) gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);",
                         c_string(&element.name)
@@ -16235,9 +16233,7 @@ fn emit_linux_gtk_application(
                 }
             }
             "Radio" => {
-                if view_property(element, "selected").is_some()
-                    && view_property(element, "on_select").is_none()
-                {
+                if view_property(element, "on_select").is_none() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"selected\") == 0 && bool_value_valid && {widget} != NULL) gtk_check_button_set_active(GTK_CHECK_BUTTON({widget}), bool_value);",
                         c_string(&element.name)

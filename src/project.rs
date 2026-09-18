@@ -2202,6 +2202,7 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
 }
 
 fn development_ui_property_lifecycle_patch_value(
+    element: &ViewElement,
     property: &crate::ast::ViewProperty,
 ) -> Option<String> {
     let property_name = typecheck::source_name_to_internal(&property.name);
@@ -2221,8 +2222,13 @@ fn development_ui_property_lifecycle_patch_value(
                 | "underline"
                 | "strikethrough"
                 | "password"
+                | "checked"
+                | "selected"
         )
     {
+        return None;
+    }
+    if !development_ui_bool_property_is_patchable(element, &property_name) {
         return None;
     }
     let ExprKind::Bool(value) = property.value.kind else {
@@ -2243,7 +2249,9 @@ fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
         | "italic"
         | "underline"
         | "strikethrough"
-        | "password" => Some("0".to_string()),
+        | "password"
+        | "checked"
+        | "selected" => Some("0".to_string()),
         _ => None,
     }
 }
@@ -2768,6 +2776,8 @@ fn development_ui_string_literals(
             "underline",
             "strikethrough",
             "password",
+            "checked",
+            "selected",
         ] {
             if property_name != "visible"
                 && !development_ui_bool_property_is_patchable(element, property_name)
@@ -2804,7 +2814,7 @@ fn development_ui_string_masked_sources(
         .iter()
         .flat_map(|element| {
             element.properties.iter().filter(move |property| {
-                if development_ui_property_lifecycle_patch_value(property).is_some() {
+                if development_ui_property_lifecycle_patch_value(element, property).is_some() {
                     return false;
                 }
                 let property_name = typecheck::source_name_to_internal(&property.name);
@@ -2841,7 +2851,8 @@ fn development_ui_string_masked_sources(
             for element in &view.elements {
                 for property in &element.properties {
                     if property.span.source_id != source.source_id
-                        || development_ui_property_lifecycle_patch_value(property).is_none()
+                        || development_ui_property_lifecycle_patch_value(element, property)
+                            .is_none()
                     {
                         continue;
                     }
@@ -3112,7 +3123,9 @@ fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {
                     .properties
                     .iter()
                     .filter_map(|property| {
-                        if development_ui_property_lifecycle_patch_value(property).is_some() {
+                        if development_ui_property_lifecycle_patch_value(element, property)
+                            .is_some()
+                        {
                             return None;
                         }
                         Some((
