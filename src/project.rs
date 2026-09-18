@@ -1945,6 +1945,22 @@ fn development_application_metadata_patch_value(
             };
             matches!(value.as_str(), "system" | "light" | "dark").then(|| value.clone())
         }
+        "surface_color"
+        | "surface_raised_color"
+        | "text_color"
+        | "text_muted_color"
+        | "accent_color"
+        | "on_accent_color"
+        | "outline_color"
+        | "danger_color"
+        | "success_color"
+        | "warning_color"
+        | "shadow_color" => {
+            let ExprKind::Str(value) = &field.value.kind else {
+                return None;
+            };
+            typecheck::valid_hex_ui_color(value).then(|| value.clone())
+        }
         "resizable" => {
             let ExprKind::Bool(value) = field.value.kind else {
                 return None;

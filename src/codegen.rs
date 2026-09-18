@@ -13255,7 +13255,7 @@ fn emit_android_native_application(
         "JNIEXPORT jint JNICALL Java_app_flux_runtime_FluxActivity_nativeThemeMode(JNIEnv *env, jobject activity) {{\n    (void)env;\n    (void)activity;\n    return (jint){theme_mode};\n}}\n\n"
     ));
     out.push_str("JNIEXPORT jstring JNICALL Java_app_flux_runtime_FluxActivity_nativeThemeColor(JNIEnv *env, jobject activity, jstring token) {\n    (void)activity;\n    if (token == NULL) return NULL;\n    const char *value = (*env)->GetStringUTFChars(env, token, NULL);\n    if (value == NULL) return NULL;\n    jstring result = NULL;\n");
-    for (token, _) in APPLICATION_THEME_COLOR_FIELDS {
+    for (token, _, _, _) in APPLICATION_THEME_COLOR_FIELDS {
         if let Some(color) = application_theme_color(application, token, signatures) {
             out.push_str(&format!(
                 "    if (strcmp(value, {}) == 0) result = (*env)->NewStringUTF(env, {});\n",
@@ -14816,9 +14816,54 @@ fn emit_linux_gtk_application(
         }
     }
 
+    let application_theme_colors = APPLICATION_THEME_COLOR_FIELDS
+        .iter()
+        .map(|(token, metadata_name, css_name, fallback)| {
+            (
+                *token,
+                *metadata_name,
+                *css_name,
+                application_theme_color(application, token, signatures)
+                    .unwrap_or_else(|| (*fallback).to_string()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let hot_application_theme_palette = application_theme_colors
+        .iter()
+        .any(|(token, _, _, _)| application_theme_color(application, token, signatures).is_some());
+    let mut theme_css = String::new();
+    for (_, _, css_name, value) in &application_theme_colors {
+        theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
+    }
+    theme_css.push_str(APPLICATION_THEME_CSS_RULES);
+
     out.push_str(&format!(
         "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic GtkWidget *flux__ui_root_grid = NULL;\n#ifdef FLUX_PROFILE_TIMELINE\nstatic GtkWidget *flux__profile_overlay_label = NULL;\n#endif\n"
     ));
+    if hot_application_theme_palette {
+        out.push_str("static GtkCssProvider *flux__ui_theme_provider = NULL;\n");
+        for (_, _, css_name, value) in &application_theme_colors {
+            out.push_str(&format!(
+                "static char flux__ui_theme_{css_name}[64] = {};\n",
+                c_string(value)
+            ));
+        }
+        let mut theme_css_format = String::new();
+        for (_, _, css_name, _) in &application_theme_colors {
+            theme_css_format.push_str(&format!("@define-color flux_{css_name} %s; "));
+        }
+        theme_css_format.push_str(APPLICATION_THEME_CSS_RULES);
+        let theme_css_values = application_theme_colors
+            .iter()
+            .map(|(_, _, css_name, _)| format!("flux__ui_theme_{css_name}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "static void flux__ui_reload_theme_css(void) {{ if (flux__ui_theme_provider == NULL) return; char *css = g_strdup_printf({}, {theme_css_values}); if (css != NULL) {{ gtk_css_provider_load_from_data(flux__ui_theme_provider, css, -1); g_free(css); }} }}\n",
+            c_string(&theme_css_format)
+        ));
+        out.push_str("static bool flux__ui_hot_theme_color(const char *value) { if (value == NULL || value[0] != '#') return false; size_t length = 0; if (!flux__ui_bounded_length(value, 9, &length) || (length != 7 && length != 9)) return false; for (size_t index = 1; index < length; ++index) { char byte = value[index]; bool hex = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'); if (!hex) return false; } return true; }\n");
+    }
     if view_uses_text_input_validation(view) {
         out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
     }
@@ -15336,6 +15381,14 @@ fn emit_linux_gtk_application(
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1'; if (strcmp(name, \"__application__\") == 0) { GApplication *hot_application = g_application_get_default(); GtkWindow *hot_window = hot_application != NULL && GTK_IS_APPLICATION(hot_application) ? gtk_application_get_active_window(GTK_APPLICATION(hot_application)) : NULL; if (hot_window != NULL) { if (strcmp(property, \"title\") == 0) gtk_window_set_title(hot_window, value); if (strcmp(property, \"resizable\") == 0 && bool_value_valid) gtk_window_set_resizable(hot_window, bool_value ? TRUE : FALSE); if (strcmp(property, \"width\") == 0 || strcmp(property, \"height\") == 0) { char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value > 0 && integer_value <= INT32_MAX) { int current_width = -1; int current_height = -1; gtk_window_get_default_size(hot_window, &current_width, &current_height); if (strcmp(property, \"width\") == 0) current_width = (int)integer_value; else current_height = (int)integer_value; gtk_window_set_default_size(hot_window, current_width, current_height); } } } } if (strcmp(name, \"__grid__\") == 0 && flux__ui_root_grid != NULL) { char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) { if (strcmp(property, \"gap\") == 0) { gtk_grid_set_column_spacing(GTK_GRID(flux__ui_root_grid), (guint)integer_value); gtk_grid_set_row_spacing(GTK_GRID(flux__ui_root_grid), (guint)integer_value); } if (strcmp(property, \"padding\") == 0) { gtk_widget_set_margin_top(flux__ui_root_grid, (int)integer_value); gtk_widget_set_margin_bottom(flux__ui_root_grid, (int)integer_value); gtk_widget_set_margin_start(flux__ui_root_grid, (int)integer_value); gtk_widget_set_margin_end(flux__ui_root_grid, (int)integer_value); } } }");
     out.push_str(" if (strcmp(name, \"__application__\") == 0 && strcmp(property, \"layout_direction\") == 0 && flux__ui_root_grid != NULL) { if (strcmp(value, \"ltr\") == 0) gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_LTR); else if (strcmp(value, \"rtl\") == 0) gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_RTL); else if (strcmp(value, \"system\") == 0) gtk_widget_set_direction(flux__ui_root_grid, GTK_TEXT_DIR_NONE); }");
     out.push_str(" if (strcmp(name, \"__application__\") == 0 && strcmp(property, \"theme\") == 0) { GtkSettings *hot_settings = gtk_settings_get_default(); if (hot_settings != NULL) { if (strcmp(value, \"dark\") == 0) g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", TRUE, NULL); else if (strcmp(value, \"light\") == 0 || strcmp(value, \"system\") == 0) g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", FALSE, NULL); } }");
+    if hot_application_theme_palette {
+        for (_, metadata_name, css_name, _) in &application_theme_colors {
+            out.push_str(&format!(
+                " if (strcmp(name, \"__application__\") == 0 && strcmp(property, {}) == 0 && flux__ui_hot_theme_color(value)) {{ g_strlcpy(flux__ui_theme_{css_name}, value, sizeof(flux__ui_theme_{css_name})); flux__ui_reload_theme_css(); }}",
+                c_string(metadata_name)
+            ));
+        }
+    }
     for element in &view.elements {
         let widget = ui_widget_c_name(&element.name);
         let host = linux_ui_host_c_name(element);
@@ -16663,33 +16716,21 @@ fn emit_linux_gtk_application(
         }
     }
     out.push_str("    GtkWidget *window = gtk_application_window_new(application);\n    flux__ui_display_scale = gtk_widget_get_scale_factor(window);\n");
-    out.push_str("    GtkCssProvider *flux__theme_provider = gtk_css_provider_new();\n");
-    let mut theme_css = String::new();
-    for (token, css_name, fallback) in [
-        ("surface", "surface", "@theme_bg_color"),
-        ("surfaceRaised", "surface_raised", "@theme_base_color"),
-        ("text", "text", "@theme_fg_color"),
-        ("textMuted", "text_muted", "alpha(@theme_fg_color, 0.62)"),
-        ("accent", "accent", "@theme_selected_bg_color"),
-        ("onAccent", "on_accent", "@theme_selected_fg_color"),
-        ("outline", "outline", "alpha(@theme_fg_color, 0.20)"),
-        ("danger", "danger", "#dc2626"),
-        ("success", "success", "#16a34a"),
-        ("warning", "warning", "#d97706"),
-        ("shadow", "shadow", "alpha(black, 0.24)"),
-    ] {
-        let value = application_theme_color(application, token, signatures)
-            .unwrap_or_else(|| fallback.to_string());
-        theme_css.push_str(&format!("@define-color flux_{css_name} {value}; "));
+    if hot_application_theme_palette {
+        out.push_str("    flux__ui_theme_provider = gtk_css_provider_new();\n    flux__ui_reload_theme_css();\n");
+        out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__ui_theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
+        out.push_str("    GtkSettings *flux__theme_settings = gtk_settings_get_default();\n    if (flux__theme_settings != NULL) g_object_bind_property(flux__theme_settings, \"gtk-interface-contrast\", flux__ui_theme_provider, \"prefers-contrast\", G_BINDING_SYNC_CREATE);\n");
+        out.push_str("    g_object_unref(flux__ui_theme_provider);\n");
+    } else {
+        out.push_str("    GtkCssProvider *flux__theme_provider = gtk_css_provider_new();\n");
+        out.push_str(&format!(
+            "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
+            c_string(&theme_css)
+        ));
+        out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
+        out.push_str("    GtkSettings *flux__theme_settings = gtk_settings_get_default();\n    if (flux__theme_settings != NULL) g_object_bind_property(flux__theme_settings, \"gtk-interface-contrast\", flux__theme_provider, \"prefers-contrast\", G_BINDING_SYNC_CREATE);\n");
+        out.push_str("    g_object_unref(flux__theme_provider);\n");
     }
-    theme_css.push_str(".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-button:hover { background-image: linear-gradient(alpha(@flux_text, 0.06), alpha(@flux_text, 0.06)); } .flux-button:active { background-image: linear-gradient(alpha(@flux_text, 0.12), alpha(@flux_text, 0.12)); } .flux-button:focus, .flux-input:focus, .flux-check:focus { outline: 2px solid @flux_accent; outline-offset: 2px; } .flux-button:disabled, .flux-input:disabled, .flux-check:disabled { opacity: 0.56; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-input-error { border-color: @flux_danger; box-shadow: 0 0 0 1px @flux_danger; } .flux-input-success { border-color: @flux_success; box-shadow: 0 0 0 1px @flux_success; } .flux-input-warning { border-color: @flux_warning; box-shadow: 0 0 0 1px @flux_warning; } .flux-check { padding: 4px; } .flux-check:checked { color: @flux_accent; } .flux-status-loading { opacity: 0.68; } .flux-status-empty { color: @flux_text_muted; } .flux-status-error { color: @flux_danger; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }");
-    out.push_str(&format!(
-        "    gtk_css_provider_load_from_data(flux__theme_provider, {}, -1);\n",
-        c_string(&theme_css)
-    ));
-    out.push_str("    gtk_style_context_add_provider_for_display(gtk_widget_get_display(window), GTK_STYLE_PROVIDER(flux__theme_provider), GTK_STYLE_PROVIDER_PRIORITY_THEME + 1);\n");
-    out.push_str("    GtkSettings *flux__theme_settings = gtk_settings_get_default();\n    if (flux__theme_settings != NULL) g_object_bind_property(flux__theme_settings, \"gtk-interface-contrast\", flux__theme_provider, \"prefers-contrast\", G_BINDING_SYNC_CREATE);\n");
-    out.push_str("    g_object_unref(flux__theme_provider);\n");
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
     out.push_str(&format!(
@@ -18021,28 +18062,55 @@ fn application_metadata_string(
     static_expr_str(&field.value, signatures)
 }
 
-const APPLICATION_THEME_COLOR_FIELDS: &[(&str, &str)] = &[
-    ("surface", "surface_color"),
-    ("surfaceRaised", "surface_raised_color"),
-    ("text", "text_color"),
-    ("textMuted", "text_muted_color"),
-    ("accent", "accent_color"),
-    ("onAccent", "on_accent_color"),
-    ("outline", "outline_color"),
-    ("danger", "danger_color"),
-    ("success", "success_color"),
-    ("warning", "warning_color"),
-    ("shadow", "shadow_color"),
+const APPLICATION_THEME_COLOR_FIELDS: &[(&str, &str, &str, &str)] = &[
+    ("surface", "surface_color", "surface", "@theme_bg_color"),
+    (
+        "surfaceRaised",
+        "surface_raised_color",
+        "surface_raised",
+        "@theme_base_color",
+    ),
+    ("text", "text_color", "text", "@theme_fg_color"),
+    (
+        "textMuted",
+        "text_muted_color",
+        "text_muted",
+        "alpha(@theme_fg_color, 0.62)",
+    ),
+    (
+        "accent",
+        "accent_color",
+        "accent",
+        "@theme_selected_bg_color",
+    ),
+    (
+        "onAccent",
+        "on_accent_color",
+        "on_accent",
+        "@theme_selected_fg_color",
+    ),
+    (
+        "outline",
+        "outline_color",
+        "outline",
+        "alpha(@theme_fg_color, 0.20)",
+    ),
+    ("danger", "danger_color", "danger", "#dc2626"),
+    ("success", "success_color", "success", "#16a34a"),
+    ("warning", "warning_color", "warning", "#d97706"),
+    ("shadow", "shadow_color", "shadow", "alpha(black, 0.24)"),
 ];
+
+const APPLICATION_THEME_CSS_RULES: &str = ".flux-root { background-color: @flux_surface; color: @flux_text; } .flux-text { color: @flux_text; } .flux-button { border-radius: 10px; padding: 8px 14px; font-weight: 600; } .flux-button:hover { background-image: linear-gradient(alpha(@flux_text, 0.06), alpha(@flux_text, 0.06)); } .flux-button:active { background-image: linear-gradient(alpha(@flux_text, 0.12), alpha(@flux_text, 0.12)); } .flux-button:focus, .flux-input:focus, .flux-check:focus { outline: 2px solid @flux_accent; outline-offset: 2px; } .flux-button:disabled, .flux-input:disabled, .flux-check:disabled { opacity: 0.56; } .flux-input { border-radius: 10px; padding: 8px 10px; } .flux-input-error { border-color: @flux_danger; box-shadow: 0 0 0 1px @flux_danger; } .flux-input-success { border-color: @flux_success; box-shadow: 0 0 0 1px @flux_success; } .flux-input-warning { border-color: @flux_warning; box-shadow: 0 0 0 1px @flux_warning; } .flux-check { padding: 4px; } .flux-check:checked { color: @flux_accent; } .flux-status-loading { opacity: 0.68; } .flux-status-empty { color: @flux_text_muted; } .flux-status-error { color: @flux_danger; } @media (prefers-contrast: more) { .flux-root { background-color: @theme_bg_color; color: @theme_fg_color; } .flux-text { color: @theme_fg_color; } .flux-button, .flux-input, .flux-check { outline: 2px solid @theme_fg_color; outline-offset: 1px; } }";
 
 fn application_theme_color(
     application: &crate::ast::ApplicationDef,
     token: &str,
     signatures: &Signatures,
 ) -> Option<String> {
-    let (_, metadata_name) = APPLICATION_THEME_COLOR_FIELDS
+    let (_, metadata_name, _, _) = APPLICATION_THEME_COLOR_FIELDS
         .iter()
-        .find(|(candidate, _)| *candidate == token)?;
+        .find(|(candidate, _, _, _)| *candidate == token)?;
     application_metadata_string(application, metadata_name, signatures)
 }
 

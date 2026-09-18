@@ -39572,6 +39572,72 @@ app Screen(title: "Before", width: 640, height: 480, resizable: true)
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_application_theme_palette() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-theme-palette-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary theme-palette patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r##"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")
+"##;
+    fs::write(&entry, initial).expect("initial theme-palette source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial theme-palette analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("theme-palette entry should canonicalize");
+    let updated = initial
+        .replace("#FAFAFA", "#F0F0F0")
+        .replace("#123456", "#654321")
+        .replace("#11223380", "#445566CC");
+    fs::write(&entry, updated).expect("updated theme-palette source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated theme-palette analysis should succeed");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "theme-palette values must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("theme-palette edits should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "accent_color".to_string(),
+                value: "#654321".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "shadow_color".to_string(),
+                value: "#445566CC".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "surface_color".to_string(),
+                value: "#F0F0F0".to_string(),
+            },
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_application_theme_mode() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-theme-mode-patch-{}",
@@ -49922,9 +49988,12 @@ app Screen(theme: "system", surfaceColor: "#FAFAFA", accentColor: "#123456", sha
     check_source(source).expect("custom semantic palette colors should typecheck");
 
     let linux = compile_to_c(source).expect("custom palette should lower to native GTK CSS");
-    assert!(linux.contains("@define-color flux_surface #FAFAFA;"));
-    assert!(linux.contains("@define-color flux_accent #123456;"));
-    assert!(linux.contains("@define-color flux_shadow #11223380;"));
+    assert!(linux.contains("static char flux__ui_theme_surface[64] = \"#FAFAFA\""));
+    assert!(linux.contains("static char flux__ui_theme_accent[64] = \"#123456\""));
+    assert!(linux.contains("static char flux__ui_theme_shadow[64] = \"#11223380\""));
+    assert!(linux.contains("@define-color flux_surface %s;"));
+    assert!(linux.contains("@define-color flux_accent %s;"));
+    assert!(linux.contains("@define-color flux_shadow %s;"));
     assert!(linux.contains("color: @flux_accent;"));
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
@@ -61342,6 +61411,45 @@ app Screen(title: "Flux", width: 640, height: 480, resizable: true)
     assert!(generated.contains("gtk_window_set_resizable(hot_window"));
     assert!(generated.contains("gtk_window_get_default_size(hot_window"));
     assert!(generated.contains("gtk_window_set_default_size(hot_window"));
+}
+
+#[test]
+fn linux_hot_reload_patch_updates_theme_palette_in_process() {
+    let source = r##"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")
+"##;
+    let program = fluxc::parser::parse(source).expect("theme-palette fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("theme-palette fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("theme-palette fixture should lower for Linux");
+
+    assert!(generated.contains("static GtkCssProvider *flux__ui_theme_provider = NULL"));
+    assert!(generated.contains("static bool flux__ui_hot_theme_color"));
+    assert!(generated.contains("static void flux__ui_reload_theme_css(void)"));
+    assert!(generated.contains("strcmp(property, \"surface_color\") == 0"));
+    assert!(generated.contains("strcmp(property, \"accent_color\") == 0"));
+    assert!(generated.contains("strcmp(property, \"shadow_color\") == 0"));
+    assert!(
+        generated
+            .contains("g_strlcpy(flux__ui_theme_accent, value, sizeof(flux__ui_theme_accent))")
+    );
+    assert!(
+        generated.contains("gtk_css_provider_load_from_data(flux__ui_theme_provider, css, -1)")
+    );
+    assert!(generated.contains(
+        "g_object_bind_property(flux__theme_settings, \"gtk-interface-contrast\", flux__ui_theme_provider"
+    ));
 }
 
 #[test]
