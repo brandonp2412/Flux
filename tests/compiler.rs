@@ -34061,6 +34061,93 @@ fn native_function_object_cache_reuses_anonymous_function_helpers() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_timeline_instrumented_functions() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-timeline-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("timeline module cache fixture should be writable");
+    let producer = root.join("producer.flux");
+    let main = root.join("main.flux");
+    fs::write(&producer, "pub fn answer() -> i64 {\n    return 21\n}\n")
+        .expect("timeline producer should be writable");
+    fs::write(
+        &main,
+        "import \"producer.flux\"\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("timeline consumer should be writable");
+
+    let cache = root.join("cache");
+    let first = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("profile")
+        .arg(&main)
+        .arg("--timeline")
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first timeline profile should run");
+    assert!(
+        first.status.success(),
+        "first timeline profile failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&first.stdout), "21\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("timeline object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 2,
+        "timeline-instrumented producer and consumer should compile independently"
+    );
+
+    fs::write(&producer, "pub fn answer() -> i64 {\n    return 22\n}\n")
+        .expect("changed timeline producer should be writable");
+    let second = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("profile")
+        .arg(&main)
+        .arg("--timeline")
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed timeline profile should run");
+    assert!(
+        second.status.success(),
+        "changed timeline profile failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&second.stdout), "22\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "a timeline-instrumented body edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged timeline-instrumented objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_recompiles_only_changed_scalar_module() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-module-cache-{}-{}",
