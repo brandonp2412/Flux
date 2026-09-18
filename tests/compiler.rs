@@ -39903,22 +39903,22 @@ app Screen
         ]
     );
 
-    let structural_palette =
-        initial.replace("app Screen", r##"app Screen(surfaceColor: "#FAFAFA")"##);
-    fs::write(&entry, structural_palette)
-        .expect("structural palette metadata source should be writable");
+    let structural_identity =
+        initial.replace("app Screen", r#"app Screen(id: "com.example.flux")"#);
+    fs::write(&entry, structural_identity)
+        .expect("structural application identity source should be writable");
     cache.invalidate_path(&entry);
     let fifth = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("structural palette metadata should analyze");
+        .expect("structural application identity should analyze");
     assert_ne!(
         fifth.development_abi(),
         first.development_abi(),
-        "adding palette metadata must remain a development ABI boundary until mutable palette runtime emission is unconditional"
+        "adding application identity must remain a development ABI boundary"
     );
     assert!(
         fifth.development_ui_string_patch_from(&first).is_none(),
-        "structural palette addition must continue to fall back to a controlled restart"
+        "application identity changes must continue to fall back to a controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -40036,14 +40036,52 @@ fn development_ui_string_patch_hot_applies_application_theme_palette() {
 }
 app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")
 "##;
-    fs::write(&entry, initial).expect("initial theme-palette source should be writable");
+    let without_palette = initial.replace(
+        r##"app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")"##,
+        "app Screen",
+    );
+    fs::write(&entry, &without_palette)
+        .expect("palette-free application source should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let palette_free = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("palette-free application analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("theme-palette entry should canonicalize");
+    fs::write(&entry, initial).expect("initial theme-palette source should be writable");
+    cache.invalidate_path(&entry);
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial theme-palette analysis should succeed");
 
-    let entry = fs::canonicalize(entry).expect("theme-palette entry should canonicalize");
+    assert_eq!(
+        first.development_abi(),
+        palette_free.development_abi(),
+        "adding literal theme-palette metadata must not change the development ABI"
+    );
+    assert_eq!(
+        first
+            .development_ui_string_patch_from(&palette_free)
+            .expect("adding theme-palette overrides should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "accent_color".to_string(),
+                value: "#123456".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "shadow_color".to_string(),
+                value: "#11223380".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "surface_color".to_string(),
+                value: "#FAFAFA".to_string(),
+            },
+        ]
+    );
     let updated = initial
         .replace("#FAFAFA", "#F0F0F0")
         .replace("#123456", "#654321")
@@ -40078,6 +40116,35 @@ app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223
                 element: "__application__".to_string(),
                 property: "surface_color".to_string(),
                 value: "#F0F0F0".to_string(),
+            },
+        ]
+    );
+
+    fs::write(&entry, &without_palette).expect("removed theme-palette source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed theme-palette source should analyze");
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing theme-palette overrides should restore native defaults"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "accent_color".to_string(),
+                value: "__flux_theme_default__".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "shadow_color".to_string(),
+                value: "__flux_theme_default__".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "surface_color".to_string(),
+                value: "__flux_theme_default__".to_string(),
             },
         ]
     );
@@ -46713,8 +46780,10 @@ app Palette(theme: "system")
     check_source(source).expect("semantic Flux color tokens should typecheck as UI strings");
 
     let linux = compile_to_c(source).expect("semantic Flux colors should lower on Linux");
-    assert!(linux.contains("@define-color flux_surface @theme_bg_color"));
-    assert!(linux.contains("@define-color flux_accent @theme_selected_bg_color"));
+    assert!(linux.contains("static char flux__ui_theme_surface[64] = \"@theme_bg_color\""));
+    assert!(linux.contains("static char flux__ui_theme_accent[64] = \"@theme_selected_bg_color\""));
+    assert!(linux.contains("@define-color flux_surface %s"));
+    assert!(linux.contains("@define-color flux_accent %s"));
     assert!(linux.contains("color: @flux_text_muted;"));
     assert!(linux.contains("background-color: @flux_accent;"));
     assert!(linux.contains("border-color: @flux_outline;"));
@@ -62204,14 +62273,14 @@ app Screen(title: "Flux", width: 640, height: 480, resizable: true)
 
 #[test]
 fn linux_hot_reload_patch_updates_theme_palette_in_process() {
-    let source = r##"view Screen {
+    let source = r#"view Screen {
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
         text: "ready"
 }
-app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223380")
-"##;
+app Screen
+"#;
     let program = fluxc::parser::parse(source).expect("theme-palette fixture should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("theme-palette fixture should typecheck");
@@ -62224,15 +62293,17 @@ app Screen(surfaceColor: "#FAFAFA", accentColor: "#123456", shadowColor: "#11223
     .expect("theme-palette fixture should lower for Linux");
 
     assert!(generated.contains("static GtkCssProvider *flux__ui_theme_provider = NULL"));
+    assert!(generated.contains("static char flux__ui_theme_surface[64] = \"@theme_bg_color\""));
     assert!(generated.contains("static bool flux__ui_hot_theme_color"));
+    assert!(generated.contains("strcmp(value, \"__flux_theme_default__\") == 0"));
     assert!(generated.contains("static void flux__ui_reload_theme_css(void)"));
     assert!(generated.contains("strcmp(property, \"surface_color\") == 0"));
     assert!(generated.contains("strcmp(property, \"accent_color\") == 0"));
     assert!(generated.contains("strcmp(property, \"shadow_color\") == 0"));
-    assert!(
-        generated
-            .contains("g_strlcpy(flux__ui_theme_accent, value, sizeof(flux__ui_theme_accent))")
-    );
+    assert!(generated.contains(
+        "g_strlcpy(flux__ui_theme_accent, next_theme_color, sizeof(flux__ui_theme_accent))"
+    ));
+    assert!(generated.contains("restore_default ? \"@theme_selected_bg_color\" : value"));
     assert!(
         generated.contains("gtk_css_provider_load_from_data(flux__ui_theme_provider, css, -1)")
     );

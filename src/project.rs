@@ -1928,8 +1928,36 @@ fn module_type_surface(
 
 const DEVELOPMENT_APPLICATION_PATCH_ELEMENT: &str = "__application__";
 const DEVELOPMENT_GRID_PATCH_ELEMENT: &str = "__grid__";
-const DEVELOPMENT_APPLICATION_DEFAULT_PROPERTIES: &[&str] =
-    &["title", "resizable", "theme", "layout_direction"];
+const DEVELOPMENT_APPLICATION_THEME_PALETTE_PROPERTIES: &[&str] = &[
+    "surface_color",
+    "surface_raised_color",
+    "text_color",
+    "text_muted_color",
+    "accent_color",
+    "on_accent_color",
+    "outline_color",
+    "danger_color",
+    "success_color",
+    "warning_color",
+    "shadow_color",
+];
+const DEVELOPMENT_APPLICATION_DEFAULT_PROPERTIES: &[&str] = &[
+    "title",
+    "resizable",
+    "theme",
+    "layout_direction",
+    "surface_color",
+    "surface_raised_color",
+    "text_color",
+    "text_muted_color",
+    "accent_color",
+    "on_accent_color",
+    "outline_color",
+    "danger_color",
+    "success_color",
+    "warning_color",
+    "shadow_color",
+];
 const DEVELOPMENT_APPLICATION_GEOMETRY_PROPERTIES: &[&str] = &["width", "height"];
 const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
     "title",
@@ -1938,7 +1966,19 @@ const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
     "layout_direction",
     "width",
     "height",
+    "surface_color",
+    "surface_raised_color",
+    "text_color",
+    "text_muted_color",
+    "accent_color",
+    "on_accent_color",
+    "outline_color",
+    "danger_color",
+    "success_color",
+    "warning_color",
+    "shadow_color",
 ];
+const DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL: &str = "__flux_theme_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2016,6 +2056,9 @@ fn development_application_default_patch_value(
         "title" => Some(view.name.clone()),
         "resizable" => Some("1".to_string()),
         "theme" | "layout_direction" => Some("system".to_string()),
+        property if DEVELOPMENT_APPLICATION_THEME_PALETTE_PROPERTIES.contains(&property) => {
+            Some(DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL.to_string())
+        }
         "width" | "height" => {
             let (width, height) = codegen::bootstrap_window_size(view);
             Some(if property == "width" { width } else { height }.to_string())
