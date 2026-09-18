@@ -1077,6 +1077,8 @@ pub enum ProjectCodegenOutcome {
         regenerated_functions: usize,
         reused_helpers: usize,
         regenerated_helpers: usize,
+        reused_runtime_fragments: usize,
+        regenerated_runtime_fragments: usize,
         reused_application_fragments: usize,
         regenerated_application_fragments: usize,
     },
@@ -1418,6 +1420,7 @@ impl ProjectAnalysisCache {
         self.last_codegen_outcome = Some(
             if stats.reused_functions > 0
                 || stats.reused_helpers > 0
+                || stats.reused_runtime_fragments > 0
                 || stats.reused_application_fragments > 0
                 || matches!(
                     self.last_outcome,
@@ -1429,6 +1432,8 @@ impl ProjectAnalysisCache {
                     regenerated_functions: stats.regenerated_functions,
                     reused_helpers: stats.reused_helpers,
                     regenerated_helpers: stats.regenerated_helpers,
+                    reused_runtime_fragments: stats.reused_runtime_fragments,
+                    regenerated_runtime_fragments: stats.regenerated_runtime_fragments,
                     reused_application_fragments: stats.reused_application_fragments,
                     regenerated_application_fragments: stats.regenerated_application_fragments,
                 }

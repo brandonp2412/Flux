@@ -138,6 +138,8 @@ pub struct FunctionCodegenStats {
     pub regenerated_functions: usize,
     pub reused_helpers: usize,
     pub regenerated_helpers: usize,
+    pub reused_runtime_fragments: usize,
+    pub regenerated_runtime_fragments: usize,
     pub reused_application_fragments: usize,
     pub regenerated_application_fragments: usize,
 }
@@ -1564,9 +1566,6 @@ fn emit_c_for_target_with_source_metadata_impl(
             }
         }
     }
-    if let Some(cache) = function_cache.as_deref_mut() {
-        cache.entries.retain(|key, _| used_cache_keys.contains(key));
-    }
     let runtime_usage = format!("{generated_body}{application_body}");
     if target != NativeTarget::Windows && runtime_usage.contains("flux__windows_") {
         return Err(Diagnostic::global(
@@ -1717,21 +1716,59 @@ fn emit_c_for_target_with_source_metadata_impl(
                     })
                 })
         });
-    emit_runtime_prelude(
-        &mut out,
-        &runtime_usage,
-        translations,
-        program_uses_background(program, &reachable_functions, &function_ir),
-        program.application.is_some() && target == NativeTarget::Linux,
-        target == NativeTarget::Android
-            && (program.application.is_some()
-                || runtime_usage.contains("flux__android_")
-                || runtime_usage.contains("flux__preferences_")),
-        target == NativeTarget::Windows
-            && (program.application.is_some() || runtime_usage.contains("flux__windows_")),
-        uses_windows_font_family,
-    );
-    harden_generated_http_text_argument_checks(&mut out);
+    let uses_background = program_uses_background(program, &reachable_functions, &function_ir);
+    let uses_linux_application = program.application.is_some() && target == NativeTarget::Linux;
+    let uses_android = target == NativeTarget::Android
+        && (program.application.is_some()
+            || runtime_usage.contains("flux__android_")
+            || runtime_usage.contains("flux__preferences_"));
+    let uses_windows = target == NativeTarget::Windows
+        && (program.application.is_some() || runtime_usage.contains("flux__windows_"));
+    let runtime_cache_key = FunctionCodegenCacheKey {
+        identity: runtime_codegen_cache_identity(
+            &runtime_usage,
+            translations,
+            uses_background,
+            uses_linux_application,
+            uses_android,
+            uses_windows,
+            uses_windows_font_family,
+        ),
+        incoming_temp_counter: 0,
+    };
+    if let Some(cached) = function_cache
+        .as_deref_mut()
+        .and_then(|cache| cache.entries.get(&runtime_cache_key).cloned())
+    {
+        out.push_str(&cached.generated);
+        codegen_stats.reused_runtime_fragments += 1;
+        used_cache_keys.insert(runtime_cache_key);
+    } else {
+        let mut runtime_prelude = String::new();
+        emit_runtime_prelude(
+            &mut runtime_prelude,
+            &runtime_usage,
+            translations,
+            uses_background,
+            uses_linux_application,
+            uses_android,
+            uses_windows,
+            uses_windows_font_family,
+        );
+        harden_generated_http_text_argument_checks(&mut runtime_prelude);
+        codegen_stats.regenerated_runtime_fragments += 1;
+        if let Some(cache) = function_cache.as_deref_mut() {
+            cache.entries.insert(
+                runtime_cache_key.clone(),
+                CachedFunctionCodegen {
+                    generated: runtime_prelude.clone(),
+                    next_temp_counter: 0,
+                },
+            );
+            used_cache_keys.insert(runtime_cache_key);
+        }
+        out.push_str(&runtime_prelude);
+    }
 
     for definition in &program.structs {
         if reachable_value_types.contains(&definition.name) {
@@ -1975,6 +2012,10 @@ fn emit_c_for_target_with_source_metadata_impl(
     }
     out.push_str(&application_body);
 
+    if let Some(cache) = function_cache.as_deref_mut() {
+        cache.entries.retain(|key, _| used_cache_keys.contains(key));
+    }
+
     Ok((out, codegen_stats))
 }
 
@@ -2004,6 +2045,75 @@ fn function_helper_codegen_cache_identity(
             .map(String::as_str)
             .unwrap_or_default()
     )
+}
+
+fn runtime_codegen_cache_identity(
+    runtime_usage: &str,
+    translations: &BTreeMap<String, BTreeMap<String, String>>,
+    uses_background: bool,
+    uses_linux_application: bool,
+    uses_android: bool,
+    uses_windows: bool,
+    uses_windows_font_family: bool,
+) -> String {
+    let mut identifiers = runtime_usage
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|identifier| runtime_codegen_identifier_relevant(identifier))
+        .collect::<Vec<_>>();
+    identifiers.sort_unstable();
+    identifiers.dedup();
+    format!(
+        "runtime:identifiers={identifiers:?}|translations={translations:?}|background={uses_background}|linux_application={uses_linux_application}|android={uses_android}|windows={uses_windows}|windows_font_family={uses_windows_font_family}"
+    )
+}
+
+fn runtime_codegen_identifier_relevant(identifier: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "flux_add_",
+        "flux_div_",
+        "flux_list_",
+        "flux_mul_",
+        "flux_neg_",
+        "flux_print_",
+        "flux_redirect_",
+        "flux_sub_",
+        "flux__android_",
+        "flux__async_task_",
+        "flux__channel_",
+        "flux__clipboard_",
+        "flux__crypto_",
+        "flux__dialog_",
+        "flux__file_dialog_",
+        "flux__focus_",
+        "flux__frame_",
+        "flux__fs_",
+        "flux__json_",
+        "flux__list",
+        "flux__locale_",
+        "flux__map",
+        "flux__menu_",
+        "flux__net_",
+        "flux__optional_",
+        "flux__path_",
+        "flux__preferences_",
+        "flux__process_",
+        "flux__sqlite_",
+        "flux__str_",
+        "flux__text_input_",
+        "flux__time_",
+        "flux__tls_",
+        "flux__tray_",
+        "flux__uri_",
+        "flux__url_",
+        "flux__websocket_",
+        "flux__windows_",
+        "flux__worker_",
+    ];
+    identifier == "flux_error_eq"
+        || identifier == "flux__finish_main"
+        || identifier == "IAccPropServices"
+        || identifier == "Java_app_flux_runtime_FluxActivity_nativeBuildUi"
+        || PREFIXES.iter().any(|prefix| identifier.starts_with(prefix))
 }
 
 fn application_codegen_cache_identity(

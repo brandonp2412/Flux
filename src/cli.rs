@@ -5455,12 +5455,19 @@ fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -
             regenerated_functions,
             reused_helpers,
             regenerated_helpers,
+            reused_runtime_fragments,
+            regenerated_runtime_fragments,
             reused_application_fragments,
             regenerated_application_fragments,
         } => format!(
-            "incremental codegen reused {reused_functions} function{}, {reused_helpers} generated helper{}, and {reused_application_fragments} application fragment{}; regenerated {regenerated_functions} function{}, {regenerated_helpers} generated helper{}, and {regenerated_application_fragments} application fragment{}",
+            "incremental codegen reused {reused_functions} function{}, {reused_helpers} generated helper{}, {reused_runtime_fragments} runtime fragment{}, and {reused_application_fragments} application fragment{}; regenerated {regenerated_functions} function{}, {regenerated_helpers} generated helper{}, {regenerated_runtime_fragments} runtime fragment{}, and {regenerated_application_fragments} application fragment{}",
             if reused_functions == 1 { "" } else { "s" },
             if reused_helpers == 1 { "" } else { "s" },
+            if reused_runtime_fragments == 1 {
+                ""
+            } else {
+                "s"
+            },
             if reused_application_fragments == 1 {
                 ""
             } else {
@@ -5468,6 +5475,11 @@ fn development_codegen_summary(outcome: fluxc::project::ProjectCodegenOutcome) -
             },
             if regenerated_functions == 1 { "" } else { "s" },
             if regenerated_helpers == 1 { "" } else { "s" },
+            if regenerated_runtime_fragments == 1 {
+                ""
+            } else {
+                "s"
+            },
             if regenerated_application_fragments == 1 {
                 ""
             } else {
@@ -5516,10 +5528,12 @@ fn write_development_status_with_build(
             regenerated_functions,
             reused_helpers,
             regenerated_helpers,
+            reused_runtime_fragments,
+            regenerated_runtime_fragments,
             reused_application_fragments,
             regenerated_application_fragments,
         }) => format!(
-            ",\"codegen\":\"incremental\",\"reused_functions\":{reused_functions},\"regenerated_functions\":{regenerated_functions},\"reused_helpers\":{reused_helpers},\"regenerated_helpers\":{regenerated_helpers},\"reused_application_fragments\":{reused_application_fragments},\"regenerated_application_fragments\":{regenerated_application_fragments}"
+            ",\"codegen\":\"incremental\",\"reused_functions\":{reused_functions},\"regenerated_functions\":{regenerated_functions},\"reused_helpers\":{reused_helpers},\"regenerated_helpers\":{regenerated_helpers},\"reused_runtime_fragments\":{reused_runtime_fragments},\"regenerated_runtime_fragments\":{regenerated_runtime_fragments},\"reused_application_fragments\":{reused_application_fragments},\"regenerated_application_fragments\":{regenerated_application_fragments}"
         ),
         Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"".to_string(),
         None => String::new(),
