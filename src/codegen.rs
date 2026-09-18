@@ -15563,23 +15563,18 @@ fn emit_linux_gtk_application(
                         element.name
                     ));
                 }
-                if view_property(element, "password").is_some() {
-                    let multiline = view_property(element, "multiline")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(false);
-                    if !multiline {
-                        let input_purpose = if view_property(element, "keyboard_type").is_none() {
-                            format!(
-                                " gtk_entry_set_input_purpose(GTK_ENTRY({widget}), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM);"
-                            )
-                        } else {
-                            String::new()
-                        };
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"password\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_entry_set_visibility(GTK_ENTRY({widget}), !bool_value);{input_purpose} }}",
-                            c_string(&element.name)
-                        ));
-                    }
+                if !multiline {
+                    let input_purpose = if view_property(element, "keyboard_type").is_none() {
+                        format!(
+                            " gtk_entry_set_input_purpose(GTK_ENTRY({widget}), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM);"
+                        )
+                    } else {
+                        String::new()
+                    };
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"password\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_entry_set_visibility(GTK_ENTRY({widget}), !bool_value);{input_purpose} }}",
+                        c_string(&element.name)
+                    ));
                 }
                 if view_property(element, "keyboard_type").is_some() {
                     let multiline = view_property(element, "multiline")

@@ -2220,6 +2220,7 @@ fn development_ui_property_lifecycle_patch_value(
                 | "italic"
                 | "underline"
                 | "strikethrough"
+                | "password"
         )
     {
         return None;
@@ -2241,7 +2242,8 @@ fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
         | "selectable"
         | "italic"
         | "underline"
-        | "strikethrough" => Some("0".to_string()),
+        | "strikethrough"
+        | "password" => Some("0".to_string()),
         _ => None,
     }
 }
@@ -2765,6 +2767,7 @@ fn development_ui_string_literals(
             "italic",
             "underline",
             "strikethrough",
+            "password",
         ] {
             if property_name != "visible"
                 && !development_ui_bool_property_is_patchable(element, property_name)

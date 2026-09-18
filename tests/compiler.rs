@@ -41380,6 +41380,137 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_password_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-password-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary password lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: "Secret"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial password lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial password lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("password lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"password\") == 0 && bool_value_valid && flux__ui_input != NULL"
+    ));
+    assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_input), !bool_value)"));
+
+    let entry = fs::canonicalize(entry).expect("password lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        text: \"Secret\"\n",
+        "        text: \"Secret\"\n        password: false\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit password default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit password default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding password: false must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding password: false should be an in-process no-op"
+    );
+
+    let protected = explicit_default.replace("password: false", "password: true");
+    fs::write(&entry, protected).expect("protected password source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("protected password source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("password: true should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "password".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed password source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed password source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing password should restore the implicit false value"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "password".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic = initial
+        .replace(
+            "    grid rows: auto\n",
+            "    grid rows: auto\n    state protected: bool = false\n",
+        )
+        .replace(
+            "        text: \"Secret\"\n",
+            "        text: \"Secret\"\n        password: protected\n",
+        );
+    fs::write(&entry, dynamic).expect("dynamic password source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic password source should analyze");
+    assert_ne!(dynamic.development_abi(), fourth.development_abi());
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven password must retain controlled restart"
+    );
+
+    let multiline = initial.replace(
+        "        text: \"Secret\"\n",
+        "        text: \"Secret\"\n        multiline: true\n        password: false\n",
+    );
+    fs::write(&entry, multiline).expect("multiline password source should be writable");
+    cache.invalidate_path(&entry);
+    let multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("multiline password source should analyze");
+    assert_ne!(
+        multiline.development_abi(),
+        fourth.development_abi(),
+        "multiline password remains outside the compatible lifecycle path"
+    );
+    assert!(
+        multiline
+            .development_ui_string_patch_from(&fourth)
+            .is_none(),
+        "multiline password must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_enabled_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-enabled-lifecycle-{}",
