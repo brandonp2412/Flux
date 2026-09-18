@@ -79,8 +79,14 @@ impl ProjectAnalysis {
         if self.development_abi() != previous.development_abi() {
             return None;
         }
-        let current = development_ui_string_literals(self)?;
-        let previous_literals = development_ui_string_literals(previous)?;
+        let mut current = development_ui_string_literals(self)?;
+        let mut previous_literals = development_ui_string_literals(previous)?;
+        development_application_geometry_lifecycle_defaults(
+            self,
+            previous,
+            &mut current,
+            &mut previous_literals,
+        )?;
         if current.keys().ne(previous_literals.keys()) {
             return None;
         }
@@ -1922,8 +1928,17 @@ fn module_type_surface(
 
 const DEVELOPMENT_APPLICATION_PATCH_ELEMENT: &str = "__application__";
 const DEVELOPMENT_GRID_PATCH_ELEMENT: &str = "__grid__";
-const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] =
+const DEVELOPMENT_APPLICATION_DEFAULT_PROPERTIES: &[&str] =
     &["title", "resizable", "theme", "layout_direction"];
+const DEVELOPMENT_APPLICATION_GEOMETRY_PROPERTIES: &[&str] = &["width", "height"];
+const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
+    "title",
+    "resizable",
+    "theme",
+    "layout_direction",
+    "width",
+    "height",
+];
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -1988,15 +2003,55 @@ fn development_application_metadata_lifecycle_patch_value(
 }
 
 fn development_application_default_patch_value(
+    analysis: &ProjectAnalysis,
     property: &str,
-    view: &crate::ast::ViewDef,
 ) -> Option<String> {
+    let application = analysis.program.application.as_ref()?;
+    let view = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)?;
     match property {
         "title" => Some(view.name.clone()),
         "resizable" => Some("1".to_string()),
         "theme" | "layout_direction" => Some("system".to_string()),
+        "width" | "height" => {
+            let (width, height) = codegen::bootstrap_window_size(view);
+            Some(if property == "width" { width } else { height }.to_string())
+        }
         _ => None,
     }
+}
+
+fn development_application_geometry_lifecycle_defaults(
+    current_analysis: &ProjectAnalysis,
+    previous_analysis: &ProjectAnalysis,
+    current: &mut BTreeMap<(String, String), String>,
+    previous: &mut BTreeMap<(String, String), String>,
+) -> Option<()> {
+    for property in DEVELOPMENT_APPLICATION_GEOMETRY_PROPERTIES {
+        let key = (
+            DEVELOPMENT_APPLICATION_PATCH_ELEMENT.to_string(),
+            (*property).to_string(),
+        );
+        if current.contains_key(&key) == previous.contains_key(&key) {
+            continue;
+        }
+        if !current.contains_key(&key) {
+            current.insert(
+                key.clone(),
+                development_application_default_patch_value(current_analysis, property)?,
+            );
+        }
+        if !previous.contains_key(&key) {
+            previous.insert(
+                key,
+                development_application_default_patch_value(previous_analysis, property)?,
+            );
+        }
+    }
+    Some(())
 }
 
 fn development_ui_element_has_property(element: &ViewElement, property: &str) -> bool {
@@ -2289,7 +2344,7 @@ fn development_ui_string_literals(
             value,
         );
     }
-    for property in DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES {
+    for property in DEVELOPMENT_APPLICATION_DEFAULT_PROPERTIES {
         if application
             .metadata
             .iter()
@@ -2302,7 +2357,7 @@ fn development_ui_string_literals(
                 DEVELOPMENT_APPLICATION_PATCH_ELEMENT.to_string(),
                 (*property).to_string(),
             ),
-            development_application_default_patch_value(property, view)?,
+            development_application_default_patch_value(analysis, property)?,
         );
     }
     for (property, value) in [

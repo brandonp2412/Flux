@@ -39903,21 +39903,117 @@ app Screen
         ]
     );
 
-    let structural_width = initial.replace("app Screen", "app Screen(width: 800)");
-    fs::write(&entry, structural_width)
-        .expect("structural width metadata source should be writable");
+    let structural_palette =
+        initial.replace("app Screen", r##"app Screen(surfaceColor: "#FAFAFA")"##);
+    fs::write(&entry, structural_palette)
+        .expect("structural palette metadata source should be writable");
     cache.invalidate_path(&entry);
     let fifth = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("structural width metadata should analyze");
+        .expect("structural palette metadata should analyze");
     assert_ne!(
         fifth.development_abi(),
         first.development_abi(),
-        "adding width must remain a development ABI boundary until its implicit geometry lifecycle is modeled"
+        "adding palette metadata must remain a development ABI boundary until mutable palette runtime emission is unconditional"
     );
     assert!(
         fifth.development_ui_string_patch_from(&first).is_none(),
-        "structural width addition must continue to fall back to a controlled restart"
+        "structural palette addition must continue to fall back to a controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_window_size_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-window-size-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary window-size lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial window-size lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial window-size lifecycle source should analyze");
+
+    let entry = fs::canonicalize(entry).expect("window-size lifecycle entry should canonicalize");
+    let explicit_defaults = initial.replace("app Screen", "app Screen(width: 260, height: 130)");
+    fs::write(&entry, &explicit_defaults)
+        .expect("explicit default window-size source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit default window-size source should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal window-size metadata must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding dimensions equal to the implicit bootstrap size should require no runtime work"
+    );
+
+    let explicit_size = initial.replace("app Screen", "app Screen(width: 800, height: 600)");
+    fs::write(&entry, &explicit_size).expect("explicit window-size source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit window-size source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("adding non-default dimensions should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "height".to_string(),
+                value: "600".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "width".to_string(),
+                value: "800".to_string(),
+            },
+        ]
+    );
+
+    fs::write(&entry, initial).expect("removed window-size source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed window-size source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing dimensions should restore the implicit bootstrap size"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "height".to_string(),
+                value: "130".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "width".to_string(),
+                value: "260".to_string(),
+            },
+        ]
     );
 
     let _ = fs::remove_dir_all(root);

@@ -21205,7 +21205,7 @@ fn text_semantic_typography(
         })
 }
 
-fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {
+pub(crate) fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {
     fn tracks_size(tracks: &[crate::ast::GridTrack], fallback: u32) -> u32 {
         let fixed = tracks
             .iter()
