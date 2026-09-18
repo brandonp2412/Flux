@@ -10735,6 +10735,10 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
     const TIME_ZONE_TRANSACTION_LOCK: &str =
         "static volatile int flux_time_zone_transaction_lock = 0;";
+    const CHANNEL_REGISTRY_MUTEX: &str =
+        "static pthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;";
+    const CHANNEL_HEAD: &str = "static struct flux__channel_state *flux__channel_head = NULL;";
+    const CHANNEL_NEXT_ID: &str = "static int64_t flux__channel_next_id = INT64_C(1);";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10816,6 +10820,28 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         );
         definitions.push_str(
             "\n#if defined(__GLIBC__)\nvolatile int flux_time_zone_transaction_lock = 0;\n#endif\n",
+        );
+        isolated = true;
+    }
+
+    if prefix.contains(CHANNEL_REGISTRY_MUTEX)
+        && prefix.contains(CHANNEL_HEAD)
+        && prefix.contains(CHANNEL_NEXT_ID)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                CHANNEL_REGISTRY_MUTEX,
+                "extern pthread_mutex_t flux__channel_registry_mutex;",
+                1,
+            )
+            .replacen(
+                CHANNEL_HEAD,
+                "extern struct flux__channel_state *flux__channel_head;",
+                1,
+            )
+            .replacen(CHANNEL_NEXT_ID, "extern int64_t flux__channel_next_id;", 1);
+        definitions.push_str(
+            "\npthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;\nstruct flux__channel_state *flux__channel_head = NULL;\nint64_t flux__channel_next_id = INT64_C(1);\n",
         );
         isolated = true;
     }
@@ -13443,6 +13469,22 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the named-time-zone transaction lock must have exactly one process-wide definition"
+        );
+
+        let channel = "#include <pthread.h>\n#include <stdint.h>\nstruct flux__channel_state { int64_t id; struct flux__channel_state *next; };\nstatic pthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;\nstatic struct flux__channel_state *flux__channel_head = NULL;\nstatic int64_t flux__channel_next_id = INT64_C(1);\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let channel_units = partition_native_c_by_source(channel)
+            .expect("the channel registry should move into one shared runtime unit");
+        assert_eq!(channel_units.len(), 3);
+        assert_eq!(
+            channel_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines()
+                        .any(|line| line == "int64_t flux__channel_next_id = INT64_C(1);")
+                })
+                .count(),
+            1,
+            "the channel registry must have exactly one process-wide handle sequence"
         );
     }
 
