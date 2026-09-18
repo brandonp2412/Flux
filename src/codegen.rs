@@ -13169,6 +13169,21 @@ fn emit_windows_native_application(
                     .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
             })
     });
+    let uses_dynamic_margins = view.elements.iter().any(|element| {
+        [
+            "margin",
+            "margin_top",
+            "margin_bottom",
+            "margin_start",
+            "margin_end",
+        ]
+        .iter()
+        .any(|property_name| {
+            view_property(element, property_name)
+                .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+        })
+    });
+    let uses_dynamic_layout = uses_dynamic_layout_constraints || uses_dynamic_margins;
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13189,6 +13204,9 @@ fn emit_windows_native_application(
     out.push_str("static bool flux__win_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
     if uses_dynamic_layout_constraints {
         out.push_str("static int64_t flux__win_checked_layout_size(int64_t value, const char *name) { if (value < 1 || value > INT32_MAX) { fprintf(stderr, \"Flux runtime error: %s must be between 1 and 2147483647\\n\", name); abort(); } return value; }\n");
+    }
+    if uses_dynamic_margins {
+        out.push_str("static int64_t flux__win_checked_margin(int64_t value, const char *name) { if (value < 0 || value > INT32_MAX) { fprintf(stderr, \"Flux runtime error: %s must be between 0 and 2147483647\\n\", name); abort(); } return value; }\n");
     }
     if uses_tooltips {
         out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, char **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } if (*storage != NULL && strcmp(*storage, text) == 0) return; char *copy = (char *)malloc(length + 1); if (copy == NULL) { fputs(\"Flux runtime error: unable to store tooltip text\\n\", stderr); abort(); } memcpy(copy, text, length + 1); free(*storage); *storage = copy; TOOLINFOA info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageA(flux__win_tooltips, TTM_UPDATETIPTEXTA, 0, (LPARAM)&info); }\n");
@@ -13680,6 +13698,25 @@ fn emit_windows_native_application(
         let row_offset = element.row as i64 - 1;
         let column_span = element.column_span as i64;
         let row_span = element.row_span as i64;
+        let margin = windows_layout_margin_value(element, "margin", "margin", view, signatures)?;
+        let margin_top =
+            windows_layout_margin_value(element, "margin_top", "marginTop", view, signatures)?;
+        let margin_bottom = windows_layout_margin_value(
+            element,
+            "margin_bottom",
+            "marginBottom",
+            view,
+            signatures,
+        )?;
+        let margin_start =
+            windows_layout_margin_value(element, "margin_start", "marginStart", view, signatures)?;
+        let margin_end =
+            windows_layout_margin_value(element, "margin_end", "marginEnd", view, signatures)?;
+        let margin_value = margin.as_deref().unwrap_or("INT64_C(0)");
+        let margin_top_value = margin_top.as_deref().unwrap_or(margin_value);
+        let margin_bottom_value = margin_bottom.as_deref().unwrap_or(margin_value);
+        let margin_start_value = margin_start.as_deref().unwrap_or(margin_value);
+        let margin_end_value = margin_end.as_deref().unwrap_or(margin_value);
         for (minimum_name, maximum_name, source_minimum, source_maximum) in [
             ("min_width", "max_width", "minWidth", "maxWidth"),
             ("min_height", "max_height", "minHeight", "maxHeight"),
@@ -13720,7 +13757,7 @@ fn emit_windows_native_application(
         } else {
             ""
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top; x = adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x; y = adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y; int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
@@ -13730,7 +13767,7 @@ fn emit_windows_native_application(
             ui_derived_c_name(&derived.name)
         ));
     }
-    if uses_dynamic_layout_constraints {
+    if uses_dynamic_layout {
         out.push_str("RECT flux__win_refresh_client = {0}; if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client)) { flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top); }\n");
     }
     for element in &view.elements {
@@ -19879,6 +19916,31 @@ fn static_rich_text_markup(
         ));
     }
     Ok(Some(markup))
+}
+
+fn windows_layout_margin_value(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    source_name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Option<String>, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok(None);
+    };
+    if let Some(value) = static_expr_i64(&property.value, signatures) {
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return Err(diag(
+                property.value.span,
+                &format!("{source_name} must be between 0 and {}", i32::MAX),
+            ));
+        }
+        return Ok(Some(format!("INT64_C({value})")));
+    }
+    let value = ui_expr_c(&property.value, view, signatures)?;
+    Ok(Some(format!(
+        "flux__win_checked_margin(({value}), \"{source_name}\")"
+    )))
 }
 
 fn windows_layout_constraint_value(

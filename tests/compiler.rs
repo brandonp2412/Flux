@@ -1651,6 +1651,7 @@ view Screen {
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
+        marginStart: extent
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -45874,6 +45875,29 @@ app DynamicMargin
     assert!(android.contains("flux__ui_state_topSpacing = flux_add_i64"));
     assert!(android.contains("flux__ui_state_endSpacing = flux_add_i64"));
     assert!(android.contains("flux__android_ui_refresh(env, flux__android_activity->clazz, 0)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic Windows margin should lower");
+    assert!(windows.contains("flux__win_checked_margin"));
+    assert!(windows.contains(
+        "requested_margin_top = flux__win_checked_margin((flux__ui_state_topSpacing), \"marginTop\")"
+    ));
+    assert!(windows.contains(
+        "requested_margin_end = flux__win_checked_margin((flux__ui_state_endSpacing), \"marginEnd\")"
+    ));
+    assert!(windows.contains(
+        "requested_margin_bottom = flux__win_checked_margin((flux__ui_state_spacing), \"margin\")"
+    ));
+    assert!(
+        windows.contains("int physical_margin_start = flux__win_scale(requested_margin_start)")
+    );
+    assert!(windows.contains("margin_width = (int64_t)control_width"));
+    assert!(windows.contains("RECT flux__win_refresh_client = {0}"));
 
     let static_source = r#"
 view StaticMargin {
