@@ -1994,6 +1994,8 @@ fn emit_c_for_target_with_source_metadata_impl(
             out.push_str(";\n");
             out.push_str(&async_release_prototype(function));
             out.push_str(";\n");
+            out.push_str(&async_run_prototype(function));
+            out.push_str(";\n");
             if function.name == "main" {
                 out.push_str("int main(void);\n");
             }
@@ -21943,6 +21945,10 @@ fn async_release_c_name(name: &str) -> String {
     format!("flux__async_release_{name}")
 }
 
+fn async_run_c_name(name: &str) -> String {
+    format!("flux__async_run_{name}")
+}
+
 fn async_saved_local_field_name(name: &str) -> String {
     format!("saved_{}", local_c_name(name))
 }
@@ -22010,6 +22016,13 @@ fn async_resume_prototype(function: &Function) -> String {
     format!(
         "static void {}(void *flux__context, void *flux__completed_child)",
         async_resume_c_name(&function.name)
+    )
+}
+
+fn async_run_prototype(function: &Function) -> String {
+    format!(
+        "static void *{}(void *flux__opaque)",
+        async_run_c_name(&function.name)
     )
 }
 
@@ -26410,7 +26423,7 @@ fn emit_async_task_runtime(
     continuation_lowered: bool,
 ) {
     let task_name = async_task_c_name(&function.name);
-    let runner_name = format!("flux__async_run_{}", function.name);
+    let runner_name = async_run_c_name(&function.name);
     let start_name = async_start_c_name(&function.name);
     let start_cont_name = async_start_cont_c_name(&function.name);
     let await_name = async_await_c_name(&function.name);
@@ -26452,7 +26465,8 @@ fn emit_async_task_runtime(
     out.push_str("    pthread_mutex_unlock(&flux__task->mutex);\n}\n");
 
     out.push_str(&format!(
-        "static void *{runner_name}(void *flux__opaque) {{\n    struct {task_name} *flux__task = (struct {task_name} *)flux__opaque;\n"
+        "{} {{\n    struct {task_name} *flux__task = (struct {task_name} *)flux__opaque;\n",
+        async_run_prototype(function)
     ));
     out.push_str("    flux__async_scope_enter(flux__task->worker_scope_id);\n");
     if continuation_lowered {

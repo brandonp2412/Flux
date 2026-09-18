@@ -10676,7 +10676,6 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     if !native_prefix_is_module_partition_safe(&prefix) {
         return None;
     }
-
     let mut order = Vec::new();
     let mut bodies = BTreeMap::<String, String>::new();
     let mut current = None::<String>;
@@ -10690,10 +10689,51 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
         }
         bodies.entry(source.clone()).or_default().push_str(line);
     }
+
+    let async_definitions = bodies
+        .iter()
+        .map(|(source, body)| {
+            let definitions = body
+                .lines()
+                .filter(|line| line.trim_start().starts_with("static ") && line.contains('{'))
+                .filter_map(native_function_helper_symbol)
+                .filter(|symbol| symbol.starts_with("flux__async_"))
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>();
+            (source.clone(), definitions)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let all_async_definitions = async_definitions
+        .values()
+        .flat_map(|definitions| definitions.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let cross_source_async_helpers = bodies
+        .iter()
+        .flat_map(|(source, body)| {
+            let local_definitions = &async_definitions[source];
+            native_partition_symbols(body)
+                .filter(|symbol| {
+                    symbol.starts_with("flux__async_")
+                        && all_async_definitions.contains(*symbol)
+                        && !local_definitions.contains(*symbol)
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>();
+    if !cross_source_async_helpers.is_empty() {
+        prefix = externalize_native_function_linkage(&prefix, &cross_source_async_helpers);
+        if let Some(runtime_unit) = shared_runtime_unit.as_mut() {
+            *runtime_unit =
+                externalize_native_function_linkage(runtime_unit, &cross_source_async_helpers);
+        }
+    }
+
     if order.len() < 2 {
         let source = order.first()?;
         let body = bodies.remove(source)?;
-        let mut units = partition_native_single_source_functions(&prefix, &body)?;
+        let mut units =
+            partition_native_single_source_functions(&prefix, &body, &cross_source_async_helpers)?;
         if let Some(runtime_unit) = shared_runtime_unit {
             units.push(runtime_unit);
         }
@@ -10703,7 +10743,9 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     let mut units = Vec::new();
     for source in order {
         let body = bodies.remove(&source)?;
-        if let Some(function_units) = partition_native_single_source_functions(&prefix, &body) {
+        if let Some(function_units) =
+            partition_native_single_source_functions(&prefix, &body, &cross_source_async_helpers)
+        {
             units.extend(function_units);
             continue;
         }
@@ -10759,6 +10801,10 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static volatile sig_atomic_t flux__process_termination_flag = 0;";
     const PROCESS_TERMINATION_HANDLERS_INSTALLED: &str =
         "static bool flux__process_termination_handlers_installed = false;";
+    const DEBUG_TASK_MUTEX: &str =
+        "static pthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;";
+    const DEBUG_TASK_HEAD: &str =
+        "static struct flux__debug_task_record *flux__debug_task_head = NULL;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10963,6 +11009,24 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         isolated = true;
     }
 
+    if prefix.contains(DEBUG_TASK_MUTEX) && prefix.contains(DEBUG_TASK_HEAD) {
+        partition_prefix = partition_prefix
+            .replacen(
+                DEBUG_TASK_MUTEX,
+                "extern pthread_mutex_t flux__debug_task_mutex;",
+                1,
+            )
+            .replacen(
+                DEBUG_TASK_HEAD,
+                "extern struct flux__debug_task_record *flux__debug_task_head;",
+                1,
+            );
+        definitions.push_str(
+            "\n#ifdef FLUX_DEBUG_METADATA\npthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;\nstruct flux__debug_task_record *flux__debug_task_head = NULL;\n#endif\n",
+        );
+        isolated = true;
+    }
+
     isolated.then(|| {
         let mut runtime_unit = String::with_capacity(partition_prefix.len() + definitions.len());
         runtime_unit.push_str(&partition_prefix);
@@ -10971,7 +11035,11 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     })
 }
 
-fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
+fn partition_native_single_source_functions(
+    prefix: &str,
+    body: &str,
+    cross_source_async_helpers: &BTreeSet<String>,
+) -> Option<Vec<String>> {
     let public_functions = prefix
         .lines()
         .filter(|line| !line.trim_start().starts_with("static inline "))
@@ -10986,7 +11054,6 @@ fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<
         .collect::<BTreeSet<_>>();
     let function_helpers = prefix
         .lines()
-        .filter(|line| line.trim_start().starts_with("static "))
         .filter_map(native_function_helper_symbol)
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
@@ -11053,8 +11120,10 @@ fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<
                 native_partition_symbols(definition).any(|dependency| {
                     let internal_dependency = internal_functions.contains(dependency)
                         || dependency.starts_with("flux__lambda_")
-                        || dependency.starts_with("flux__bind_");
+                        || dependency.starts_with("flux__bind_")
+                        || dependency.starts_with("flux__async_");
                     internal_dependency
+                        && !cross_source_async_helpers.contains(dependency)
                         && dependency != symbol.as_str()
                         && !extractable.contains(dependency)
                 })
@@ -11068,7 +11137,11 @@ fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<
             extractable.remove(&symbol);
         }
     }
-    if extractable.is_empty() {
+    if extractable.is_empty()
+        || cross_source_async_helpers
+            .iter()
+            .any(|symbol| definitions.contains_key(symbol) && !extractable.contains(symbol))
+    {
         return None;
     }
 
@@ -11076,7 +11149,12 @@ fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<
         .intersection(&internal_functions)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let shared_prefix = externalize_native_function_linkage(prefix, &externalized_private);
+    let externalized_prefix_functions = externalized_private
+        .iter()
+        .cloned()
+        .chain(cross_source_async_helpers.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let shared_prefix = externalize_native_function_linkage(prefix, &externalized_prefix_functions);
     let mut ranges = extractable
         .iter()
         .filter_map(|symbol| {
@@ -11147,36 +11225,68 @@ fn native_flux_function_symbol(line: &str) -> Option<&str> {
 }
 
 fn native_function_helper_symbol(line: &str) -> Option<&str> {
-    ["flux__lambda_", "flux__bind_"]
-        .into_iter()
-        .filter_map(|prefix| {
-            line.find(prefix)
-                .zip(native_symbol_with_prefix(line, prefix))
-        })
-        .min_by_key(|(start, _)| *start)
-        .map(|(_, symbol)| symbol)
+    [
+        "flux__lambda_",
+        "flux__bind_",
+        "flux__async_body_",
+        "flux__async_start_",
+        "flux__async_await_",
+        "flux__async_finish_",
+        "flux__async_release_",
+        "flux__async_resume_",
+        "flux__async_run_",
+    ]
+    .into_iter()
+    .filter_map(|prefix| {
+        line.find(prefix)
+            .zip(native_symbol_with_prefix(line, prefix))
+    })
+    .min_by_key(|(start, _)| *start)
+    .map(|(_, symbol)| symbol)
 }
 
 fn native_partition_symbol(line: &str) -> Option<&str> {
-    ["flux__fn_", "flux__lambda_", "flux__bind_"]
-        .into_iter()
-        .filter_map(|prefix| {
-            line.find(prefix)
-                .zip(native_symbol_with_prefix(line, prefix))
-        })
-        .min_by_key(|(start, _)| *start)
-        .map(|(_, symbol)| symbol)
+    [
+        "flux__fn_",
+        "flux__lambda_",
+        "flux__bind_",
+        "flux__async_body_",
+        "flux__async_start_",
+        "flux__async_await_",
+        "flux__async_finish_",
+        "flux__async_release_",
+        "flux__async_resume_",
+        "flux__async_run_",
+    ]
+    .into_iter()
+    .filter_map(|prefix| {
+        line.find(prefix)
+            .zip(native_symbol_with_prefix(line, prefix))
+    })
+    .min_by_key(|(start, _)| *start)
+    .map(|(_, symbol)| symbol)
 }
 
 fn native_partition_symbol_at_start(source: &str) -> Option<&str> {
-    ["flux__fn_", "flux__lambda_", "flux__bind_"]
-        .into_iter()
-        .find_map(|prefix| {
-            source
-                .starts_with(prefix)
-                .then(|| native_symbol_with_prefix(source, prefix))
-                .flatten()
-        })
+    [
+        "flux__fn_",
+        "flux__lambda_",
+        "flux__bind_",
+        "flux__async_body_",
+        "flux__async_start_",
+        "flux__async_await_",
+        "flux__async_finish_",
+        "flux__async_release_",
+        "flux__async_resume_",
+        "flux__async_run_",
+    ]
+    .into_iter()
+    .find_map(|prefix| {
+        source
+            .starts_with(prefix)
+            .then(|| native_symbol_with_prefix(source, prefix))
+            .flatten()
+    })
 }
 
 fn native_symbol_with_prefix<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
@@ -13671,6 +13781,33 @@ app OverlayDemo(title: "Overlay")
             1,
             "termination handler installation state must have exactly one process-wide definition"
         );
+
+        let async_debug = "#include <stdbool.h>\n#include <pthread.h>\n#include <stdint.h>\n#ifdef FLUX_DEBUG_METADATA\nstruct flux__debug_task_record { struct flux__debug_task_record *next; };\nstatic pthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;\nstatic struct flux__debug_task_record *flux__debug_task_head = NULL;\n#endif\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let async_debug_units = partition_native_c_by_source(async_debug)
+            .expect("the async debug-task registry should move into one shared runtime unit");
+        assert_eq!(async_debug_units.len(), 3);
+        assert_eq!(
+            async_debug_units
+                .iter()
+                .filter(|unit| unit.lines().any(|line| {
+                    line == "pthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;"
+                }))
+                .count(),
+            1,
+            "the async debug-task mutex must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            async_debug_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines().any(|line| {
+                        line == "struct flux__debug_task_record *flux__debug_task_head = NULL;"
+                    })
+                })
+                .count(),
+            1,
+            "the async debug-task list must have exactly one process-wide definition"
+        );
     }
 
     #[test]
@@ -13744,6 +13881,34 @@ app OverlayDemo(title: "Overlay")
         assert!(closure_units.iter().any(|unit| {
             unit.contains("int64_t flux__fn_private(void) { return flux__lambda_1_1_1(); }")
                 && !unit.contains("int main(void)")
+        }));
+
+        let async_dependent = "#include <stdint.h>\nstatic int64_t flux__async_body_compute(void);\nstatic void *flux__async_run_compute(void *flux__opaque);\nstatic int64_t flux__async_start_compute(void);\nstatic void flux__async_resume_main(void *flux__context, void *flux__child);\n#line 1 \"/tmp/worker.flux\"\nstatic int64_t flux__async_body_compute(void) { return 7; }\nstatic void *flux__async_run_compute(void *flux__opaque) { (void)flux__opaque; return (void *)(intptr_t)flux__async_body_compute(); }\nstatic int64_t flux__async_start_compute(void) { return flux__async_body_compute(); }\n#line 1 \"/tmp/main.flux\"\nstatic void flux__async_resume_main(void *flux__context, void *flux__child) { (void)flux__context; (void)flux__child; (void)flux__async_start_compute(); }\nint main(void) { flux__async_resume_main(NULL, NULL); return 0; }\n";
+        let async_units = partition_native_c_by_source(async_dependent)
+            .expect("generated async helpers should partition with external linkage");
+        assert_eq!(async_units.len(), 5);
+        assert!(
+            async_units
+                .iter()
+                .all(|unit| !unit.contains("static int64_t flux__async_start_compute"))
+        );
+        assert!(async_units.iter().all(|unit| {
+            !unit.contains("static int64_t flux__async_body_compute(void) {")
+                && !unit.contains("static void *flux__async_run_compute(void *flux__opaque) {")
+                && !unit.contains("static int64_t flux__async_start_compute(void) {")
+                && !unit.contains(
+                    "static void flux__async_resume_main(void *flux__context, void *flux__child) {",
+                )
+        }));
+        assert!(async_units.iter().any(|unit| {
+            unit.contains("int64_t flux__async_body_compute(void) { return 7; }")
+                && !unit.contains("int main(void)")
+        }));
+        assert!(async_units.iter().any(|unit| {
+            unit.contains("void flux__async_resume_main(void *flux__context, void *flux__child)")
+                && unit
+                    .contains("int main(void) { flux__async_resume_main(NULL, NULL); return 0; }")
+                && !unit.contains("return 7")
         }));
 
         let independent = "#include <stdint.h>\nint64_t flux__fn_public(void);\n#line 1 \"/tmp/main.flux\"\nint64_t flux__fn_public(void) { const char *brace = \"{ still text }\"; (void)brace; return 7; }\n#line 5 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_public(); }\n";

@@ -35480,6 +35480,115 @@ fn native_module_object_cache_isolates_process_termination_state() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_async_function_helpers() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-async-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native async module cache fixture should be writable");
+    let worker = root.join("worker.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &worker,
+        "pub async fn compute(value: i64) -> i64 {\n    return value * 2\n}\n",
+    )
+    .expect("async producer module should be writable");
+    fs::write(
+        &main,
+        "import \"worker.flux\"\n\nasync fn main() -> i64 {\n    let result: i64 = await compute(21)\n    print(result)\n    return 0\n}\n",
+    )
+    .expect("async consumer module should be writable");
+
+    let cache = root.join("cache");
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native async object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("async module-object build should run");
+    assert!(
+        built.status.success(),
+        "async module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("async module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "42\n");
+
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        16,
+        "async function bodies, task helpers, continuations, entry runtime, and shared debug-task registry should compile independently"
+    );
+
+    fs::write(
+        &worker,
+        "pub async fn compute(value: i64) -> i64 {\n    return value * 3\n}\n",
+    )
+    .expect("changed async producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed async module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed async module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed async module-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&second_run.stdout), "63\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        17,
+        "an async producer body edit should add only its changed body object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged async task helpers, entry runtime, and shared debug registry should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_isolates_websocket_client_mode() {
     if Command::new("openssl").arg("version").output().is_err() {
         return;
