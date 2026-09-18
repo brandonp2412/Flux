@@ -14476,6 +14476,13 @@ fn emit_linux_gtk_application(
     if uses_hot_css_color {
         out.push_str("static const char *flux__ui_hot_css_color(const char *value) { if (value == NULL) return NULL; if (strcmp(value, \"surface\") == 0) return \"@flux_surface\"; if (strcmp(value, \"surfaceRaised\") == 0) return \"@flux_surface_raised\"; if (strcmp(value, \"text\") == 0) return \"@flux_text\"; if (strcmp(value, \"textMuted\") == 0) return \"@flux_text_muted\"; if (strcmp(value, \"accent\") == 0) return \"@flux_accent\"; if (strcmp(value, \"onAccent\") == 0) return \"@flux_on_accent\"; if (strcmp(value, \"outline\") == 0) return \"@flux_outline\"; if (strcmp(value, \"danger\") == 0) return \"@flux_danger\"; if (strcmp(value, \"success\") == 0) return \"@flux_success\"; if (strcmp(value, \"warning\") == 0) return \"@flux_warning\"; if (strcmp(value, \"shadow\") == 0) return \"@flux_shadow\"; if (strcmp(value, \"transparent\") == 0) return \"transparent\"; size_t length = 0; if (value[0] != '#' || !flux__ui_bounded_length(value, 9, &length) || (length != 7 && length != 9)) return NULL; for (size_t index = 1; index < length; index += 1) { char byte = value[index]; bool hex = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'); if (!hex) return NULL; } return value; }\n");
     }
+    if view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "transition_easing").is_some())
+    {
+        out.push_str("static const char *flux__ui_hot_css_transition_easing(const char *value) { if (value == NULL) return NULL; if (strcmp(value, \"linear\") == 0) return \"linear\"; if (strcmp(value, \"ease\") == 0) return \"ease\"; if (strcmp(value, \"easeIn\") == 0 || strcmp(value, \"ease_in\") == 0) return \"ease-in\"; if (strcmp(value, \"easeOut\") == 0 || strcmp(value, \"ease_out\") == 0) return \"ease-out\"; if (strcmp(value, \"easeInOut\") == 0 || strcmp(value, \"ease_in_out\") == 0) return \"ease-in-out\"; if (strcmp(value, \"spring\") == 0) return \"cubic-bezier(0.22, 1.20, 0.36, 1)\"; if (strcmp(value, \"springGentle\") == 0 || strcmp(value, \"spring_gentle\") == 0) return \"cubic-bezier(0.34, 1.36, 0.64, 1)\"; if (strcmp(value, \"springSnappy\") == 0 || strcmp(value, \"spring_snappy\") == 0) return \"cubic-bezier(0.16, 1.30, 0.30, 1)\"; return NULL; }\n");
+    }
     out.push_str("static gchar *flux__ui_image_source_path(const char *source);\nstatic gchar *flux__ui_bounded_image_source_path(const char *source) { if (source == NULL) return flux__ui_image_source_path(source); size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\\0') source_length += 1; if (source_length > 65536) return g_strdup(\"\"); return flux__ui_image_source_path(source); }\n");
     out.push_str(
         "static gchar *flux__ui_image_source_path(const char *source) {\n    if (source == NULL) return g_strdup(\"\");\n    if (!g_str_has_prefix(source, \"asset://\")) return g_strdup(source);\n    const char *relative = source + 8;\n    if (*relative == '\\0' || *relative == '/' || strstr(relative, \"../\") != NULL || g_str_has_suffix(relative, \"/..\")) return g_strdup(\"\");\n    const char *override_root = getenv(\"FLUX_ASSET_ROOT\");\n    if (override_root != NULL && *override_root != '\\0') return g_build_filename(override_root, relative, NULL);\n    GError *error = NULL;\n    gchar *executable = g_file_read_link(\"/proc/self/exe\", &error);\n    if (executable == NULL) {\n        if (error != NULL) g_error_free(error);\n        return g_build_filename(\"assets\", relative, NULL);\n    }\n    gchar *directory = g_path_get_dirname(executable);\n    gchar *resolved = g_build_filename(directory, \"assets\", relative, NULL);\n    g_free(directory);\n    g_free(executable);\n    return resolved;\n}\n"
@@ -14723,6 +14730,19 @@ fn emit_linux_gtk_application(
             if view_property(element, property_name).is_some()
                 && linux_hot_css_color_property(element, property_name).is_some()
             {
+                out.push_str(&format!(
+                    "static GtkCssProvider *{} = NULL;\n",
+                    linux_ui_hot_style_provider_c_name(element, property_name)
+                ));
+            }
+        }
+        for property_name in [
+            "transition_ms",
+            "transition_delay_ms",
+            "border_style",
+            "transition_easing",
+        ] {
+            if view_property(element, property_name).is_some() {
                 out.push_str(&format!(
                     "static GtkCssProvider *{} = NULL;\n",
                     linux_ui_hot_style_provider_c_name(element, property_name)
@@ -15135,6 +15155,45 @@ fn emit_linux_gtk_application(
             let css_format = c_string(&format!("#flux-ui-{} {{ {css_name}: %s; }}", element.name));
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, css_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                c_string(&element.name)
+            ));
+        }
+        for property_name in ["transition_ms", "transition_delay_ms"] {
+            let Some(css_name) = linux_hot_css_time_i64_property(property_name) else {
+                continue;
+            };
+            if view_property(element, property_name).is_none() {
+                continue;
+            }
+            let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ {css_name}: %lldms; }} @media (prefers-reduced-motion: reduce) {{ #flux-ui-{} {{ {css_name}: 0ms; }} }}",
+                element.name, element.name
+            ));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) {{ gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); GtkSettings *patch_settings = gtk_settings_get_default(); if (patch_settings != NULL) g_object_bind_property(patch_settings, \"gtk-interface-reduced-motion\", {provider}, \"prefers-reduced-motion\", G_BINDING_SYNC_CREATE); }} }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, integer_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "border_style").is_some() {
+            let provider = linux_ui_hot_style_provider_c_name(element, "border_style");
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ border-style: %s; }}",
+                element.name
+            ));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"border_style\") == 0 && {widget} != NULL) {{ bool css_value_valid = strcmp(value, \"none\") == 0 || strcmp(value, \"solid\") == 0 || strcmp(value, \"dashed\") == 0 || strcmp(value, \"dotted\") == 0 || strcmp(value, \"double\") == 0; if (css_value_valid) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "transition_easing").is_some() {
+            let provider = linux_ui_hot_style_provider_c_name(element, "transition_easing");
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ transition-timing-function: %s; }}",
+                element.name
+            ));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"transition_easing\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_transition_easing(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, css_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
                 c_string(&element.name)
             ));
         }
@@ -19035,6 +19094,14 @@ fn linux_hot_css_i64_property(
         "radius_top_right" => Some("border-top-right-radius"),
         "radius_bottom_left" => Some("border-bottom-left-radius"),
         "radius_bottom_right" => Some("border-bottom-right-radius"),
+        _ => None,
+    }
+}
+
+fn linux_hot_css_time_i64_property(property_name: &str) -> Option<&'static str> {
+    match property_name {
+        "transition_ms" => Some("transition-duration"),
+        "transition_delay_ms" => Some("transition-delay"),
         _ => None,
     }
 }

@@ -37491,6 +37491,144 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_css_transition_timing_and_border_style() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-css-transition-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary CSS transition patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Animate"
+        borderWidth: 2
+        borderStyle: "solid"
+        transitionMs: 180
+        transitionDelayMs: 20
+        transitionEasing: "easeIn"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial CSS transition patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial CSS transition patch analysis should succeed");
+
+    let updated = initial
+        .replace("borderStyle: \"solid\"", "borderStyle: \"dashed\"")
+        .replace("transitionMs: 180", "transitionMs: 240")
+        .replace("transitionDelayMs: 20", "transitionDelayMs: 40")
+        .replace(
+            "transitionEasing: \"easeIn\"",
+            "transitionEasing: \"springGentle\"",
+        );
+    fs::write(&entry, &updated).expect("updated CSS transition patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("CSS transition patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated CSS transition patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe CSS transition and border-style edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (property, value) in [
+        ("border_style", "dashed"),
+        ("transition_ms", "240"),
+        ("transition_delay_ms", "40"),
+        ("transition_easing", "springGentle"),
+    ] {
+        assert_eq!(
+            patch.get(&("action".to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing CSS transition hot patch for {property}"
+        );
+    }
+    assert_eq!(patch.len(), 4);
+
+    let generated = second
+        .emit_c()
+        .expect("CSS transition patch fixture should lower for Linux");
+    for provider in [
+        "flux__ui_hot_style_action_border_style",
+        "flux__ui_hot_style_action_transition_ms",
+        "flux__ui_hot_style_action_transition_delay_ms",
+        "flux__ui_hot_style_action_transition_easing",
+    ] {
+        assert!(
+            generated.contains(&format!("static GtkCssProvider *{provider} = NULL")),
+            "missing bounded transition/style provider {provider}"
+        );
+        assert!(
+            generated.contains(&format!(
+                "gtk_css_provider_load_from_data({provider}, patch_css, -1)"
+            )),
+            "transition/style provider {provider} should be reloaded in place"
+        );
+    }
+    assert!(generated.contains("#flux-ui-action { border-style: %s; }"));
+    assert!(generated.contains("#flux-ui-action { transition-duration: %lldms; } @media (prefers-reduced-motion: reduce) { #flux-ui-action { transition-duration: 0ms; } }"));
+    assert!(generated.contains("#flux-ui-action { transition-delay: %lldms; } @media (prefers-reduced-motion: reduce) { #flux-ui-action { transition-delay: 0ms; } }"));
+    assert!(
+        generated
+            .contains("g_object_bind_property(patch_settings, \"gtk-interface-reduced-motion\"")
+    );
+    assert!(
+        generated.contains(
+            "strcmp(value, \"springGentle\") == 0 || strcmp(value, \"spring_gentle\") == 0"
+        )
+    );
+    assert!(generated.contains("cubic-bezier(0.34, 1.36, 0.64, 1)"));
+    assert!(generated.contains("#flux-ui-action { transition-timing-function: %s; }"));
+
+    for (from, to, label) in [
+        (
+            "transitionMs: 240",
+            "transitionMs: -1",
+            "transition duration",
+        ),
+        (
+            "transitionDelayMs: 40",
+            "transitionDelayMs: -1",
+            "transition delay",
+        ),
+        (
+            "borderStyle: \"dashed\"",
+            "borderStyle: \"wavy\"",
+            "border style",
+        ),
+    ] {
+        let invalid_source = updated.replace(from, to);
+        fs::write(&entry, invalid_source)
+            .unwrap_or_else(|error| panic!("invalid {label} source should be writable: {error}"));
+        cache.invalidate_path(&entry);
+        let invalid = cache
+            .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+            .unwrap_or_else(|diagnostics| {
+                panic!("invalid {label} should remain semantically typed: {diagnostics:?}")
+            });
+        assert!(
+            invalid.development_ui_string_patch_from(&second).is_none(),
+            "target-invalid {label} must use normal rebuild validation"
+        );
+        assert!(
+            invalid.emit_c().is_err(),
+            "target-invalid {label} must still reach native validation"
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_invalid_image_fit_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-image-fit-patch-{}",

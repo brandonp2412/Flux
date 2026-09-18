@@ -1916,6 +1916,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "border_top_color" | "border_bottom_color" | "border_start_color" | "border_end_color" => {
             true
         }
+        "border_style" | "transition_easing" => true,
         "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
@@ -1999,7 +2000,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
             element.kind == "Text"
         }
         "size" => matches!(element.kind.as_str(), "Text" | "Button"),
-        "focus_scope" | "layout_transition_ms" => true,
+        "focus_scope" | "layout_transition_ms" | "transition_ms" | "transition_delay_ms" => true,
         "min_width" => !development_ui_element_has_property(element, "max_width"),
         "min_height" => !development_ui_element_has_property(element, "max_height"),
         "max_width" => !development_ui_element_has_property(element, "min_width"),
@@ -2083,6 +2084,19 @@ fn development_ui_string_literals(
                 {
                     return None;
                 }
+                if property_name == "border_style"
+                    && !matches!(
+                        value.as_str(),
+                        "none" | "solid" | "dashed" | "dotted" | "double"
+                    )
+                {
+                    return None;
+                }
+                if property_name == "transition_easing"
+                    && typecheck::transition_easing_css_value(value).is_none()
+                {
+                    return None;
+                }
                 if property_name == "keyboard_type" {
                     let valid = matches!(
                         value.as_str(),
@@ -2158,8 +2172,10 @@ fn development_ui_string_literals(
                 if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
                     return None;
                 }
-                if property_name == "layout_transition_ms"
-                    && !(0..=i64::from(i32::MAX)).contains(&value)
+                if matches!(
+                    property_name.as_str(),
+                    "layout_transition_ms" | "transition_ms" | "transition_delay_ms"
+                ) && !(0..=i64::from(i32::MAX)).contains(&value)
                 {
                     return None;
                 }
