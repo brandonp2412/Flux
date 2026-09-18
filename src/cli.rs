@@ -10739,6 +10739,17 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static pthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;";
     const CHANNEL_HEAD: &str = "static struct flux__channel_state *flux__channel_head = NULL;";
     const CHANNEL_NEXT_ID: &str = "static int64_t flux__channel_next_id = INT64_C(1);";
+    const WORKER_MUTEX: &str =
+        "static pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;";
+    const WORKER_CHANGED: &str =
+        "static pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER;";
+    const WORKER_HEAD: &str = "static struct flux__worker_state *flux__worker_head = NULL;";
+    const WORKER_NEXT_ID: &str = "static int64_t flux__worker_next_id = INT64_C(1);";
+    const WORKER_NEXT_SCOPE_ID: &str = "static int64_t flux__worker_next_scope_id = INT64_C(-1);";
+    const WORKER_CURRENT_ID: &str =
+        "static _Thread_local int64_t flux__worker_current_id = INT64_C(0);";
+    const WORKER_CURRENT_ERROR: &str =
+        "static _Thread_local const char *flux__worker_current_error = NULL;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10843,6 +10854,55 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         definitions.push_str(
             "\npthread_mutex_t flux__channel_registry_mutex = PTHREAD_MUTEX_INITIALIZER;\nstruct flux__channel_state *flux__channel_head = NULL;\nint64_t flux__channel_next_id = INT64_C(1);\n",
         );
+        isolated = true;
+    }
+
+    if prefix.contains(WORKER_MUTEX)
+        && prefix.contains(WORKER_HEAD)
+        && prefix.contains(WORKER_NEXT_ID)
+        && prefix.contains(WORKER_NEXT_SCOPE_ID)
+        && prefix.contains(WORKER_CURRENT_ID)
+        && prefix.contains(WORKER_CURRENT_ERROR)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                WORKER_MUTEX,
+                "extern pthread_mutex_t flux__worker_mutex;",
+                1,
+            )
+            .replacen(
+                WORKER_HEAD,
+                "extern struct flux__worker_state *flux__worker_head;",
+                1,
+            )
+            .replacen(WORKER_NEXT_ID, "extern int64_t flux__worker_next_id;", 1)
+            .replacen(
+                WORKER_NEXT_SCOPE_ID,
+                "extern int64_t flux__worker_next_scope_id;",
+                1,
+            )
+            .replacen(
+                WORKER_CURRENT_ID,
+                "extern _Thread_local int64_t flux__worker_current_id;",
+                1,
+            )
+            .replacen(
+                WORKER_CURRENT_ERROR,
+                "extern _Thread_local const char *flux__worker_current_error;",
+                1,
+            );
+        definitions.push_str(
+            "\npthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\nstruct flux__worker_state *flux__worker_head = NULL;\nint64_t flux__worker_next_id = INT64_C(1);\nint64_t flux__worker_next_scope_id = INT64_C(-1);\n_Thread_local int64_t flux__worker_current_id = INT64_C(0);\n_Thread_local const char *flux__worker_current_error = NULL;\n",
+        );
+        if prefix.contains(WORKER_CHANGED) {
+            partition_prefix = partition_prefix.replacen(
+                WORKER_CHANGED,
+                "extern pthread_cond_t flux__worker_changed;",
+                1,
+            );
+            definitions
+                .push_str("pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER;\n");
+        }
         isolated = true;
     }
 
@@ -13485,6 +13545,34 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the channel registry must have exactly one process-wide handle sequence"
+        );
+
+        let worker = "#include <pthread.h>\n#include <stdint.h>\nstruct flux__worker_state { int64_t id; struct flux__worker_state *next; };\nstatic pthread_mutex_t flux__worker_mutex = PTHREAD_MUTEX_INITIALIZER;\nstatic pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER;\nstatic struct flux__worker_state *flux__worker_head = NULL;\nstatic int64_t flux__worker_next_id = INT64_C(1);\nstatic int64_t flux__worker_next_scope_id = INT64_C(-1);\nstatic _Thread_local int64_t flux__worker_current_id = INT64_C(0);\nstatic _Thread_local const char *flux__worker_current_error = NULL;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let worker_units = partition_native_c_by_source(worker)
+            .expect("the worker registry should move into one shared runtime unit");
+        assert_eq!(worker_units.len(), 3);
+        assert_eq!(
+            worker_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines()
+                        .any(|line| line == "int64_t flux__worker_next_id = INT64_C(1);")
+                })
+                .count(),
+            1,
+            "the worker registry must have exactly one process-wide handle sequence"
+        );
+        assert_eq!(
+            worker_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines().any(|line| {
+                        line == "_Thread_local int64_t flux__worker_current_id = INT64_C(0);"
+                    })
+                })
+                .count(),
+            1,
+            "the current worker identity must have exactly one external thread-local definition"
         );
     }
 
