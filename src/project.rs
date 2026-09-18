@@ -1401,14 +1401,17 @@ impl ProjectAnalysisCache {
         }
 
         let function_cache = self.function_codegen.entry(cache_key.clone()).or_default();
-        if !matches!(
+        let incremental = matches!(
             self.last_outcome,
             Some(ProjectAnalysisOutcome::Incremental { .. })
-        ) {
+        );
+        if !incremental {
             function_cache.clear();
-            if let Some(durable) = read_function_codegen_cache(analysis, target, native_target) {
-                *function_cache = durable;
-            }
+        }
+        if (!incremental || function_cache.is_empty())
+            && let Some(durable) = read_function_codegen_cache(analysis, target, native_target)
+        {
+            *function_cache = durable;
         }
         let fingerprint = codegen_cache_fingerprint(analysis, native_target);
         persist_typed_ir_manifest(analysis, target, native_target, fingerprint);

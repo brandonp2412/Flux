@@ -41,6 +41,10 @@ impl FunctionCodegenCache {
         self.entries.clear();
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub(crate) fn encode_persisted(&self) -> Vec<u8> {
         const MAGIC: &[u8] = b"FLUXFC1\0";
 

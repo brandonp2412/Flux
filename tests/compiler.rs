@@ -36365,6 +36365,86 @@ fn project_analysis_cache_preserves_durable_codegen_reuse_across_runner_caches()
 }
 
 #[test]
+fn project_analysis_cache_hydrates_function_fragments_after_whole_c_hit() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-durable-run-hydration-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary durable hydration project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(
+        &entry,
+        "fn value() -> i64 { 1 }\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let overlays = std::collections::HashMap::new();
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first_analysis = first_cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("initial durable hydration analysis should succeed");
+    first_cache
+        .emit_c_for_target_cached(&entry, &first_analysis, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial durable hydration codegen should succeed");
+    assert_eq!(
+        first_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    let mut resumed_cache = fluxc::project::ProjectAnalysisCache::default();
+    let resumed_analysis = resumed_cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("resumed runner analysis should succeed");
+    resumed_cache
+        .emit_c_for_target_cached(
+            &entry,
+            &resumed_analysis,
+            fluxc::codegen::NativeTarget::Linux,
+        )
+        .expect("resumed runner should restore the whole generated-C artifact");
+    assert_eq!(
+        resumed_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Cached)
+    );
+
+    fs::write(
+        &entry,
+        "fn value() -> i64 { 2 }\nfn main() -> i64 { value() }\n",
+    )
+    .expect("body-only edit should be writable");
+    resumed_cache.invalidate_path(&entry);
+    let updated = resumed_cache
+        .analyze_with_overlays(&entry, &overlays)
+        .expect("body-only edit should analyze incrementally");
+    assert_eq!(
+        resumed_cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1
+        })
+    );
+    resumed_cache
+        .emit_c_for_target_cached(&entry, &updated, fluxc::codegen::NativeTarget::Linux)
+        .expect("body-only edit should hydrate durable per-function fragments");
+    assert_eq!(
+        resumed_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 1,
+            regenerated_functions: 1,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_runtime_fragments: 1,
+            regenerated_runtime_fragments: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
+        }),
+        "a whole-C cache hit must not make the next incremental edit regenerate unchanged functions"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_clear_discards_parsed_module_entries() {
     let root =
         std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));
