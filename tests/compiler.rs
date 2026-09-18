@@ -36239,6 +36239,86 @@ app Screen
 }
 
 #[test]
+fn development_ui_text_patch_accepts_only_static_root_text_edits() {
+    let root =
+        std::env::temp_dir().join(format!("flux-development-ui-patch-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn helper() -> i64 { 1 }
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "ready"
+    Button action at 2,1
+        text: "Go"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development patch analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("development patch entry should canonicalize");
+    let text_only = r#"
+
+
+fn helper() -> i64 { 1 }
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "updated"
+    Button action at 2,1
+        text: "Run"
+}
+app Screen
+"#;
+    fs::write(&entry, text_only).expect("text-only development patch edit should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("text-only development patch edit should analyze");
+    let patch = second
+        .development_ui_text_patch_from(&first)
+        .expect("static root text edits should be patchable");
+    assert_eq!(
+        patch,
+        vec![
+            fluxc::project::DevelopmentUiTextPatch {
+                element: "action".to_string(),
+                text: "Run".to_string(),
+            },
+            fluxc::project::DevelopmentUiTextPatch {
+                element: "label".to_string(),
+                text: "updated".to_string(),
+            },
+        ]
+    );
+
+    let function_edit = text_only
+        .replace("fn helper() -> i64 { 1 }", "fn helper() -> i64 { 2 }")
+        .replace(r#"text: "updated""#, r#"text: "changed again""#);
+    fs::write(&entry, function_edit).expect("function development patch edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("function development patch edit should analyze");
+    assert!(
+        third.development_ui_text_patch_from(&second).is_none(),
+        "function body edits must fall back to rebuilding rather than data-only UI patching"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",
@@ -54096,6 +54176,10 @@ app Screen
     assert!(generated.contains("fwrite(&flux__ui_state_count"));
     assert!(generated.contains("flux__ui_set_state_message(value)"));
     assert!(generated.contains("signal(SIGTERM, flux__ui_reload_signal)"));
+    assert!(generated.contains("signal(SIGUSR1, flux__ui_patch_signal)"));
+    assert!(generated.contains("FLUX_HOT_RELOAD_PATCH_PATH"));
+    assert!(generated.contains("memcmp(magic, \"FLXP\", 4)"));
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_label), value)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
 }
 

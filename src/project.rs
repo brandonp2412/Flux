@@ -33,6 +33,12 @@ pub struct DevelopmentAbi {
     pub fingerprint: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentUiTextPatch {
+    pub element: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectAnalysis {
     pub program: Program,
@@ -47,6 +53,35 @@ impl ProjectAnalysis {
             version: DEVELOPMENT_ABI_VERSION,
             fingerprint: development_abi_fingerprint(self),
         }
+    }
+
+    pub fn development_ui_text_patch_from(
+        &self,
+        previous: &ProjectAnalysis,
+    ) -> Option<Vec<DevelopmentUiTextPatch>> {
+        if self.development_abi() != previous.development_abi() {
+            return None;
+        }
+        let current = development_ui_text_literals(self)?;
+        let previous_literals = development_ui_text_literals(previous)?;
+        if current.keys().ne(previous_literals.keys()) {
+            return None;
+        }
+        if development_ui_text_masked_sources(self)?
+            != development_ui_text_masked_sources(previous)?
+        {
+            return None;
+        }
+
+        Some(
+            current
+                .into_iter()
+                .filter_map(|(element, text)| {
+                    (previous_literals.get(&element) != Some(&text))
+                        .then_some(DevelopmentUiTextPatch { element, text })
+                })
+                .collect(),
+        )
     }
 
     pub fn emit_c(&self) -> Result<String, Diagnostic> {
@@ -1823,6 +1858,112 @@ fn module_type_surface(
     }
 
     surface
+}
+
+fn development_ui_text_literals(analysis: &ProjectAnalysis) -> Option<BTreeMap<String, String>> {
+    let application = analysis.program.application.as_ref()?;
+    let view = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)?;
+    let mut literals = BTreeMap::new();
+    for element in &view.elements {
+        if !matches!(element.kind.as_str(), "Text" | "Button") {
+            continue;
+        }
+        if element.kind == "Text"
+            && element
+                .properties
+                .iter()
+                .any(|property| property.name == "rich_text")
+        {
+            continue;
+        }
+        let Some(property) = element
+            .properties
+            .iter()
+            .find(|property| property.name == "text")
+        else {
+            continue;
+        };
+        let ExprKind::Str(text) = &property.value.kind else {
+            continue;
+        };
+        if text.as_bytes().contains(&0) {
+            return None;
+        }
+        literals.insert(element.name.clone(), text.clone());
+    }
+    Some(literals)
+}
+
+fn development_ui_text_masked_sources(
+    analysis: &ProjectAnalysis,
+) -> Option<Vec<(PathBuf, String, String)>> {
+    let application = analysis.program.application.as_ref()?;
+    let view = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)?;
+    let masks = view
+        .elements
+        .iter()
+        .filter(|element| matches!(element.kind.as_str(), "Text" | "Button"))
+        .filter(|element| {
+            element.kind != "Text"
+                || !element
+                    .properties
+                    .iter()
+                    .any(|property| property.name == "rich_text")
+        })
+        .filter_map(|element| {
+            element
+                .properties
+                .iter()
+                .find(|property| property.name == "text")
+        })
+        .filter(|property| matches!(property.value.kind, ExprKind::Str(_)))
+        .map(|property| property.value.span)
+        .collect::<Vec<_>>();
+
+    let mut sources = analysis.sources.iter().collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+    sources
+        .into_iter()
+        .map(|source| {
+            let mut text = source.text.clone();
+            let mut ranges = masks
+                .iter()
+                .copied()
+                .filter(|span| span.source_id == source.source_id)
+                .map(|span| source_span_byte_range(&text, span))
+                .collect::<Option<Vec<_>>>()?;
+            ranges.sort_by(|left, right| right.0.cmp(&left.0));
+            for (start, end) in ranges {
+                text.replace_range(start..end, "\"__flux_hot_text__\"");
+            }
+            let canonical = formatter::format_source(&text).ok()?;
+            Some((source.path.clone(), source.module_name.clone(), canonical))
+        })
+        .collect()
+}
+
+fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usize)> {
+    let line_start = if span.line <= 1 {
+        0
+    } else {
+        source
+            .char_indices()
+            .filter(|(_, ch)| *ch == char::from(10))
+            .nth(span.line - 2)
+            .map(|(index, _)| index + 1)?
+    };
+    let start = line_start.checked_add(span.column.checked_sub(1)?)?;
+    let end = start.checked_add(span.length)?;
+    (end <= source.len() && source.is_char_boundary(start) && source.is_char_boundary(end))
+        .then_some((start, end))
 }
 
 fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {

@@ -5030,7 +5030,9 @@ fn demangle_profile_symbols(report: &str) -> String {
 
 fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
     let reload_state_path = development_reload_state_path(target);
+    let hot_reload_patch_path = development_hot_reload_patch_path(target);
     let _ = fs::remove_file(&reload_state_path);
+    let _ = fs::remove_file(&hot_reload_patch_path);
     let (quit_tx, quit_rx) = mpsc::channel();
     if io::stdin().is_terminal() {
         thread::spawn(move || {
@@ -5053,7 +5055,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         mode,
         "building initial process",
     );
-    let (mut child, mut binary, mut watch_paths, mut development_abi) =
+    let (mut child, mut binary, mut watch_paths, mut development_abi, mut running_analysis) =
         match start_development_build(target, generation, mode, &mut analysis_cache) {
             Ok(started) => started,
             Err(error) => {
@@ -5090,6 +5092,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         if quit_rx.try_recv().is_ok() {
             stop_child(&mut child);
             let _ = fs::remove_file(&reload_state_path);
+            let _ = fs::remove_file(&hot_reload_patch_path);
             eprintln!("run: stopped");
             return Ok(());
         }
@@ -5119,7 +5122,13 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             continue;
         }
 
-        fingerprints = debounce_changes(&watch_paths, current);
+        let next_fingerprints = debounce_changes(&watch_paths, current);
+        let changed_paths = watch_paths
+            .iter()
+            .filter(|path| fingerprints.get(*path) != next_fingerprints.get(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        fingerprints = next_fingerprints;
         let reload_started = Instant::now();
         let analysis_started = Instant::now();
         write_development_status(
@@ -5158,6 +5167,66 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let abi_compatible = next_development_abi == development_abi;
         let analysis_ms = analysis_started.elapsed().as_millis();
         let sources = analysis.sources.clone();
+        let source_paths = sources
+            .iter()
+            .map(|source| source.path.clone())
+            .collect::<HashSet<_>>();
+        let source_only_change = !changed_paths.is_empty()
+            && changed_paths.iter().all(|path| source_paths.contains(path));
+        if source_only_change
+            && abi_compatible
+            && let Some(process) = child.as_ref()
+            && let Some(patch) = analysis.development_ui_text_patch_from(&running_analysis)
+        {
+            let apply_started = Instant::now();
+            let dispatched = write_development_ui_text_patch(&hot_reload_patch_path, &patch)
+                .is_ok()
+                && signal_development_ui_patch(process);
+            if dispatched {
+                generation += 1;
+                let timing = DevelopmentReloadTiming {
+                    analysis_ms,
+                    codegen_ms: 0,
+                    native_ms: 0,
+                    restart_ms: 0,
+                    apply_ms: apply_started.elapsed().as_millis(),
+                    total_ms: reload_started.elapsed().as_millis(),
+                    abi_compatible: true,
+                    abi: next_development_abi,
+                    reload_method: "in_process_text",
+                };
+                development_abi = next_development_abi;
+                running_analysis = analysis;
+                watch_paths = project_watch_paths(target, &sources);
+                fingerprints = watch_fingerprints(&watch_paths);
+                last_analysis_outcome = analysis_outcome;
+                last_codegen_outcome = None;
+                last_reload_timing = Some(timing);
+                write_development_status_with_build(
+                    target,
+                    "hot_applied",
+                    generation,
+                    mode,
+                    "applied compatible static UI text change in process",
+                    last_analysis_outcome,
+                    last_codegen_outcome,
+                    last_reload_timing,
+                );
+                status_state = "hot_applied";
+                eprintln!(
+                    "reload: hot-applied {} static UI text change{} without restarting",
+                    patch.len(),
+                    if patch.len() == 1 { "" } else { "s" }
+                );
+                eprintln!(
+                    "reload: ready in {}ms (analysis {}ms, apply {}ms)",
+                    timing.total_ms, timing.analysis_ms, timing.apply_ms
+                );
+                continue;
+            }
+            let _ = fs::remove_file(&hot_reload_patch_path);
+            eprintln!("reload: in-process UI patch unavailable; falling back to rebuild");
+        }
         let codegen_started = Instant::now();
         let generated = match analysis_cache.emit_c_for_target_cached(
             target,
@@ -5210,11 +5279,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             codegen_ms,
             native_ms,
             restart_ms,
+            apply_ms: 0,
             total_ms: reload_started.elapsed().as_millis(),
             abi_compatible,
             abi: next_development_abi,
+            reload_method: "restart",
         };
         development_abi = next_development_abi;
+        running_analysis = analysis;
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
@@ -5268,9 +5340,11 @@ struct DevelopmentReloadTiming {
     codegen_ms: u128,
     native_ms: u128,
     restart_ms: u128,
+    apply_ms: u128,
     total_ms: u128,
     abi_compatible: bool,
     abi: fluxc::project::DevelopmentAbi,
+    reload_method: &'static str,
 }
 
 fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
@@ -5347,12 +5421,14 @@ fn write_development_status_with_build(
     let timing_fields = timing
         .map(|timing| {
             format!(
-                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"reload_total_ms\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\"",
+                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"apply_ms\":{},\"reload_total_ms\":{},\"reload_method\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\"",
                 timing.analysis_ms,
                 timing.codegen_ms,
                 timing.native_ms,
                 timing.restart_ms,
+                timing.apply_ms,
                 timing.total_ms,
+                json_string(timing.reload_method),
                 timing.abi_compatible,
                 timing.abi.version,
                 timing.abi.fingerprint
@@ -5416,6 +5492,7 @@ fn start_development_build(
         PathBuf,
         Vec<PathBuf>,
         fluxc::project::DevelopmentAbi,
+        fluxc::project::ProjectAnalysis,
     ),
     CliError,
 > {
@@ -5445,7 +5522,7 @@ fn start_development_build(
     let child = spawn_development_binary(&binary, target)?;
     let watch_paths = project_watch_paths(target, &sources);
     let development_abi = analysis.development_abi();
-    Ok((Some(child), binary, watch_paths, development_abi))
+    Ok((Some(child), binary, watch_paths, development_abi, analysis))
 }
 
 fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliError> {
@@ -5460,6 +5537,10 @@ fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliErro
     command.env(
         "FLUX_RELOAD_STATE_PATH",
         development_reload_state_path(target),
+    );
+    command.env(
+        "FLUX_HOT_RELOAD_PATCH_PATH",
+        development_hot_reload_patch_path(target),
     );
     if let Some(manifest_path) = manifest_path
         && let Ok(manifest) = fluxc::project::read_manifest(&manifest_path)
@@ -5526,6 +5607,77 @@ fn development_reload_state_path(target: &Path) -> PathBuf {
         std::process::id()
     ));
     path
+}
+
+fn development_hot_reload_patch_path(target: &Path) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let target_hash = target.to_string_lossy().bytes().fold(0_u64, |hash, byte| {
+        hash.wrapping_mul(16777619).wrapping_add(u64::from(byte))
+    });
+    path.push(format!(
+        "fluxc-run-{}-{target_hash:016x}.patch",
+        std::process::id()
+    ));
+    path
+}
+
+fn write_development_ui_text_patch(
+    path: &Path,
+    patch: &[fluxc::project::DevelopmentUiTextPatch],
+) -> io::Result<()> {
+    let count = u32::try_from(patch.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many UI patch records"))?;
+    let temporary = path.with_extension(format!("patch-tmp-{}", std::process::id()));
+    let result = (|| {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(b"FLXP")?;
+        file.write_all(&1_u32.to_ne_bytes())?;
+        file.write_all(&count.to_ne_bytes())?;
+        for record in patch {
+            let name = record.element.as_bytes();
+            let value = record.text.as_bytes();
+            let name_length = u32::try_from(name.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UI patch element name is too long",
+                )
+            })?;
+            let value_length = u32::try_from(value.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "UI patch text is too long")
+            })?;
+            if name_length > 1024 || value_length > 65536 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UI patch record exceeds the native reload bounds",
+                ));
+            }
+            file.write_all(&name_length.to_ne_bytes())?;
+            file.write_all(&value_length.to_ne_bytes())?;
+            file.write_all(name)?;
+            file.write_all(value)?;
+        }
+        file.sync_all()?;
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn signal_development_ui_patch(process: &Child) -> bool {
+    #[cfg(unix)]
+    {
+        return Command::new("kill")
+            .args(["-USR1", &process.id().to_string()])
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process;
+        false
+    }
 }
 
 fn development_binary_path(generation: usize) -> PathBuf {
@@ -11445,7 +11597,7 @@ mod tests {
         symbolize_options, test_options, validate_android_publish_manifest,
         validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
         web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
-        windows_publish_options, write_native_cache_metadata,
+        windows_publish_options, write_development_ui_text_patch, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -12623,6 +12775,46 @@ app OverlayDemo(title: "Overlay")
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn development_ui_text_patch_uses_bounded_versioned_binary_records() {
+        let root = std::env::temp_dir().join(format!(
+            "flux-development-ui-patch-record-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("patch record directory should be writable");
+        let path = root.join("reload.patch");
+        let patch = vec![
+            crate::project::DevelopmentUiTextPatch {
+                element: "title".to_string(),
+                text: "Ready".to_string(),
+            },
+            crate::project::DevelopmentUiTextPatch {
+                element: "action".to_string(),
+                text: "Run".to_string(),
+            },
+        ];
+
+        write_development_ui_text_patch(&path, &patch)
+            .expect("development UI text patch should be writable");
+
+        let mut expected = b"FLXP".to_vec();
+        expected.extend_from_slice(&1_u32.to_ne_bytes());
+        expected.extend_from_slice(&2_u32.to_ne_bytes());
+        for (name, value) in [("title", "Ready"), ("action", "Run")] {
+            expected.extend_from_slice(&(name.len() as u32).to_ne_bytes());
+            expected.extend_from_slice(&(value.len() as u32).to_ne_bytes());
+            expected.extend_from_slice(name.as_bytes());
+            expected.extend_from_slice(value.as_bytes());
+        }
+        assert_eq!(
+            std::fs::read(&path).expect("patch record should be readable"),
+            expected
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
