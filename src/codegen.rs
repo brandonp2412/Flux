@@ -14876,6 +14876,12 @@ fn emit_linux_gtk_application(
                 if submit_on_enter { "true" } else { "false" }
             ));
         }
+        if view_property(element, "drag_text").is_some() {
+            out.push_str(&format!(
+                "static GtkDragSource *flux__ui_drag_source_{} = NULL;\n",
+                element.name
+            ));
+        }
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -15086,6 +15092,14 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"tooltip\") == 0 && {widget} != NULL) gtk_widget_set_tooltip_text({widget}, value);",
                 c_string(&element.name)
+            ));
+        }
+        if view_property(element, "drag_text").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_{} != NULL) {{ GdkContentProvider *drag_content = gdk_content_provider_new_typed(G_TYPE_STRING, value); if (drag_content != NULL) {{ gtk_drag_source_set_content(flux__ui_drag_source_{}, drag_content); g_object_unref(drag_content); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name
             ));
         }
         if element.kind == "TextInput"
@@ -17165,10 +17179,10 @@ fn emit_linux_gtk_application(
                     "dragText must be a compile-time string value",
                 ));
             };
-            let source = format!("flux__drag_source_{}", element.name);
+            let source = format!("flux__ui_drag_source_{}", element.name);
             let content = format!("flux__drag_content_{}", element.name);
             out.push_str(&format!(
-                "    GdkContentProvider *{content} = gdk_content_provider_new_typed(G_TYPE_STRING, {});\n    GtkDragSource *{source} = gtk_drag_source_new();\n    gtk_drag_source_set_actions({source}, GDK_ACTION_COPY);\n    gtk_drag_source_set_content({source}, {content});\n    g_object_unref({content});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({source}));\n",
+                "    GdkContentProvider *{content} = gdk_content_provider_new_typed(G_TYPE_STRING, {});\n    {source} = gtk_drag_source_new();\n    gtk_drag_source_set_actions({source}, GDK_ACTION_COPY);\n    gtk_drag_source_set_content({source}, {content});\n    g_object_unref({content});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({source}));\n",
                 c_string(&text),
             ));
         }

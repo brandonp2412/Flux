@@ -38895,6 +38895,65 @@ app Form
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_drag_text_content() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-drag-text-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary dragText patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view DragDrop {
+    grid columns: 1fr
+    grid rows: auto
+    Text source at 1,1
+        text: "Drag"
+        dragText: "before"
+}
+app DragDrop
+"#;
+    fs::write(&entry, initial).expect("initial dragText patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial dragText patch analysis should succeed");
+
+    let updated = initial.replace("dragText: \"before\"", "dragText: \"after\"");
+    fs::write(&entry, updated).expect("updated dragText patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("dragText patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated dragText patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("dragText edits should hot-apply to the existing native drag source");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "source");
+    assert_eq!(patch[0].property, "drag_text");
+    assert_eq!(patch[0].value, "after");
+
+    let generated = second
+        .emit_c()
+        .expect("dragText patch fixture should lower for Linux");
+    assert!(generated.contains("static GtkDragSource *flux__ui_drag_source_source = NULL"));
+    assert!(generated.contains("flux__ui_drag_source_source = gtk_drag_source_new()"));
+    assert!(
+        generated.contains(
+            "strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_source != NULL"
+        )
+    );
+    assert!(generated.contains("gdk_content_provider_new_typed(G_TYPE_STRING, value)"));
+    assert!(
+        generated
+            .contains("gtk_drag_source_set_content(flux__ui_drag_source_source, drag_content)")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",
@@ -44765,7 +44824,7 @@ app DragDrop
     assert!(linux.contains("gdk_content_provider_new_typed(G_TYPE_STRING, \"horse-profile\")"));
     assert!(linux.contains("gtk_drag_source_new()"));
     assert!(
-        linux.contains("gtk_drag_source_set_actions(flux__drag_source_source, GDK_ACTION_COPY)")
+        linux.contains("gtk_drag_source_set_actions(flux__ui_drag_source_source, GDK_ACTION_COPY)")
     );
     assert!(linux.contains("gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_COPY)"));
     assert!(linux.contains("G_CALLBACK(flux__ui_drop_target)"));

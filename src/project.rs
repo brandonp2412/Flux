@@ -1928,6 +1928,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
         }
+        "drag_text" => true,
         "placeholder" => {
             element.kind == "TextInput"
                 && element
