@@ -2006,6 +2006,17 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "max_width" => !development_ui_element_has_property(element, "min_width"),
         "max_height" => !development_ui_element_has_property(element, "min_height"),
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
+        "border_width" => ![
+            "border_top_width",
+            "border_bottom_width",
+            "border_start_width",
+            "border_end_width",
+        ]
+        .iter()
+        .any(|property| development_ui_element_has_property(element, property)),
+        "border_top_width" | "border_bottom_width" | "border_start_width" | "border_end_width" => {
+            true
+        }
         "padding" => ![
             "padding_top",
             "padding_bottom",
@@ -2203,6 +2214,11 @@ fn development_ui_string_literals(
                         | "margin_bottom"
                         | "margin_start"
                         | "margin_end"
+                        | "border_width"
+                        | "border_top_width"
+                        | "border_bottom_width"
+                        | "border_start_width"
+                        | "border_end_width"
                         | "padding"
                         | "padding_top"
                         | "padding_bottom"

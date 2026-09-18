@@ -37339,6 +37339,125 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_border_widths() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-border-width-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary border width patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button base at 1,1
+        text: "Base"
+        borderWidth: 1
+        borderStyle: "solid"
+    Button detailed at 2,1
+        text: "Detailed"
+        borderTopWidth: 2
+        borderEndWidth: 3
+        borderStyle: "solid"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial border width patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial border width patch analysis should succeed");
+
+    let updated = initial
+        .replace("borderWidth: 1", "borderWidth: 4")
+        .replace("borderTopWidth: 2", "borderTopWidth: 5")
+        .replace("borderEndWidth: 3", "borderEndWidth: 6");
+    fs::write(&entry, &updated).expect("updated border width patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("border width patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated border width patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe border width edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for (element, property, value) in [
+        ("base", "border_width", "4"),
+        ("detailed", "border_top_width", "5"),
+        ("detailed", "border_end_width", "6"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing border width hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 3);
+
+    let generated = second
+        .emit_c()
+        .expect("border width patch fixture should lower for Linux");
+    for (provider, css) in [
+        (
+            "flux__ui_hot_style_base_border_width",
+            "#flux-ui-base { border-width: %lldpx; }",
+        ),
+        (
+            "flux__ui_hot_style_detailed_border_top_width",
+            "#flux-ui-detailed { border-top-width: %lldpx; }",
+        ),
+        (
+            "flux__ui_hot_style_detailed_border_end_width",
+            "#flux-ui-detailed { border-right-width: %lldpx; }",
+        ),
+    ] {
+        assert!(
+            generated.contains(&format!("static GtkCssProvider *{provider} = NULL")),
+            "missing bounded hot-style provider {provider}"
+        );
+        assert!(
+            generated.contains(&format!(
+                "gtk_css_provider_load_from_data({provider}, patch_css, -1)"
+            )),
+            "hot-style provider {provider} should be reloaded in place"
+        );
+        assert!(generated.contains(css), "missing CSS patch template {css}");
+    }
+
+    let overridden_initial = initial.replace(
+        "borderWidth: 1",
+        "borderWidth: 1\n        borderTopWidth: 2",
+    );
+    fs::write(&entry, &overridden_initial)
+        .expect("overridden border width source should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden border width source should analyze");
+    let overridden_updated = overridden_initial.replace("borderWidth: 1", "borderWidth: 4");
+    fs::write(&entry, overridden_updated)
+        .expect("overridden base border width edit should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden border width edit should analyze");
+    assert!(
+        overridden_second
+            .development_ui_string_patch_from(&overridden_first)
+            .is_none(),
+        "base border width edits with explicit edge overrides must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_common_css_colors() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-style-color-patch-{}",

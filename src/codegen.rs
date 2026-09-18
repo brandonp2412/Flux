@@ -14699,6 +14699,11 @@ fn emit_linux_gtk_application(
             ));
         }
         for property_name in [
+            "border_width",
+            "border_top_width",
+            "border_bottom_width",
+            "border_start_width",
+            "border_end_width",
             "padding",
             "padding_top",
             "padding_bottom",
@@ -15110,6 +15115,11 @@ fn emit_linux_gtk_application(
             }
         }
         for property_name in [
+            "border_width",
+            "border_top_width",
+            "border_bottom_width",
+            "border_start_width",
+            "border_end_width",
             "padding",
             "padding_top",
             "padding_bottom",
@@ -19062,6 +19072,22 @@ fn linux_hot_css_i64_property(
     property_name: &str,
 ) -> Option<&'static str> {
     match property_name {
+        "border_width"
+            if ![
+                "border_top_width",
+                "border_bottom_width",
+                "border_start_width",
+                "border_end_width",
+            ]
+            .iter()
+            .any(|property| view_property(element, property).is_some()) =>
+        {
+            Some("border-width")
+        }
+        "border_top_width" => Some("border-top-width"),
+        "border_bottom_width" => Some("border-bottom-width"),
+        "border_start_width" => Some("border-left-width"),
+        "border_end_width" => Some("border-right-width"),
         "padding"
             if ![
                 "padding_top",
