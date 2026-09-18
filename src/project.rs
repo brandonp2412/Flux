@@ -1941,6 +1941,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
             !development_ui_element_has_property(element, "accessibility_description")
                 && !development_ui_element_has_property(element, "accessibility_action_label")
         }
+        "status" => true,
         "align_x" | "align_y" => true,
         _ => false,
     }
@@ -2050,6 +2051,11 @@ fn development_ui_string_literals(
                     if !valid {
                         return None;
                     }
+                }
+                if property_name == "status"
+                    && !typecheck::UI_PRESENTATION_STATES.contains(&value.as_str())
+                {
+                    return None;
                 }
                 value.clone()
             } else if development_ui_bool_property_is_patchable(element, &property_name) {

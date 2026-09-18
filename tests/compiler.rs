@@ -36753,6 +36753,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         maxWidthChars: 20
         alignX: "start"
         alignY: "start"
+        status: "loading"
         margin: 4
         marginTop: 8
     Button action at 2,1
@@ -36807,6 +36808,7 @@ app Screen
         maxWidthChars: 40
         alignX: "center"
         alignY: "end"
+        status: "error"
         margin: 6
         marginTop: 10
     Button action at 2,1
@@ -36878,6 +36880,7 @@ app Screen
         ("label", "max_width_chars", "40"),
         ("label", "align_x", "center"),
         ("label", "align_y", "end"),
+        ("label", "status", "error"),
         ("label", "margin", "6"),
         ("label", "margin_top", "10"),
         ("action", "text", "Updated action"),
@@ -36907,7 +36910,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 35);
+    assert_eq!(patch.len(), 36);
 
     let generated = second
         .emit_c()
@@ -36944,6 +36947,11 @@ app Screen
     assert!(generated.contains("gtk_widget_set_halign(flux__ui_label, alignment)"));
     assert!(generated.contains("strcmp(property, \"align_y\") == 0"));
     assert!(generated.contains("gtk_widget_set_valign(flux__ui_label, alignment)"));
+    assert!(generated.contains("strcmp(property, \"status\") == 0 && flux__ui_label != NULL"));
+    assert!(
+        generated.contains("gtk_widget_remove_css_class(flux__ui_label, \"flux-status-loading\")")
+    );
+    assert!(generated.contains("gtk_widget_add_css_class(flux__ui_label, \"flux-status-error\")"));
     assert!(generated.contains("strcmp(property, \"margin\") == 0 && flux__ui_label != NULL"));
     assert_eq!(
         generated
