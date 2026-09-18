@@ -14741,6 +14741,20 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
+                if view_property(element, "keyboard_type").is_some() {
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    let setter = if multiline {
+                        format!("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW({widget}), input_purpose);")
+                    } else {
+                        format!("gtk_entry_set_input_purpose(GTK_ENTRY({widget}), input_purpose);")
+                    };
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"keyboard_type\") == 0 && {widget} != NULL) {{ GtkInputPurpose input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; bool input_purpose_valid = true; if (strcmp(value, \"text\") == 0) input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; else if (strcmp(value, \"email\") == 0) input_purpose = GTK_INPUT_PURPOSE_EMAIL; else if (strcmp(value, \"number\") == 0) input_purpose = GTK_INPUT_PURPOSE_DIGITS; else if (strcmp(value, \"decimal\") == 0) input_purpose = GTK_INPUT_PURPOSE_NUMBER; else if (strcmp(value, \"phone\") == 0) input_purpose = GTK_INPUT_PURPOSE_PHONE; else if (strcmp(value, \"url\") == 0) input_purpose = GTK_INPUT_PURPOSE_URL; else input_purpose_valid = false; if (input_purpose_valid) {setter} }}",
+                        c_string(&element.name)
+                    ));
+                }
                 if view_property(element, "max_length").is_some() {
                     let multiline = view_property(element, "multiline")
                         .and_then(|property| static_expr_bool(&property.value, signatures))

@@ -1916,6 +1916,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                     })
                     .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
         }
+        "keyboard_type" => element.kind == "TextInput",
         "validation_state" => element.kind == "TextInput",
         "validation_message" => {
             element.kind == "TextInput"
@@ -1995,6 +1996,15 @@ fn development_ui_string_literals(
                 if value.as_bytes().contains(&0) {
                     return None;
                 }
+                if property_name == "keyboard_type" {
+                    let valid = matches!(
+                        value.as_str(),
+                        "text" | "email" | "number" | "decimal" | "phone" | "url"
+                    );
+                    if !valid {
+                        return None;
+                    }
+                }
                 value.clone()
             } else if development_ui_bool_property_is_patchable(element, &property_name) {
                 let ExprKind::Bool(value) = property.value.kind else {
@@ -2009,6 +2019,9 @@ fn development_ui_string_literals(
                 let ExprKind::Int(value) = property.value.kind else {
                     continue;
                 };
+                if property_name == "max_length" && !(0..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
                 value.to_string()
             } else {
                 continue;

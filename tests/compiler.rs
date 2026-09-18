@@ -36655,10 +36655,12 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     TextInput input at 4,1
         readOnly: false
         password: false
+        keyboardType: "text"
         maxLength: 12
         multiline: false
     TextInput notes at 5,1
         readOnly: false
+        keyboardType: "text"
         multiline: true
 }
 app Screen
@@ -36686,10 +36688,12 @@ app Screen
     TextInput input at 4,1
         readOnly: true
         password: true
+        keyboardType: "email"
         maxLength: 24
         multiline: false
     TextInput notes at 5,1
         readOnly: true
+        keyboardType: "url"
         multiline: true
 }
 app Screen
@@ -36728,8 +36732,10 @@ app Screen
         ("image", "can_shrink", "0"),
         ("input", "read_only", "1"),
         ("input", "password", "1"),
+        ("input", "keyboard_type", "email"),
         ("input", "max_length", "24"),
         ("notes", "read_only", "1"),
+        ("notes", "keyboard_type", "url"),
     ] {
         assert_eq!(
             patch.get(&(element.to_string(), property.to_string())),
@@ -36737,7 +36743,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 14);
+    assert_eq!(patch.len(), 16);
 
     let generated = second
         .emit_c()
@@ -36768,12 +36774,18 @@ app Screen
     );
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1"));
     assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_input), !bool_value)"));
-    assert!(generated.contains(
-        "gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_input), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM)"
-    ));
     assert!(
         generated
             .contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_notes), !bool_value)")
+    );
+    assert!(generated.contains("strcmp(property, \"keyboard_type\") == 0"));
+    assert!(
+        generated.contains("gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_input), input_purpose)")
+    );
+    assert!(
+        generated.contains(
+            "gtk_text_view_set_input_purpose(GTK_TEXT_VIEW(flux__ui_notes), input_purpose)"
+        )
     );
     assert!(generated.contains("strcmp(property, \"max_length\") == 0"));
     assert!(
@@ -36831,6 +36843,74 @@ app Screen
     assert!(
         second.development_ui_string_patch_from(&first).is_none(),
         "multiline maxLength is callback-backed and must use controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-invalid-text-input-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary invalid TextInput patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput query at 1,1
+        keyboardType: "text"
+        maxLength: 12
+    TextInput notes at 2,1
+        keyboardType: "url"
+        multiline: true
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial TextInput patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput patch analysis should succeed");
+    let entry = fs::canonicalize(entry).expect("TextInput patch entry should canonicalize");
+
+    let invalid_keyboard =
+        initial.replace("keyboardType: \"text\"", "keyboardType: \"unsupported\"");
+    fs::write(&entry, invalid_keyboard).expect("invalid keyboard source should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_keyboard = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid keyboard value remains semantically a string");
+    assert!(
+        invalid_keyboard
+            .development_ui_string_patch_from(&first)
+            .is_none(),
+        "target-invalid keyboardType must use normal rebuild validation"
+    );
+    assert!(
+        invalid_keyboard.emit_c().is_err(),
+        "target-invalid keyboardType must still reach native validation"
+    );
+
+    let invalid_max_length = initial.replace("maxLength: 12", "maxLength: 2147483648");
+    fs::write(&entry, invalid_max_length).expect("invalid max-length source should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_max_length = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("out-of-range maxLength remains semantically i64");
+    assert!(
+        invalid_max_length
+            .development_ui_string_patch_from(&first)
+            .is_none(),
+        "out-of-range maxLength must use normal rebuild validation"
+    );
+    assert!(
+        invalid_max_length.emit_c().is_err(),
+        "out-of-range maxLength must still reach native validation"
     );
 
     let _ = fs::remove_dir_all(root);
