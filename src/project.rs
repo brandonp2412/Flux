@@ -1959,6 +1959,22 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
     }
 }
 
+fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &str) -> bool {
+    match property {
+        "max_length" => {
+            element.kind == "TextInput"
+                && element
+                    .properties
+                    .iter()
+                    .find(|property| {
+                        typecheck::source_name_to_internal(&property.name) == "multiline"
+                    })
+                    .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
+        }
+        _ => false,
+    }
+}
+
 fn development_ui_string_literals(
     analysis: &ProjectAnalysis,
 ) -> Option<BTreeMap<(String, String), String>> {
@@ -1989,6 +2005,11 @@ fn development_ui_string_literals(
                 } else {
                     "0".to_string()
                 }
+            } else if development_ui_i64_property_is_patchable(element, &property_name) {
+                let ExprKind::Int(value) = property.value.kind else {
+                    continue;
+                };
+                value.to_string()
             } else {
                 continue;
             };
@@ -2015,9 +2036,15 @@ fn development_ui_string_masked_sources(
                 let property_name = typecheck::source_name_to_internal(&property.name);
                 development_ui_string_property_is_patchable(element, &property_name)
                     || development_ui_bool_property_is_patchable(element, &property_name)
+                    || development_ui_i64_property_is_patchable(element, &property_name)
             })
         })
-        .filter(|property| matches!(property.value.kind, ExprKind::Str(_) | ExprKind::Bool(_)))
+        .filter(|property| {
+            matches!(
+                property.value.kind,
+                ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_)
+            )
+        })
         .map(|property| property.value.span)
         .collect::<Vec<_>>();
 

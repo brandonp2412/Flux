@@ -36623,13 +36623,14 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_covers_safe_static_boolean_properties() {
+fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
-        "flux-development-ui-bool-patch-{}",
+        "flux-development-ui-scalar-patch-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temporary development bool patch project should be writable");
+    fs::create_dir_all(&root)
+        .expect("temporary development scalar patch project should be writable");
     let entry = root.join("main.flux");
     let initial = r#"view Screen {
     grid columns: 1fr
@@ -36654,6 +36655,7 @@ fn development_ui_string_patch_covers_safe_static_boolean_properties() {
     TextInput input at 4,1
         readOnly: false
         password: false
+        maxLength: 12
         multiline: false
     TextInput notes at 5,1
         readOnly: false
@@ -36684,6 +36686,7 @@ app Screen
     TextInput input at 4,1
         readOnly: true
         password: true
+        maxLength: 24
         multiline: false
     TextInput notes at 5,1
         readOnly: true
@@ -36691,19 +36694,19 @@ app Screen
 }
 app Screen
 "#;
-    fs::write(&entry, initial).expect("development bool patch source should be writable");
+    fs::write(&entry, initial).expect("development scalar patch source should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("initial development bool patch analysis should succeed");
+        .expect("initial development scalar patch analysis should succeed");
 
-    fs::write(&entry, updated).expect("development bool patch edit should be writable");
+    fs::write(&entry, updated).expect("development scalar patch edit should be writable");
     let entry = fs::canonicalize(entry).expect("development bool patch entry should canonicalize");
     cache.invalidate_path(&entry);
     let second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("updated development bool patch analysis should succeed");
+        .expect("updated development scalar patch analysis should succeed");
     let patch = second
         .development_ui_string_patch_from(&first)
         .expect("safe static boolean edits should hot-apply");
@@ -36725,6 +36728,7 @@ app Screen
         ("image", "can_shrink", "0"),
         ("input", "read_only", "1"),
         ("input", "password", "1"),
+        ("input", "max_length", "24"),
         ("notes", "read_only", "1"),
     ] {
         assert_eq!(
@@ -36733,7 +36737,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 13);
+    assert_eq!(patch.len(), 14);
 
     let generated = second
         .emit_c()
@@ -36771,6 +36775,11 @@ app Screen
         generated
             .contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_notes), !bool_value)")
     );
+    assert!(generated.contains("strcmp(property, \"max_length\") == 0"));
+    assert!(
+        generated
+            .contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_input), (int)integer_value)")
+    );
 
     let dynamic = updated.replace("visible: false", "visible: windowIsCompact");
     fs::write(&entry, dynamic).expect("dynamic bool edit should be writable");
@@ -36781,6 +36790,47 @@ app Screen
     assert!(
         third.development_ui_string_patch_from(&second).is_none(),
         "changing a static patchable bool into a runtime expression must fall back to rebuild"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_restarts_for_multiline_max_length_edits() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-multiline-max-length-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary multiline max-length project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput notes at 1,1
+        multiline: true
+        maxLength: 12
+}
+app Screen
+"#;
+    let updated = initial.replace("maxLength: 12", "maxLength: 24");
+    fs::write(&entry, initial).expect("initial multiline max-length source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial multiline max-length analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated multiline max-length source should be writable");
+    let entry = fs::canonicalize(entry).expect("multiline max-length entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated multiline max-length analysis should succeed");
+
+    assert!(
+        second.development_ui_string_patch_from(&first).is_none(),
+        "multiline maxLength is callback-backed and must use controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
