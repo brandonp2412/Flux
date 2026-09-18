@@ -1930,6 +1930,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         }
         "drag_text" => true,
         "context_menu_label" => true,
+        "shortcut" => true,
         "shortcut_scope" => development_ui_element_has_property(element, "shortcut"),
         "placeholder" => element.kind == "TextInput",
         "keyboard_type" => element.kind == "TextInput",
@@ -2245,7 +2246,11 @@ fn development_ui_string_literals(
                 {
                     return None;
                 }
-                value.clone()
+                if property_name == "shortcut" {
+                    codegen::gtk_shortcut_trigger(value)?
+                } else {
+                    value.clone()
+                }
             } else if development_ui_bool_property_is_patchable(element, &property_name) {
                 let ExprKind::Bool(value) = property.value.kind else {
                     continue;

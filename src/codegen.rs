@@ -14909,7 +14909,9 @@ fn emit_linux_gtk_application(
         }
         if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
-                "static GtkShortcutController *flux__ui_shortcut_controller_{} = NULL;\n",
+                "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data);\nstatic GtkShortcutController *flux__ui_shortcut_controller_{} = NULL;\nstatic GtkShortcut *flux__ui_shortcut_object_{} = NULL;\n",
+                element.name,
+                element.name,
                 element.name
             ));
         }
@@ -15140,6 +15142,19 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name,
                 element.name
+            ));
+        }
+        if view_property(element, "shortcut").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut\") == 0 && flux__ui_shortcut_controller_{} != NULL && flux__ui_shortcut_object_{} != NULL) {{ GtkShortcutTrigger *trigger = gtk_shortcut_trigger_parse_string(value); if (trigger != NULL) {{ GtkShortcut *replacement = gtk_shortcut_new(trigger, gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)); if (replacement != NULL) {{ gtk_shortcut_controller_add_shortcut(flux__ui_shortcut_controller_{}, replacement); gtk_shortcut_controller_remove_shortcut(flux__ui_shortcut_controller_{}, flux__ui_shortcut_object_{}); flux__ui_shortcut_object_{} = replacement; }} }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
             ));
         }
         if view_property(element, "shortcut_scope").is_some() {
@@ -17029,8 +17044,9 @@ fn emit_linux_gtk_application(
                 None => "GTK_SHORTCUT_SCOPE_GLOBAL",
             };
             let controller = format!("flux__ui_shortcut_controller_{}", element.name);
+            let shortcut_object = format!("flux__ui_shortcut_object_{}", element.name);
             out.push_str(&format!(
-                "    {controller} = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());\n    gtk_shortcut_controller_set_scope({controller}, {scope});\n    gtk_shortcut_controller_add_shortcut({controller}, gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({controller}));\n",
+                "    {controller} = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());\n    gtk_shortcut_controller_set_scope({controller}, {scope});\n    {shortcut_object} = gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL));\n    gtk_shortcut_controller_add_shortcut({controller}, {shortcut_object});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({controller}));\n",
                 c_string(&trigger),
                 element.name,
             ));
@@ -19789,7 +19805,7 @@ fn static_context_menu_items(
     Ok(Some(labels))
 }
 
-fn gtk_shortcut_trigger(value: &str) -> Option<String> {
+pub(crate) fn gtk_shortcut_trigger(value: &str) -> Option<String> {
     let (control, shift, alt, key) = crate::typecheck::parse_ui_shortcut(value)?;
     let key = match key.as_str() {
         "Enter" => "Return".to_string(),
