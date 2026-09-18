@@ -8,9 +8,10 @@ use crate::ast::{Expr, ExprKind, Program, Type, UnaryOp, ViewElement};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, formatter, parser, typecheck};
 
-const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
+const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v2";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
-const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-codegen-v1";
+const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-codegen-v2";
+const COMPILER_SOURCE_FINGERPRINT: &str = env!("FLUX_COMPILER_SOURCE_FINGERPRINT");
 const PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
@@ -789,6 +790,8 @@ fn codegen_cache_fingerprint(
         hash = stable_bytes_hash_with_seed(bytes, hash);
     };
     add(PROJECT_CODEGEN_CACHE_VERSION.as_bytes());
+    add(env!("CARGO_PKG_VERSION").as_bytes());
+    add(COMPILER_SOURCE_FINGERPRINT.as_bytes());
     add(native_target_cache_tag(native_target).as_bytes());
     for source in &analysis.sources {
         add(source.path.to_string_lossy().as_bytes());
@@ -823,6 +826,8 @@ fn function_codegen_cache_context_fingerprint(
         hash = stable_bytes_hash_with_seed(bytes, hash);
     };
     add(PROJECT_FUNCTION_CODEGEN_CACHE_VERSION.as_bytes());
+    add(env!("CARGO_PKG_VERSION").as_bytes());
+    add(COMPILER_SOURCE_FINGERPRINT.as_bytes());
     add(native_target_cache_tag(native_target).as_bytes());
     add(analysis
         .signatures

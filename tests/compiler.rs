@@ -35692,8 +35692,8 @@ fn project_codegen_cache_reuses_and_invalidates_generated_c() {
     assert_eq!(first, second);
     let cached_artifact =
         fs::read_to_string(artifacts[0].path()).expect("cached C should be readable");
-    assert!(cached_artifact.starts_with("flux-project-codegen-v1:"));
-    assert!(cached_artifact.len() > "flux-project-codegen-v1:\n".len());
+    assert!(cached_artifact.starts_with("flux-project-codegen-v2:"));
+    assert!(cached_artifact.len() > "flux-project-codegen-v2:\n".len());
 
     fs::write(
         artifacts[0].path(),
@@ -36133,7 +36133,7 @@ fn project_function_codegen_cache_ignores_corrupt_durable_fragments() {
         "the corrupt bytes must not survive fallback codegen"
     );
     assert!(
-        repaired.starts_with(b"flux-project-function-codegen-v1:"),
+        repaired.starts_with(b"flux-project-function-codegen-v2:"),
         "fallback codegen should replace corruption with a versioned durable artifact"
     );
 
