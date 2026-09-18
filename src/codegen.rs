@@ -14721,6 +14721,24 @@ fn emit_linux_gtk_application(
                 }
             }
             "TextInput" => {
+                if view_property(element, "text").is_some()
+                    && view_property(element, "on_change").is_none()
+                {
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if multiline {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) {{ GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_text_buffer_set_text(buffer, value, -1); }}",
+                            c_string(&element.name)
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) gtk_editable_set_text(GTK_EDITABLE({widget}), value);",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
                 if view_property(element, "read_only").is_some() {
                     let multiline = view_property(element, "multiline")
                         .and_then(|property| static_expr_bool(&property.value, signatures))

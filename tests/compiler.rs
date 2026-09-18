@@ -36654,12 +36654,14 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         fit: "contain"
         canShrink: true
     TextInput input at 4,1
+        text: "Input"
         readOnly: false
         password: false
         keyboardType: "text"
         maxLength: 12
         multiline: false
     TextInput notes at 5,1
+        text: "Notes"
         readOnly: false
         keyboardType: "text"
         multiline: true
@@ -36688,12 +36690,14 @@ app Screen
         fit: "cover"
         canShrink: false
     TextInput input at 4,1
+        text: "Updated input"
         readOnly: true
         password: true
         keyboardType: "email"
         maxLength: 24
         multiline: false
     TextInput notes at 5,1
+        text: "Updated notes"
         readOnly: true
         keyboardType: "url"
         multiline: true
@@ -36734,10 +36738,12 @@ app Screen
         ("image", "source", "updated.png"),
         ("image", "fit", "cover"),
         ("image", "can_shrink", "0"),
+        ("input", "text", "Updated input"),
         ("input", "read_only", "1"),
         ("input", "password", "1"),
         ("input", "keyboard_type", "email"),
         ("input", "max_length", "24"),
+        ("notes", "text", "Updated notes"),
         ("notes", "read_only", "1"),
         ("notes", "keyboard_type", "url"),
     ] {
@@ -36747,7 +36753,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 18);
+    assert_eq!(patch.len(), 20);
 
     let generated = second
         .emit_c()
@@ -36781,6 +36787,8 @@ app Screen
     assert!(
         generated.contains("gtk_picture_set_content_fit(GTK_PICTURE(flux__ui_image), content_fit)")
     );
+    assert!(generated.contains("gtk_editable_set_text(GTK_EDITABLE(flux__ui_input), value)"));
+    assert!(generated.contains("gtk_text_buffer_set_text(buffer, value, -1)"));
     assert!(
         generated.contains("gtk_editable_set_editable(GTK_EDITABLE(flux__ui_input), !bool_value)")
     );
@@ -36859,6 +36867,50 @@ app Screen
     assert!(
         invalid.emit_c().is_err(),
         "target-invalid Image.fit must still reach native validation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_restarts_for_text_input_text_with_change_handler() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-input-change-handler-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary TextInput change-handler patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state query: str = ""
+    grid columns: 1fr
+    grid rows: auto
+    TextInput queryInput at 1,1
+        text: "One"
+        onChange: query, value => value
+}
+app Screen
+"#;
+    let updated = initial.replace("text: \"One\"", "text: \"Two\"");
+    fs::write(&entry, initial).expect("initial TextInput change-handler source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput change-handler analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated TextInput change-handler source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("TextInput change-handler patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated TextInput change-handler analysis should succeed");
+
+    assert!(
+        second.development_ui_string_patch_from(&first).is_none(),
+        "TextInput.text with onChange must use controlled restart instead of synthesizing an application change event"
     );
 
     let _ = fs::remove_dir_all(root);

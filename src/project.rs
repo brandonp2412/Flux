@@ -1890,11 +1890,13 @@ fn development_ui_element_has_property(element: &ViewElement, property: &str) ->
 fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "text" => {
-            matches!(element.kind.as_str(), "Text" | "Button" | "Header")
+            (matches!(element.kind.as_str(), "Text" | "Button" | "Header")
                 && (element.kind != "Text"
                     || !element.properties.iter().any(|property| {
                         typecheck::source_name_to_internal(&property.name) == "rich_text"
-                    }))
+                    })))
+                || (element.kind == "TextInput"
+                    && !development_ui_element_has_property(element, "on_change"))
         }
         "label" => matches!(
             element.kind.as_str(),
