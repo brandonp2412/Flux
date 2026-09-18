@@ -37682,6 +37682,111 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_color_without_stale_pango_foreground() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-color-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary text color patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r##"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Flux"
+        size: 20
+        bold: true
+        color: "#2563EB80"
+}
+app Screen
+"##;
+    fs::write(&entry, initial).expect("initial text color patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text color patch analysis should succeed");
+
+    let updated = initial.replace("color: \"#2563EB80\"", "color: \"accent\"");
+    fs::write(&entry, &updated).expect("updated text color patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("text color patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated text color patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("text color edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "title");
+    assert_eq!(patch[0].property, "color");
+    assert_eq!(patch[0].value, "accent");
+
+    let generated = second
+        .emit_c()
+        .expect("text color patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "static gboolean flux__ui_hot_remove_text_color(PangoAttribute *attribute, gpointer data)"
+    ));
+    assert!(generated.contains("PANGO_ATTR_FOREGROUND_ALPHA"));
+    assert!(generated.contains("static GtkCssProvider *flux__ui_hot_style_title_color = NULL"));
+    assert!(generated.contains("#flux-ui-title { color: %s; }"));
+    assert!(
+        generated.contains(
+            "pango_attr_list_filter(patched_attrs, flux__ui_hot_remove_text_color, NULL)"
+        )
+    );
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_title_color, patch_css, -1)"
+    ));
+
+    let invalid = updated.replace("color: \"accent\"", "color: \"javascript:red\"");
+    fs::write(&entry, invalid).expect("invalid text color edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid text color remains semantically a string");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid text color must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid text color must still reach native validation"
+    );
+
+    let rich_initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        richText: "<b>Flux</b>"
+        color: "text"
+}
+app Screen
+"#;
+    fs::write(&entry, rich_initial).expect("rich text color source should be writable");
+    cache.invalidate_path(&entry);
+    let rich_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("rich text color source should analyze");
+    let rich_updated = rich_initial.replace("color: \"text\"", "color: \"accent\"");
+    fs::write(&entry, rich_updated).expect("updated rich text color source should be writable");
+    cache.invalidate_path(&entry);
+    let rich_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated rich text color source should analyze");
+    assert!(
+        rich_second
+            .development_ui_string_patch_from(&rich_first)
+            .is_none(),
+        "rich Text color edits must retain controlled restart because markup owns Pango attributes"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_css_transition_timing_and_border_style() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-css-transition-patch-{}",

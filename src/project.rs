@@ -1917,6 +1917,9 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
             true
         }
         "border_style" | "transition_easing" => true,
+        "color" => {
+            element.kind == "Text" && !development_ui_element_has_property(element, "rich_text")
+        }
         "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
@@ -2087,6 +2090,7 @@ fn development_ui_string_literals(
                     property_name.as_str(),
                     "background_color"
                         | "shadow_color"
+                        | "color"
                         | "border_color"
                         | "border_top_color"
                         | "border_bottom_color"
