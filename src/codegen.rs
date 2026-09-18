@@ -13157,6 +13157,10 @@ fn emit_windows_native_application(
             || view_property(element, "accessibility_action_label").is_some()
             || view_property(element, "accessibility_hidden").is_some()
     });
+    let uses_tooltips = view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "tooltip").is_some());
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13175,6 +13179,9 @@ fn emit_windows_native_application(
         "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
     out.push_str("static bool flux__win_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
+    if uses_tooltips {
+        out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, char **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } if (*storage != NULL && strcmp(*storage, text) == 0) return; char *copy = (char *)malloc(length + 1); if (copy == NULL) { fputs(\"Flux runtime error: unable to store tooltip text\\n\", stderr); abort(); } memcpy(copy, text, length + 1); free(*storage); *storage = copy; TOOLINFOA info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageA(flux__win_tooltips, TTM_UPDATETIPTEXTA, 0, (LPARAM)&info); }\n");
+    }
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical <= 0) return (int)logical; int64_t scaled = (logical * (int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); return scaled > INT32_MAX ? INT32_MAX : (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { return ((int64_t)physical * INT64_C(96) + (int64_t)flux__win_dpi / INT64_C(2)) / (int64_t)flux__win_dpi; }\n");
     if uses_accessibility {
         out.push_str("static IAccPropServices *flux__win_accessibility = NULL;\nstatic bool flux__win_com_should_uninitialize = false;\nstatic wchar_t *flux__win_accessibility_wide(const char *text) { if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\nstatic void flux__win_accessibility_init(void) { HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); if (SUCCEEDED(initialized)) flux__win_com_should_uninitialize = true; else if (initialized != RPC_E_CHANGED_MODE) return; (void)CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC_SERVER, &IID_IAccPropServices, (void **)&flux__win_accessibility); }\nstatic void flux__win_accessibility_set_name(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_NAME, wide); free(wide); }\nstatic void flux__win_accessibility_set_description(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DESCRIPTION, wide); free(wide); }\nstatic void flux__win_accessibility_set_role(HWND control, LONG role) { if (control == NULL || flux__win_accessibility == NULL) return; VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = role; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_ROLE, value); VariantClear(&value); }\nstatic void flux__win_accessibility_shutdown(void) { if (flux__win_accessibility != NULL) { flux__win_accessibility->lpVtbl->Release(flux__win_accessibility); flux__win_accessibility = NULL; } if (flux__win_com_should_uninitialize) { CoUninitialize(); flux__win_com_should_uninitialize = false; } }\n");
@@ -13294,6 +13301,12 @@ fn emit_windows_native_application(
         if element.kind == "Image" {
             out.push_str(&format!(
                 "static HBITMAP flux__win_bitmap_{} = NULL;\n",
+                element.name
+            ));
+        }
+        if view_property(element, "tooltip").is_some() {
+            out.push_str(&format!(
+                "static char *flux__win_tooltip_text_{} = NULL;\n",
                 element.name
             ));
         }
@@ -13719,6 +13732,13 @@ fn emit_windows_native_application(
                 }
             }
         }
+        if let Some(property) = view_property(element, "tooltip") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_tooltip({variable}, &flux__win_tooltip_text_{}, {value});\n",
+                element.name
+            ));
+        }
         if let Some(property) = view_property(element, "visible") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
@@ -13907,8 +13927,16 @@ fn emit_windows_native_application(
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
+    let tooltip_init = if uses_tooltips {
+        " INITCOMMONCONTROLSEX flux__win_common_controls = { sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES }; if (!InitCommonControlsEx(&flux__win_common_controls)) return 1;"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init}{tooltip_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
+    if uses_tooltips {
+        out.push_str("flux__win_tooltips = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
+    }
     for (index, element) in view.elements.iter().enumerate() {
         let variable = ui_widget_c_name(&element.name);
         let x = padding + (element.column as i64 - 1) * ((width - padding * 2 + gap) / columns);
@@ -14037,6 +14065,9 @@ fn emit_windows_native_application(
             "0".to_string()
         };
         out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {text}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        if view_property(element, "tooltip").is_some() {
+            out.push_str(&format!("TOOLINFOA flux__win_toolinfo_{index} = {{0}}; flux__win_toolinfo_{index}.cbSize = sizeof(flux__win_toolinfo_{index}); flux__win_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_toolinfo_{index}.hwnd = flux__windows_active_window; flux__win_toolinfo_{index}.uId = (UINT_PTR){variable}; flux__win_toolinfo_{index}.lpszText = \"\"; if (!SendMessageA(flux__win_tooltips, TTM_ADDTOOLA, 0, (LPARAM)&flux__win_toolinfo_{index})) return 1;\n"));
+        }
         if let Some(property) = view_property(element, "accessibility_role") {
             let role = static_expr_str(&property.value, signatures).ok_or_else(|| {
                 diag(
@@ -14139,6 +14170,18 @@ fn emit_windows_native_application(
             || (element.kind == "Text" && view_property(element, "color").is_some())
     }) {
         out.push_str(" flux__win_delete_brushes();");
+    }
+    if uses_tooltips {
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| view_property(element, "tooltip").is_some())
+        {
+            out.push_str(&format!(
+                " free(flux__win_tooltip_text_{}); flux__win_tooltip_text_{} = NULL;",
+                element.name, element.name
+            ));
+        }
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");

@@ -1564,6 +1564,48 @@ app Screen(title: "Image")
 }
 
 #[test]
+fn windows_backend_uses_native_tooltips_and_refreshes_dynamic_text() {
+    let source = r#"
+view Screen {
+    state help: str = "Search the catalog"
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput query at 1,1
+        placeholder: "Search"
+        tooltip: help
+    Button update at 2,1
+        text: "Update help"
+        onPress: help => "Search by title"
+}
+app Screen(title: "Tooltips")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows tooltip source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows tooltip source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows tooltips should lower to native common controls");
+
+    assert!(generated.contains("InitCommonControlsEx"));
+    assert!(generated.contains("TOOLTIPS_CLASSA"));
+    assert!(generated.contains("TTM_ADDTOOLA"));
+    assert!(generated.contains("TTM_UPDATETIPTEXTA"));
+    assert!(generated.contains("static char *flux__win_tooltip_text_query = NULL;"));
+    assert!(generated.contains(
+        "flux__win_set_tooltip(flux__ui_query, &flux__win_tooltip_text_query, flux__ui_state_help)"
+    ));
+    assert!(generated.contains("tooltip exceeds 65536 bytes"));
+    assert!(
+        generated
+            .contains("free(flux__win_tooltip_text_query); flux__win_tooltip_text_query = NULL;")
+    );
+}
+
+#[test]
 fn windows_text_font_family_rejects_empty_compile_time_value() {
     let source = r#"
 view Screen {
@@ -1605,6 +1647,7 @@ view Screen {
     grid rows: auto
     Text title at 1,1
         text: "Cross target"
+        tooltip: "Native tooltip"
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -1650,7 +1693,7 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
             .args(["-o"])
             .arg(&binary)
             .arg(&c_path)
-            .args(["-luser32", "-lgdi32"])
+            .args(["-luser32", "-lgdi32", "-lcomctl32"])
             .output()
             .expect("winegcc should run for Windows executable validation");
         assert!(
