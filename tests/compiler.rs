@@ -36633,7 +36633,7 @@ fn development_ui_string_patch_covers_safe_static_boolean_properties() {
     let entry = root.join("main.flux");
     let initial = r#"view Screen {
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto auto
     Text label at 1,1
         text: "Label"
         visible: true
@@ -36651,12 +36651,19 @@ fn development_ui_string_patch_covers_safe_static_boolean_properties() {
     Image image at 3,1
         source: "image.png"
         canShrink: true
+    TextInput input at 4,1
+        readOnly: false
+        password: false
+        multiline: false
+    TextInput notes at 5,1
+        readOnly: false
+        multiline: true
 }
 app Screen
 "#;
     let updated = r#"view Screen {
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto auto
     Text label at 1,1
         text: "Label"
         visible: false
@@ -36674,6 +36681,13 @@ app Screen
     Image image at 3,1
         source: "image.png"
         canShrink: false
+    TextInput input at 4,1
+        readOnly: true
+        password: true
+        multiline: false
+    TextInput notes at 5,1
+        readOnly: true
+        multiline: true
 }
 app Screen
 "#;
@@ -36709,6 +36723,9 @@ app Screen
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
         ("image", "can_shrink", "0"),
+        ("input", "read_only", "1"),
+        ("input", "password", "1"),
+        ("notes", "read_only", "1"),
     ] {
         assert_eq!(
             patch.get(&(element.to_string(), property.to_string())),
@@ -36716,7 +36733,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 10);
+    assert_eq!(patch.len(), 13);
 
     let generated = second
         .emit_c()
@@ -36741,6 +36758,18 @@ app Screen
     ));
     assert!(
         generated.contains("gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_image), bool_value)")
+    );
+    assert!(
+        generated.contains("gtk_editable_set_editable(GTK_EDITABLE(flux__ui_input), !bool_value)")
+    );
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1"));
+    assert!(generated.contains("gtk_entry_set_visibility(GTK_ENTRY(flux__ui_input), !bool_value)"));
+    assert!(generated.contains(
+        "gtk_entry_set_input_purpose(GTK_ENTRY(flux__ui_input), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM)"
+    ));
+    assert!(
+        generated
+            .contains("gtk_text_view_set_editable(GTK_TEXT_VIEW(flux__ui_notes), !bool_value)")
     );
 
     let dynamic = updated.replace("visible: false", "visible: windowIsCompact");

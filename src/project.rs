@@ -1942,6 +1942,17 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
             element.kind.as_str(),
             "Button" | "TextInput" | "Toggle" | "Radio"
         ),
+        "read_only" => element.kind == "TextInput",
+        "password" => {
+            element.kind == "TextInput"
+                && element
+                    .properties
+                    .iter()
+                    .find(|property| {
+                        typecheck::source_name_to_internal(&property.name) == "multiline"
+                    })
+                    .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
+        }
         "primary" => element.kind == "Button",
         "can_shrink" => element.kind == "Image",
         _ => false,

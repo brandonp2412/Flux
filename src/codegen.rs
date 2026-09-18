@@ -14707,6 +14707,40 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             )),
             "TextInput" => {
+                if view_property(element, "read_only").is_some() {
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if multiline {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_text_view_set_editable(GTK_TEXT_VIEW({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
+                            c_string(&element.name)
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"read_only\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_editable_set_editable(GTK_EDITABLE({widget}), !bool_value); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, bool_value, -1); }}",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
+                if view_property(element, "password").is_some() {
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if !multiline {
+                        let input_purpose = if view_property(element, "keyboard_type").is_none() {
+                            format!(
+                                " gtk_entry_set_input_purpose(GTK_ENTRY({widget}), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM);"
+                            )
+                        } else {
+                            String::new()
+                        };
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"password\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_entry_set_visibility(GTK_ENTRY({widget}), !bool_value);{input_purpose} }}",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
                 if view_property(element, "validation_state").is_some() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",
