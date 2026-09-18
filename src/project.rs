@@ -1964,6 +1964,11 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
     }
 }
 
+fn development_ui_string_list_property_is_patchable(element: &ViewElement, property: &str) -> bool {
+    property == "context_menu_items"
+        && development_ui_element_has_property(element, "on_context_menu_item_select")
+}
+
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
@@ -2139,6 +2144,27 @@ fn development_ui_string_literals(
     for element in &view.elements {
         for property in &element.properties {
             let property_name = typecheck::source_name_to_internal(&property.name);
+            if development_ui_string_list_property_is_patchable(element, &property_name) {
+                let ExprKind::List(values) = &property.value.kind else {
+                    continue;
+                };
+                if values.is_empty() {
+                    return None;
+                }
+                for (index, item) in values.iter().enumerate() {
+                    let ExprKind::Str(value) = &item.kind else {
+                        return None;
+                    };
+                    if value.is_empty() || value.as_bytes().contains(&0) {
+                        return None;
+                    }
+                    literals.insert(
+                        (element.name.clone(), format!("context_menu_item_{index}")),
+                        value.clone(),
+                    );
+                }
+                continue;
+            }
             let value = if development_ui_string_property_is_patchable(element, &property_name) {
                 let ExprKind::Str(value) = &property.value.kind else {
                     continue;
@@ -2368,6 +2394,7 @@ fn development_ui_string_masked_sources(
             element.properties.iter().filter(move |property| {
                 let property_name = typecheck::source_name_to_internal(&property.name);
                 development_ui_string_property_is_patchable(element, &property_name)
+                    || development_ui_string_list_property_is_patchable(element, &property_name)
                     || development_ui_bool_property_is_patchable(element, &property_name)
                     || development_ui_i64_property_is_patchable(element, &property_name)
             })
@@ -2375,7 +2402,7 @@ fn development_ui_string_masked_sources(
         .filter(|property| {
             matches!(
                 property.value.kind,
-                ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_)
+                ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::List(_)
             ) || development_ui_i64_literal_value(&property.value).is_some()
         })
         .map(|property| property.value.span)

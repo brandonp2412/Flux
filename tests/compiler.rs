@@ -39021,6 +39021,86 @@ app ContextCard
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_context_menu_item_labels() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-context-menu-items-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary context-menu items patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn menuSelected(index: i64) -> void {
+    print(index)
+}
+
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        contextMenuItems: ["Open", "Delete"]
+        onContextMenuItemSelect: menuSelected
+}
+app ContextCard
+"#;
+    fs::write(&entry, initial).expect("initial context-menu items source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial context-menu items analysis should succeed");
+
+    let updated = initial.replace(
+        "contextMenuItems: [\"Open\", \"Delete\"]",
+        "contextMenuItems: [\"Archive\", \"Delete\"]",
+    );
+    fs::write(&entry, &updated).expect("updated context-menu items source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("context-menu items patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated context-menu items analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("same-shape context menu item edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "card");
+    assert_eq!(patch[0].property, "context_menu_item_0");
+    assert_eq!(patch[0].value, "Archive");
+
+    let generated = second
+        .emit_c()
+        .expect("context-menu items patch fixture should lower for Linux");
+    assert!(
+        generated.contains("static const char *flux__ui_context_menu_item_card_0 = \"Archive\"")
+    );
+    assert!(generated.contains("static char *flux__ui_context_menu_item_owned_card_0 = NULL"));
+    assert!(
+        generated.contains("strcmp(property, \"context_menu_item_0\") == 0 && value_length > 0")
+    );
+    assert!(generated.contains("gtk_button_new_with_label(flux__ui_context_menu_item_card_0)"));
+    assert!(generated.contains("g_free(flux__ui_context_menu_item_owned_card_0)"));
+
+    let reshaped = updated.replace(
+        "contextMenuItems: [\"Archive\", \"Delete\"]",
+        "contextMenuItems: [\"Archive\", \"Delete\", \"Share\"]",
+    );
+    fs::write(&entry, reshaped).expect("reshaped context-menu items source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("reshaped context-menu items analysis should succeed");
+    assert!(
+        third.development_ui_string_patch_from(&second).is_none(),
+        "context menu item count changes must fall back to rebuild"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_shortcut_trigger() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-shortcut-trigger-patch-{}",
@@ -44972,9 +45052,10 @@ app ContextCard
     check_source(multi_item).expect("multi-item context menus should typecheck");
     let linux = compile_to_c(multi_item).expect("multi-item context menus should lower to GTK");
     assert!(linux.contains("gtk_box_new(GTK_ORIENTATION_VERTICAL, 0)"));
-    assert!(linux.contains("gtk_button_new_with_label(\"Open\")"));
-    assert!(linux.contains("gtk_button_new_with_label(\"Archive\")"));
-    assert!(linux.contains("gtk_button_new_with_label(\"Delete\")"));
+    assert!(linux.contains("static const char *flux__ui_context_menu_item_card_0 = \"Open\""));
+    assert!(linux.contains("static const char *flux__ui_context_menu_item_card_1 = \"Archive\""));
+    assert!(linux.contains("static const char *flux__ui_context_menu_item_card_2 = \"Delete\""));
+    assert!(linux.contains("gtk_button_new_with_label(flux__ui_context_menu_item_card_0)"));
     assert!(
         linux.contains("GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), \"flux-menu-index\"))")
     );

@@ -14907,6 +14907,18 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
+        if let Some(items) = static_context_menu_items(element, signatures)? {
+            for (index, label) in items.iter().enumerate() {
+                out.push_str(&format!(
+                    "static const char *flux__ui_context_menu_item_{}_{} = {};\nstatic char *flux__ui_context_menu_item_owned_{}_{} = NULL;\n",
+                    element.name,
+                    index,
+                    c_string(label),
+                    element.name,
+                    index
+                ));
+            }
+        }
         if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
                 "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data);\nstatic GtkShortcutController *flux__ui_shortcut_controller_{} = NULL;\nstatic GtkShortcut *flux__ui_shortcut_object_{} = NULL;\n",
@@ -15143,6 +15155,17 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name
             ));
+        }
+        if let Some(items) = static_context_menu_items(element, signatures)? {
+            for index in 0..items.len() {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_item_{index}\") == 0 && value_length > 0) {{ char *label_copy = g_strdup(value); if (label_copy != NULL) {{ g_free(flux__ui_context_menu_item_owned_{}_{index}); flux__ui_context_menu_item_owned_{}_{index} = label_copy; flux__ui_context_menu_item_{}_{index} = label_copy; }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name
+                ));
+            }
         }
         if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
@@ -15944,10 +15967,10 @@ fn emit_linux_gtk_application(
             };
             let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
                 let mut body = "GtkWidget *popover = gtk_popover_new(); GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_popover_set_child(GTK_POPOVER(popover), menu_box); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {(int)x, (int)y, 1, 1}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); ".to_string();
-                for (index, label) in items.iter().enumerate() {
+                for (index, _label) in items.iter().enumerate() {
                     body.push_str(&format!(
-                        "GtkWidget *item_{index} = gtk_button_new_with_label({}); g_object_set_data(G_OBJECT(item_{index}), \"flux-menu-index\", GINT_TO_POINTER({index})); gtk_box_append(GTK_BOX(menu_box), item_{index}); g_signal_connect(item_{index}, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); ",
-                        c_string(label),
+                        "GtkWidget *item_{index} = gtk_button_new_with_label(flux__ui_context_menu_item_{}_{index}); g_object_set_data(G_OBJECT(item_{index}), \"flux-menu-index\", GINT_TO_POINTER({index})); gtk_box_append(GTK_BOX(menu_box), item_{index}); g_signal_connect(item_{index}, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); ",
+                        element.name,
                         element.name,
                     ));
                 }
@@ -17484,6 +17507,14 @@ fn emit_linux_gtk_application(
                 "    g_free(flux__ui_context_menu_label_owned_{});\n",
                 element.name
             ));
+        }
+        if let Some(items) = static_context_menu_items(element, signatures)? {
+            for index in 0..items.len() {
+                out.push_str(&format!(
+                    "    g_free(flux__ui_context_menu_item_owned_{}_{index});\n",
+                    element.name
+                ));
+            }
         }
     }
     out.push_str("    g_object_unref(application);\n    return status;\n}\n");
