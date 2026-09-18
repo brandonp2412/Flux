@@ -21917,7 +21917,9 @@ fn main() -> i64 {
     assert!(generated.contains("flux__preferences_get("));
     assert!(generated.contains("flux__preferences_set("));
     assert!(generated.contains("flux__preferences_remove("));
-    assert!(generated.contains("while (length < sizeof(path) && override[length] != '\\0')"));
+    assert!(generated.contains("while (length < path_capacity && override[length] != '\\0')"));
+    assert!(!generated.contains("static char path[4096]"));
+    assert!(!generated.contains("static char directory[4096]"));
     assert!(generated.contains("while (value_length <= 65535 && value[value_length] != '\\0')"));
     assert!(!generated.contains("if (strlen(override) >= sizeof(path))"));
     assert!(!generated.contains("if (value == NULL || strlen(value) > 65535)"));
@@ -34783,6 +34785,120 @@ fn native_module_object_cache_isolates_tls_session_registry() {
 
     let _ = server.kill();
     let _ = server.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn native_module_object_cache_reuses_preferences_runtime() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-preferences-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native preferences module cache fixture should be writable");
+    let settings = root.join("settings.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &settings,
+        "pub fn saveTheme() -> i64 {\n    let saveError: error = preferences.set(\"theme\", \"dark\")\n    if saveError != nil:\n        return 1\n    return 0\n}\n",
+    )
+    .expect("preferences producer module should be writable");
+    fs::write(
+        &main,
+        "import \"settings.flux\"\n\nfn main() -> i64 {\n    let saved: i64 = saveTheme()\n    if saved != 0:\n        return saved\n    let removeError: error = preferences.remove(\"theme\")\n    if removeError != nil:\n        print(removeError)\n        return 2\n    return 0\n}\n",
+    )
+    .expect("preferences consumer module should be writable");
+
+    let cache = root.join("cache");
+    let preference_path = root.join("preferences.log");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("preferences module-object build should run");
+    assert!(
+        built.status.success(),
+        "preferences module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .env("FLUX_PREFERENCES_PATH", &preference_path)
+        .output()
+        .expect("preferences module-object binary should run");
+    assert!(
+        first_run.status.success(),
+        "preferences module-object binary failed: {}{}",
+        String::from_utf8_lossy(&first_run.stdout),
+        String::from_utf8_lossy(&first_run.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native preferences object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        2,
+        "the preferences producer and consumer should compile independently without shared static path state"
+    );
+
+    fs::write(
+        &settings,
+        "pub fn saveTheme() -> i64 {\n    let saveError: error = preferences.set(\"theme\", \"light\")\n    if saveError != nil:\n        return 1\n    return 0\n}\n",
+    )
+    .expect("changed preferences producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed preferences module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed preferences module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .env("FLUX_PREFERENCES_PATH", &preference_path)
+        .output()
+        .expect("changed preferences module-object binary should run");
+    assert!(second_run.status.success());
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        3,
+        "a preferences producer body edit should add one object while reusing the consumer"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged preferences-linked object cache entries should remain reusable"
+    );
+
     let _ = fs::remove_dir_all(&root);
 }
 

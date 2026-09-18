@@ -8336,14 +8336,13 @@ static const char *flux__preferences_remove(const char *key) {
     }
     if runtime_usage.contains("flux__preferences_") && !uses_android && !uses_windows {
         out.push_str(
-            r#"static const char *flux__preferences_path(void) {
-    static char path[4096];
-    static char directory[4096];
+            r#"static const char *flux__preferences_path(char *path, size_t path_capacity, char *directory, size_t directory_capacity) {
+    if (path == NULL || directory == NULL || path_capacity == 0 || directory_capacity == 0) return NULL;
     const char *override = getenv("FLUX_PREFERENCES_PATH");
     if (override != NULL && override[0] != '\0') {
         size_t length = 0;
-        while (length < sizeof(path) && override[length] != '\0') length += 1;
-        if (length >= sizeof(path)) return NULL;
+        while (length < path_capacity && override[length] != '\0') length += 1;
+        if (length >= path_capacity) return NULL;
         memcpy(path, override, length + 1);
         return path;
     }
@@ -8351,20 +8350,24 @@ static const char *flux__preferences_remove(const char *key) {
     if (base == NULL || base[0] == '\0') {
         const char *home = getenv("HOME");
         if (home == NULL || home[0] == '\0') return NULL;
-        if (snprintf(directory, sizeof(directory), "%s/.config", home) >= (int)sizeof(directory)) return NULL;
+        int written = snprintf(directory, directory_capacity, "%s/.config", home);
+        if (written < 0 || (size_t)written >= directory_capacity) return NULL;
         (void)mkdir(directory, 0700);
         (void)chmod(directory, 0700);
-        if (snprintf(directory, sizeof(directory), "%s/.config/flux", home) >= (int)sizeof(directory)) return NULL;
+        written = snprintf(directory, directory_capacity, "%s/.config/flux", home);
+        if (written < 0 || (size_t)written >= directory_capacity) return NULL;
         base = directory;
         (void)mkdir(base, 0700);
         (void)chmod(base, 0700);
     } else {
-        if (snprintf(directory, sizeof(directory), "%s/flux", base) >= (int)sizeof(directory)) return NULL;
+        int written = snprintf(directory, directory_capacity, "%s/flux", base);
+        if (written < 0 || (size_t)written >= directory_capacity) return NULL;
         base = directory;
         (void)mkdir(base, 0700);
         (void)chmod(base, 0700);
     }
-    if (snprintf(path, sizeof(path), "%s/preferences", base) >= (int)sizeof(path)) return NULL;
+    int written = snprintf(path, path_capacity, "%s/preferences", base);
+    if (written < 0 || (size_t)written >= path_capacity) return NULL;
     return path;
 }
 static const char *flux__preferences_validate_key(const char *key) {
@@ -8380,7 +8383,9 @@ static const char *flux__preferences_validate_key(const char *key) {
 static const char *flux__preferences_get(const char *key, const char *fallback, void (*callback)(const char *)) {
     const char *invalid = flux__preferences_validate_key(key);
     if (invalid != NULL || fallback == NULL || callback == NULL) return invalid == NULL ? "invalid preference read arguments" : invalid;
-    const char *path = flux__preferences_path();
+    char path_storage[4096];
+    char directory_storage[4096];
+    const char *path = flux__preferences_path(path_storage, sizeof(path_storage), directory_storage, sizeof(directory_storage));
     if (path == NULL) return "preference path is unavailable";
     int descriptor = open(path, O_RDONLY);
     if (descriptor < 0 && errno != ENOENT) return "failed to open preferences";
@@ -8419,7 +8424,9 @@ static const char *flux__preferences_get(const char *key, const char *fallback, 
 }
 static const char *flux__preferences_append(const char *record, size_t length) {
     if (record == NULL || length > 1048576u) return "preference record exceeds storage limit";
-    const char *path = flux__preferences_path();
+    char path_storage[4096];
+    char directory_storage[4096];
+    const char *path = flux__preferences_path(path_storage, sizeof(path_storage), directory_storage, sizeof(directory_storage));
     if (path == NULL) return "preference path is unavailable";
     int descriptor = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
     if (descriptor < 0) return "failed to open preferences for writing";
