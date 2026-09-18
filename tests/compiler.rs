@@ -36648,6 +36648,8 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         ellipsize: "none"
         maxLines: 1
         maxWidthChars: 20
+        alignX: "start"
+        alignY: "start"
     Button action at 2,1
         text: "Action"
         visible: true
@@ -36689,6 +36691,8 @@ app Screen
         ellipsize: "end"
         maxLines: 2
         maxWidthChars: 40
+        alignX: "center"
+        alignY: "end"
     Button action at 2,1
         text: "Action"
         visible: false
@@ -36747,6 +36751,8 @@ app Screen
         ("label", "ellipsize", "end"),
         ("label", "max_lines", "2"),
         ("label", "max_width_chars", "40"),
+        ("label", "align_x", "center"),
+        ("label", "align_y", "end"),
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
@@ -36768,7 +36774,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 25);
+    assert_eq!(patch.len(), 27);
 
     let generated = second
         .emit_c()
@@ -36801,6 +36807,10 @@ app Screen
     assert!(generated.contains(
         "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_label), integer_value == 0 ? -1 : (int)integer_value)"
     ));
+    assert!(generated.contains("strcmp(property, \"align_x\") == 0"));
+    assert!(generated.contains("gtk_widget_set_halign(flux__ui_label, alignment)"));
+    assert!(generated.contains("strcmp(property, \"align_y\") == 0"));
+    assert!(generated.contains("gtk_widget_set_valign(flux__ui_label, alignment)"));
     assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
     assert!(generated.contains(
         "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
@@ -36921,6 +36931,8 @@ fn development_ui_string_patch_defers_invalid_text_layout_literals() {
         ellipsize: "none"
         maxLines: 1
         maxWidthChars: 20
+        alignX: "start"
+        alignY: "start"
 }
 app Screen
 "#;
@@ -36938,6 +36950,8 @@ app Screen
         ("ellipsize: \"none\"", "ellipsize: \"around\""),
         ("maxLines: 1", "maxLines: 0"),
         ("maxWidthChars: 20", "maxWidthChars: -1"),
+        ("alignX: \"start\"", "alignX: \"middle\""),
+        ("alignY: \"start\"", "alignY: \"middle\""),
     ] {
         let invalid = initial.replace(from, to);
         fs::write(&entry, invalid).expect("invalid Text layout source should be writable");

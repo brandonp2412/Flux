@@ -1934,6 +1934,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 .any(|property| development_ui_element_has_property(element, property))
         }
         "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
+        "align_x" | "align_y" => true,
         _ => false,
     }
 }
@@ -2033,6 +2034,12 @@ fn development_ui_string_literals(
                 }
                 if property_name == "ellipsize" {
                     let valid = matches!(value.as_str(), "none" | "start" | "middle" | "end");
+                    if !valid {
+                        return None;
+                    }
+                }
+                if matches!(property_name.as_str(), "align_x" | "align_y") {
+                    let valid = matches!(value.as_str(), "start" | "center" | "end" | "fill");
                     if !valid {
                         return None;
                     }
