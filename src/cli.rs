@@ -11652,7 +11652,6 @@ fn build_native_configured(
     }
 
     let partitioned_units = if cache_enabled
-        && !static_link
         && native_target.triple.is_none()
         && native_target.sysroot.is_none()
         && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux

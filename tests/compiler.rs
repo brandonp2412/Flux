@@ -36528,6 +36528,111 @@ fn native_build_accepts_explicit_host_target_and_sysroot() {
 }
 
 #[test]
+fn static_package_reuses_partitioned_native_objects() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-static-object-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src"))
+        .expect("static package source directory should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nname = \"static-cache-test\"\nversion = \"1.0.0\"\nentry = \"src/main.flux\"\n",
+    )
+    .expect("static package manifest should be writable");
+    let source = root.join("src/main.flux");
+    fs::write(
+        &source,
+        "fn answer() -> i64 {\n    return 42\n}\n\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("static package source should be writable");
+
+    let cache = root.join("cache");
+    let first_binary = root.join("first-static");
+    let first = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "static", "-o"])
+        .arg(&first_binary)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first static package should run");
+    assert!(
+        first.status.success(),
+        "first static package failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_run = Command::new(&first_binary)
+        .output()
+        .expect("first static package should execute");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "42\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("static package object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 2,
+        "static package functions should compile into independent cached objects"
+    );
+
+    fs::write(
+        &source,
+        "fn answer() -> i64 {\n    return 43\n}\n\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("changed static package source should be writable");
+    let second_binary = root.join("second-static");
+    let second = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("package")
+        .arg(&root)
+        .args(["--format", "static", "-o"])
+        .arg(&second_binary)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed static package should run");
+    assert!(
+        second.status.success(),
+        "changed static package failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_run = Command::new(&second_binary)
+        .output()
+        .expect("changed static package should execute");
+    assert!(second_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&second_run.stdout), "43\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "a static-package body edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged static-package objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn flux_package_builds_a_manifest_backed_linux_bundle() {
     let root = std::env::temp_dir().join(format!("flux-package-cli-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
