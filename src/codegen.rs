@@ -16191,7 +16191,7 @@ fn emit_linux_gtk_application(
                     ),
                     ("strikethrough", "pango_attr_strikethrough_new(bool_value)"),
                 ] {
-                    if view_property(element, property).is_some() {
+                    if property != "bold" || view_property(element, property).is_some() {
                         out.push_str(&format!(
                             " if (strcmp(name, {}) == 0 && strcmp(property, \"{property}\") == 0 && bool_value_valid && {widget} != NULL) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, {attribute}); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }}",
                             c_string(&element.name)
