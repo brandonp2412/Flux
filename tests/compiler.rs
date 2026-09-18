@@ -38954,6 +38954,73 @@ app DragDrop
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_context_menu_labels() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-context-menu-label-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary context-menu label patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn selected() -> void {
+    print("selected")
+}
+
+view ContextCard {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Options"
+        contextMenuLabel: "Open"
+        onContextMenuSelect: selected
+}
+app ContextCard
+"#;
+    fs::write(&entry, initial).expect("initial context-menu label patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial context-menu label patch analysis should succeed");
+
+    let updated = initial.replace(
+        "contextMenuLabel: \"Open\"",
+        "contextMenuLabel: \"Archive\"",
+    );
+    fs::write(&entry, updated).expect("updated context-menu label patch source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("context-menu label patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated context-menu label patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("contextMenuLabel edits should hot-apply to future native popovers");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "card");
+    assert_eq!(patch[0].property, "context_menu_label");
+    assert_eq!(patch[0].value, "Archive");
+
+    let generated = second
+        .emit_c()
+        .expect("context-menu label patch fixture should lower for Linux");
+    assert!(
+        generated.contains("static const char *flux__ui_context_menu_label_card = \"Archive\"")
+    );
+    assert!(generated.contains("static char *flux__ui_context_menu_label_owned_card = NULL"));
+    assert!(
+        generated.contains("strcmp(property, \"context_menu_label\") == 0 && value_length > 0")
+    );
+    assert!(generated.contains("flux__ui_context_menu_label_card = label_copy"));
+    assert!(generated.contains("gtk_button_new_with_label(flux__ui_context_menu_label_card)"));
+    assert!(generated.contains("g_free(flux__ui_context_menu_label_owned_card)"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",
@@ -44658,7 +44725,8 @@ app ContextCard
     assert!(linux.contains("flux__ui_context_menu_card"));
     assert!(linux.contains("gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(flux__context_menu_card), GDK_BUTTON_SECONDARY)"));
     assert!(linux.contains("\"released\", G_CALLBACK(flux__ui_context_menu_card)"));
-    assert!(linux.contains("gtk_button_new_with_label(\"Open\")"));
+    assert!(linux.contains("static const char *flux__ui_context_menu_label_card = \"Open\""));
+    assert!(linux.contains("gtk_button_new_with_label(flux__ui_context_menu_label_card)"));
     assert!(linux.contains("gtk_popover_set_pointing_to"));
     assert!(linux.contains("G_CALLBACK(flux__ui_context_menu_select_card)"));
     assert!(linux.contains("flux__ui_context_menu_key_card"));

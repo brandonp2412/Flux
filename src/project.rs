@@ -1929,6 +1929,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 || !development_ui_element_has_property(element, "validation_message")
         }
         "drag_text" => true,
+        "context_menu_label" => true,
         "placeholder" => {
             element.kind == "TextInput"
                 && element
@@ -2203,6 +2204,9 @@ fn development_ui_string_literals(
                 if property_name == "accessibility_role"
                     && !typecheck::ACCESSIBILITY_ROLES.contains(&value.as_str())
                 {
+                    return None;
+                }
+                if property_name == "context_menu_label" && value.is_empty() {
                     return None;
                 }
                 if property_name == "variant" {

@@ -14882,6 +14882,20 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
+        if let Some(property) = view_property(element, "context_menu_label") {
+            let Some(label) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "contextMenuLabel must be a compile-time string value",
+                ));
+            };
+            out.push_str(&format!(
+                "static const char *flux__ui_context_menu_label_{} = {};\nstatic char *flux__ui_context_menu_label_owned_{} = NULL;\n",
+                element.name,
+                c_string(&label),
+                element.name
+            ));
+        }
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -15098,6 +15112,15 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_{} != NULL) {{ GdkContentProvider *drag_content = gdk_content_provider_new_typed(G_TYPE_STRING, value); if (drag_content != NULL) {{ gtk_drag_source_set_content(flux__ui_drag_source_{}, drag_content); g_object_unref(drag_content); }} }}",
                 c_string(&element.name),
+                element.name,
+                element.name
+            ));
+        }
+        if view_property(element, "context_menu_label").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_label\") == 0 && value_length > 0) {{ char *label_copy = g_strdup(value); if (label_copy != NULL) {{ g_free(flux__ui_context_menu_label_owned_{}); flux__ui_context_menu_label_owned_{} = label_copy; flux__ui_context_menu_label_{} = label_copy; }} }}",
+                c_string(&element.name),
+                element.name,
                 element.name,
                 element.name
             ));
@@ -15876,17 +15899,15 @@ fn emit_linux_gtk_application(
                 ));
                 body
             } else if let Some(label_property) = view_property(element, "context_menu_label") {
-                let Some(label) = static_expr_str(&label_property.value, signatures) else {
+                let Some(_label) = static_expr_str(&label_property.value, signatures) else {
                     return Err(diag(
                         label_property.value.span,
                         "contextMenuLabel must be a compile-time string value",
                     ));
                 };
                 format!(
-                    "GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); GtkWidget *popover = gtk_popover_new(); GtkWidget *item = gtk_button_new_with_label({}); gtk_popover_set_child(GTK_POPOVER(popover), item); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {{(int)x, (int)y, 1, 1}}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); g_signal_connect(item, \"clicked\", G_CALLBACK(flux__ui_context_menu_select_{}), popover); g_signal_connect(popover, \"closed\", G_CALLBACK(flux__ui_context_menu_closed_{}), NULL); gtk_popover_popup(GTK_POPOVER(popover)); ",
-                    c_string(&label),
-                    element.name,
-                    element.name,
+                    "GtkWidget *anchor = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); GtkWidget *popover = gtk_popover_new(); GtkWidget *item = gtk_button_new_with_label(flux__ui_context_menu_label_{}); gtk_popover_set_child(GTK_POPOVER(popover), item); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {{(int)x, (int)y, 1, 1}}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); g_signal_connect(item, \"clicked\", G_CALLBACK(flux__ui_context_menu_select_{}), popover); g_signal_connect(popover, \"closed\", G_CALLBACK(flux__ui_context_menu_closed_{}), NULL); gtk_popover_popup(GTK_POPOVER(popover)); ",
+                    element.name, element.name, element.name,
                 )
             } else {
                 String::new()
@@ -17387,7 +17408,16 @@ fn emit_linux_gtk_application(
     if on_stop.is_some() || on_exit.is_some() {
         out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
     }
-    out.push_str("    int status = g_application_run(G_APPLICATION(application), argc, argv);\n    g_object_unref(application);\n    return status;\n}\n");
+    out.push_str("    int status = g_application_run(G_APPLICATION(application), argc, argv);\n");
+    for element in &view.elements {
+        if view_property(element, "context_menu_label").is_some() {
+            out.push_str(&format!(
+                "    g_free(flux__ui_context_menu_label_owned_{});\n",
+                element.name
+            ));
+        }
+    }
+    out.push_str("    g_object_unref(application);\n    return status;\n}\n");
     Ok(())
 }
 
