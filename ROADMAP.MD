@@ -1444,6 +1444,8 @@ Verified Milestone 29 TextInput read-only lifecycle follow-up: literal `readOnly
 
 Verified Milestone 29 image-shrink lifecycle follow-up: literal Image `canShrink` declarations are now ABI-stable whether present or omitted. Development analysis models the compiler-owned implicit value as `false`, keeps the GTK picture shrink patch path available even when the property was omitted at launch, treats explicit `false` as a no-op, hot-applies `true` to the existing native picture, and restores the implicit non-shrinking state when the declaration is removed. State-driven image shrink behavior remains structural and uses controlled restart.
 
+Verified Milestone 29 selectable-text lifecycle follow-up: literal Text `selectable` declarations are now ABI-stable whether present or omitted. Development analysis models the native/compiler-owned omitted state as `false`, emits the GTK selectable patch path even when the property was absent at launch, treats explicit `false` as a no-op, applies `true` to the existing label in process, and restores non-selectable text when the declaration is removed. State-driven selectability remains structural and uses controlled restart.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
