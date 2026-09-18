@@ -14621,7 +14621,7 @@ fn emit_linux_gtk_application(
             ));
         }
     }
-    out.push_str("static volatile sig_atomic_t flux__ui_reload_requested = 0; static void flux__ui_reload_signal(int signal_number) { (void)signal_number; flux__ui_reload_requested = 1; } static gboolean flux__ui_reload_poll(gpointer data) { (void)data; if (!flux__ui_reload_requested) return G_SOURCE_CONTINUE; flux__ui_save_reload_state(); GApplication *application = g_application_get_default(); if (application != NULL) g_application_quit(application); return G_SOURCE_REMOVE; }\n");
+    out.push_str("static volatile sig_atomic_t flux__ui_reload_requested = 0; static volatile sig_atomic_t flux__ui_patch_requested = 0; static void flux__ui_apply_reload_patch(void); static void flux__ui_reload_signal(int signal_number) { (void)signal_number; flux__ui_reload_requested = 1; } static void flux__ui_patch_signal(int signal_number) { (void)signal_number; flux__ui_patch_requested = 1; } static gboolean flux__ui_reload_poll(gpointer data) { (void)data; if (flux__ui_patch_requested) { flux__ui_patch_requested = 0; flux__ui_apply_reload_patch(); } if (!flux__ui_reload_requested) return G_SOURCE_CONTINUE; flux__ui_save_reload_state(); GApplication *application = g_application_get_default(); if (application != NULL) g_application_quit(application); return G_SOURCE_REMOVE; }\n");
     for derived in &view.derived {
         let derived_name = ui_derived_c_name(&derived.name);
         let initial = match signatures.canonical_type(&derived.ty) {
@@ -14673,6 +14673,22 @@ fn emit_linux_gtk_application(
         }
     }
     out.push('\n');
+    out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 1 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; value[value_length] = '\\0';");
+    for element in &view.elements {
+        let widget = ui_widget_c_name(&element.name);
+        match element.kind.as_str() {
+            "Text" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && {widget} != NULL) gtk_label_set_text(GTK_LABEL({widget}), value);",
+                c_string(&element.name)
+            )),
+            "Button" => out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && {widget} != NULL) gtk_button_set_label(GTK_BUTTON({widget}), value);",
+                c_string(&element.name)
+            )),
+            _ => {}
+        }
+    }
+    out.push_str(" free(name); free(value); } fclose(file); remove(path); }\n\n");
     emit_ui_refresh(out, view, signatures)?;
     out.push_str(&format!(
         "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {{\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n{}    flux__ui_refresh_changed(-2);\n}}\n\n",
@@ -16413,7 +16429,7 @@ fn emit_linux_gtk_application(
             "    g_signal_connect(application, \"open\", G_CALLBACK(flux__ui_open), NULL);\n",
         );
     }
-    out.push_str("    signal(SIGTERM, flux__ui_reload_signal); g_timeout_add(50, flux__ui_reload_poll, NULL);\n");
+    out.push_str("    signal(SIGTERM, flux__ui_reload_signal); signal(SIGUSR1, flux__ui_patch_signal); g_timeout_add(50, flux__ui_reload_poll, NULL);\n");
     if on_stop.is_some() || on_exit.is_some() {
         out.push_str("    g_signal_connect(application, \"shutdown\", G_CALLBACK(flux__ui_shutdown), NULL);\n");
     }
