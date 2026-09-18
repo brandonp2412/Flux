@@ -2208,7 +2208,7 @@ fn development_ui_property_lifecycle_patch_value(
     if property.transition.is_some()
         || !matches!(
             property_name.as_str(),
-            "visible" | "enabled" | "primary" | "accessibility_hidden" | "read_only"
+            "visible" | "enabled" | "primary" | "accessibility_hidden" | "read_only" | "can_shrink"
         )
     {
         return None;
@@ -2222,7 +2222,7 @@ fn development_ui_property_lifecycle_patch_value(
 fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
     match property {
         "visible" | "enabled" => Some("1".to_string()),
-        "primary" | "accessibility_hidden" | "read_only" => Some("0".to_string()),
+        "primary" | "accessibility_hidden" | "read_only" | "can_shrink" => Some("0".to_string()),
         _ => None,
     }
 }
@@ -2739,6 +2739,7 @@ fn development_ui_string_literals(
             "primary",
             "accessibility_hidden",
             "read_only",
+            "can_shrink",
         ] {
             if property_name != "visible"
                 && !development_ui_bool_property_is_patchable(element, property_name)

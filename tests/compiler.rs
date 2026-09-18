@@ -41632,6 +41632,111 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_image_can_shrink_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-image-can-shrink-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary Image.canShrink lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state shrink: bool = false
+    Image hero at 1,1
+        source: "hero.png"
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial Image.canShrink lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Image.canShrink lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("Image.canShrink lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"can_shrink\") == 0 && bool_value_valid && flux__ui_hero != NULL"
+    ));
+
+    let entry =
+        fs::canonicalize(entry).expect("Image.canShrink lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        source: \"hero.png\"\n",
+        "        source: \"hero.png\"\n        canShrink: false\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit Image.canShrink default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit Image.canShrink default should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding canShrink: false should be an in-process no-op"
+    );
+
+    let shrinkable = explicit_default.replace("canShrink: false", "canShrink: true");
+    fs::write(&entry, shrinkable).expect("shrinkable image source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shrinkable image source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("canShrink: true should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "can_shrink".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed Image.canShrink source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed Image.canShrink source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing canShrink should restore the implicit false value"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "can_shrink".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        source: \"hero.png\"\n",
+        "        source: \"hero.png\"\n        canShrink: shrink\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic Image.canShrink source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic Image.canShrink source should analyze");
+    assert_ne!(dynamic.development_abi(), fourth.development_abi());
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven Image.canShrink declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",

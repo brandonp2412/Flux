@@ -16216,12 +16216,10 @@ fn emit_linux_gtk_application(
                 }
             }
             "Image" => {
-                if view_property(element, "can_shrink").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"can_shrink\") == 0 && bool_value_valid && {widget} != NULL) gtk_picture_set_can_shrink(GTK_PICTURE({widget}), bool_value);",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"can_shrink\") == 0 && bool_value_valid && {widget} != NULL) gtk_picture_set_can_shrink(GTK_PICTURE({widget}), bool_value);",
+                    c_string(&element.name)
+                ));
             }
             "Button" => {
                 out.push_str(&format!(
