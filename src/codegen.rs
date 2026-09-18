@@ -15780,19 +15780,17 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "visible").is_some() {
-            if view_property(element, "layout_transition_ms").is_some() {
-                let layout = linux_ui_layout_c_name(element);
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), bool_value);",
-                    c_string(&element.name)
-                ));
-            } else {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_visible({host}, bool_value);",
-                    c_string(&element.name)
-                ));
-            }
+        if view_property(element, "layout_transition_ms").is_some() {
+            let layout = linux_ui_layout_c_name(element);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), bool_value);",
+                c_string(&element.name)
+            ));
+        } else {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_visible({host}, bool_value);",
+                c_string(&element.name)
+            ));
         }
         if view_property(element, "clip").is_some() {
             out.push_str(&format!(

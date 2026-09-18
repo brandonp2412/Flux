@@ -2201,6 +2201,27 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
     }
 }
 
+fn development_ui_property_lifecycle_patch_value(
+    property: &crate::ast::ViewProperty,
+) -> Option<String> {
+    if property.transition.is_some()
+        || typecheck::source_name_to_internal(&property.name) != "visible"
+    {
+        return None;
+    }
+    let ExprKind::Bool(value) = property.value.kind else {
+        return None;
+    };
+    Some(if value { "1" } else { "0" }.to_string())
+}
+
+fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
+    match property {
+        "visible" => Some("1".to_string()),
+        _ => None,
+    }
+}
+
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
@@ -2707,6 +2728,19 @@ fn development_ui_string_literals(
             };
             literals.insert((element.name.clone(), property_name), value);
         }
+        for property_name in ["visible"] {
+            if element
+                .properties
+                .iter()
+                .any(|property| typecheck::source_name_to_internal(&property.name) == property_name)
+            {
+                continue;
+            }
+            literals.insert(
+                (element.name.clone(), property_name.to_string()),
+                development_ui_property_lifecycle_default(property_name)?,
+            );
+        }
     }
     Some(literals)
 }
@@ -2725,6 +2759,9 @@ fn development_ui_string_masked_sources(
         .iter()
         .flat_map(|element| {
             element.properties.iter().filter(move |property| {
+                if development_ui_property_lifecycle_patch_value(property).is_some() {
+                    return false;
+                }
                 let property_name = typecheck::source_name_to_internal(&property.name);
                 development_ui_string_property_is_patchable(element, &property_name)
                     || development_ui_string_list_property_is_patchable(element, &property_name)
@@ -2756,6 +2793,17 @@ fn development_ui_string_masked_sources(
                         .map(|(start, end)| (start, end, "\"__flux_hot_string__\"".to_string()))
                 })
                 .collect::<Option<Vec<_>>>()?;
+            for element in &view.elements {
+                for property in &element.properties {
+                    if property.span.source_id != source.source_id
+                        || development_ui_property_lifecycle_patch_value(property).is_none()
+                    {
+                        continue;
+                    }
+                    let (start, end) = source_line_byte_range(&text, property.line)?;
+                    edits.push((start, end, String::new()));
+                }
+            }
             if source.source_id == application.keyword_span.source_id {
                 let (start, end) = source_span_byte_range(&text, application.span)?;
                 edits.push((
@@ -2813,6 +2861,28 @@ fn development_application_masked_declaration(
             metadata.join(", ")
         ))
     }
+}
+
+fn source_line_byte_range(source: &str, line: usize) -> Option<(usize, usize)> {
+    let start = if line <= 1 {
+        0
+    } else {
+        source
+            .char_indices()
+            .filter(|(_, ch)| *ch == char::from(10))
+            .nth(line - 2)
+            .map(|(index, _)| index + 1)?
+    };
+    let line_end = source[start..]
+        .find(char::from(10))
+        .map(|offset| start + offset)
+        .unwrap_or(source.len());
+    let end = if line_end < source.len() {
+        line_end.checked_add(1)?
+    } else {
+        line_end
+    };
+    Some((start, end))
 }
 
 fn development_grid_declaration_byte_range(
@@ -2996,13 +3066,16 @@ fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {
                 let properties = element
                     .properties
                     .iter()
-                    .map(|property| {
-                        (
+                    .filter_map(|property| {
+                        if development_ui_property_lifecycle_patch_value(property).is_some() {
+                            return None;
+                        }
+                        Some((
                             property.name.as_str(),
                             property.transition.as_ref().map(|transition| {
                                 (transition.state.as_str(), transition.event_value.as_deref())
                             }),
-                        )
+                        ))
                     })
                     .collect::<Vec<_>>();
                 (
