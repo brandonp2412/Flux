@@ -37610,13 +37610,13 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_shadow_color() {
+fn development_ui_string_patch_hot_applies_composite_shadow_properties() {
     let root = std::env::temp_dir().join(format!(
-        "flux-development-shadow-color-patch-{}",
+        "flux-development-shadow-patch-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temporary shadow color patch project should be writable");
+    fs::create_dir_all(&root).expect("temporary shadow patch project should be writable");
     let entry = root.join("main.flux");
     let initial = r#"view Screen {
     grid columns: 1fr
@@ -37630,52 +37630,112 @@ fn development_ui_string_patch_hot_applies_shadow_color() {
 }
 app Screen
 "#;
-    fs::write(&entry, initial).expect("initial shadow color patch source should be writable");
+    fs::write(&entry, initial).expect("initial shadow patch source should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("initial shadow color patch analysis should succeed");
+        .expect("initial shadow patch analysis should succeed");
 
-    let updated = initial.replace("shadowColor: \"shadow\"", "shadowColor: \"accent\"");
-    fs::write(&entry, &updated).expect("updated shadow color patch source should be writable");
-    let entry = fs::canonicalize(entry).expect("shadow color patch entry should canonicalize");
+    let color_source = initial.replace("shadowColor: \"shadow\"", "shadowColor: \"accent\"");
+    fs::write(&entry, &color_source).expect("shadow color patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("shadow patch entry should canonicalize");
     cache.invalidate_path(&entry);
-    let second = cache
+    let color = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("updated shadow color patch analysis should succeed");
-    let patch = second
+        .expect("shadow color patch analysis should succeed");
+    let patch = color
         .development_ui_string_patch_from(&first)
         .expect("shadow color edits should hot-apply");
     assert_eq!(patch.len(), 1);
-    assert_eq!(patch[0].element, "action");
     assert_eq!(patch[0].property, "shadow_color");
     assert_eq!(patch[0].value, "accent");
 
-    let generated = second
+    let blur_source = color_source.replace("shadowBlur: 8", "shadowBlur: 12");
+    fs::write(&entry, &blur_source).expect("shadow blur patch source should be writable");
+    cache.invalidate_path(&entry);
+    let blur = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadow blur patch analysis should succeed");
+    let patch = blur
+        .development_ui_string_patch_from(&color)
+        .expect("shadow blur edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "shadow_blur");
+    assert_eq!(patch[0].value, "12");
+
+    let offset_x_source = blur_source.replace("shadowOffsetX: 2", "shadowOffsetX: -4");
+    fs::write(&entry, &offset_x_source).expect("shadow X offset patch source should be writable");
+    cache.invalidate_path(&entry);
+    let offset_x = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadow X offset patch analysis should succeed");
+    let patch = offset_x
+        .development_ui_string_patch_from(&blur)
+        .expect("signed shadow X offset edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "shadow_offset_x");
+    assert_eq!(patch[0].value, "-4");
+
+    let offset_y_source = offset_x_source.replace("shadowOffsetY: 3", "shadowOffsetY: 7");
+    fs::write(&entry, &offset_y_source).expect("shadow Y offset patch source should be writable");
+    cache.invalidate_path(&entry);
+    let offset_y = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadow Y offset patch analysis should succeed");
+    let patch = offset_y
+        .development_ui_string_patch_from(&offset_x)
+        .expect("shadow Y offset edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "shadow_offset_y");
+    assert_eq!(patch[0].value, "7");
+
+    let generated = first
         .emit_c()
-        .expect("shadow color patch fixture should lower for Linux");
+        .expect("shadow patch fixture should lower for Linux");
+    assert!(generated.contains("static GtkCssProvider *flux__ui_hot_style_action_shadow = NULL"));
     assert!(
-        generated.contains("static GtkCssProvider *flux__ui_hot_style_action_shadow_color = NULL")
+        generated.contains("static char flux__ui_hot_shadow_action_color[32] = \"@flux_shadow\"")
     );
-    assert!(generated.contains("#flux-ui-action { box-shadow: 2px 3px 8px %s; }"));
+    assert!(generated.contains("static int flux__ui_hot_shadow_action_blur = 8"));
+    assert!(generated.contains("static int flux__ui_hot_shadow_action_offset_x = 2"));
+    assert!(generated.contains("static int flux__ui_hot_shadow_action_offset_y = 3"));
+    assert!(generated.contains("#flux-ui-action { box-shadow: %dpx %dpx %dpx %s; }"));
     assert!(generated.contains(
-        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow_color, patch_css, -1)"
+        "g_strlcpy(flux__ui_hot_shadow_action_color, css_value, sizeof(flux__ui_hot_shadow_action_color))"
+    ));
+    assert!(generated.contains("flux__ui_hot_shadow_action_blur = (int)integer_value"));
+    assert!(generated.contains("flux__ui_hot_shadow_action_offset_x = (int)integer_value"));
+    assert!(generated.contains("flux__ui_hot_shadow_action_offset_y = (int)integer_value"));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow, patch_css, -1)"
     ));
 
-    let invalid = updated.replace("shadowColor: \"accent\"", "shadowColor: \"javascript:red\"");
+    let invalid =
+        color_source.replace("shadowColor: \"accent\"", "shadowColor: \"javascript:red\"");
     fs::write(&entry, invalid).expect("invalid shadow color edit should be writable");
     cache.invalidate_path(&entry);
     let invalid = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("invalid shadow color remains semantically a string");
     assert!(
-        invalid.development_ui_string_patch_from(&second).is_none(),
+        invalid.development_ui_string_patch_from(&color).is_none(),
         "target-invalid shadow color must use normal rebuild validation"
     );
     assert!(
         invalid.emit_c().is_err(),
         "target-invalid shadow color must still reach native validation"
+    );
+
+    let oversized = color_source.replace("shadowBlur: 8", "shadowBlur: 2147483648");
+    fs::write(&entry, oversized).expect("oversized shadow blur source should be writable");
+    cache.invalidate_path(&entry);
+    let oversized = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("oversized shadow blur remains a valid static style");
+    assert!(
+        oversized.development_ui_string_patch_from(&color).is_none(),
+        "shadow geometry outside the live native range must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);

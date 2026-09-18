@@ -2004,6 +2004,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         }
         "size" => matches!(element.kind.as_str(), "Text" | "Button"),
         "focus_scope" | "layout_transition_ms" | "transition_ms" | "transition_delay_ms" => true,
+        "shadow_blur" | "shadow_offset_x" | "shadow_offset_y" => true,
         "min_width" => !development_ui_element_has_property(element, "max_width"),
         "min_height" => !development_ui_element_has_property(element, "max_height"),
         "max_width" => !development_ui_element_has_property(element, "min_width"),
@@ -2041,6 +2042,22 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
             true
         }
         _ => false,
+    }
+}
+
+fn development_ui_i64_literal_value(expr: &Expr) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Int(value) => Some(*value),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => {
+            let ExprKind::Int(value) = expr.kind else {
+                return None;
+            };
+            value.checked_neg()
+        }
+        _ => None,
     }
 }
 
@@ -2172,7 +2189,7 @@ fn development_ui_string_literals(
                     "0".to_string()
                 }
             } else if development_ui_i64_property_is_patchable(element, &property_name) {
-                let ExprKind::Int(value) = property.value.kind else {
+                let Some(value) = development_ui_i64_literal_value(&property.value) else {
                     continue;
                 };
                 if property_name == "max_length" && !(0..=i64::from(i32::MAX)).contains(&value) {
@@ -2192,6 +2209,16 @@ fn development_ui_string_literals(
                     property_name.as_str(),
                     "layout_transition_ms" | "transition_ms" | "transition_delay_ms"
                 ) && !(0..=i64::from(i32::MAX)).contains(&value)
+                {
+                    return None;
+                }
+                if property_name == "shadow_blur" && !(0..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if matches!(
+                    property_name.as_str(),
+                    "shadow_offset_x" | "shadow_offset_y"
+                ) && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
                 {
                     return None;
                 }
@@ -2272,7 +2299,7 @@ fn development_ui_string_masked_sources(
             matches!(
                 property.value.kind,
                 ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_)
-            )
+            ) || development_ui_i64_literal_value(&property.value).is_some()
         })
         .map(|property| property.value.span)
         .collect::<Vec<_>>();
