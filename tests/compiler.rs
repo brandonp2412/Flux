@@ -9602,6 +9602,8 @@ fn main() -> i64 {
     check_source(source).expect("locale detection should typecheck");
     let generated = compile_to_c(source).expect("locale detection should lower on Linux");
     assert!(generated.contains("static inline const char *flux__locale_source(void)"));
+    assert!(generated.contains("static _Thread_local char flux__locale_language_buffer[32]"));
+    assert!(generated.contains("static _Thread_local char flux__locale_region_buffer[32]"));
     assert!(generated.contains("static const char *flux__locale_language(void)"));
     assert!(generated.contains("static const char *flux__locale_region(void)"));
     assert!(generated.contains("flux__locale_language()"));
@@ -35583,6 +35585,120 @@ fn native_module_object_cache_reuses_async_function_helpers() {
             .iter()
             .all(|object| second_objects.contains(object)),
         "unchanged async task helpers, entry runtime, and shared debug registry should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn native_module_object_cache_isolates_locale_buffers() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-locale-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native locale module cache fixture should be writable");
+    let locale = root.join("locale.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &locale,
+        "pub fn currentLanguage() -> str {\n    return locale.language()\n}\n",
+    )
+    .expect("locale producer module should be writable");
+    fs::write(
+        &main,
+        "import \"locale.flux\"\n\nfn main() -> i64 {\n    print(currentLanguage())\n    print(locale.region())\n    return 0\n}\n",
+    )
+    .expect("locale consumer module should be writable");
+
+    let cache = root.join("cache");
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native locale object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let run_locale = |binary: &std::path::Path| {
+        let output = Command::new(binary)
+            .env("LC_ALL", "fr_CA.UTF-8")
+            .env_remove("LC_MESSAGES")
+            .env_remove("LANG")
+            .output()
+            .expect("locale module-cache binary should run");
+        assert!(
+            output.status.success(),
+            "locale module-cache binary failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "fr\nCA\n");
+    };
+
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("locale module-object build should run");
+    assert!(
+        built.status.success(),
+        "locale module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    run_locale(&first);
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the locale producer, consumer, and shared thread-local buffers should compile independently"
+    );
+
+    fs::write(
+        &locale,
+        "pub fn currentLanguage() -> str {\n    let language: str = locale.language()\n    return language\n}\n",
+    )
+    .expect("changed locale producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed locale module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed locale module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    run_locale(&second);
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "a locale producer body edit should add one object while reusing the consumer and shared locale buffers"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged locale consumer and shared thread-local buffer object should remain reusable"
     );
 
     let _ = fs::remove_dir_all(&root);

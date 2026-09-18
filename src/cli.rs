@@ -10805,6 +10805,9 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static pthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;";
     const DEBUG_TASK_HEAD: &str =
         "static struct flux__debug_task_record *flux__debug_task_head = NULL;";
+    const LOCALE_LANGUAGE_BUFFER: &str =
+        "static _Thread_local char flux__locale_language_buffer[32];";
+    const LOCALE_REGION_BUFFER: &str = "static _Thread_local char flux__locale_region_buffer[32];";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -11024,6 +11027,25 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         definitions.push_str(
             "\n#ifdef FLUX_DEBUG_METADATA\npthread_mutex_t flux__debug_task_mutex = PTHREAD_MUTEX_INITIALIZER;\nstruct flux__debug_task_record *flux__debug_task_head = NULL;\n#endif\n",
         );
+        isolated = true;
+    }
+
+    if prefix.contains(LOCALE_LANGUAGE_BUFFER) {
+        partition_prefix = partition_prefix.replacen(
+            LOCALE_LANGUAGE_BUFFER,
+            "extern _Thread_local char flux__locale_language_buffer[32];",
+            1,
+        );
+        definitions.push_str("\n_Thread_local char flux__locale_language_buffer[32];\n");
+        isolated = true;
+    }
+    if prefix.contains(LOCALE_REGION_BUFFER) {
+        partition_prefix = partition_prefix.replacen(
+            LOCALE_REGION_BUFFER,
+            "extern _Thread_local char flux__locale_region_buffer[32];",
+            1,
+        );
+        definitions.push_str("_Thread_local char flux__locale_region_buffer[32];\n");
         isolated = true;
     }
 
@@ -13807,6 +13829,31 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the async debug-task list must have exactly one process-wide definition"
+        );
+
+        let locale_buffers = "#include <stdint.h>\nstatic _Thread_local char flux__locale_language_buffer[32];\nstatic _Thread_local char flux__locale_region_buffer[32];\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let locale_units = partition_native_c_by_source(locale_buffers)
+            .expect("locale scratch buffers should move into one shared runtime unit");
+        assert_eq!(locale_units.len(), 3);
+        assert_eq!(
+            locale_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "_Thread_local char flux__locale_language_buffer[32];"))
+                .count(),
+            1,
+            "the locale language buffer must have exactly one thread-local definition"
+        );
+        assert_eq!(
+            locale_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "_Thread_local char flux__locale_region_buffer[32];"))
+                .count(),
+            1,
+            "the locale region buffer must have exactly one thread-local definition"
         );
     }
 
