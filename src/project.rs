@@ -1934,6 +1934,13 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 .any(|property| development_ui_element_has_property(element, property))
         }
         "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
+        "accessibility_action_label" => {
+            !development_ui_element_has_property(element, "accessibility_description")
+        }
+        "accessibility_long_press_label" => {
+            !development_ui_element_has_property(element, "accessibility_description")
+                && !development_ui_element_has_property(element, "accessibility_action_label")
+        }
         "align_x" | "align_y" => true,
         _ => false,
     }

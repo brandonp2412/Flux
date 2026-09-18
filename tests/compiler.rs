@@ -36623,6 +36623,109 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_accessibility_action_labels_with_linux_precedence() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-action-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary accessibility action patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn tapped() -> void {
+    print("tap")
+}
+
+fn held() -> void {
+    print("hold")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text tapTarget at 1,1
+        text: "Tap"
+        onTap: tapped
+        accessibilityActionLabel: "Open before"
+    Text holdTarget at 2,1
+        text: "Hold"
+        onLongPress: held
+        accessibilityLongPressLabel: "Hold before"
+    Text describedTarget at 3,1
+        text: "Described"
+        onTap: tapped
+        accessibilityDescription: "Explicit description"
+        accessibilityActionLabel: "Shadowed before"
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial accessibility action patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial accessibility action patch analysis should succeed");
+
+    let updated = initial
+        .replace("Open before", "Open after")
+        .replace("Hold before", "Hold after");
+    fs::write(&entry, &updated).expect("accessibility action patch edit should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("accessibility action patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated accessibility action patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("unshadowed accessibility action labels should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&(
+            "tapTarget".to_string(),
+            "accessibility_action_label".to_string()
+        )),
+        Some(&"Open after".to_string())
+    );
+    assert_eq!(
+        patch.get(&(
+            "holdTarget".to_string(),
+            "accessibility_long_press_label".to_string()
+        )),
+        Some(&"Hold after".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = second
+        .emit_c()
+        .expect("accessibility action patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"accessibility_action_label\") == 0 && flux__ui_action_tapTarget != NULL"
+    ));
+    assert!(generated.contains(
+        "strcmp(property, \"accessibility_long_press_label\") == 0 && flux__ui_holdTarget != NULL"
+    ));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1"));
+
+    let shadowed = updated.replace("Shadowed before", "Shadowed after");
+    fs::write(&entry, shadowed).expect("shadowed action label edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadowed action label edit should analyze");
+    assert!(
+        third.development_ui_string_patch_from(&second).is_none(),
+        "an action label shadowed by an explicit description must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
