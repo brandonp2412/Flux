@@ -37742,6 +37742,151 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_static_transform_group() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-transform-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary transform patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Transform"
+        translateX: 4
+        translateY: -2
+        rotateDegrees: 5
+        scalePercent: 100
+        scaleYPercent: 90
+        skewXDegrees: 1
+        transformOriginXPercent: 45
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial transform patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial transform patch analysis should succeed");
+
+    let translated_source = initial.replace("translateX: 4", "translateX: 8");
+    fs::write(&entry, &translated_source).expect("translated source should be writable");
+    let entry = fs::canonicalize(entry).expect("transform patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let translated = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("translated source should analyze");
+    let patch = translated
+        .development_ui_string_patch_from(&first)
+        .expect("static translate edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "translate_x");
+    assert_eq!(patch[0].value, "8");
+
+    let scaled_source = translated_source.replace("scalePercent: 100", "scalePercent: 120");
+    fs::write(&entry, &scaled_source).expect("scaled source should be writable");
+    cache.invalidate_path(&entry);
+    let scaled = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("scaled source should analyze");
+    let patch = scaled
+        .development_ui_string_patch_from(&translated)
+        .expect("base scale edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "scale_percent");
+    assert_eq!(patch[0].value, "120");
+
+    let rotated_source = scaled_source.replace("rotateDegrees: 5", "rotateDegrees: -15");
+    fs::write(&entry, &rotated_source).expect("rotated source should be writable");
+    cache.invalidate_path(&entry);
+    let rotated = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("rotated source should analyze");
+    let patch = rotated
+        .development_ui_string_patch_from(&scaled)
+        .expect("signed rotation edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].property, "rotate_degrees");
+    assert_eq!(patch[0].value, "-15");
+
+    let generated = first
+        .emit_c()
+        .expect("static transform patch fixture should lower for Linux");
+    assert!(generated.contains("static GtkCssProvider *flux__ui_hot_style_card_transform = NULL"));
+    for declaration in [
+        "static int flux__ui_hot_transform_card_translate_x = 4",
+        "static int flux__ui_hot_transform_card_translate_y = -2",
+        "static int flux__ui_hot_transform_card_rotate = 5",
+        "static int flux__ui_hot_transform_card_scale_x = 100",
+        "static int flux__ui_hot_transform_card_scale_y = 90",
+        "static int flux__ui_hot_transform_card_skew_x = 1",
+        "static int flux__ui_hot_transform_card_origin_x = 45",
+        "static int flux__ui_hot_transform_card_origin_y = 50",
+    ] {
+        assert!(
+            generated.contains(declaration),
+            "missing transform live state declaration {declaration}"
+        );
+    }
+    assert!(generated.contains(
+        "#flux-ui-card { transform: translate(%dpx, %dpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }"
+    ));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_card_transform, patch_css, -1)"
+    ));
+    let scale_handler = generated
+        .split("strcmp(property, \"scale_percent\")")
+        .nth(1)
+        .expect("base scale handler should be emitted")
+        .split(" if (strcmp(name")
+        .next()
+        .expect("base scale handler should have a bounded body");
+    assert!(
+        scale_handler.contains("flux__ui_hot_transform_card_scale_x = (int)integer_value"),
+        "base scale should update the non-overridden X scale"
+    );
+    assert!(
+        !scale_handler.contains("flux__ui_hot_transform_card_scale_y = (int)integer_value"),
+        "base scale must preserve the explicit Y scale override"
+    );
+
+    let dynamic_initial = r#"view Screen {
+    state offset: i64 = 0
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Dynamic"
+        translateX: offset
+        rotateDegrees: 5
+}
+app Screen
+"#;
+    fs::write(&entry, dynamic_initial).expect("dynamic transform source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic transform source should analyze");
+    let dynamic_updated = dynamic_initial.replace("rotateDegrees: 5", "rotateDegrees: 10");
+    fs::write(&entry, dynamic_updated)
+        .expect("updated dynamic transform source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated dynamic transform source should analyze");
+    assert!(
+        dynamic_second
+            .development_ui_string_patch_from(&dynamic_first)
+            .is_none(),
+        "mixed dynamic/static transform groups must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_color_without_stale_pango_foreground() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-color-patch-{}",

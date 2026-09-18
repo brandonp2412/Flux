@@ -14777,6 +14777,41 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
+        if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
+            let translate_x = static_style_i64(element, "translate_x", signatures)?.unwrap_or(0);
+            let translate_y = static_style_i64(element, "translate_y", signatures)?.unwrap_or(0);
+            let rotate = static_style_i64(element, "rotate_degrees", signatures)?.unwrap_or(0);
+            let scale = static_style_i64(element, "scale_percent", signatures)?.unwrap_or(100);
+            let scale_x =
+                static_style_i64(element, "scale_x_percent", signatures)?.unwrap_or(scale);
+            let scale_y =
+                static_style_i64(element, "scale_y_percent", signatures)?.unwrap_or(scale);
+            let skew_x = static_style_i64(element, "skew_x_degrees", signatures)?.unwrap_or(0);
+            let skew_y = static_style_i64(element, "skew_y_degrees", signatures)?.unwrap_or(0);
+            let origin_x =
+                static_style_i64(element, "transform_origin_x_percent", signatures)?.unwrap_or(50);
+            let origin_y =
+                static_style_i64(element, "transform_origin_y_percent", signatures)?.unwrap_or(50);
+            let provider = linux_ui_hot_transform_provider_c_name(element);
+            let values = [
+                ("translate_x", translate_x),
+                ("translate_y", translate_y),
+                ("rotate", rotate),
+                ("scale_x", scale_x),
+                ("scale_y", scale_y),
+                ("skew_x", skew_x),
+                ("skew_y", skew_y),
+                ("origin_x", origin_x),
+                ("origin_y", origin_y),
+            ];
+            out.push_str(&format!("static GtkCssProvider *{provider} = NULL;\n"));
+            for (name, value) in values {
+                out.push_str(&format!(
+                    "static int {} = {value};\n",
+                    linux_ui_hot_transform_value_c_name(element, name)
+                ));
+            }
+        }
         if element_has_dynamic_transform(element, signatures) {
             out.push_str(&format!(
                 "static GtkCssProvider *{} = NULL;\n",
@@ -15233,6 +15268,57 @@ fn emit_linux_gtk_application(
                 };
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && {range}) {{ {variable} = (int)integer_value;{apply} }} }}",
+                    c_string(&element.name)
+                ));
+            }
+        }
+        if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
+            let provider = linux_ui_hot_transform_provider_c_name(element);
+            let translate_x = linux_ui_hot_transform_value_c_name(element, "translate_x");
+            let translate_y = linux_ui_hot_transform_value_c_name(element, "translate_y");
+            let rotate = linux_ui_hot_transform_value_c_name(element, "rotate");
+            let scale_x = linux_ui_hot_transform_value_c_name(element, "scale_x");
+            let scale_y = linux_ui_hot_transform_value_c_name(element, "scale_y");
+            let skew_x = linux_ui_hot_transform_value_c_name(element, "skew_x");
+            let skew_y = linux_ui_hot_transform_value_c_name(element, "skew_y");
+            let origin_x = linux_ui_hot_transform_value_c_name(element, "origin_x");
+            let origin_y = linux_ui_hot_transform_value_c_name(element, "origin_y");
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ transform: translate(%dpx, %dpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }}",
+                element.name
+            ));
+            let apply = format!(
+                " if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {translate_x}, {translate_y}, {rotate}, ((double){scale_x} / 100.0), ((double){scale_y} / 100.0), {skew_x}, {skew_y}, {origin_x}, {origin_y}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }}"
+            );
+            for (property_name, variable) in [
+                ("translate_x", &translate_x),
+                ("translate_y", &translate_y),
+                ("rotate_degrees", &rotate),
+                ("scale_x_percent", &scale_x),
+                ("scale_y_percent", &scale_y),
+                ("skew_x_degrees", &skew_x),
+                ("skew_y_degrees", &skew_y),
+                ("transform_origin_x_percent", &origin_x),
+                ("transform_origin_y_percent", &origin_y),
+            ] {
+                if view_property(element, property_name).is_none() {
+                    continue;
+                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{ {variable} = (int)integer_value;{apply} }} }}",
+                    c_string(&element.name)
+                ));
+            }
+            if view_property(element, "scale_percent").is_some() {
+                let mut scale_updates = String::new();
+                if view_property(element, "scale_x_percent").is_none() {
+                    scale_updates.push_str(&format!(" {scale_x} = (int)integer_value;"));
+                }
+                if view_property(element, "scale_y_percent").is_none() {
+                    scale_updates.push_str(&format!(" {scale_y} = (int)integer_value;"));
+                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"scale_percent\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{{scale_updates}{apply} }} }}",
                     c_string(&element.name)
                 ));
             }
@@ -19239,11 +19325,22 @@ fn linux_ui_hot_shadow_provider_c_name(element: &crate::ast::ViewElement) -> Str
     linux_ui_hot_style_provider_c_name(element, "shadow")
 }
 
+fn linux_ui_hot_transform_provider_c_name(element: &crate::ast::ViewElement) -> String {
+    linux_ui_hot_style_provider_c_name(element, "transform")
+}
+
 fn linux_ui_hot_shadow_value_c_name(
     element: &crate::ast::ViewElement,
     property_name: &str,
 ) -> String {
     format!("flux__ui_hot_shadow_{}_{}", element.name, property_name)
+}
+
+fn linux_ui_hot_transform_value_c_name(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+) -> String {
+    format!("flux__ui_hot_transform_{}_{}", element.name, property_name)
 }
 
 fn linux_element_has_shadow_style(element: &crate::ast::ViewElement) -> bool {

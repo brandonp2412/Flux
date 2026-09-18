@@ -1996,6 +1996,38 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
     }
 }
 
+const DEVELOPMENT_UI_TRANSFORM_PROPERTIES: &[&str] = &[
+    "translate_x",
+    "translate_y",
+    "rotate_degrees",
+    "scale_percent",
+    "scale_x_percent",
+    "scale_y_percent",
+    "skew_x_degrees",
+    "skew_y_degrees",
+    "transform_origin_x_percent",
+    "transform_origin_y_percent",
+];
+
+fn development_ui_transform_is_static_literal(element: &ViewElement) -> bool {
+    !development_ui_element_has_property(element, "drag_translate")
+        && !development_ui_element_has_property(element, "pinch_scale")
+        && DEVELOPMENT_UI_TRANSFORM_PROPERTIES
+            .iter()
+            .all(|property_name| {
+                element
+                    .properties
+                    .iter()
+                    .find(|property| {
+                        typecheck::source_name_to_internal(&property.name) == *property_name
+                    })
+                    .is_none_or(|property| {
+                        development_ui_i64_literal_value(&property.value)
+                            .is_some_and(|value| i32::try_from(value).is_ok())
+                    })
+            })
+}
+
 fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "max_length" => element.kind == "TextInput",
@@ -2005,6 +2037,16 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "size" => matches!(element.kind.as_str(), "Text" | "Button"),
         "focus_scope" | "layout_transition_ms" | "transition_ms" | "transition_delay_ms" => true,
         "shadow_blur" | "shadow_offset_x" | "shadow_offset_y" => true,
+        "translate_x"
+        | "translate_y"
+        | "rotate_degrees"
+        | "scale_percent"
+        | "scale_x_percent"
+        | "scale_y_percent"
+        | "skew_x_degrees"
+        | "skew_y_degrees"
+        | "transform_origin_x_percent"
+        | "transform_origin_y_percent" => development_ui_transform_is_static_literal(element),
         "min_width" => !development_ui_element_has_property(element, "max_width"),
         "min_height" => !development_ui_element_has_property(element, "max_height"),
         "max_width" => !development_ui_element_has_property(element, "min_width"),
@@ -2219,6 +2261,11 @@ fn development_ui_string_literals(
                     property_name.as_str(),
                     "shadow_offset_x" | "shadow_offset_y"
                 ) && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
+                {
+                    return None;
+                }
+                if DEVELOPMENT_UI_TRANSFORM_PROPERTIES.contains(&property_name.as_str())
+                    && i32::try_from(value).is_err()
                 {
                     return None;
                 }
