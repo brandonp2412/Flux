@@ -10652,7 +10652,7 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     if order.len() < 2 {
         let source = order.first()?;
         let body = bodies.remove(source)?;
-        return partition_native_single_source_public_functions(&prefix, &body);
+        return partition_native_single_source_functions(&prefix, &body);
     }
 
     Some(
@@ -10669,23 +10669,26 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     )
 }
 
-fn partition_native_single_source_public_functions(
-    prefix: &str,
-    body: &str,
-) -> Option<Vec<String>> {
+fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
     let public_functions = prefix
         .lines()
         .filter(|line| !line.trim_start().starts_with("static inline "))
         .filter_map(native_flux_function_symbol)
+        .map(str::to_string)
         .collect::<BTreeSet<_>>();
-    if public_functions.is_empty() {
-        return None;
-    }
     let private_functions = prefix
         .lines()
         .filter(|line| line.trim_start().starts_with("static inline "))
         .filter_map(native_flux_function_symbol)
-        .collect::<Vec<_>>();
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let known_functions = public_functions
+        .union(&private_functions)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if known_functions.is_empty() {
+        return None;
+    }
 
     let lines = body.split_inclusive('\n').collect::<Vec<_>>();
     let mut offsets = Vec::with_capacity(lines.len());
@@ -10695,7 +10698,7 @@ fn partition_native_single_source_public_functions(
         offset += line.len();
     }
 
-    let mut ranges = Vec::new();
+    let mut definitions = BTreeMap::<String, (usize, usize)>::new();
     for (index, line) in lines.iter().enumerate() {
         if line.starts_with(char::is_whitespace) {
             continue;
@@ -10703,7 +10706,7 @@ fn partition_native_single_source_public_functions(
         let Some(symbol) = native_flux_function_symbol(line) else {
             continue;
         };
-        if !public_functions.contains(symbol) {
+        if !known_functions.contains(symbol) {
             continue;
         }
         let Some(symbol_at) = line.find(symbol) else {
@@ -10724,21 +10727,57 @@ fn partition_native_single_source_public_functions(
             .checked_sub(1)
             .filter(|previous| lines[*previous].trim_start().starts_with("#line "))
             .map_or(definition_start, |previous| offsets[previous]);
-        let definition = &body[start..end];
-        if private_functions
-            .iter()
-            .any(|private| definition.contains(private))
-            || definition.contains("flux__lambda_")
-            || definition.contains("flux__bind_")
-        {
-            continue;
-        }
-        ranges.push((start, end));
+        definitions.insert(symbol.to_string(), (start, end));
     }
-    if ranges.is_empty() {
+
+    let mut extractable = definitions
+        .iter()
+        .filter_map(|(symbol, (start, end))| {
+            let definition = &body[*start..*end];
+            (!definition.contains("flux__lambda_") && !definition.contains("flux__bind_"))
+                .then_some(symbol.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    loop {
+        let blocked = extractable
+            .iter()
+            .filter(|symbol| {
+                let (start, end) = definitions[*symbol];
+                let definition = &body[start..end];
+                native_flux_function_symbols(definition).any(|dependency| {
+                    private_functions.contains(dependency)
+                        && dependency != symbol.as_str()
+                        && !extractable.contains(dependency)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if blocked.is_empty() {
+            break;
+        }
+        for symbol in blocked {
+            extractable.remove(&symbol);
+        }
+    }
+    if extractable.is_empty() {
         return None;
     }
-    ranges.sort_unstable();
+
+    let externalized_private = extractable
+        .intersection(&private_functions)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let shared_prefix = externalize_native_function_linkage(prefix, &externalized_private);
+    let mut ranges = extractable
+        .iter()
+        .filter_map(|symbol| {
+            definitions
+                .get(symbol)
+                .copied()
+                .map(|(start, end)| (start, end, symbol.clone()))
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|(start, _, _)| *start);
     if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
         return None;
     }
@@ -10746,11 +10785,16 @@ fn partition_native_single_source_public_functions(
     let mut units = Vec::with_capacity(ranges.len() + 1);
     let mut remainder = String::with_capacity(body.len());
     let mut cursor = 0usize;
-    for (start, end) in ranges {
+    for (start, end, symbol) in ranges {
         remainder.push_str(&body[cursor..start]);
-        let mut unit = String::with_capacity(prefix.len() + end - start);
-        unit.push_str(prefix);
-        unit.push_str(&body[start..end]);
+        let definition = if private_functions.contains(&symbol) {
+            externalize_native_function_linkage(&body[start..end], &externalized_private)
+        } else {
+            body[start..end].to_string()
+        };
+        let mut unit = String::with_capacity(shared_prefix.len() + definition.len());
+        unit.push_str(&shared_prefix);
+        unit.push_str(&definition);
         units.push(unit);
         cursor = end;
     }
@@ -10758,11 +10802,33 @@ fn partition_native_single_source_public_functions(
     if remainder.trim().is_empty() {
         return None;
     }
-    let mut remainder_unit = String::with_capacity(prefix.len() + remainder.len());
-    remainder_unit.push_str(prefix);
+    let mut remainder_unit = String::with_capacity(shared_prefix.len() + remainder.len());
+    remainder_unit.push_str(&shared_prefix);
     remainder_unit.push_str(&remainder);
     units.push(remainder_unit);
     Some(units)
+}
+
+fn native_flux_function_symbols(source: &str) -> impl Iterator<Item = &str> {
+    source
+        .match_indices("flux__fn_")
+        .filter_map(|(offset, _)| native_flux_function_symbol(&source[offset..]))
+}
+
+fn externalize_native_function_linkage(source: &str, functions: &BTreeSet<String>) -> String {
+    source
+        .split_inclusive('\n')
+        .map(|line| {
+            if line.trim_start().starts_with("static inline ")
+                && native_flux_function_symbol(line)
+                    .is_some_and(|symbol| functions.contains(symbol))
+            {
+                line.replacen("static inline ", "", 1)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
 }
 
 fn native_flux_function_symbol(line: &str) -> Option<&str> {
@@ -13067,11 +13133,29 @@ app OverlayDemo(title: "Overlay")
     }
 
     #[test]
-    fn native_single_source_function_partitioning_keeps_private_dependencies_monolithic() {
+    fn native_single_source_function_partitioning_externalizes_safe_private_dependencies() {
         let generated = "#include <stdint.h>\nstatic inline int64_t flux__fn_private(void);\nint64_t flux__fn_public(void);\n#line 1 \"/tmp/main.flux\"\nint64_t flux__fn_public(void) { return flux__fn_private(); }\n#line 5 \"/tmp/main.flux\"\nstatic inline int64_t flux__fn_private(void) { return 7; }\n#line 9 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_public(); }\n";
+        let units = partition_native_c_by_source(generated)
+            .expect("safe private dependency chains should split into native function objects");
+        assert_eq!(units.len(), 3);
         assert!(
-            partition_native_c_by_source(generated).is_none(),
-            "a public function that depends on a private generated function must retain the monolithic object path"
+            units
+                .iter()
+                .all(|unit| !unit.contains("static inline int64_t flux__fn_private"))
+        );
+        assert!(units.iter().any(|unit| {
+            unit.contains("int64_t flux__fn_private(void) { return 7; }")
+                && !unit.contains("int main(void)")
+        }));
+        assert!(units.iter().any(|unit| {
+            unit.contains("int64_t flux__fn_public(void) { return flux__fn_private(); }")
+                && !unit.contains("int main(void)")
+        }));
+
+        let closure_dependent = "#include <stdint.h>\nstatic inline int64_t flux__fn_private(void);\n#line 1 \"/tmp/main.flux\"\nstatic inline int64_t flux__fn_private(void) { return flux__lambda_1_1_1(); }\n#line 5 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_private(); }\n";
+        assert!(
+            partition_native_c_by_source(closure_dependent).is_none(),
+            "functions coupled to generated closure helpers should keep the monolithic path"
         );
 
         let independent = "#include <stdint.h>\nint64_t flux__fn_public(void);\n#line 1 \"/tmp/main.flux\"\nint64_t flux__fn_public(void) { const char *brace = \"{ still text }\"; (void)brace; return 7; }\n#line 5 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_public(); }\n";
