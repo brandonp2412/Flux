@@ -2205,55 +2205,87 @@ fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
 ) -> Option<String> {
+    if property.transition.is_some() {
+        return None;
+    }
     let property_name = typecheck::source_name_to_internal(&property.name);
-    if property.transition.is_some()
-        || !matches!(
-            property_name.as_str(),
-            "visible"
-                | "clip"
-                | "enabled"
-                | "primary"
-                | "accessibility_hidden"
-                | "read_only"
-                | "can_shrink"
-                | "selectable"
-                | "wrap"
-                | "italic"
-                | "underline"
-                | "strikethrough"
-                | "password"
-                | "checked"
-                | "selected"
-        )
-    {
-        return None;
+    if matches!(
+        property_name.as_str(),
+        "visible"
+            | "clip"
+            | "enabled"
+            | "primary"
+            | "accessibility_hidden"
+            | "read_only"
+            | "can_shrink"
+            | "selectable"
+            | "wrap"
+            | "italic"
+            | "underline"
+            | "strikethrough"
+            | "password"
+            | "checked"
+            | "selected"
+    ) {
+        if !development_ui_bool_property_is_patchable(element, &property_name) {
+            return None;
+        }
+        let ExprKind::Bool(value) = property.value.kind else {
+            return None;
+        };
+        return Some(if value { "1" } else { "0" }.to_string());
     }
-    if !development_ui_bool_property_is_patchable(element, &property_name) {
-        return None;
+    if property_name == "margin" {
+        if !development_ui_i64_property_is_patchable(element, &property_name) {
+            return None;
+        }
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
     }
-    let ExprKind::Bool(value) = property.value.kind else {
-        return None;
-    };
-    Some(if value { "1" } else { "0" }.to_string())
+    None
 }
 
-fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
-    match property {
-        "visible" | "enabled" | "wrap" => Some("1".to_string()),
-        "primary"
-        | "clip"
-        | "accessibility_hidden"
-        | "read_only"
-        | "can_shrink"
-        | "selectable"
-        | "italic"
-        | "underline"
-        | "strikethrough"
-        | "password"
-        | "checked"
-        | "selected" => Some("0".to_string()),
-        _ => None,
+fn development_ui_property_lifecycle_default(
+    element: &ViewElement,
+    property: &str,
+) -> Option<String> {
+    if matches!(
+        property,
+        "visible"
+            | "clip"
+            | "enabled"
+            | "primary"
+            | "accessibility_hidden"
+            | "read_only"
+            | "can_shrink"
+            | "selectable"
+            | "wrap"
+            | "italic"
+            | "underline"
+            | "strikethrough"
+            | "password"
+            | "checked"
+            | "selected"
+    ) {
+        if !development_ui_bool_property_is_patchable(element, property) {
+            return None;
+        }
+        return Some(
+            if matches!(property, "visible" | "enabled" | "wrap") {
+                "1"
+            } else {
+                "0"
+            }
+            .to_string(),
+        );
     }
+    if property == "margin" && development_ui_i64_property_is_patchable(element, property) {
+        return Some("0".to_string());
+    }
+    None
 }
 
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
@@ -2778,12 +2810,8 @@ fn development_ui_string_literals(
             "password",
             "checked",
             "selected",
+            "margin",
         ] {
-            if property_name != "visible"
-                && !development_ui_bool_property_is_patchable(element, property_name)
-            {
-                continue;
-            }
             if element
                 .properties
                 .iter()
@@ -2791,10 +2819,11 @@ fn development_ui_string_literals(
             {
                 continue;
             }
-            literals.insert(
-                (element.name.clone(), property_name.to_string()),
-                development_ui_property_lifecycle_default(property_name)?,
-            );
+            let Some(default) = development_ui_property_lifecycle_default(element, property_name)
+            else {
+                continue;
+            };
+            literals.insert((element.name.clone(), property_name.to_string()), default);
         }
     }
     Some(literals)

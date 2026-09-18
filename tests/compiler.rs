@@ -41622,6 +41622,95 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_margin_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-margin-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary margin lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Label"
+        marginTop: 7
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial margin lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial margin lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("margin lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"margin\") == 0 && flux__ui_label != NULL"));
+    assert!(generated.contains("gtk_widget_set_margin_bottom(flux__ui_label, (int)integer_value)"));
+
+    let entry = fs::canonicalize(entry).expect("margin lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        marginTop: 7\n",
+        "        marginTop: 7\n        margin: 0\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit margin default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit margin default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding margin: 0 must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding margin: 0 should be an in-process no-op"
+    );
+
+    let spaced = explicit_default.replace("margin: 0", "margin: 12");
+    fs::write(&entry, spaced).expect("spaced margin source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("spaced margin source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("margin: 12 should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "margin".to_string(),
+            value: "12".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed margin source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed margin source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing margin should restore the implicit zero value"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "margin".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_enabled_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-enabled-lifecycle-{}",

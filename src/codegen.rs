@@ -15842,25 +15842,23 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "margin").is_some() {
-            let mut setters = String::new();
-            for (property_name, setter) in [
-                ("margin_top", "top"),
-                ("margin_bottom", "bottom"),
-                ("margin_start", "start"),
-                ("margin_end", "end"),
-            ] {
-                if view_property(element, property_name).is_none() {
-                    setters.push_str(&format!(
-                        " gtk_widget_set_margin_{setter}({widget}, (int)integer_value);"
-                    ));
-                }
+        let mut margin_setters = String::new();
+        for (property_name, setter) in [
+            ("margin_top", "top"),
+            ("margin_bottom", "bottom"),
+            ("margin_start", "start"),
+            ("margin_end", "end"),
+        ] {
+            if view_property(element, property_name).is_none() {
+                margin_setters.push_str(&format!(
+                    " gtk_widget_set_margin_{setter}({widget}, (int)integer_value);"
+                ));
             }
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"margin\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{{setters} }} }}",
-                c_string(&element.name)
-            ));
         }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"margin\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{{margin_setters} }} }}",
+            c_string(&element.name)
+        ));
         for (property_name, setter) in [
             ("margin_top", "top"),
             ("margin_bottom", "bottom"),
