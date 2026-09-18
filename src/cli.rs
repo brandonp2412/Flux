@@ -10333,9 +10333,6 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
 }
 
 fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
-    if c_source.contains("struct flux__") || c_source.contains("union flux__") {
-        return None;
-    }
     let lines = c_source.split_inclusive('\n').collect::<Vec<_>>();
     let first_source_line = lines
         .iter()
@@ -12563,6 +12560,16 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(
             partition_native_c_by_source(scalar)
                 .expect("independent scalar modules should be partitionable")
+                .len(),
+            2
+        );
+
+        let aggregate = "#include <stdint.h>\nstruct flux__type_Pair { int64_t left; int64_t right; };\nstruct flux__type_Pair flux__fn_left(void);\nint64_t flux__fn_right(struct flux__type_Pair value);\n#line 1 \"/tmp/left.flux\"\nstruct flux__type_Pair flux__fn_left(void) { return (struct flux__type_Pair){1, 2}; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(struct flux__type_Pair value) { return value.right; }\n";
+        assert_eq!(
+            partition_native_c_by_source(aggregate)
+                .expect(
+                    "shared aggregate declarations are safe to duplicate across translation units"
+                )
                 .len(),
             2
         );

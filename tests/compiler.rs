@@ -33537,6 +33537,110 @@ fn native_module_object_cache_recompiles_only_changed_scalar_module() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_named_value_type_abi() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-aggregate-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native aggregate module cache fixture should be writable");
+    let types = root.join("types.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &types,
+        "pub struct Pair {\n    left: i64\n    right: i64\n}\n\npub fn makePair(value: i64) -> Pair {\n    return Pair { left: value, right: value + 1 }\n}\n",
+    )
+    .expect("aggregate module should be writable");
+    fs::write(
+        &main,
+        "import \"types.flux\"\n\nfn main() -> i64 {\n    let pair: Pair = makePair(20)\n    print(pair.right)\n    return 0\n}\n",
+    )
+    .expect("aggregate consumer should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first aggregate module-object build should run");
+    assert!(
+        built.status.success(),
+        "first aggregate module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first aggregate module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "21\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native aggregate module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(first_objects.len(), 2);
+
+    fs::write(
+        &types,
+        "pub struct Pair {\n    left: i64\n    right: i64\n}\n\npub fn makePair(value: i64) -> Pair {\n    return Pair { left: value, right: value + 2 }\n}\n",
+    )
+    .expect("changed aggregate module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed aggregate module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed aggregate module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed aggregate module-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&second_run.stdout), "22\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        3,
+        "a body-only aggregate producer edit should add one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged aggregate consumer object should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-module-cache-{}-{}",
