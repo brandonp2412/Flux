@@ -1062,7 +1062,7 @@ fn format_struct_pattern_field(field: &StructPatternField) -> String {
     }
 }
 
-fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
+pub(crate) fn format_expr(expr: &Expr, parent_precedence: u8) -> String {
     match &expr.kind {
         ExprKind::Int(value) => value.to_string(),
         ExprKind::Bool(value) => value.to_string(),

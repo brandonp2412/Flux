@@ -1529,7 +1529,7 @@ fn emit_c_for_target_with_source_metadata_impl(
     let mut application_body = String::new();
     if program.application.is_some() {
         let cache_key = FunctionCodegenCacheKey {
-            identity: application_codegen_cache_identity(program, target),
+            identity: application_codegen_cache_identity(program, target, source_paths),
             incoming_temp_counter: 0,
         };
         if let Some(cached) = function_cache
@@ -2006,20 +2006,135 @@ fn function_helper_codegen_cache_identity(
     )
 }
 
-fn application_codegen_cache_identity(program: &Program, target: NativeTarget) -> String {
-    format!(
-        "application:{target:?}|imports={:?}|aliases={:?}|interfaces={:?}|implementations={:?}|structs={:?}|enums={:?}|constants={:?}|application={:?}|routes={:?}|views={:?}",
-        program.imports,
-        program.aliases,
-        program.interfaces,
-        program.implementations,
-        program.structs,
-        program.enums,
-        program.constants,
-        program.application,
-        program.routes,
-        program.views
-    )
+fn application_codegen_cache_identity(
+    program: &Program,
+    target: NativeTarget,
+    source_paths: &HashMap<SourceId, String>,
+) -> String {
+    let source_path = |source_id: SourceId| {
+        source_paths
+            .get(&source_id)
+            .map(String::as_str)
+            .unwrap_or_default()
+    };
+    let application = program.application.as_ref().map(|application| {
+        (
+            source_path(application.keyword_span.source_id),
+            application.view_name.as_str(),
+            application
+                .metadata
+                .iter()
+                .map(|field| {
+                    (
+                        field.name.as_str(),
+                        crate::formatter::format_expr(&field.value, 0),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    let routes = program
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                source_path(route.keyword_span.source_id),
+                route.name.as_str(),
+                route.view_name.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let views = program
+        .views
+        .iter()
+        .map(|view| {
+            let params = view
+                .params
+                .iter()
+                .map(|param| {
+                    (
+                        param.name.as_str(),
+                        &param.ty,
+                        param.named_only,
+                        param
+                            .default
+                            .as_ref()
+                            .map(|default| crate::formatter::format_expr(default, 0)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let states = view
+                .states
+                .iter()
+                .map(|state| {
+                    (
+                        state.name.as_str(),
+                        &state.ty,
+                        crate::formatter::format_expr(&state.initial, 0),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let derived = view
+                .derived
+                .iter()
+                .map(|derived| {
+                    (
+                        derived.name.as_str(),
+                        &derived.ty,
+                        crate::formatter::format_expr(&derived.value, 0),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let elements = view
+                .elements
+                .iter()
+                .map(|element| {
+                    let properties = element
+                        .properties
+                        .iter()
+                        .map(|property| {
+                            (
+                                property.name.as_str(),
+                                crate::formatter::format_expr(&property.value, 0),
+                                property.transition.as_ref().map(|transition| {
+                                    (transition.state.as_str(), transition.event_value.as_deref())
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        element.kind.as_str(),
+                        element.name.as_str(),
+                        element.row,
+                        element.column,
+                        element.row_span,
+                        element.column_span,
+                        properties,
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                source_path(view.keyword_span.source_id),
+                view.public,
+                view.name.as_str(),
+                params,
+                states,
+                derived,
+                (
+                    &view.grid.columns,
+                    &view.grid.rows,
+                    view.grid.flow,
+                    view.grid.gap,
+                    view.grid.padding,
+                    view.grid.scroll,
+                    view.grid.overlay,
+                ),
+                elements,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("application:{target:?}|application={application:?}|routes={routes:?}|views={views:?}")
 }
 
 fn harden_generated_http_text_argument_checks(out: &mut String) {

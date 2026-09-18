@@ -36875,8 +36875,8 @@ fn project_codegen_cache_reuses_application_fragment_across_cache_restarts() {
         Some(fluxc::project::ProjectCodegenOutcome::Full)
     );
 
-    let updated = initial.replace("{ 1 }", "{ 2 }");
-    fs::write(&entry, updated).expect("updated application-codegen source should be writable");
+    let updated = initial.replace("{ 1 }\n\nview", "{ 200 }\n\n\nview");
+    fs::write(&entry, &updated).expect("updated application-codegen source should be writable");
     let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
     let second = second_cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
@@ -36905,6 +36905,33 @@ fn project_codegen_cache_reuses_application_fragment_across_cache_restarts() {
         second
             .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
             .expect("durable application codegen should match a fresh full emission")
+    );
+
+    let ui_updated = updated.replace("text: \"ready\"", "text: \"changed\"");
+    fs::write(&entry, ui_updated).expect("updated UI source should be writable");
+    let mut third_cache = fluxc::project::ProjectAnalysisCache::default();
+    let third = third_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated UI source should analyze in a fresh cache");
+    let third_c = third_cache
+        .emit_c_for_target_cached(&entry, &third, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated UI source should regenerate application codegen");
+    assert_eq!(
+        third_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 1,
+            regenerated_functions: 0,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 1,
+        })
+    );
+    assert_eq!(
+        third_c,
+        third
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("regenerated application codegen should match a fresh full emission")
     );
 
     let _ = fs::remove_dir_all(root);
