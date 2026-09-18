@@ -11651,15 +11651,12 @@ fn build_native_configured(
         let _ = fs::remove_file(native_cache_metadata_path(&cache));
     }
 
-    let partitioned_units = if cache_enabled
-        && native_target.triple.is_none()
-        && native_target.sysroot.is_none()
-        && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
-    {
-        partition_native_c_by_source(c_source)
-    } else {
-        None
-    };
+    let partitioned_units =
+        if cache_enabled && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux {
+            partition_native_c_by_source(c_source)
+        } else {
+            None
+        };
     let unit_sources = partitioned_units
         .as_ref()
         .map(|units| units.iter().map(String::as_str).collect::<Vec<_>>())

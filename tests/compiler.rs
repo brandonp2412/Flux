@@ -36480,16 +36480,22 @@ fn native_object_cache_reuses_compilation_across_link_only_changes() {
 
 #[test]
 fn native_build_accepts_explicit_host_target_and_sysroot() {
-    let root = std::env::temp_dir().join(format!("flux-native-target-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-target-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("native target fixture should be writable");
     let source = root.join("main.flux");
     fs::write(
         &source,
-        "fn main() -> i64 {\n    print(7)\n    return 0\n}\n",
+        "fn answer() -> i64 {\n    return 7\n}\n\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
     )
     .expect("native target source should be writable");
-    let output = root.join("app");
     let clang = Command::new("clang")
         .arg("-dumpmachine")
         .output()
@@ -36501,28 +36507,82 @@ fn native_build_accepts_explicit_host_target_and_sysroot() {
         "clang should report a native target triple"
     );
 
-    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(&output)
-        .arg("--target")
-        .arg(&target)
-        .arg("--sysroot")
-        .arg("/")
-        .env("FLUX_CACHE_DIR", root.join("cache"))
-        .output()
-        .expect("explicit native target build should run");
+    let cache = root.join("cache");
+    let build = |output: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_flux"))
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .arg("--target")
+            .arg(&target)
+            .arg("--sysroot")
+            .arg("/")
+            .env("FLUX_CACHE_DIR", &cache)
+            .output()
+            .expect("explicit native target build should run")
+    };
+    let first_output = root.join("first");
+    let built = build(&first_output);
     assert!(
         built.status.success(),
         "explicit native target build failed: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    let ran = Command::new(&output)
+    let ran = Command::new(&first_output)
         .output()
         .expect("same-target artifact should execute on the host");
     assert!(ran.status.success());
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("explicit-target object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 2,
+        "same-target cross-configuration build should partition native objects"
+    );
+
+    fs::write(
+        &source,
+        "fn answer() -> i64 {\n    return 8\n}\n\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("changed native target source should be writable");
+    let second_output = root.join("second");
+    let rebuilt = build(&second_output);
+    assert!(
+        rebuilt.status.success(),
+        "changed explicit native target build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let reran = Command::new(&second_output)
+        .output()
+        .expect("changed same-target artifact should execute on the host");
+    assert!(reran.status.success());
+    assert_eq!(String::from_utf8_lossy(&reran.stdout), "8\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "an explicit-target body edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged explicit-target objects should remain reusable"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
