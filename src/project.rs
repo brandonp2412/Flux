@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ast::{Expr, ExprKind, Program, UnaryOp};
+use crate::ast::{Expr, ExprKind, Program, UnaryOp, ViewElement};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, formatter, parser, typecheck};
 
@@ -34,9 +34,10 @@ pub struct DevelopmentAbi {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DevelopmentUiTextPatch {
+pub struct DevelopmentUiStringPatch {
     pub element: String,
-    pub text: String,
+    pub property: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,20 +56,20 @@ impl ProjectAnalysis {
         }
     }
 
-    pub fn development_ui_text_patch_from(
+    pub fn development_ui_string_patch_from(
         &self,
         previous: &ProjectAnalysis,
-    ) -> Option<Vec<DevelopmentUiTextPatch>> {
+    ) -> Option<Vec<DevelopmentUiStringPatch>> {
         if self.development_abi() != previous.development_abi() {
             return None;
         }
-        let current = development_ui_text_literals(self)?;
-        let previous_literals = development_ui_text_literals(previous)?;
+        let current = development_ui_string_literals(self)?;
+        let previous_literals = development_ui_string_literals(previous)?;
         if current.keys().ne(previous_literals.keys()) {
             return None;
         }
-        if development_ui_text_masked_sources(self)?
-            != development_ui_text_masked_sources(previous)?
+        if development_ui_string_masked_sources(self)?
+            != development_ui_string_masked_sources(previous)?
         {
             return None;
         }
@@ -76,9 +77,13 @@ impl ProjectAnalysis {
         Some(
             current
                 .into_iter()
-                .filter_map(|(element, text)| {
-                    (previous_literals.get(&element) != Some(&text))
-                        .then_some(DevelopmentUiTextPatch { element, text })
+                .filter_map(|((element, property), value)| {
+                    (previous_literals.get(&(element.clone(), property.clone())) != Some(&value))
+                        .then_some(DevelopmentUiStringPatch {
+                            element,
+                            property,
+                            value,
+                        })
                 })
                 .collect(),
         )
@@ -1860,7 +1865,24 @@ fn module_type_surface(
     surface
 }
 
-fn development_ui_text_literals(analysis: &ProjectAnalysis) -> Option<BTreeMap<String, String>> {
+fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
+    match property {
+        "text" => {
+            matches!(element.kind.as_str(), "Text" | "Button")
+                && (element.kind != "Text"
+                    || !element
+                        .properties
+                        .iter()
+                        .any(|property| property.name == "rich_text"))
+        }
+        "tooltip" => element.kind != "TextInput",
+        _ => false,
+    }
+}
+
+fn development_ui_string_literals(
+    analysis: &ProjectAnalysis,
+) -> Option<BTreeMap<(String, String), String>> {
     let application = analysis.program.application.as_ref()?;
     let view = analysis
         .program
@@ -1869,36 +1891,23 @@ fn development_ui_text_literals(analysis: &ProjectAnalysis) -> Option<BTreeMap<S
         .find(|view| view.name == application.view_name)?;
     let mut literals = BTreeMap::new();
     for element in &view.elements {
-        if !matches!(element.kind.as_str(), "Text" | "Button") {
-            continue;
+        for property in &element.properties {
+            if !development_ui_string_property_is_patchable(element, &property.name) {
+                continue;
+            }
+            let ExprKind::Str(value) = &property.value.kind else {
+                continue;
+            };
+            if value.as_bytes().contains(&0) {
+                return None;
+            }
+            literals.insert((element.name.clone(), property.name.clone()), value.clone());
         }
-        if element.kind == "Text"
-            && element
-                .properties
-                .iter()
-                .any(|property| property.name == "rich_text")
-        {
-            continue;
-        }
-        let Some(property) = element
-            .properties
-            .iter()
-            .find(|property| property.name == "text")
-        else {
-            continue;
-        };
-        let ExprKind::Str(text) = &property.value.kind else {
-            continue;
-        };
-        if text.as_bytes().contains(&0) {
-            return None;
-        }
-        literals.insert(element.name.clone(), text.clone());
     }
     Some(literals)
 }
 
-fn development_ui_text_masked_sources(
+fn development_ui_string_masked_sources(
     analysis: &ProjectAnalysis,
 ) -> Option<Vec<(PathBuf, String, String)>> {
     let application = analysis.program.application.as_ref()?;
@@ -1910,19 +1919,10 @@ fn development_ui_text_masked_sources(
     let masks = view
         .elements
         .iter()
-        .filter(|element| matches!(element.kind.as_str(), "Text" | "Button"))
-        .filter(|element| {
-            element.kind != "Text"
-                || !element
-                    .properties
-                    .iter()
-                    .any(|property| property.name == "rich_text")
-        })
-        .filter_map(|element| {
-            element
-                .properties
-                .iter()
-                .find(|property| property.name == "text")
+        .flat_map(|element| {
+            element.properties.iter().filter(move |property| {
+                development_ui_string_property_is_patchable(element, &property.name)
+            })
         })
         .filter(|property| matches!(property.value.kind, ExprKind::Str(_)))
         .map(|property| property.value.span)
@@ -1942,7 +1942,7 @@ fn development_ui_text_masked_sources(
                 .collect::<Option<Vec<_>>>()?;
             ranges.sort_by(|left, right| right.0.cmp(&left.0));
             for (start, end) in ranges {
-                text.replace_range(start..end, "\"__flux_hot_text__\"");
+                text.replace_range(start..end, "\"__flux_hot_string__\"");
             }
             let canonical = formatter::format_source(&text).ok()?;
             Some((source.path.clone(), source.module_name.clone(), canonical))

@@ -5176,10 +5176,10 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         if source_only_change
             && abi_compatible
             && let Some(process) = child.as_ref()
-            && let Some(patch) = analysis.development_ui_text_patch_from(&running_analysis)
+            && let Some(patch) = analysis.development_ui_string_patch_from(&running_analysis)
         {
             let apply_started = Instant::now();
-            let dispatched = write_development_ui_text_patch(&hot_reload_patch_path, &patch)
+            let dispatched = write_development_ui_string_patch(&hot_reload_patch_path, &patch)
                 .is_ok()
                 && signal_development_ui_patch(process);
             if dispatched {
@@ -5193,7 +5193,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     total_ms: reload_started.elapsed().as_millis(),
                     abi_compatible: true,
                     abi: next_development_abi,
-                    reload_method: "in_process_text",
+                    reload_method: "in_process_string",
                 };
                 development_abi = next_development_abi;
                 running_analysis = analysis;
@@ -5207,14 +5207,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     "hot_applied",
                     generation,
                     mode,
-                    "applied compatible static UI text change in process",
+                    "applied compatible static UI string change in process",
                     last_analysis_outcome,
                     last_codegen_outcome,
                     last_reload_timing,
                 );
                 status_state = "hot_applied";
                 eprintln!(
-                    "reload: hot-applied {} static UI text change{} without restarting",
+                    "reload: hot-applied {} static UI string change{} without restarting",
                     patch.len(),
                     if patch.len() == 1 { "" } else { "s" }
                 );
@@ -5621,9 +5621,9 @@ fn development_hot_reload_patch_path(target: &Path) -> PathBuf {
     path
 }
 
-fn write_development_ui_text_patch(
+fn write_development_ui_string_patch(
     path: &Path,
-    patch: &[fluxc::project::DevelopmentUiTextPatch],
+    patch: &[fluxc::project::DevelopmentUiStringPatch],
 ) -> io::Result<()> {
     let count = u32::try_from(patch.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "too many UI patch records"))?;
@@ -5631,29 +5631,35 @@ fn write_development_ui_text_patch(
     let result = (|| {
         let mut file = fs::File::create(&temporary)?;
         file.write_all(b"FLXP")?;
-        file.write_all(&1_u32.to_ne_bytes())?;
+        file.write_all(&2_u32.to_ne_bytes())?;
         file.write_all(&count.to_ne_bytes())?;
         for record in patch {
             let name = record.element.as_bytes();
-            let value = record.text.as_bytes();
+            let property = record.property.as_bytes();
+            let value = record.value.as_bytes();
             let name_length = u32::try_from(name.len()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "UI patch element name is too long",
                 )
             })?;
-            let value_length = u32::try_from(value.len()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "UI patch text is too long")
+            let property_length = u32::try_from(property.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "UI patch property is too long")
             })?;
-            if name_length > 1024 || value_length > 65536 {
+            let value_length = u32::try_from(value.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "UI patch value is too long")
+            })?;
+            if name_length > 1024 || property_length > 128 || value_length > 65536 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "UI patch record exceeds the native reload bounds",
                 ));
             }
             file.write_all(&name_length.to_ne_bytes())?;
+            file.write_all(&property_length.to_ne_bytes())?;
             file.write_all(&value_length.to_ne_bytes())?;
             file.write_all(name)?;
+            file.write_all(property)?;
             file.write_all(value)?;
         }
         file.sync_all()?;
@@ -11600,7 +11606,7 @@ mod tests {
         symbolize_options, test_options, validate_android_publish_manifest,
         validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
         web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
-        windows_publish_options, write_development_ui_text_patch, write_native_cache_metadata,
+        windows_publish_options, write_development_ui_string_patch, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -12781,7 +12787,7 @@ app OverlayDemo(title: "Overlay")
     }
 
     #[test]
-    fn development_ui_text_patch_uses_bounded_versioned_binary_records() {
+    fn development_ui_string_patch_uses_bounded_versioned_binary_records() {
         let root = std::env::temp_dir().join(format!(
             "flux-development-ui-patch-record-{}",
             std::process::id()
@@ -12790,26 +12796,33 @@ app OverlayDemo(title: "Overlay")
         std::fs::create_dir_all(&root).expect("patch record directory should be writable");
         let path = root.join("reload.patch");
         let patch = vec![
-            crate::project::DevelopmentUiTextPatch {
+            crate::project::DevelopmentUiStringPatch {
                 element: "title".to_string(),
-                text: "Ready".to_string(),
+                property: "text".to_string(),
+                value: "Ready".to_string(),
             },
-            crate::project::DevelopmentUiTextPatch {
+            crate::project::DevelopmentUiStringPatch {
                 element: "action".to_string(),
-                text: "Run".to_string(),
+                property: "tooltip".to_string(),
+                value: "Run this".to_string(),
             },
         ];
 
-        write_development_ui_text_patch(&path, &patch)
-            .expect("development UI text patch should be writable");
+        write_development_ui_string_patch(&path, &patch)
+            .expect("development UI string patch should be writable");
 
         let mut expected = b"FLXP".to_vec();
-        expected.extend_from_slice(&1_u32.to_ne_bytes());
         expected.extend_from_slice(&2_u32.to_ne_bytes());
-        for (name, value) in [("title", "Ready"), ("action", "Run")] {
+        expected.extend_from_slice(&2_u32.to_ne_bytes());
+        for (name, property, value) in [
+            ("title", "text", "Ready"),
+            ("action", "tooltip", "Run this"),
+        ] {
             expected.extend_from_slice(&(name.len() as u32).to_ne_bytes());
+            expected.extend_from_slice(&(property.len() as u32).to_ne_bytes());
             expected.extend_from_slice(&(value.len() as u32).to_ne_bytes());
             expected.extend_from_slice(name.as_bytes());
+            expected.extend_from_slice(property.as_bytes());
             expected.extend_from_slice(value.as_bytes());
         }
         assert_eq!(

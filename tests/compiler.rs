@@ -36294,7 +36294,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_text_patch_accepts_only_static_root_text_edits() {
+fn development_ui_string_patch_accepts_only_supported_static_root_edits() {
     let root =
         std::env::temp_dir().join(format!("flux-development-ui-patch-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -36307,8 +36307,10 @@ view Screen {
     grid rows: auto auto
     Text label at 1,1
         text: "ready"
+        tooltip: "Label tip"
     Button action at 2,1
         text: "Go"
+        tooltip: "Action tip"
 }
 app Screen
 "#;
@@ -36330,29 +36332,43 @@ view Screen {
     grid rows: auto auto
     Text label at 1,1
         text: "updated"
+        tooltip: "Updated label tip"
     Button action at 2,1
         text: "Run"
+        tooltip: "Updated action tip"
 }
 app Screen
 "#;
-    fs::write(&entry, text_only).expect("text-only development patch edit should be writable");
+    fs::write(&entry, text_only).expect("string-only development patch edit should be writable");
     cache.invalidate_path(&entry);
     let second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("text-only development patch edit should analyze");
     let patch = second
-        .development_ui_text_patch_from(&first)
-        .expect("static root text edits should be patchable");
+        .development_ui_string_patch_from(&first)
+        .expect("supported static root string edits should be patchable");
     assert_eq!(
         patch,
         vec![
-            fluxc::project::DevelopmentUiTextPatch {
+            fluxc::project::DevelopmentUiStringPatch {
                 element: "action".to_string(),
-                text: "Run".to_string(),
+                property: "text".to_string(),
+                value: "Run".to_string(),
             },
-            fluxc::project::DevelopmentUiTextPatch {
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "action".to_string(),
+                property: "tooltip".to_string(),
+                value: "Updated action tip".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
                 element: "label".to_string(),
-                text: "updated".to_string(),
+                property: "text".to_string(),
+                value: "updated".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "label".to_string(),
+                property: "tooltip".to_string(),
+                value: "Updated label tip".to_string(),
             },
         ]
     );
@@ -36366,7 +36382,7 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("function development patch edit should analyze");
     assert!(
-        third.development_ui_text_patch_from(&second).is_none(),
+        third.development_ui_string_patch_from(&second).is_none(),
         "function body edits must fall back to rebuilding rather than data-only UI patching"
     );
 
@@ -54323,6 +54339,7 @@ view Screen {
     state message: str = "ready"
     Text label at 1,1
         text: message
+        tooltip: "State label"
     TextInput input at 2,1
         text: message
         onChange: message, value => value
@@ -54357,7 +54374,11 @@ app Screen
     assert!(generated.contains("signal(SIGUSR1, flux__ui_patch_signal)"));
     assert!(generated.contains("FLUX_HOT_RELOAD_PATCH_PATH"));
     assert!(generated.contains("memcmp(magic, \"FLXP\", 4)"));
+    assert!(generated.contains("version != 2"));
+    assert!(generated.contains("strcmp(property, \"text\") == 0"));
     assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_label), value)"));
+    assert!(generated.contains("strcmp(property, \"tooltip\") == 0"));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_label, value)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
 }
 
