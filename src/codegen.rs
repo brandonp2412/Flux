@@ -14488,6 +14488,25 @@ fn emit_linux_gtk_application(
     if view
         .elements
         .iter()
+        .any(|element| element.kind == "Text" && view_property(element, "variant").is_some())
+    {
+        let mut helper = String::from(
+            "static bool flux__ui_hot_text_variant(const char *value, int *size, bool *bold, double *line_height, int *max_width_chars) { if (value == NULL || size == NULL || bold == NULL || line_height == NULL || max_width_chars == NULL) return false;",
+        );
+        for &(variant, size, bold, line_height_percent, max_width_chars) in TEXT_SEMANTIC_VARIANTS {
+            helper.push_str(&format!(
+                " if (strcmp(value, {}) == 0) {{ *size = {size}; *bold = {}; *line_height = {:.4}; *max_width_chars = {max_width_chars}; return true; }}",
+                c_string(variant),
+                if bold { "true" } else { "false" },
+                line_height_percent as f64 / 100.0,
+            ));
+        }
+        helper.push_str(" return false; }\n");
+        out.push_str(&helper);
+    }
+    if view
+        .elements
+        .iter()
         .any(|element| view_property(element, "transition_easing").is_some())
     {
         out.push_str("static const char *flux__ui_hot_css_transition_easing(const char *value) { if (value == NULL) return NULL; if (strcmp(value, \"linear\") == 0) return \"linear\"; if (strcmp(value, \"ease\") == 0) return \"ease\"; if (strcmp(value, \"easeIn\") == 0 || strcmp(value, \"ease_in\") == 0) return \"ease-in\"; if (strcmp(value, \"easeOut\") == 0 || strcmp(value, \"ease_out\") == 0) return \"ease-out\"; if (strcmp(value, \"easeInOut\") == 0 || strcmp(value, \"ease_in_out\") == 0) return \"ease-in-out\"; if (strcmp(value, \"spring\") == 0) return \"cubic-bezier(0.22, 1.20, 0.36, 1)\"; if (strcmp(value, \"springGentle\") == 0 || strcmp(value, \"spring_gentle\") == 0) return \"cubic-bezier(0.34, 1.36, 0.64, 1)\"; if (strcmp(value, \"springSnappy\") == 0 || strcmp(value, \"spring_snappy\") == 0) return \"cubic-bezier(0.16, 1.30, 0.30, 1)\"; return NULL; }\n");
@@ -15438,6 +15457,42 @@ fn emit_linux_gtk_application(
                             c_string(&element.name)
                         ));
                     }
+                }
+                if view_property(element, "variant").is_some() {
+                    let mut attribute_updates = String::new();
+                    if view_property(element, "size").is_none() {
+                        attribute_updates.push_str(
+                            " pango_attr_list_change(patched_attrs, pango_attr_size_new(variant_size * PANGO_SCALE));",
+                        );
+                    }
+                    if view_property(element, "bold").is_none() {
+                        attribute_updates.push_str(
+                            " pango_attr_list_change(patched_attrs, pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL));",
+                        );
+                    }
+                    if view_property(element, "line_height_percent").is_none() {
+                        attribute_updates.push_str(
+                            " pango_attr_list_change(patched_attrs, pango_attr_line_height_new(variant_line_height));",
+                        );
+                    }
+                    let attribute_patch = if attribute_updates.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new();{attribute_updates} gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs);"
+                        )
+                    };
+                    let width_patch = if view_property(element, "max_width_chars").is_none() {
+                        format!(
+                            " gtk_label_set_max_width_chars(GTK_LABEL({widget}), variant_max_width_chars);"
+                        )
+                    } else {
+                        String::new()
+                    };
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"variant\") == 0 && {widget} != NULL) {{ int variant_size = 0; bool variant_bold = false; double variant_line_height = 0.0; int variant_max_width_chars = 0; if (flux__ui_hot_text_variant(value, &variant_size, &variant_bold, &variant_line_height, &variant_max_width_chars)) {{{attribute_patch}{width_patch} }} }}",
+                        c_string(&element.name)
+                    ));
                 }
                 if view_property(element, "size").is_some() {
                     out.push_str(&format!(
@@ -20321,6 +20376,14 @@ fn emit_ui_refresh(
     Ok(())
 }
 
+const TEXT_SEMANTIC_VARIANTS: &[(&str, i64, bool, i64, i64)] = &[
+    ("body", 16, false, 140, 72),
+    ("caption", 13, false, 135, 72),
+    ("heading", 20, true, 125, 52),
+    ("title", 28, true, 120, 44),
+    ("display", 36, true, 115, 36),
+];
+
 fn text_semantic_typography(
     element: &crate::ast::ViewElement,
     signatures: &Signatures,
@@ -20334,20 +20397,21 @@ fn text_semantic_typography(
         })?,
         None => "body".to_string(),
     };
-    match variant.as_str() {
-        "body" => Ok((16, false, 140, 72)),
-        "caption" => Ok((13, false, 135, 72)),
-        "heading" => Ok((20, true, 125, 52)),
-        "title" => Ok((28, true, 120, 44)),
-        "display" => Ok((36, true, 115, 36)),
-        _ => Err(diag(
-            view_property(element, "variant")
-                .expect("non-default variant has a source property")
-                .value
-                .span,
-            "Text.variant must be one of 'body', 'caption', 'heading', 'title', or 'display'",
-        )),
-    }
+    TEXT_SEMANTIC_VARIANTS
+        .iter()
+        .find(|(name, ..)| *name == variant)
+        .map(|(_, size, bold, line_height_percent, max_width_chars)| {
+            (*size, *bold, *line_height_percent, *max_width_chars)
+        })
+        .ok_or_else(|| {
+            diag(
+                view_property(element, "variant")
+                    .expect("non-default variant has a source property")
+                    .value
+                    .span,
+                "Text.variant must be one of 'body', 'caption', 'heading', 'title', or 'display'",
+            )
+        })
 }
 
 fn bootstrap_window_size(view: &crate::ast::ViewDef) -> (u32, u32) {

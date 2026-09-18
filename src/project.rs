@@ -1920,6 +1920,9 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "color" => {
             element.kind == "Text" && !development_ui_element_has_property(element, "rich_text")
         }
+        "variant" => {
+            element.kind == "Text" && !development_ui_element_has_property(element, "rich_text")
+        }
         "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
@@ -2197,6 +2200,15 @@ fn development_ui_string_literals(
                     && !typecheck::ACCESSIBILITY_ROLES.contains(&value.as_str())
                 {
                     return None;
+                }
+                if property_name == "variant" {
+                    let valid = matches!(
+                        value.as_str(),
+                        "body" | "caption" | "heading" | "title" | "display"
+                    );
+                    if !valid {
+                        return None;
+                    }
                 }
                 if property_name == "text_align" {
                     let valid = matches!(value.as_str(), "left" | "center" | "right" | "fill");

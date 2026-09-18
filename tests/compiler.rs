@@ -36732,6 +36732,104 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_variants_with_explicit_override_precedence() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-variant-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary development text variant patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text defaulted at 1,1
+        text: "Defaulted"
+        variant: "body"
+    Text overridden at 2,1
+        text: "Overridden"
+        variant: "body"
+        size: 18
+        bold: false
+        lineHeightPercent: 150
+        maxWidthChars: 60
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text variant patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text variant patch analysis should succeed");
+
+    let updated = initial.replace("variant: \"body\"", "variant: \"title\"");
+    fs::write(&entry, updated).expect("updated text variant patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("text variant patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated text variant patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("compatible Text.variant edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("defaulted".to_string(), "variant".to_string())),
+        Some(&"title".to_string())
+    );
+    assert_eq!(
+        patch.get(&("overridden".to_string(), "variant".to_string())),
+        Some(&"title".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = second
+        .emit_c()
+        .expect("text variant patch fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_hot_text_variant"));
+    assert!(generated.contains("strcmp(property, \"variant\") == 0 && flux__ui_defaulted != NULL"));
+    assert!(
+        generated.contains("strcmp(property, \"variant\") == 0 && flux__ui_overridden != NULL")
+    );
+    assert_eq!(
+        generated
+            .matches("pango_attr_size_new(variant_size * PANGO_SCALE)")
+            .count(),
+        1,
+        "explicit Text.size must win over semantic variant defaults"
+    );
+    assert_eq!(
+        generated
+            .matches(
+                "pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
+            )
+            .count(),
+        1,
+        "explicit Text.bold must win over semantic variant defaults"
+    );
+    assert_eq!(
+        generated
+            .matches("pango_attr_line_height_new(variant_line_height)")
+            .count(),
+        1,
+        "explicit Text.lineHeightPercent must win over semantic variant defaults"
+    );
+    assert!(generated.contains(
+        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_defaulted), variant_max_width_chars)"
+    ));
+    assert!(!generated.contains(
+        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_overridden), variant_max_width_chars)"
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
