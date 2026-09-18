@@ -36718,6 +36718,65 @@ fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
 }
 
 #[test]
+fn project_codegen_cache_reuses_later_functions_when_temp_counts_shift() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-function-temp-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("function temp-codegen project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(
+        &entry,
+        "fn changed() -> i64 {\n    let left: i64[] = [1]\n    let right: i64[] = [2]\n    let values: i64[] = concat(left, right)\n    return values.first\n}\n\nfn stable() -> i64 {\n    let values: i64[] = concat([3], [4])\n    return values.last\n}\n\nfn main() -> i64 {\n    return changed() + stable()\n}\n",
+    )
+    .expect("initial temp-codegen source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial temp-codegen source should analyze");
+    cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial temp-codegen source should emit C");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    fs::write(
+        &entry,
+        "fn changed() -> i64 {\n    let left: i64[] = [1]\n    let right: i64[] = [2]\n    let values: i64[] = concat(concat(left, right), right)\n    return values.first\n}\n\nfn stable() -> i64 {\n    let values: i64[] = concat([3], [4])\n    return values.last\n}\n\nfn main() -> i64 {\n    return changed() + stable()\n}\n",
+    )
+    .expect("updated temp-codegen source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated temp-codegen source should analyze");
+    let incremental = cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated temp-codegen source should emit C");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 2,
+            regenerated_functions: 1,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+        }),
+        "a changed function's local temporary count must not invalidate later functions"
+    );
+    assert_eq!(
+        incremental,
+        second
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("incremental temp-independent codegen should match full codegen")
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_codegen_cache_reuses_generated_helpers_across_cache_restarts() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-durable-helper-codegen-{}",

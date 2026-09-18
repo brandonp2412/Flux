@@ -1480,7 +1480,6 @@ fn emit_c_for_target_with_source_metadata_impl(
         }
         generated_body.push_str(&generated_helper);
     }
-    let mut temp_counter = 0usize;
     for function in &program.functions {
         if reachable_functions.contains(&function.name) && function.foreign_symbol.is_none() {
             let cfg = function_ir
@@ -1488,20 +1487,20 @@ fn emit_c_for_target_with_source_metadata_impl(
                 .expect("all parsed functions have cached typed IR");
             let cache_key = FunctionCodegenCacheKey {
                 identity: function_codegen_cache_identity(function, source_paths),
-                incoming_temp_counter: temp_counter,
+                incoming_temp_counter: 0,
             };
             if let Some(cached) = function_cache
                 .as_deref_mut()
                 .and_then(|cache| cache.entries.get(&cache_key).cloned())
             {
                 generated_body.push_str(&cached.generated);
-                temp_counter = cached.next_temp_counter;
                 codegen_stats.reused_functions += 1;
                 used_cache_keys.insert(cache_key);
                 continue;
             }
 
             let mut generated_function = String::new();
+            let mut temp_counter = 0usize;
             emit_function(
                 &mut generated_function,
                 function,
