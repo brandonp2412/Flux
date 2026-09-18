@@ -34386,6 +34386,129 @@ fn native_module_object_cache_reuses_crypto_linked_module() {
 }
 
 #[test]
+fn native_module_object_cache_isolates_sqlite_registry_state() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-sqlite-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native SQLite module cache fixture should be writable");
+    let storage = root.join("storage.flux");
+    let main = root.join("main.flux");
+    let first_database = root.join("first.db");
+    let second_database = root.join("second.db");
+    fs::write(
+        &storage,
+        format!(
+            "pub fn openDatabase() -> (i64, error) {{\n    return sqlite.open(\"{}\")\n}}\n",
+            first_database.display()
+        ),
+    )
+    .expect("SQLite storage module should be writable");
+    fs::write(
+        &main,
+        "import \"storage.flux\"\n\nfn main() -> i64 {\n    let (database, openError) = openDatabase()\n    print(openError)\n    print(sqlite.execute(database, \"CREATE TABLE item (value INTEGER)\"))\n    print(sqlite.close(database))\n    return 0\n}\n",
+    )
+    .expect("SQLite consumer should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first SQLite module-object build should run");
+    assert!(
+        built.status.success(),
+        "first SQLite module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first SQLite module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&first_run.stdout),
+        "nil\nnil\nnil\n",
+        "a SQLite handle opened in one native object must remain valid in the consumer object"
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native SQLite module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the SQLite producer, consumer runtime, and shared registry should compile independently"
+    );
+
+    fs::write(
+        &storage,
+        format!(
+            "pub fn openDatabase() -> (i64, error) {{\n    return sqlite.open(\"{}\")\n}}\n",
+            second_database.display()
+        ),
+    )
+    .expect("changed SQLite storage module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed SQLite module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed SQLite module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed SQLite module-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&second_run.stdout),
+        "nil\nnil\nnil\n"
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "changing only the SQLite producer body should add one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the SQLite registry and unchanged consumer objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-module-cache-{}-{}",

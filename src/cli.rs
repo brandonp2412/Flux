@@ -10666,7 +10666,13 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     let first_source_line = lines
         .iter()
         .position(|line| native_source_line_path(line).is_some())?;
-    let prefix = lines[..first_source_line].concat();
+    let mut prefix = lines[..first_source_line].concat();
+    let mut shared_runtime_unit = None;
+    if !native_prefix_is_module_partition_safe(&prefix) {
+        let (partition_prefix, runtime_unit) = partition_native_sqlite_runtime(&prefix)?;
+        prefix = partition_prefix;
+        shared_runtime_unit = Some(runtime_unit);
+    }
     if !native_prefix_is_module_partition_safe(&prefix) {
         return None;
     }
@@ -10687,7 +10693,11 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     if order.len() < 2 {
         let source = order.first()?;
         let body = bodies.remove(source)?;
-        return partition_native_single_source_functions(&prefix, &body);
+        let mut units = partition_native_single_source_functions(&prefix, &body)?;
+        if let Some(runtime_unit) = shared_runtime_unit {
+            units.push(runtime_unit);
+        }
+        return Some(units);
     }
 
     let mut units = Vec::new();
@@ -10702,7 +10712,33 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
         unit.push_str(&body);
         units.push(unit);
     }
+    if let Some(runtime_unit) = shared_runtime_unit {
+        units.push(runtime_unit);
+    }
     Some(units)
+}
+
+fn partition_native_sqlite_runtime(prefix: &str) -> Option<(String, String)> {
+    const SQLITE_SLOTS: &str =
+        "static struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];";
+    const SQLITE_SHARED_SLOTS: &str = "extern struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nextern bool flux__sqlite_cleanup_registered;";
+    const SQLITE_REGISTERED: &str =
+        "    static bool registered = false;\n    if (registered) return;\n    registered = true;";
+    const SQLITE_SHARED_REGISTERED: &str = "    if (flux__sqlite_cleanup_registered) return;\n    flux__sqlite_cleanup_registered = true;";
+
+    if !prefix.contains(SQLITE_SLOTS) || !prefix.contains(SQLITE_REGISTERED) {
+        return None;
+    }
+
+    let partition_prefix = prefix
+        .replacen(SQLITE_SLOTS, SQLITE_SHARED_SLOTS, 1)
+        .replacen(SQLITE_REGISTERED, SQLITE_SHARED_REGISTERED, 1);
+    let mut runtime_unit = String::with_capacity(partition_prefix.len() + 192);
+    runtime_unit.push_str(&partition_prefix);
+    runtime_unit.push_str(
+        "\nstruct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nbool flux__sqlite_cleanup_registered = false;\n",
+    );
+    Some((partition_prefix, runtime_unit))
 }
 
 fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
@@ -11037,6 +11073,7 @@ fn native_prefix_is_module_partition_safe(prefix: &str) -> bool {
         if depth == 0
             && trimmed.ends_with(';')
             && !declaration.contains('(')
+            && !trimmed.starts_with("extern ")
             && !trimmed.starts_with("typedef ")
             && !trimmed.starts_with("struct ")
             && !trimmed.starts_with("enum ")
@@ -11176,7 +11213,6 @@ fn build_native_configured(
         && native_target.triple.is_none()
         && native_target.sysroot.is_none()
         && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
-        && !sqlite
     {
         partition_native_c_by_source(c_source)
     } else {
@@ -13211,6 +13247,34 @@ app OverlayDemo(title: "Overlay")
                 )
                 .len(),
             2
+        );
+
+        let sqlite = "#include <stdbool.h>\n#include <stdint.h>\n#define FLUX__SQLITE_MAX_DATABASES 256\nstruct flux__sqlite_slot { void *database; uint32_t generation; };\nstatic struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nstatic inline void flux__sqlite_register_cleanup(void) {\n    static bool registered = false;\n    if (registered) return;\n    registered = true;\n}\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let sqlite_units = partition_native_c_by_source(sqlite)
+            .expect("SQLite registry state should move into one shared runtime unit");
+        assert_eq!(sqlite_units.len(), 3);
+        assert_eq!(
+            sqlite_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines().any(|line| {
+                        line == "struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];"
+                    })
+                })
+                .count(),
+            1,
+            "the SQLite handle registry must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            sqlite_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines()
+                        .any(|line| line == "bool flux__sqlite_cleanup_registered = false;")
+                })
+                .count(),
+            1,
+            "cleanup registration must also remain process-wide"
         );
     }
 
