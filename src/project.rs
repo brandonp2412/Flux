@@ -1965,8 +1965,22 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
 }
 
 fn development_ui_string_list_property_is_patchable(element: &ViewElement, property: &str) -> bool {
-    property == "context_menu_items"
-        && development_ui_element_has_property(element, "on_context_menu_item_select")
+    match property {
+        "context_menu_items" => {
+            development_ui_element_has_property(element, "on_context_menu_item_select")
+        }
+        "accessibility_actions" => {
+            development_ui_element_has_property(element, "on_accessibility_action")
+                && ![
+                    "accessibility_description",
+                    "accessibility_action_label",
+                    "accessibility_long_press_label",
+                ]
+                .iter()
+                .any(|property| development_ui_element_has_property(element, property))
+        }
+        _ => false,
+    }
 }
 
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
@@ -2151,17 +2165,28 @@ fn development_ui_string_literals(
                 if values.is_empty() {
                     return None;
                 }
-                for (index, item) in values.iter().enumerate() {
+                let mut labels = Vec::with_capacity(values.len());
+                for item in values {
                     let ExprKind::Str(value) = &item.kind else {
                         return None;
                     };
                     if value.is_empty() || value.as_bytes().contains(&0) {
                         return None;
                     }
+                    labels.push(value.clone());
+                }
+                if property_name == "accessibility_actions" {
                     literals.insert(
-                        (element.name.clone(), format!("context_menu_item_{index}")),
-                        value.clone(),
+                        (element.name.clone(), property_name),
+                        format!("Actions: {}", labels.join("; ")),
                     );
+                } else {
+                    for (index, value) in labels.into_iter().enumerate() {
+                        literals.insert(
+                            (element.name.clone(), format!("context_menu_item_{index}")),
+                            value,
+                        );
+                    }
                 }
                 continue;
             }

@@ -15229,6 +15229,11 @@ fn emit_linux_gtk_application(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
                 c_string(&element.name)
             ));
+        } else if view_property(element, "accessibility_actions").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_actions\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
+                c_string(&element.name)
+            ));
         }
         if view_property(element, "accessibility_value").is_some() {
             out.push_str(&format!(

@@ -36732,6 +36732,94 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_custom_accessibility_action_descriptions() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-actions-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary custom accessibility action patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn runAction(index: i64) -> void {
+    print(index)
+}
+
+view Actions {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Document"
+        accessibilityActions: ["Open details", "Archive"]
+        onAccessibilityAction: runAction
+}
+app Actions
+"#;
+    fs::write(&entry, initial)
+        .expect("initial custom accessibility action patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial custom accessibility action patch analysis should succeed");
+
+    let updated = initial.replace(
+        "accessibilityActions: [\"Open details\", \"Archive\"]",
+        "accessibilityActions: [\"Open now\", \"Archive\", \"Share\"]",
+    );
+    fs::write(&entry, &updated)
+        .expect("updated custom accessibility action patch source should be writable");
+    let entry = fs::canonicalize(entry)
+        .expect("custom accessibility action patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated custom accessibility action patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("unshadowed custom accessibility action labels should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "title");
+    assert_eq!(patch[0].property, "accessibility_actions");
+    assert_eq!(patch[0].value, "Actions: Open now; Archive; Share");
+
+    let generated = second
+        .emit_c()
+        .expect("custom accessibility action patch fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("strcmp(property, \"accessibility_actions\") == 0 && flux__ui_title != NULL")
+    );
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1"));
+
+    let shadowed = updated.replace(
+        "text: \"Document\"",
+        "text: \"Document\"\n        accessibilityDescription: \"Explicit description\"",
+    );
+    fs::write(&entry, &shadowed)
+        .expect("shadowed custom accessibility action source should be writable");
+    cache.invalidate_path(&entry);
+    let shadowed_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadowed custom accessibility action source should analyze");
+    let shadowed_updated = shadowed.replace("Open now", "Open later");
+    fs::write(&entry, shadowed_updated)
+        .expect("shadowed custom accessibility action edit should be writable");
+    cache.invalidate_path(&entry);
+    let shadowed_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shadowed custom accessibility action edit should analyze");
+    assert!(
+        shadowed_second
+            .development_ui_string_patch_from(&shadowed_first)
+            .is_none(),
+        "custom accessibility actions shadowed by an explicit description must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_variants_with_explicit_override_precedence() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-variant-patch-{}",
