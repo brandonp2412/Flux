@@ -1848,13 +1848,16 @@ fn module_type_surface(
         let metadata = application
             .metadata
             .iter()
-            .map(|field| {
+            .filter_map(|field| {
+                if development_application_metadata_lifecycle_patch_value(field).is_some() {
+                    return None;
+                }
                 let value = if development_application_metadata_patch_value(field).is_some() {
                     "__flux_hot_application_metadata__".to_string()
                 } else {
                     expr_surface(&field.value)
                 };
-                (&field.name, value)
+                Some((&field.name, value))
             })
             .collect::<Vec<_>>();
         write!(
@@ -1919,6 +1922,8 @@ fn module_type_surface(
 
 const DEVELOPMENT_APPLICATION_PATCH_ELEMENT: &str = "__application__";
 const DEVELOPMENT_GRID_PATCH_ELEMENT: &str = "__grid__";
+const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] =
+    &["title", "resizable", "theme", "layout_direction"];
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -1968,6 +1973,28 @@ fn development_application_metadata_patch_value(
             let value = development_ui_i64_literal_value(&field.value)?;
             (value > 0 && value <= i64::from(i32::MAX)).then(|| value.to_string())
         }
+        _ => None,
+    }
+}
+
+fn development_application_metadata_lifecycle_patch_value(
+    field: &crate::ast::ApplicationMetadataField,
+) -> Option<String> {
+    let property = typecheck::source_name_to_internal(&field.name);
+    DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES
+        .contains(&property.as_str())
+        .then(|| development_application_metadata_patch_value(field))
+        .flatten()
+}
+
+fn development_application_default_patch_value(
+    property: &str,
+    view: &crate::ast::ViewDef,
+) -> Option<String> {
+    match property {
+        "title" => Some(view.name.clone()),
+        "resizable" => Some("1".to_string()),
+        "theme" | "layout_direction" => Some("system".to_string()),
         _ => None,
     }
 }
@@ -2260,6 +2287,22 @@ fn development_ui_string_literals(
                 typecheck::source_name_to_internal(&field.name),
             ),
             value,
+        );
+    }
+    for property in DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES {
+        if application
+            .metadata
+            .iter()
+            .any(|field| typecheck::source_name_to_internal(&field.name) == *property)
+        {
+            continue;
+        }
+        literals.insert(
+            (
+                DEVELOPMENT_APPLICATION_PATCH_ELEMENT.to_string(),
+                (*property).to_string(),
+            ),
+            development_application_default_patch_value(property, view)?,
         );
     }
     for (property, value) in [
@@ -2579,32 +2622,26 @@ fn development_ui_string_masked_sources(
         .views
         .iter()
         .find(|view| view.name == application.view_name)?;
-    let mut masks = application
-        .metadata
+    let masks = view
+        .elements
         .iter()
-        .filter(|field| development_application_metadata_patch_value(field).is_some())
-        .map(|field| field.value.span)
+        .flat_map(|element| {
+            element.properties.iter().filter(move |property| {
+                let property_name = typecheck::source_name_to_internal(&property.name);
+                development_ui_string_property_is_patchable(element, &property_name)
+                    || development_ui_string_list_property_is_patchable(element, &property_name)
+                    || development_ui_bool_property_is_patchable(element, &property_name)
+                    || development_ui_i64_property_is_patchable(element, &property_name)
+            })
+        })
+        .filter(|property| {
+            matches!(
+                property.value.kind,
+                ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::List(_)
+            ) || development_ui_i64_literal_value(&property.value).is_some()
+        })
+        .map(|property| property.value.span)
         .collect::<Vec<_>>();
-    masks.extend(
-        view.elements
-            .iter()
-            .flat_map(|element| {
-                element.properties.iter().filter(move |property| {
-                    let property_name = typecheck::source_name_to_internal(&property.name);
-                    development_ui_string_property_is_patchable(element, &property_name)
-                        || development_ui_string_list_property_is_patchable(element, &property_name)
-                        || development_ui_bool_property_is_patchable(element, &property_name)
-                        || development_ui_i64_property_is_patchable(element, &property_name)
-                })
-            })
-            .filter(|property| {
-                matches!(
-                    property.value.kind,
-                    ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::List(_)
-                ) || development_ui_i64_literal_value(&property.value).is_some()
-            })
-            .map(|property| property.value.span),
-    );
 
     let mut sources = analysis.sources.iter().collect::<Vec<_>>();
     sources.sort_by(|left, right| left.path.cmp(&right.path));
@@ -2618,9 +2655,17 @@ fn development_ui_string_masked_sources(
                 .filter(|span| span.source_id == source.source_id)
                 .map(|span| {
                     source_span_byte_range(&text, span)
-                        .map(|(start, end)| (start, end, "\"__flux_hot_string__\""))
+                        .map(|(start, end)| (start, end, "\"__flux_hot_string__\"".to_string()))
                 })
                 .collect::<Option<Vec<_>>>()?;
+            if source.source_id == application.keyword_span.source_id {
+                let (start, end) = source_span_byte_range(&text, application.span)?;
+                edits.push((
+                    start,
+                    end,
+                    development_application_masked_declaration(&text, application)?,
+                ));
+            }
             if source.source_id == view.name_span.source_id {
                 for (line, property) in [
                     (view.grid.gap_line, "gap"),
@@ -2631,17 +2676,45 @@ fn development_ui_string_masked_sources(
                     };
                     let (start, end) =
                         development_grid_declaration_byte_range(&text, line, property)?;
-                    edits.push((start, end, ""));
+                    edits.push((start, end, String::new()));
                 }
             }
             edits.sort_by(|left, right| right.0.cmp(&left.0));
             for (start, end, replacement) in edits {
-                text.replace_range(start..end, replacement);
+                text.replace_range(start..end, &replacement);
             }
             let canonical = formatter::format_source(&text).ok()?;
             Some((source.path.clone(), source.module_name.clone(), canonical))
         })
         .collect()
+}
+
+fn development_application_masked_declaration(
+    source: &str,
+    application: &crate::ast::ApplicationDef,
+) -> Option<String> {
+    let mut metadata = Vec::new();
+    for field in &application.metadata {
+        if development_application_metadata_lifecycle_patch_value(field).is_some() {
+            continue;
+        }
+        let value = if development_application_metadata_patch_value(field).is_some() {
+            "\"__flux_hot_string__\"".to_string()
+        } else {
+            let (start, end) = source_span_byte_range(source, field.value.span)?;
+            source[start..end].to_string()
+        };
+        metadata.push(format!("{}: {value}", field.name));
+    }
+    if metadata.is_empty() {
+        Some(format!("app {}", application.view_name))
+    } else {
+        Some(format!(
+            "app {}({})",
+            application.view_name,
+            metadata.join(", ")
+        ))
+    }
 }
 
 fn development_grid_declaration_byte_range(

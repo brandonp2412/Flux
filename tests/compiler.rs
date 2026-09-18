@@ -39777,6 +39777,153 @@ app Screen(title: "Before", width: 640, height: 480, resizable: true)
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_application_metadata_lifecycle_defaults() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-application-lifecycle-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary application lifecycle patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial application lifecycle patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial application lifecycle patch analysis should succeed");
+
+    let entry =
+        fs::canonicalize(entry).expect("application lifecycle patch entry should canonicalize");
+    let explicit_defaults = initial.replace(
+        "app Screen",
+        r#"app Screen(title: "Screen", resizable: true, theme: "system", layoutDirection: "system")"#,
+    );
+    fs::write(&entry, &explicit_defaults)
+        .expect("explicit default application metadata should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit default application metadata should analyze");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding lifecycle-safe application metadata defaults must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding explicit application defaults should be an in-process no-op"
+    );
+
+    let non_defaults = initial.replace(
+        "app Screen",
+        r#"app Screen(title: "Dashboard", resizable: false, theme: "dark", layoutDirection: "rtl")"#,
+    );
+    fs::write(&entry, &non_defaults).expect("non-default application metadata should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("non-default application metadata should analyze");
+
+    assert_eq!(
+        third.development_abi(),
+        first.development_abi(),
+        "adding lifecycle-safe non-default application metadata must not change the development ABI"
+    );
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("non-default application metadata should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "layout_direction".to_string(),
+                value: "rtl".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "resizable".to_string(),
+                value: "0".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "theme".to_string(),
+                value: "dark".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "title".to_string(),
+                value: "Dashboard".to_string(),
+            },
+        ]
+    );
+
+    fs::write(&entry, initial).expect("removed application metadata source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed application metadata should return to defaults");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing lifecycle-safe application metadata should hot-apply defaults"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "layout_direction".to_string(),
+                value: "system".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "resizable".to_string(),
+                value: "1".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "theme".to_string(),
+                value: "system".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "title".to_string(),
+                value: "Screen".to_string(),
+            },
+        ]
+    );
+
+    let structural_width = initial.replace("app Screen", "app Screen(width: 800)");
+    fs::write(&entry, structural_width)
+        .expect("structural width metadata source should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("structural width metadata should analyze");
+    assert_ne!(
+        fifth.development_abi(),
+        first.development_abi(),
+        "adding width must remain a development ABI boundary until its implicit geometry lifecycle is modeled"
+    );
+    assert!(
+        fifth.development_ui_string_patch_from(&first).is_none(),
+        "structural width addition must continue to fall back to a controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_application_theme_palette() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-theme-palette-patch-{}",
