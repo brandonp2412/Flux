@@ -1966,16 +1966,7 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
 
 fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
-        "max_length" => {
-            element.kind == "TextInput"
-                && element
-                    .properties
-                    .iter()
-                    .find(|property| {
-                        typecheck::source_name_to_internal(&property.name) == "multiline"
-                    })
-                    .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
-        }
+        "max_length" => element.kind == "TextInput",
         "max_lines" | "max_width_chars" => element.kind == "Text",
         "size" => element.kind == "Button",
         _ => false,

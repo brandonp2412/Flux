@@ -14671,6 +14671,29 @@ fn emit_linux_gtk_application(
                 ui_transform_provider_c_name(&element.name)
             ));
         }
+        if element.kind == "TextInput"
+            && view_property(element, "multiline")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false)
+            && let Some(property) = view_property(element, "max_length")
+        {
+            let Some(max_length) = static_expr_i64(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
+                ));
+            };
+            if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                return Err(diag(
+                    property.value.span,
+                    "TextInput.maxLength must be between 0 and 2147483647",
+                ));
+            }
+            out.push_str(&format!(
+                "static gint flux__ui_max_length_{} = {max_length};\n",
+                element.name
+            ));
+        }
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -14823,7 +14846,13 @@ fn emit_linux_gtk_application(
                     let multiline = view_property(element, "multiline")
                         .and_then(|property| static_expr_bool(&property.value, signatures))
                         .unwrap_or(false);
-                    if !multiline {
+                    if multiline {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) flux__ui_max_length_{} = (gint)integer_value; }}",
+                            c_string(&element.name),
+                            element.name
+                        ));
+                    } else {
                         out.push_str(&format!(
                             " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_entry_set_max_length(GTK_ENTRY({widget}), (int)integer_value); }}",
                             c_string(&element.name)
@@ -15010,7 +15039,8 @@ fn emit_linux_gtk_application(
                     ));
                 }
                 out.push_str(&format!(
-                    "static void flux__ui_limit_{}(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {{ (void)data; const gint limit = {max_length}; gint current = gtk_text_buffer_get_char_count(buffer); glong incoming = g_utf8_strlen(text, length); gint available = limit - current; if (incoming <= available) return; g_signal_stop_emission_by_name(buffer, \"insert-text\"); if (available <= 0) return; const gchar *end = g_utf8_offset_to_pointer(text, available); gtk_text_buffer_insert(buffer, location, text, (gint)(end - text)); }}\n",
+                    "static void flux__ui_limit_{}(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {{ (void)data; const gint limit = flux__ui_max_length_{}; gint current = gtk_text_buffer_get_char_count(buffer); glong incoming = g_utf8_strlen(text, length); gint available = limit - current; if (incoming <= available) return; g_signal_stop_emission_by_name(buffer, \"insert-text\"); if (available <= 0) return; const gchar *end = g_utf8_offset_to_pointer(text, available); gtk_text_buffer_insert(buffer, location, text, (gint)(end - text)); }}\n",
+                    element.name,
                     element.name,
                 ));
             }

@@ -36672,6 +36672,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         text: "Notes"
         readOnly: false
         keyboardType: "text"
+        maxLength: 48
         multiline: true
 }
 app Screen
@@ -36716,6 +36717,7 @@ app Screen
         text: "Updated notes"
         readOnly: true
         keyboardType: "url"
+        maxLength: 96
         multiline: true
 }
 app Screen
@@ -36771,6 +36773,7 @@ app Screen
         ("notes", "text", "Updated notes"),
         ("notes", "read_only", "1"),
         ("notes", "keyboard_type", "url"),
+        ("notes", "max_length", "96"),
     ] {
         assert_eq!(
             patch.get(&(element.to_string(), property.to_string())),
@@ -36778,7 +36781,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 29);
+    assert_eq!(patch.len(), 30);
 
     let generated = second
         .emit_c()
@@ -36862,6 +36865,8 @@ app Screen
         generated
             .contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_input), (int)integer_value)")
     );
+    assert!(generated.contains("static gint flux__ui_max_length_notes = 96"));
+    assert!(generated.contains("flux__ui_max_length_notes = (gint)integer_value"));
 
     let dynamic = updated.replace("visible: false", "visible: windowIsCompact");
     fs::write(&entry, dynamic).expect("dynamic bool edit should be writable");
@@ -37073,7 +37078,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_restarts_for_multiline_max_length_edits() {
+fn development_ui_string_patch_hot_applies_multiline_max_length_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-multiline-max-length-patch-{}",
         std::process::id()
@@ -37105,10 +37110,20 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("updated multiline max-length analysis should succeed");
 
-    assert!(
-        second.development_ui_string_patch_from(&first).is_none(),
-        "multiline maxLength is callback-backed and must use controlled restart"
-    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("multiline maxLength should hot-apply through mutable limiter state");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "notes");
+    assert_eq!(patch[0].property, "max_length");
+    assert_eq!(patch[0].value, "24");
+
+    let generated = second
+        .emit_c()
+        .expect("updated multiline maxLength should lower for Linux");
+    assert!(generated.contains("static gint flux__ui_max_length_notes = 24"));
+    assert!(generated.contains("const gint limit = flux__ui_max_length_notes"));
+    assert!(generated.contains("flux__ui_max_length_notes = (gint)integer_value"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -42098,7 +42113,8 @@ app Form
     assert!(generated.contains(
         "g_signal_connect(flux__ui_buffer_query, \"insert-text\", G_CALLBACK(flux__ui_limit_query), NULL)"
     ));
-    assert!(generated.contains("const gint limit = 12"));
+    assert!(generated.contains("static gint flux__ui_max_length_query = 12"));
+    assert!(generated.contains("const gint limit = flux__ui_max_length_query"));
     assert!(generated.contains("g_utf8_strlen(text, length)"));
     assert!(generated.contains("g_utf8_offset_to_pointer(text, available)"));
     assert!(generated.contains("g_signal_stop_emission_by_name(buffer, \"insert-text\")"));
