@@ -41843,6 +41843,110 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_wrap_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-wrap-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary Text.wrap lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state wrapping: bool = true
+    Text label at 1,1
+        text: "Label"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial Text.wrap lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Text.wrap lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("Text.wrap lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains(
+            "strcmp(property, \"wrap\") == 0 && bool_value_valid && flux__ui_label != NULL"
+        )
+    );
+    assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
+
+    let entry = fs::canonicalize(entry).expect("Text.wrap lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        wrap: true\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit Text.wrap default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit Text.wrap default should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding wrap: true should be an in-process no-op"
+    );
+
+    let nowrap = explicit_default.replace("wrap: true", "wrap: false");
+    fs::write(&entry, nowrap).expect("non-wrapping text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("non-wrapping text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("wrap: false should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "wrap".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed Text.wrap source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed Text.wrap source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing wrap should restore the implicit true value"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "wrap".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        wrap: wrapping\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic Text.wrap source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic Text.wrap source should analyze");
+    assert_ne!(dynamic.development_abi(), fourth.development_abi());
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven Text.wrap declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",

@@ -16125,12 +16125,10 @@ fn emit_linux_gtk_application(
                     ("selectable", "gtk_label_set_selectable"),
                     ("wrap", "gtk_label_set_wrap"),
                 ] {
-                    if property == "selectable" || view_property(element, property).is_some() {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"{property}\") == 0 && bool_value_valid && {widget} != NULL) {setter}(GTK_LABEL({widget}), bool_value);",
-                            c_string(&element.name)
-                        ));
-                    }
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"{property}\") == 0 && bool_value_valid && {widget} != NULL) {setter}(GTK_LABEL({widget}), bool_value);",
+                        c_string(&element.name)
+                    ));
                 }
                 if view_property(element, "variant").is_some() {
                     let mut attribute_updates = String::new();
