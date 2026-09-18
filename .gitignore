@@ -4,3 +4,4 @@
 *.o
 *.exe
 /editors/vscode/dist/
+**/.flux/

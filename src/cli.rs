@@ -10332,6 +10332,113 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     libraries
 }
 
+fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
+    if c_source.contains("struct flux__") || c_source.contains("union flux__") {
+        return None;
+    }
+    let lines = c_source.split_inclusive('\n').collect::<Vec<_>>();
+    let first_source_line = lines
+        .iter()
+        .position(|line| native_source_line_path(line).is_some())?;
+    let prefix = lines[..first_source_line].concat();
+    if !native_prefix_is_module_partition_safe(&prefix) {
+        return None;
+    }
+
+    let mut order = Vec::new();
+    let mut bodies = BTreeMap::<String, String>::new();
+    let mut current = None::<String>;
+    for line in &lines[first_source_line..] {
+        if line.trim_start().starts_with("#line ") {
+            current = Some(native_source_line_path(line)?.to_string());
+        }
+        let source = current.as_ref()?;
+        if !bodies.contains_key(source) {
+            order.push(source.clone());
+        }
+        bodies.entry(source.clone()).or_default().push_str(line);
+    }
+    if order.len() < 2 {
+        return None;
+    }
+
+    Some(
+        order
+            .into_iter()
+            .filter_map(|source| bodies.remove(&source))
+            .map(|body| {
+                let mut unit = String::with_capacity(prefix.len() + body.len());
+                unit.push_str(&prefix);
+                unit.push_str(&body);
+                unit
+            })
+            .collect(),
+    )
+}
+
+fn native_source_line_path(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    if !line.starts_with("#line ") {
+        return None;
+    }
+    let start = line.find('"')?;
+    let end = line.rfind('"')?;
+    (end > start).then_some(&line[start + 1..end])
+}
+
+fn native_prefix_is_module_partition_safe(prefix: &str) -> bool {
+    let mut depth = 0i32;
+    for line in prefix.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if depth > 0 && trimmed.starts_with("static ") {
+            return false;
+        }
+        if let Some(open) = trimmed.find('{')
+            && trimmed[open + 1..].contains("static ")
+        {
+            return false;
+        }
+        if depth == 0 && trimmed.starts_with("static ") {
+            let header_end = ['=', '{', ';']
+                .into_iter()
+                .filter_map(|delimiter| trimmed.find(delimiter))
+                .min()
+                .unwrap_or(trimmed.len());
+            if !trimmed[..header_end].contains('(') {
+                return false;
+            }
+        }
+        let declaration = trimmed.split('=').next().unwrap_or(trimmed);
+        if depth == 0
+            && trimmed.ends_with(';')
+            && !declaration.contains('(')
+            && !trimmed.starts_with("typedef ")
+            && !trimmed.starts_with("struct ")
+            && !trimmed.starts_with("enum ")
+            && !trimmed.starts_with("union ")
+            && !trimmed.starts_with("_Static_assert")
+        {
+            return false;
+        }
+        for ch in trimmed.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    depth == 0
+}
+
 fn build_native_configured(
     c_source: &str,
     output: &Path,
@@ -10441,25 +10548,48 @@ fn build_native_configured(
         let _ = fs::remove_file(native_cache_metadata_path(&cache));
     }
 
-    let object_cache = native_object_cache_path_configured(
-        c_source,
-        mode,
-        instrumentation,
-        native_target,
-        &toolchain_identity,
-        &native_cflags,
-    );
-    let object_is_cached = object_cache.is_file() && native_cache_entry_is_valid(&object_cache);
-    if !object_is_cached && object_cache.exists() {
-        let _ = fs::remove_file(&object_cache);
-        let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
-    }
-
-    let mut temporary_object = None;
-    let object = if object_is_cached {
-        object_cache.clone()
+    let partitioned_units = if cache_enabled
+        && instrumentation == NativeInstrumentation::None
+        && !static_link
+        && native_target.triple.is_none()
+        && native_target.sysroot.is_none()
+        && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
+        && !gtk
+        && !sqlite
+        && !crypto
+    {
+        partition_native_c_by_source(c_source)
     } else {
-        let object = native_temporary_object_path(output, c_source);
+        None
+    };
+    let unit_sources = partitioned_units
+        .as_ref()
+        .map(|units| units.iter().map(String::as_str).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![c_source]);
+    let mut objects = Vec::with_capacity(unit_sources.len());
+    let mut temporary_objects = Vec::new();
+
+    for unit_source in unit_sources {
+        let object_cache = native_object_cache_path_configured(
+            unit_source,
+            mode,
+            instrumentation,
+            native_target,
+            &toolchain_identity,
+            &native_cflags,
+        );
+        let object_is_cached = object_cache.is_file() && native_cache_entry_is_valid(&object_cache);
+        if !object_is_cached && object_cache.exists() {
+            let _ = fs::remove_file(&object_cache);
+            let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
+        }
+
+        if object_is_cached {
+            objects.push(object_cache);
+            continue;
+        }
+
+        let object = native_temporary_object_path(output, unit_source);
         let _ = fs::remove_file(&object);
         let mut compile = Command::new("clang");
         compile
@@ -10504,13 +10634,16 @@ fn build_native_configured(
             .stdin
             .take()
             .expect("clang compiler stdin was configured as piped")
-            .write_all(c_source.as_bytes())
+            .write_all(unit_source.as_bytes())
             .map_err(|error| format!("failed to send generated C to clang compiler: {error}"))?;
         let compile_result = child
             .wait_with_output()
             .map_err(|error| format!("failed to wait for clang compiler: {error}"))?;
         if !compile_result.status.success() {
             let _ = fs::remove_file(&object);
+            for temporary in &temporary_objects {
+                let _ = fs::remove_file(temporary);
+            }
             return Err(format!(
                 "native backend compilation failed:\n{}",
                 String::from_utf8_lossy(&compile_result.stderr)
@@ -10539,9 +10672,9 @@ fn build_native_configured(
                 }
             }
         }
-        temporary_object = Some(object.clone());
-        object
-    };
+        temporary_objects.push(object.clone());
+        objects.push(object);
+    }
 
     let mut link = Command::new("clang");
     link.args(mode.clang_link_args());
@@ -10566,11 +10699,11 @@ fn build_native_configured(
             link.arg("-fsanitize=address");
         }
     }
-    link.arg(&object).args(&native_cflags).args(&native_libs);
+    link.args(&objects).args(&native_cflags).args(&native_libs);
     let temporary_output = native_temporary_artifact_path(output, c_source);
     link.arg("-o").arg(&temporary_output);
     let output_result = link.stdout(Stdio::piped()).stderr(Stdio::piped()).output();
-    if let Some(object) = temporary_object.as_deref() {
+    for object in &temporary_objects {
         let _ = fs::remove_file(object);
     }
     let output_result =
@@ -11260,13 +11393,13 @@ mod tests {
         msix_manifest_xml, msix_version, native_build_cache_path_configured,
         native_cache_entry_is_valid, native_object_cache_path_configured,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
-        package_options, parse_adb_devices, profile_options, profile_report_addresses,
-        prune_native_cache_directory, publish_registry_package_command, registry_publish_options,
-        select_android_run_target, split_symbols_options, stage_android_package_assets,
-        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
-        validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
-        web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
-        windows_publish_options, write_native_cache_metadata,
+        package_options, parse_adb_devices, partition_native_c_by_source, profile_options,
+        profile_report_addresses, prune_native_cache_directory, publish_registry_package_command,
+        registry_publish_options, select_android_run_target, split_symbols_options,
+        stage_android_package_assets, stage_package_assets, symbolize_options, test_options,
+        validate_android_publish_manifest, validate_msix_certificate, validate_msix_publisher,
+        waydroid_status_is_running, web_dev_options, web_dev_response, web_source_stamp,
+        windows_native_system_libraries, windows_publish_options, write_native_cache_metadata,
     };
     use std::fs;
 
@@ -12416,6 +12549,23 @@ app OverlayDemo(title: "Overlay")
                 "-lcamera2ndk".to_string(),
                 "-lmediandk".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn native_module_partitioning_rejects_shared_mutable_runtime_state() {
+        let stateful = "#include <stdint.h>\nstatic int64_t flux__shared = 0;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        assert!(
+            partition_native_c_by_source(stateful).is_none(),
+            "module partitioning must fall back when translation units would duplicate mutable runtime state"
+        );
+
+        let scalar = "#include <stdint.h>\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        assert_eq!(
+            partition_native_c_by_source(scalar)
+                .expect("independent scalar modules should be partitionable")
+                .len(),
+            2
         );
     }
 

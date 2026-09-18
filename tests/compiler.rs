@@ -33423,6 +33423,120 @@ fn native_cache_cli_reports_prunes_and_cleans_global_artifacts() {
 }
 
 #[test]
+fn native_module_object_cache_recompiles_only_changed_scalar_module() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native module cache fixture should be writable");
+    let math = root.join("math.flux");
+    let service = root.join("service.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &math,
+        "fn scale(value: i64) -> i64 {\n    return value * 2\n}\npub fn double(value: i64) -> i64 {\n    return scale(value)\n}\n",
+    )
+    .expect("math module should be writable");
+    fs::write(
+        &service,
+        "import \"math.flux\"\npub fn answer() -> i64 {\n    return double(21)\n}\n",
+    )
+    .expect("service module should be writable");
+    fs::write(
+        &main,
+        "import \"service.flux\"\nfn main() -> i64 {\n    print(answer())\n    return 0\n}\n",
+    )
+    .expect("entry module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first module-object build should run");
+    assert!(
+        built.status.success(),
+        "first module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "42\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "each source module should compile to its own cached object"
+    );
+
+    fs::write(
+        &math,
+        "fn scale(value: i64) -> i64 {\n    return value * 3\n}\npub fn double(value: i64) -> i64 {\n    return scale(value)\n}\n",
+    )
+    .expect("changed math module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed module-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&second_run.stdout), "63\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "a body-only edit should add one changed module object and reuse the other two"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged module object cache entries should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
