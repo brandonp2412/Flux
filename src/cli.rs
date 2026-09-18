@@ -10728,6 +10728,10 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const NET_SOCKETS: &str = "static int flux__net_owned_sockets[256];";
     const NET_SOCKET_COUNT: &str = "static size_t flux__net_owned_socket_count = 0;";
     const NET_REGISTERED: &str = "static bool flux__net_owned_sockets_registered = false;";
+    const TLS_SLOTS: &str = "static struct flux__tls_slot flux__tls_slots[64];";
+    const TLS_RESUMPTION_SLOTS: &str =
+        "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
+    const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10761,6 +10765,32 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             );
         definitions.push_str(
             "\nint flux__net_owned_sockets[256];\nsize_t flux__net_owned_socket_count = 0;\nbool flux__net_owned_sockets_registered = false;\n",
+        );
+        isolated = true;
+    }
+
+    if prefix.contains(TLS_SLOTS)
+        && prefix.contains(TLS_RESUMPTION_SLOTS)
+        && prefix.contains(TLS_REGISTERED)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                TLS_SLOTS,
+                "extern struct flux__tls_slot flux__tls_slots[64];",
+                1,
+            )
+            .replacen(
+                TLS_RESUMPTION_SLOTS,
+                "extern struct flux__tls_resumption_slot flux__tls_resumption_slots[64];",
+                1,
+            )
+            .replacen(
+                TLS_REGISTERED,
+                "extern bool flux__tls_cleanup_registered;",
+                1,
+            );
+        definitions.push_str(
+            "\nstruct flux__tls_slot flux__tls_slots[64];\nstruct flux__tls_resumption_slot flux__tls_resumption_slots[64];\nbool flux__tls_cleanup_registered = false;\n",
         );
         isolated = true;
     }
@@ -13332,6 +13362,31 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the network socket count must have exactly one process-wide definition"
+        );
+
+        let tls = "#include <stdbool.h>\n#include <stdint.h>\nstruct flux__tls_slot { int socket; bool used; };\nstruct flux__tls_resumption_slot { bool used; };\nstatic struct flux__tls_slot flux__tls_slots[64];\nstatic struct flux__tls_resumption_slot flux__tls_resumption_slots[64];\nstatic bool flux__tls_cleanup_registered = false;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let tls_units = partition_native_c_by_source(tls)
+            .expect("TLS session state should move into one shared runtime unit");
+        assert_eq!(tls_units.len(), 3);
+        assert_eq!(
+            tls_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "struct flux__tls_slot flux__tls_slots[64];"))
+                .count(),
+            1,
+            "the TLS session registry must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            tls_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "bool flux__tls_cleanup_registered = false;"))
+                .count(),
+            1,
+            "TLS cleanup registration must have exactly one process-wide definition"
         );
     }
 

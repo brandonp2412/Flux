@@ -34619,6 +34619,174 @@ fn native_module_object_cache_isolates_network_socket_registry() {
 }
 
 #[test]
+fn native_module_object_cache_isolates_tls_session_registry() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-tls-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native TLS module cache fixture should be writable");
+    let key = root.join("server.key");
+    let certificate = root.join("server.crt");
+    let generated = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-keyout",
+        ])
+        .arg(&key)
+        .args(["-out"])
+        .arg(&certificate)
+        .output()
+        .expect("OpenSSL should generate the TLS module-cache certificate");
+    assert!(
+        generated.status.success(),
+        "TLS module-cache certificate generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("TLS module-cache port should bind");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut server = Command::new("openssl")
+        .args(["s_server", "-quiet", "-www", "-accept"])
+        .arg(port.to_string())
+        .args(["-cert"])
+        .arg(&certificate)
+        .args(["-key"])
+        .arg(&key)
+        .spawn()
+        .expect("OpenSSL TLS module-cache server should start");
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let sessions = root.join("sessions.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &sessions,
+        format!(
+            "pub fn openSession() -> (i64, error) {{\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    if connectError != nil:\n        return -1, connectError\n    let nonblockingError: error = net.nonblocking(socket, true)\n    if nonblockingError != nil:\n        return -1, nonblockingError\n    return tls.wrap(socket, \"127.0.0.1\", \"{}\")\n}}\n",
+            certificate.display()
+        ),
+    )
+    .expect("TLS producer module should be writable");
+    fs::write(
+        &main,
+        "import \"sessions.flux\"\n\nfn main() -> i64 {\n    let (session, openError) = openSession()\n    if openError != nil:\n        print(openError)\n        return 1\n    let closeError: error = tls.close(session)\n    if closeError != nil:\n        print(closeError)\n        return 2\n    return 0\n}\n",
+    )
+    .expect("TLS consumer module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first TLS module-object build should run");
+    assert!(
+        built.status.success(),
+        "first TLS module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first TLS module-object binary should run");
+    assert!(
+        first_run.status.success(),
+        "TLS session opened in the producer object must be visible to the consumer object: {}{}",
+        String::from_utf8_lossy(&first_run.stdout),
+        String::from_utf8_lossy(&first_run.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native TLS module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the TLS producer, consumer runtime, and shared TLS/network registries should compile independently"
+    );
+
+    fs::write(
+        &sessions,
+        format!(
+            "pub fn openSession() -> (i64, error) {{\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    if connectError != nil:\n        return -1, connectError\n    if socket < 0:\n        return -1, connectError\n    let nonblockingError: error = net.nonblocking(socket, true)\n    if nonblockingError != nil:\n        return -1, nonblockingError\n    return tls.wrap(socket, \"127.0.0.1\", \"{}\")\n}}\n",
+            certificate.display()
+        ),
+    )
+    .expect("changed TLS producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed TLS module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed TLS module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed TLS module-object binary should run");
+    assert!(second_run.status.success());
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "changing only the TLS-producing body should add one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the shared TLS/network registries and unchanged consumer object should remain reusable"
+    );
+
+    let _ = server.kill();
+    let _ = server.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-module-cache-{}-{}",
