@@ -39500,6 +39500,78 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_application_window_metadata() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-application-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary application patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(title: "Before", width: 640, height: 480, resizable: true)
+"#;
+    fs::write(&entry, initial).expect("initial application patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial application patch analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("application patch entry should canonicalize");
+    let updated = initial
+        .replace("title: \"Before\"", "title: \"After\"")
+        .replace("width: 640", "width: 800")
+        .replace("height: 480", "height: 540")
+        .replace("resizable: true", "resizable: false");
+    fs::write(&entry, updated).expect("updated application patch source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated application patch analysis should succeed");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "patchable window metadata values must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("window metadata edits should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "height".to_string(),
+                value: "540".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "resizable".to_string(),
+                value: "0".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "title".to_string(),
+                value: "After".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__application__".to_string(),
+                property: "width".to_string(),
+                value: "800".to_string(),
+            },
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-property-patch-{}",
@@ -61039,6 +61111,36 @@ app Screen
     assert!(generated.contains("strcmp(property, \"placeholder\") == 0"));
     assert!(generated.contains("gtk_entry_set_placeholder_text(GTK_ENTRY(flux__ui_input), value)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
+}
+
+#[test]
+fn linux_hot_reload_patch_updates_application_window_metadata_in_process() {
+    let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(title: "Flux", width: 640, height: 480, resizable: true)
+"#;
+    let program = fluxc::parser::parse(source).expect("window metadata fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("window metadata fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("window metadata fixture should lower for Linux");
+
+    assert!(generated.contains("strcmp(name, \"__application__\") == 0"));
+    assert!(generated.contains("strcmp(property, \"title\") == 0"));
+    assert!(generated.contains("gtk_window_set_title(hot_window, value)"));
+    assert!(generated.contains("strcmp(property, \"resizable\") == 0"));
+    assert!(generated.contains("gtk_window_set_resizable(hot_window"));
+    assert!(generated.contains("gtk_window_get_default_size(hot_window"));
+    assert!(generated.contains("gtk_window_set_default_size(hot_window"));
 }
 
 #[test]

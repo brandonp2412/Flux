@@ -5215,14 +5215,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     "hot_applied",
                     generation,
                     mode,
-                    "applied compatible static UI string change in process",
+                    "applied compatible static UI change in process",
                     last_analysis_outcome,
                     last_codegen_outcome,
                     last_reload_timing,
                 );
                 status_state = "hot_applied";
                 eprintln!(
-                    "reload: hot-applied {} static UI string change{} without restarting",
+                    "reload: hot-applied {} static UI change{} without restarting",
                     patch.len(),
                     if patch.len() == 1 { "" } else { "s" }
                 );

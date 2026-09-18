@@ -1848,7 +1848,14 @@ fn module_type_surface(
         let metadata = application
             .metadata
             .iter()
-            .map(|field| (&field.name, expr_surface(&field.value)))
+            .map(|field| {
+                let value = if development_application_metadata_patch_value(field).is_some() {
+                    "__flux_hot_application_metadata__".to_string()
+                } else {
+                    expr_surface(&field.value)
+                };
+                (&field.name, value)
+            })
             .collect::<Vec<_>>();
         write!(
             surface,
@@ -1911,6 +1918,32 @@ fn module_type_surface(
     }
 
     surface
+}
+
+const DEVELOPMENT_APPLICATION_PATCH_ELEMENT: &str = "__application__";
+
+fn development_application_metadata_patch_value(
+    field: &crate::ast::ApplicationMetadataField,
+) -> Option<String> {
+    match typecheck::source_name_to_internal(&field.name).as_str() {
+        "title" => {
+            let ExprKind::Str(value) = &field.value.kind else {
+                return None;
+            };
+            (!value.as_bytes().contains(&0)).then(|| value.clone())
+        }
+        "resizable" => {
+            let ExprKind::Bool(value) = field.value.kind else {
+                return None;
+            };
+            Some(if value { "1" } else { "0" }.to_string())
+        }
+        "width" | "height" => {
+            let value = development_ui_i64_literal_value(&field.value)?;
+            (value > 0 && value <= i64::from(i32::MAX)).then(|| value.to_string())
+        }
+        _ => None,
+    }
 }
 
 fn development_ui_element_has_property(element: &ViewElement, property: &str) -> bool {
@@ -2190,6 +2223,20 @@ fn development_ui_string_literals(
         .views
         .iter()
         .find(|view| view.name == application.view_name)?;
+    let mut literals = BTreeMap::new();
+    for field in &application.metadata {
+        let Some(value) = development_application_metadata_patch_value(field) else {
+            continue;
+        };
+        literals.insert(
+            (
+                DEVELOPMENT_APPLICATION_PATCH_ELEMENT.to_string(),
+                typecheck::source_name_to_internal(&field.name),
+            ),
+            value,
+        );
+    }
+
     let mut layout_transition_duration = None;
     for element in &view.elements {
         let Some(property) = element.properties.iter().find(|property| {
@@ -2209,7 +2256,6 @@ fn development_ui_string_literals(
         layout_transition_duration = Some(value);
     }
 
-    let mut literals = BTreeMap::new();
     for element in &view.elements {
         for (minimum_name, maximum_name) in
             [("min_width", "max_width"), ("min_height", "max_height")]
@@ -2492,26 +2538,32 @@ fn development_ui_string_masked_sources(
         .views
         .iter()
         .find(|view| view.name == application.view_name)?;
-    let masks = view
-        .elements
+    let mut masks = application
+        .metadata
         .iter()
-        .flat_map(|element| {
-            element.properties.iter().filter(move |property| {
-                let property_name = typecheck::source_name_to_internal(&property.name);
-                development_ui_string_property_is_patchable(element, &property_name)
-                    || development_ui_string_list_property_is_patchable(element, &property_name)
-                    || development_ui_bool_property_is_patchable(element, &property_name)
-                    || development_ui_i64_property_is_patchable(element, &property_name)
-            })
-        })
-        .filter(|property| {
-            matches!(
-                property.value.kind,
-                ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::List(_)
-            ) || development_ui_i64_literal_value(&property.value).is_some()
-        })
-        .map(|property| property.value.span)
+        .filter(|field| development_application_metadata_patch_value(field).is_some())
+        .map(|field| field.value.span)
         .collect::<Vec<_>>();
+    masks.extend(
+        view.elements
+            .iter()
+            .flat_map(|element| {
+                element.properties.iter().filter(move |property| {
+                    let property_name = typecheck::source_name_to_internal(&property.name);
+                    development_ui_string_property_is_patchable(element, &property_name)
+                        || development_ui_string_list_property_is_patchable(element, &property_name)
+                        || development_ui_bool_property_is_patchable(element, &property_name)
+                        || development_ui_i64_property_is_patchable(element, &property_name)
+                })
+            })
+            .filter(|property| {
+                matches!(
+                    property.value.kind,
+                    ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::List(_)
+                ) || development_ui_i64_literal_value(&property.value).is_some()
+            })
+            .map(|property| property.value.span),
+    );
 
     let mut sources = analysis.sources.iter().collect::<Vec<_>>();
     sources.sort_by(|left, right| left.path.cmp(&right.path));

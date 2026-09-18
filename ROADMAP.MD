@@ -1414,6 +1414,8 @@ Verified WebSocket handshake-boundary follow-up: server request-line/header pars
 
 # Verified JSON fixed-escape-width follow-up: compiler-generated JSON string, array, and object encoders copy each selected JSON escape literal using its statically known two-byte width instead of rescanning compiler-owned literals with `strlen`; native output and maximum-expansion coverage remain unchanged, while owned dynamic JSON values and escaping results remain open.
 
+Verified Milestone 29 window-metadata hot-apply follow-up: Linux development runs now treat literal application `title`, `width`, `height`, and `resizable` value edits as ABI-stable data-only changes. The save-triggered runner patches the active GTK window in process with native bounds/type validation instead of rebuilding it, while adding/removing metadata, unsupported metadata changes, and structural edits retain the controlled rebuild/restart fallback. Automatic save-triggered hot reload remains unchecked while broader structural/runtime replacement and cross-platform production coverage are incomplete.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

@@ -65,12 +65,13 @@ Acceptance for the development loop:
 
 - no reload hotkey is required;
 - `flux run` notices the save and reports that it is compiling;
-- a successful replacement build restarts the app automatically;
-- the edited text appears in the relaunched native window;
+- supported ABI-compatible static UI edits apply directly to the running native window without a restart;
+- application title, default width/height, and resizability changes are included in that in-process Linux hot-apply path;
+- compatible edits that still require native code replacement rebuild automatically and use a controlled restart with compatible root-view state restored;
 - introducing a compile error leaves the last good app running and reports diagnostics;
-- fixing and saving the error causes the next successful replacement build to launch automatically.
+- fixing and saving the error causes the next successful hot apply or replacement build automatically.
 
-State-preserving in-process Fast-Refresh-style hot apply remains a later milestone. The P0 dogfood contract intentionally accepts the existing controlled restart on compatible successful builds while preserving the requirement that normal development is save-triggered and needs no manual reload key.
+The development loop already combines in-process data-only patches, incremental analysis/code generation, native object reuse, and state-preserving controlled restarts. The production-ready hot-reload milestone remains open until the remaining structural edits, runtime replacement boundaries, performance guarantees, and supported-platform behavior are covered end to end.
 
 ## 4. Non-interactive preflight
 
