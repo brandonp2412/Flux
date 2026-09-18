@@ -43818,15 +43818,19 @@ app Screen
 "#;
     check_source(source).expect("unique compile-time accessibility order should typecheck");
     let linux = compile_to_c(source).expect("accessibility order should lower to GTK relations");
-    assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_second), -1"));
-    assert!(linux.contains("GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_third), -1"));
-    let first_to_second = linux
-        .find("GTK_ACCESSIBLE(flux__ui_first), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_second)")
-        .expect("first should flow to second");
-    let second_to_third = linux
-        .find("GTK_ACCESSIBLE(flux__ui_second), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE(flux__ui_third)")
-        .expect("second should flow to third");
-    assert!(first_to_second < second_to_third);
+    assert!(linux.contains("static int64_t flux__ui_accessibility_order_first = INT64_C(10)"));
+    assert!(linux.contains("static int64_t flux__ui_accessibility_order_second = INT64_C(20)"));
+    assert!(linux.contains("static int64_t flux__ui_accessibility_order_third = INT64_C(30)"));
+    assert!(
+        linux.contains(
+            "gtk_accessible_reset_relation(nodes[index], GTK_ACCESSIBLE_RELATION_FLOW_TO)"
+        )
+    );
+    assert!(linux.contains("if (orders[indices[right]] < orders[indices[left]])"));
+    assert!(linux.contains(
+        "gtk_accessible_update_relation(current, GTK_ACCESSIBLE_RELATION_FLOW_TO, next, -1)"
+    ));
+    assert!(linux.contains("flux__ui_refresh_accessibility_order();"));
 
     let program = fluxc::parser::parse(source).expect("accessibility-order app should parse");
     let signatures =
@@ -43882,6 +43886,81 @@ app Screen
             .message
             .contains("accessibilityOrder must be a compile-time i64 value")
     }));
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_accessibility_order() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-order-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary accessibility-order patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text first at 1,1
+        text: "First"
+        accessibilityOrder: 10
+    Text second at 2,1
+        text: "Second"
+        accessibilityOrder: 20
+    Text third at 3,1
+        text: "Third"
+        accessibilityOrder: 30
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial accessibility-order source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial accessibility-order analysis should succeed");
+
+    let updated = initial
+        .replace(
+            "Text first at 1,1\n        text: \"First\"\n        accessibilityOrder: 10",
+            "Text first at 1,1\n        text: \"First\"\n        accessibilityOrder: 30",
+        )
+        .replace(
+            "Text third at 3,1\n        text: \"Third\"\n        accessibilityOrder: 30",
+            "Text third at 3,1\n        text: \"Third\"\n        accessibilityOrder: 10",
+        );
+    fs::write(&entry, &updated).expect("updated accessibility-order source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("accessibility-order patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated accessibility-order analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("valid accessibility-order edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("first".to_string(), "accessibility_order".to_string())),
+        Some(&"30".to_string())
+    );
+    assert_eq!(
+        patch.get(&("third".to_string(), "accessibility_order".to_string())),
+        Some(&"10".to_string())
+    );
+
+    let generated = second
+        .emit_c()
+        .expect("accessibility-order patch fixture should lower for Linux");
+    assert!(generated.contains("flux__ui_accessibility_order_changed = true"));
+    assert!(generated.contains(
+        "if (flux__ui_accessibility_order_changed) { flux__ui_accessibility_order_changed = false; flux__ui_refresh_accessibility_order(); }"
+    ));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

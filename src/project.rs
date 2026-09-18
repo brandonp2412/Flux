@@ -2058,7 +2058,11 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
             element.kind == "Text"
         }
         "size" => matches!(element.kind.as_str(), "Text" | "Button"),
-        "focus_scope" | "layout_transition_ms" | "transition_ms" | "transition_delay_ms" => true,
+        "focus_scope"
+        | "accessibility_order"
+        | "layout_transition_ms"
+        | "transition_ms"
+        | "transition_delay_ms" => true,
         "shadow_blur" | "shadow_offset_x" | "shadow_offset_y" => true,
         "translate_x"
         | "translate_y"
@@ -2315,6 +2319,9 @@ fn development_ui_string_literals(
                 let Some(value) = development_ui_i64_literal_value(&property.value) else {
                     continue;
                 };
+                if property_name == "accessibility_order" && value < 0 {
+                    return None;
+                }
                 if property_name == "max_length" && !(0..=i64::from(i32::MAX)).contains(&value) {
                     return None;
                 }

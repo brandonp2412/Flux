@@ -14927,6 +14927,39 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
+        if let Some(property) = view_property(element, "accessibility_order") {
+            let Some(order) = static_expr_i64(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "accessibilityOrder must be a compile-time i64 value",
+                ));
+            };
+            out.push_str(&format!(
+                "static int64_t flux__ui_accessibility_order_{} = INT64_C({order});\n",
+                element.name
+            ));
+        }
+    }
+    let hot_accessibility_order = ordered_accessibility_elements(view, signatures)?;
+    if !hot_accessibility_order.is_empty() {
+        let count = hot_accessibility_order.len();
+        let nodes = hot_accessibility_order
+            .iter()
+            .map(|element| format!("GTK_ACCESSIBLE({})", linux_ui_host_c_name(element)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let orders = hot_accessibility_order
+            .iter()
+            .map(|element| format!("flux__ui_accessibility_order_{}", element.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let indices = (0..count)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "static bool flux__ui_accessibility_order_changed = false;\nstatic void flux__ui_refresh_accessibility_order(void) {{ GtkAccessible *nodes[{count}] = {{{nodes}}}; int64_t orders[{count}] = {{{orders}}}; size_t indices[{count}] = {{{indices}}}; for (size_t index = 0; index < {count}; ++index) {{ if (nodes[index] != NULL) gtk_accessible_reset_relation(nodes[index], GTK_ACCESSIBLE_RELATION_FLOW_TO); }} for (size_t left = 0; left < {count}; ++left) {{ for (size_t right = left + 1; right < {count}; ++right) {{ if (orders[indices[right]] < orders[indices[left]]) {{ size_t swap = indices[left]; indices[left] = indices[right]; indices[right] = swap; }} }} }} for (size_t index = 0; index + 1 < {count}; ++index) {{ GtkAccessible *current = nodes[indices[index]]; GtkAccessible *next = nodes[indices[index + 1]]; if (current != NULL && next != NULL) gtk_accessible_update_relation(current, GTK_ACCESSIBLE_RELATION_FLOW_TO, next, -1); }} }}\n"
+        ));
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -15233,6 +15266,13 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_actions\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
                 c_string(&element.name)
+            ));
+        }
+        if view_property(element, "accessibility_order").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_order\") == 0) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0) {{ flux__ui_accessibility_order_{} = (int64_t)integer_value; flux__ui_accessibility_order_changed = true; }} }}",
+                c_string(&element.name),
+                element.name
             ));
         }
         if view_property(element, "accessibility_value").is_some() {
@@ -15725,7 +15765,13 @@ fn emit_linux_gtk_application(
             _ => {}
         }
     }
-    out.push_str(" free(name); free(property); free(value); } fclose(file); remove(path); }\n\n");
+    if hot_accessibility_order.is_empty() {
+        out.push_str(
+            " free(name); free(property); free(value); } fclose(file); remove(path); }\n\n",
+        );
+    } else {
+        out.push_str(" free(name); free(property); free(value); } fclose(file); remove(path); if (flux__ui_accessibility_order_changed) { flux__ui_accessibility_order_changed = false; flux__ui_refresh_accessibility_order(); } }\n\n");
+    }
     emit_ui_refresh(out, view, signatures)?;
     out.push_str(&format!(
         "static void flux__ui_window_environment_changed(GObject *object, GParamSpec *pspec, gpointer data) {{\n    (void)pspec;\n    (void)data;\n    int width = -1;\n    int height = -1;\n    gtk_window_get_default_size(GTK_WINDOW(object), &width, &height);\n    int scale = gtk_widget_get_scale_factor(GTK_WIDGET(object));\n    int64_t next_width = width > 0 ? (int64_t)width : flux__ui_window_width;\n    int64_t next_height = height > 0 ? (int64_t)height : flux__ui_window_height;\n    int64_t next_scale = scale > 0 ? (int64_t)scale : INT64_C(1);\n    if (next_width == flux__ui_window_width && next_height == flux__ui_window_height && next_scale == flux__ui_display_scale) return;\n    flux__ui_window_width = next_width;\n    flux__ui_window_height = next_height;\n    flux__ui_display_scale = next_scale;\n{}    flux__ui_refresh_changed(-2);\n}}\n\n",
@@ -17471,13 +17517,8 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "#ifdef FLUX_PROFILE_TIMELINE\n    if (getenv(\"FLUX_PERF_OVERLAY\") != NULL) {{\n        flux__profile_overlay_label = gtk_label_new(\"Flux refresh: waiting\");\n        gtk_widget_add_css_class(flux__profile_overlay_label, \"osd\");\n        gtk_widget_set_halign(flux__profile_overlay_label, GTK_ALIGN_END);\n        gtk_widget_set_valign(flux__profile_overlay_label, GTK_ALIGN_START);\n        gtk_widget_set_margin_top(flux__profile_overlay_label, 8);\n        gtk_widget_set_margin_end(flux__profile_overlay_label, 8);\n        gtk_grid_attach(GTK_GRID(grid), flux__profile_overlay_label, 0, 0, {overlay_columns}, 1);\n    }}\n#endif\n"
     ));
-    let accessibility_order = ordered_accessibility_elements(view, signatures)?;
-    for pair in accessibility_order.windows(2) {
-        let current = linux_ui_host_c_name(pair[0]);
-        let next = linux_ui_host_c_name(pair[1]);
-        out.push_str(&format!(
-            "    gtk_accessible_update_relation(GTK_ACCESSIBLE({current}), GTK_ACCESSIBLE_RELATION_FLOW_TO, GTK_ACCESSIBLE({next}), -1);\n"
-        ));
+    if !hot_accessibility_order.is_empty() {
+        out.push_str("    flux__ui_refresh_accessibility_order();\n");
     }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");
