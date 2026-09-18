@@ -10554,7 +10554,6 @@ fn build_native_configured(
         && native_target.triple.is_none()
         && native_target.sysroot.is_none()
         && native_target.codegen_target() == fluxc::codegen::NativeTarget::Linux
-        && !gtk
         && !sqlite
         && !crypto
     {

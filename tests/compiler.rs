@@ -33537,6 +33537,104 @@ fn native_module_object_cache_recompiles_only_changed_scalar_module() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-ui-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native UI module cache fixture should be writable");
+    let hooks = root.join("hooks.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &hooks,
+        "pub fn startup() -> void {\n    print(\"started\")\n}\n",
+    )
+    .expect("UI hook module should be writable");
+    fs::write(
+        &main,
+        "import \"hooks.flux\"\n\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"ready\"\n}\n\napp Screen(title: \"UI module cache\", onStart: startup)\n",
+    )
+    .expect("UI entry module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first UI module-object build should run");
+    assert!(
+        built.status.success(),
+        "first UI module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native UI module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        2,
+        "the imported UI module and root application runtime should compile independently"
+    );
+
+    fs::write(
+        &hooks,
+        "pub fn startup() -> void {\n    print(\"changed\")\n}\n",
+    )
+    .expect("changed UI hook module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed UI module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed UI module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        3,
+        "a body-only imported UI module edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged root UI runtime object should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

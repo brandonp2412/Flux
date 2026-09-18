@@ -1916,6 +1916,9 @@ fn emit_c_for_target_with_source_metadata_impl(
         &runtime_usage,
     )?;
     out.push_str(&generated_body);
+    if let Some(application) = &program.application {
+        emit_source_line(&mut out, application.span, source_paths);
+    }
     out.push_str(&application_body);
 
     Ok((out, codegen_stats))
