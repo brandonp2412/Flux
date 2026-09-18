@@ -37205,6 +37205,140 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_padding_and_radius_css() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-style-spacing-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary style spacing patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text base at 1,1
+        text: "Base"
+        padding: 4
+        radius: 6
+    Text detailed at 2,1
+        text: "Detailed"
+        paddingTop: 1
+        paddingEnd: 2
+        radiusTopLeft: 3
+        radiusBottomRight: 4
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial style spacing patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial style spacing patch analysis should succeed");
+
+    let updated = initial
+        .replace("padding: 4", "padding: 8")
+        .replace("radius: 6", "radius: 10")
+        .replace("paddingTop: 1", "paddingTop: 5")
+        .replace("paddingEnd: 2", "paddingEnd: 7")
+        .replace("radiusTopLeft: 3", "radiusTopLeft: 9")
+        .replace("radiusBottomRight: 4", "radiusBottomRight: 11");
+    fs::write(&entry, &updated).expect("updated style spacing patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("style spacing patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated style spacing patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe padding and radius edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (element, property, value) in [
+        ("base", "padding", "8"),
+        ("base", "radius", "10"),
+        ("detailed", "padding_top", "5"),
+        ("detailed", "padding_end", "7"),
+        ("detailed", "radius_top_left", "9"),
+        ("detailed", "radius_bottom_right", "11"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing style hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 6);
+
+    let generated = second
+        .emit_c()
+        .expect("style spacing patch fixture should lower for Linux");
+    for provider in [
+        "flux__ui_hot_style_base_padding",
+        "flux__ui_hot_style_base_radius",
+        "flux__ui_hot_style_detailed_padding_top",
+        "flux__ui_hot_style_detailed_padding_end",
+        "flux__ui_hot_style_detailed_radius_top_left",
+        "flux__ui_hot_style_detailed_radius_bottom_right",
+    ] {
+        assert!(
+            generated.contains(&format!("static GtkCssProvider *{provider} = NULL")),
+            "missing bounded hot-style provider {provider}"
+        );
+        assert!(
+            generated.contains(&format!(
+                "gtk_css_provider_load_from_data({provider}, patch_css, -1)"
+            )),
+            "hot-style provider {provider} should be reloaded in place"
+        );
+    }
+    assert!(generated.contains("#flux-ui-base { padding: %lldpx; }"));
+    assert!(generated.contains("#flux-ui-base { border-radius: %lldpx; }"));
+    assert!(generated.contains("#flux-ui-detailed { padding-top: %lldpx; }"));
+    assert!(generated.contains("#flux-ui-detailed { padding-right: %lldpx; }"));
+    assert!(generated.contains("#flux-ui-detailed { border-top-left-radius: %lldpx; }"));
+    assert!(generated.contains("#flux-ui-detailed { border-bottom-right-radius: %lldpx; }"));
+
+    let invalid = updated.replace("padding: 8", "padding: -1");
+    fs::write(&entry, invalid).expect("invalid padding edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid padding remains semantically an i64");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid padding must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid padding must still reach native validation"
+    );
+
+    let overridden_initial = initial.replace("padding: 4", "padding: 4\n        paddingTop: 2");
+    fs::write(&entry, &overridden_initial).expect("overridden padding source should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden padding source should analyze");
+    let overridden_updated = overridden_initial.replace("padding: 4", "padding: 12");
+    fs::write(&entry, overridden_updated).expect("overridden base padding edit should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden base padding edit should analyze");
+    assert!(
+        overridden_second
+            .development_ui_string_patch_from(&overridden_first)
+            .is_none(),
+        "base padding edits with explicit side overrides must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_invalid_image_fit_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-image-fit-patch-{}",

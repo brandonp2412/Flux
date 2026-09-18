@@ -1993,6 +1993,26 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "max_width" => !development_ui_element_has_property(element, "min_width"),
         "max_height" => !development_ui_element_has_property(element, "min_height"),
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
+        "padding" => ![
+            "padding_top",
+            "padding_bottom",
+            "padding_start",
+            "padding_end",
+        ]
+        .iter()
+        .any(|property| development_ui_element_has_property(element, property)),
+        "padding_top" | "padding_bottom" | "padding_start" | "padding_end" => true,
+        "radius" => ![
+            "radius_top_left",
+            "radius_top_right",
+            "radius_bottom_left",
+            "radius_bottom_right",
+        ]
+        .iter()
+        .any(|property| development_ui_element_has_property(element, property)),
+        "radius_top_left" | "radius_top_right" | "radius_bottom_left" | "radius_bottom_right" => {
+            true
+        }
         _ => false,
     }
 }
@@ -2138,7 +2158,21 @@ fn development_ui_string_literals(
                 }
                 if matches!(
                     property_name.as_str(),
-                    "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end"
+                    "margin"
+                        | "margin_top"
+                        | "margin_bottom"
+                        | "margin_start"
+                        | "margin_end"
+                        | "padding"
+                        | "padding_top"
+                        | "padding_bottom"
+                        | "padding_start"
+                        | "padding_end"
+                        | "radius"
+                        | "radius_top_left"
+                        | "radius_top_right"
+                        | "radius_bottom_left"
+                        | "radius_bottom_right"
                 ) && !(0..=i64::from(i32::MAX)).contains(&value)
                 {
                     return None;

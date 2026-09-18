@@ -14673,6 +14673,27 @@ fn emit_linux_gtk_application(
                 linux_ui_layout_c_name(element)
             ));
         }
+        for property_name in [
+            "padding",
+            "padding_top",
+            "padding_bottom",
+            "padding_start",
+            "padding_end",
+            "radius",
+            "radius_top_left",
+            "radius_top_right",
+            "radius_bottom_left",
+            "radius_bottom_right",
+        ] {
+            if view_property(element, property_name).is_some()
+                && linux_hot_css_i64_property(element, property_name).is_some()
+            {
+                out.push_str(&format!(
+                    "static GtkCssProvider *{} = NULL;\n",
+                    linux_ui_hot_style_provider_c_name(element, property_name)
+                ));
+            }
+        }
         if element_has_dynamic_transform(element, signatures) {
             out.push_str(&format!(
                 "static GtkCssProvider *{} = NULL;\n",
@@ -15032,6 +15053,34 @@ fn emit_linux_gtk_application(
                     c_string(&element.name)
                 ));
             }
+        }
+        for property_name in [
+            "padding",
+            "padding_top",
+            "padding_bottom",
+            "padding_start",
+            "padding_end",
+            "radius",
+            "radius_top_left",
+            "radius_top_right",
+            "radius_bottom_left",
+            "radius_bottom_right",
+        ] {
+            let Some(css_name) = linux_hot_css_i64_property(element, property_name) else {
+                continue;
+            };
+            if view_property(element, property_name).is_none() {
+                continue;
+            }
+            let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ {css_name}: %lldpx; }}",
+                element.name
+            ));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, integer_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                c_string(&element.name)
+            ));
         }
         for (property_name, maximum_name, horizontal) in [
             ("min_width", "max_width", true),
@@ -18891,6 +18940,54 @@ fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
     } else {
         linux_ui_host_c_name(element)
     }
+}
+
+fn linux_hot_css_i64_property(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+) -> Option<&'static str> {
+    match property_name {
+        "padding"
+            if ![
+                "padding_top",
+                "padding_bottom",
+                "padding_start",
+                "padding_end",
+            ]
+            .iter()
+            .any(|property| view_property(element, property).is_some()) =>
+        {
+            Some("padding")
+        }
+        "padding_top" => Some("padding-top"),
+        "padding_bottom" => Some("padding-bottom"),
+        "padding_start" => Some("padding-left"),
+        "padding_end" => Some("padding-right"),
+        "radius"
+            if ![
+                "radius_top_left",
+                "radius_top_right",
+                "radius_bottom_left",
+                "radius_bottom_right",
+            ]
+            .iter()
+            .any(|property| view_property(element, property).is_some()) =>
+        {
+            Some("border-radius")
+        }
+        "radius_top_left" => Some("border-top-left-radius"),
+        "radius_top_right" => Some("border-top-right-radius"),
+        "radius_bottom_left" => Some("border-bottom-left-radius"),
+        "radius_bottom_right" => Some("border-bottom-right-radius"),
+        _ => None,
+    }
+}
+
+fn linux_ui_hot_style_provider_c_name(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+) -> String {
+    format!("flux__ui_hot_style_{}_{}", element.name, property_name)
 }
 
 fn view_layout_transition_duration(
