@@ -15838,7 +15838,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "enabled").is_some() {
+        if matches!(
+            element.kind.as_str(),
+            "Button" | "TextInput" | "Toggle" | "Radio"
+        ) {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"enabled\") == 0 && bool_value_valid && {widget} != NULL) gtk_widget_set_sensitive({widget}, bool_value);",
                 c_string(&element.name)

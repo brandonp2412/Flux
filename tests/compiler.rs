@@ -41160,6 +41160,146 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_enabled_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-enabled-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary enabled lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state ready: bool = true
+    Button action at 1,1
+        text: "Action"
+    TextInput input at 2,1
+        text: "Input"
+    Toggle toggle at 3,1
+        label: "Toggle"
+    Radio radio at 4,1
+        label: "Radio"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial enabled lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial enabled lifecycle source should analyze");
+
+    let generated = first
+        .emit_c()
+        .expect("enabled lifecycle fixture should lower for Linux");
+    for element in ["action", "input", "toggle", "radio"] {
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"enabled\") == 0 && bool_value_valid && flux__ui_{element} != NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "gtk_widget_set_sensitive(flux__ui_{element}, bool_value)"
+        )));
+    }
+
+    let entry = fs::canonicalize(entry).expect("enabled lifecycle entry should canonicalize");
+    let explicit_default = initial
+        .replace(
+            "        text: \"Action\"\n",
+            "        text: \"Action\"\n        enabled: true\n",
+        )
+        .replace(
+            "        text: \"Input\"\n",
+            "        text: \"Input\"\n        enabled: true\n",
+        )
+        .replace(
+            "        label: \"Toggle\"\n",
+            "        label: \"Toggle\"\n        enabled: true\n",
+        )
+        .replace(
+            "        label: \"Radio\"\n",
+            "        label: \"Radio\"\n        enabled: true\n",
+        );
+    fs::write(&entry, &explicit_default).expect("explicit enabled defaults should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit enabled defaults should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal enabled defaults must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding enabled: true should be an in-process no-op"
+    );
+
+    let disabled = explicit_default.replace("enabled: true", "enabled: false");
+    fs::write(&entry, disabled).expect("disabled enabled lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("disabled enabled lifecycle source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let disabled_patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("adding enabled: false should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for element in ["action", "input", "toggle", "radio"] {
+        assert_eq!(
+            disabled_patch.get(&(element.to_string(), "enabled".to_string())),
+            Some(&"0".to_string())
+        );
+    }
+    assert_eq!(disabled_patch.len(), 4);
+
+    fs::write(&entry, initial).expect("removed enabled source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed enabled lifecycle source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    let restored_patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing enabled should restore the implicit true value")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for element in ["action", "input", "toggle", "radio"] {
+        assert_eq!(
+            restored_patch.get(&(element.to_string(), "enabled".to_string())),
+            Some(&"1".to_string())
+        );
+    }
+    assert_eq!(restored_patch.len(), 4);
+
+    let dynamic = initial.replace(
+        "        text: \"Action\"\n",
+        "        text: \"Action\"\n        enabled: ready\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic enabled source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic enabled source should analyze");
+    assert_ne!(
+        dynamic.development_abi(),
+        fourth.development_abi(),
+        "state-driven enabled declarations must remain structural"
+    );
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven enabled declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
