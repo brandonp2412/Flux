@@ -32402,8 +32402,8 @@ app Screen(onStart: started)
         thread::sleep(Duration::from_millis(20));
     }
 
-    fs::write(&entry, initial.replace("Before", "After"))
-        .expect("UI hot-apply edit should be writable");
+    let after_text = initial.replace("Before", "After");
+    fs::write(&entry, &after_text).expect("UI hot-apply edit should be writable");
     wait_for_log(
         &log,
         &["reload: hot-applied 1 static UI change without restarting"],
@@ -32419,6 +32419,53 @@ app Screen(onStart: started)
         fs::read_to_string(&starts).expect("UI child start marker should remain readable"),
         "S",
         "onStart must not run again for an in-process UI patch"
+    );
+
+    let explicit_defaults = after_text.replace(
+        "    grid rows: auto\n",
+        "    grid rows: auto\n    grid gap: 12\n    grid padding: 20\n",
+    );
+    fs::write(&entry, &explicit_defaults)
+        .expect("explicit default grid spacing should be writable");
+    wait_for_log(
+        &log,
+        &[
+            "reload: compatible static UI source change required no runtime patch; kept process running",
+        ],
+        Duration::from_secs(8),
+    );
+    wait_for_run_generation(&status_path, 2, Duration::from_secs(8));
+    let status = fs::read_to_string(&status_path)
+        .expect("default-spacing hot-apply status should be readable");
+    assert!(status.contains("\"reload_method\":\"in_process_unchanged\""));
+    assert!(status.contains("\"native_ms\":0"));
+    assert!(status.contains("\"restart_ms\":0"));
+
+    let non_defaults = explicit_defaults
+        .replace("grid gap: 12", "grid gap: 24")
+        .replace("grid padding: 20", "grid padding: 32");
+    fs::write(&entry, non_defaults).expect("non-default grid spacing should be writable");
+    wait_for_log(
+        &log,
+        &["reload: hot-applied 2 static UI changes without restarting"],
+        Duration::from_secs(8),
+    );
+    wait_for_run_generation(&status_path, 3, Duration::from_secs(8));
+    let status = fs::read_to_string(&status_path)
+        .expect("non-default spacing hot-apply status should be readable");
+    assert!(status.contains("\"reload_method\":\"in_process_string\""));
+
+    fs::write(&entry, &after_text).expect("removed grid spacing should be writable");
+    wait_for_run_generation(&status_path, 4, Duration::from_secs(8));
+    let status = fs::read_to_string(&status_path)
+        .expect("removed spacing hot-apply status should be readable");
+    assert!(status.contains("\"reload_method\":\"in_process_string\""));
+    assert!(status.contains("\"native_ms\":0"));
+    assert!(status.contains("\"restart_ms\":0"));
+    assert_eq!(
+        fs::read_to_string(&starts).expect("UI child start marker should remain readable"),
+        "S",
+        "adding, changing, and removing root spacing must not restart the UI child"
     );
 
     let process_group = format!("-{}", runner.id());
@@ -39916,6 +39963,137 @@ app Screen
                 element: "__grid__".to_string(),
                 property: "padding".to_string(),
                 value: "32".to_string(),
+            },
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_abi_ignores_explicit_root_grid_defaults() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-grid-default-abi-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary grid-default ABI project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial grid-default ABI source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial grid-default ABI analysis should succeed");
+    let first_c = cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial grid-default ABI source should lower");
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+
+    let entry = fs::canonicalize(entry).expect("grid-default ABI entry should canonicalize");
+    let explicit_defaults = initial.replace(
+        "    grid rows: auto\n",
+        "    grid rows: auto\n    grid gap: 12\n    grid padding: 20\n",
+    );
+    fs::write(&entry, explicit_defaults)
+        .expect("explicit grid-default ABI source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit default grid spacing should remain valid");
+    let second_c = cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("explicit default grid spacing should lower");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "explicit default grid spacing must not cross the development ABI boundary"
+    );
+    assert_ne!(
+        second_c, first_c,
+        "source-line mappings should still reflect the inserted declarations in fresh native output"
+    );
+    assert_eq!(
+        cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 0,
+            regenerated_functions: 0,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_runtime_fragments: 1,
+            regenerated_runtime_fragments: 0,
+            reused_application_fragments: 1,
+            regenerated_application_fragments: 0,
+        }),
+        "explicit default spacing should reuse the native application fragment"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding explicit defaults should be recognized as an ABI-safe no-op patch"
+    );
+
+    let explicit_non_defaults = initial.replace(
+        "    grid rows: auto\n",
+        "    grid rows: auto\n    grid gap: 24\n    grid padding: 32\n",
+    );
+    fs::write(&entry, explicit_non_defaults)
+        .expect("non-default grid spacing source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("non-default grid spacing should remain valid");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&first)
+            .expect("adding non-default grid spacing should hot-apply"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "gap".to_string(),
+                value: "24".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "padding".to_string(),
+                value: "32".to_string(),
+            },
+        ]
+    );
+
+    fs::write(&entry, initial).expect("removed grid spacing source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed grid spacing should return to defaults");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing grid spacing should hot-apply defaults"),
+        vec![
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "gap".to_string(),
+                value: "12".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "__grid__".to_string(),
+                property: "padding".to_string(),
+                value: "20".to_string(),
             },
         ]
     );

@@ -1888,8 +1888,6 @@ fn module_type_surface(
                 &view.grid.columns,
                 &view.grid.rows,
                 view.grid.flow,
-                view.grid.gap.map(|_| 0_u32),
-                view.grid.padding.map(|_| 0_u32),
                 view.grid.scroll,
             )
         )
@@ -2264,10 +2262,10 @@ fn development_ui_string_literals(
             value,
         );
     }
-    for (property, value) in [("gap", view.grid.gap), ("padding", view.grid.padding)] {
-        let Some(value) = value else {
-            continue;
-        };
+    for (property, value) in [
+        ("gap", view.grid.gap.unwrap_or(12)),
+        ("padding", view.grid.padding.unwrap_or(20)),
+    ] {
         if value > i32::MAX as u32 {
             return None;
         }
@@ -2614,16 +2612,15 @@ fn development_ui_string_masked_sources(
         .into_iter()
         .map(|source| {
             let mut text = source.text.clone();
-            let mut ranges = masks
+            let mut edits = masks
                 .iter()
                 .copied()
                 .filter(|span| span.source_id == source.source_id)
-                .map(|span| source_span_byte_range(&text, span))
+                .map(|span| {
+                    source_span_byte_range(&text, span)
+                        .map(|(start, end)| (start, end, "\"__flux_hot_string__\""))
+                })
                 .collect::<Option<Vec<_>>>()?;
-            ranges.sort_by(|left, right| right.0.cmp(&left.0));
-            for (start, end) in ranges {
-                text.replace_range(start..end, "\"__flux_hot_string__\"");
-            }
             if source.source_id == view.name_span.source_id {
                 for (line, property) in [
                     (view.grid.gap_line, "gap"),
@@ -2632,9 +2629,14 @@ fn development_ui_string_masked_sources(
                     let Some(line) = line else {
                         continue;
                     };
-                    let (start, end) = development_grid_literal_byte_range(&text, line, property)?;
-                    text.replace_range(start..end, "0");
+                    let (start, end) =
+                        development_grid_declaration_byte_range(&text, line, property)?;
+                    edits.push((start, end, ""));
                 }
+            }
+            edits.sort_by(|left, right| right.0.cmp(&left.0));
+            for (start, end, replacement) in edits {
+                text.replace_range(start..end, replacement);
             }
             let canonical = formatter::format_source(&text).ok()?;
             Some((source.path.clone(), source.module_name.clone(), canonical))
@@ -2642,7 +2644,7 @@ fn development_ui_string_masked_sources(
         .collect()
 }
 
-fn development_grid_literal_byte_range(
+fn development_grid_declaration_byte_range(
     source: &str,
     line: usize,
     property: &str,
@@ -2662,7 +2664,6 @@ fn development_grid_literal_byte_range(
         .unwrap_or(source.len());
     let raw = &source[line_start..line_end];
     let trimmed = raw.trim_start();
-    let indentation = raw.len().checked_sub(trimmed.len())?;
     let grid_prefix = format!("grid {property}:");
     let flow_prefix = format!("flow {property}:");
     let prefix = if trimmed.starts_with(&grid_prefix) {
@@ -2672,18 +2673,16 @@ fn development_grid_literal_byte_range(
     } else {
         return None;
     };
-    let rest = &trimmed[prefix.len()..];
-    let value = rest.trim_start();
-    let whitespace = rest.len().checked_sub(value.len())?;
-    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 || !value[digits..].trim().is_empty() {
+    let value = trimmed[prefix.len()..].trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    let start = line_start
-        .checked_add(indentation)?
-        .checked_add(prefix.len())?
-        .checked_add(whitespace)?;
-    Some((start, start.checked_add(digits)?))
+    let declaration_end = if line_end < source.len() {
+        line_end.checked_add(1)?
+    } else {
+        line_end
+    };
+    Some((line_start, declaration_end))
 }
 
 fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usize)> {

@@ -5183,9 +5183,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             && let Some(patch) = analysis.development_ui_string_patch_from(&running_analysis)
         {
             let apply_started = Instant::now();
-            let dispatched = write_development_ui_string_patch(&hot_reload_patch_path, &patch)
-                .is_ok()
-                && signal_development_ui_patch(process);
+            let patch_is_empty = patch.is_empty();
+            let dispatched = if patch_is_empty {
+                let _ = fs::remove_file(&hot_reload_patch_path);
+                true
+            } else {
+                write_development_ui_string_patch(&hot_reload_patch_path, &patch).is_ok()
+                    && signal_development_ui_patch(process)
+            };
             if dispatched {
                 generation += 1;
                 let timing = DevelopmentReloadTiming {
@@ -5197,7 +5202,11 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     total_ms: reload_started.elapsed().as_millis(),
                     abi_compatible: true,
                     abi: next_development_abi,
-                    reload_method: "in_process_string",
+                    reload_method: if patch_is_empty {
+                        "in_process_unchanged"
+                    } else {
+                        "in_process_string"
+                    },
                     state_root_compatible: state_boundary.root_compatible,
                     state_preserved: state_boundary.preserved.len(),
                     state_reset: state_boundary.reset.len(),
@@ -5215,17 +5224,27 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     "hot_applied",
                     generation,
                     mode,
-                    "applied compatible static UI change in process",
+                    if patch_is_empty {
+                        "compatible static UI source change required no runtime patch"
+                    } else {
+                        "applied compatible static UI change in process"
+                    },
                     last_analysis_outcome,
                     last_codegen_outcome,
                     last_reload_timing,
                 );
                 status_state = "hot_applied";
-                eprintln!(
-                    "reload: hot-applied {} static UI change{} without restarting",
-                    patch.len(),
-                    if patch.len() == 1 { "" } else { "s" }
-                );
+                if patch_is_empty {
+                    eprintln!(
+                        "reload: compatible static UI source change required no runtime patch; kept process running"
+                    );
+                } else {
+                    eprintln!(
+                        "reload: hot-applied {} static UI change{} without restarting",
+                        patch.len(),
+                        if patch.len() == 1 { "" } else { "s" }
+                    );
+                }
                 eprintln!(
                     "reload: ready in {}ms (analysis {}ms, apply {}ms)",
                     timing.total_ms, timing.analysis_ms, timing.apply_ms
