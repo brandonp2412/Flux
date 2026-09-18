@@ -1868,14 +1868,20 @@ fn module_type_surface(
 fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "text" => {
-            matches!(element.kind.as_str(), "Text" | "Button")
+            matches!(element.kind.as_str(), "Text" | "Button" | "Header")
                 && (element.kind != "Text"
-                    || !element
-                        .properties
-                        .iter()
-                        .any(|property| property.name == "rich_text"))
+                    || !element.properties.iter().any(|property| {
+                        typecheck::source_name_to_internal(&property.name) == "rich_text"
+                    }))
         }
+        "label" => matches!(
+            element.kind.as_str(),
+            "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
+        ),
+        "title" => element.kind == "Card",
+        "alt" => element.kind == "Image",
         "tooltip" => element.kind != "TextInput",
+        "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
         _ => false,
     }
 }
@@ -1892,7 +1898,8 @@ fn development_ui_string_literals(
     let mut literals = BTreeMap::new();
     for element in &view.elements {
         for property in &element.properties {
-            if !development_ui_string_property_is_patchable(element, &property.name) {
+            let property_name = typecheck::source_name_to_internal(&property.name);
+            if !development_ui_string_property_is_patchable(element, &property_name) {
                 continue;
             }
             let ExprKind::Str(value) = &property.value.kind else {
@@ -1901,7 +1908,7 @@ fn development_ui_string_literals(
             if value.as_bytes().contains(&0) {
                 return None;
             }
-            literals.insert((element.name.clone(), property.name.clone()), value.clone());
+            literals.insert((element.name.clone(), property_name), value.clone());
         }
     }
     Some(literals)
@@ -1921,7 +1928,10 @@ fn development_ui_string_masked_sources(
         .iter()
         .flat_map(|element| {
             element.properties.iter().filter(move |property| {
-                development_ui_string_property_is_patchable(element, &property.name)
+                development_ui_string_property_is_patchable(
+                    element,
+                    &typecheck::source_name_to_internal(&property.name),
+                )
             })
         })
         .filter(|property| matches!(property.value.kind, ExprKind::Str(_)))

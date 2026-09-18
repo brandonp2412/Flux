@@ -36390,6 +36390,121 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-ui-property-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto auto auto
+    Toggle toggle at 1,1
+        label: "Toggle before"
+        accessibilityLabel: "Toggle accessible before"
+        accessibilityDescription: "Toggle description before"
+        accessibilityValue: "off"
+    Radio radio at 2,1
+        label: "Radio before"
+    Nav navigation at 3,1
+        label: "Nav before"
+    Chart chart at 4,1
+        label: "Chart before"
+    Card card at 5,1
+        title: "Card before"
+    Header header at 6,1
+        text: "Header before"
+    Content content at 7,1
+        label: "Content before"
+    Image image at 8,1
+        source: "image.png"
+        alt: "Image before"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development property patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development property patch analysis should succeed");
+
+    let updated = initial
+        .replace("Toggle before", "Toggle after")
+        .replace("Toggle accessible before", "Toggle accessible after")
+        .replace("Toggle description before", "Toggle description after")
+        .replace("\"off\"", "\"on\"")
+        .replace("Radio before", "Radio after")
+        .replace("Nav before", "Nav after")
+        .replace("Chart before", "Chart after")
+        .replace("Card before", "Card after")
+        .replace("Header before", "Header after")
+        .replace("Content before", "Content after")
+        .replace("Image before", "Image after");
+    fs::write(&entry, &updated).expect("development property patch edit should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("development property patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated development property patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("native string property edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for (element, property, value) in [
+        ("toggle", "label", "Toggle after"),
+        ("toggle", "accessibility_label", "Toggle accessible after"),
+        (
+            "toggle",
+            "accessibility_description",
+            "Toggle description after",
+        ),
+        ("toggle", "accessibility_value", "on"),
+        ("radio", "label", "Radio after"),
+        ("navigation", "label", "Nav after"),
+        ("chart", "label", "Chart after"),
+        ("card", "title", "Card after"),
+        ("header", "text", "Header after"),
+        ("content", "label", "Content after"),
+        ("image", "alt", "Image after"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 11);
+
+    let generated = second
+        .emit_c()
+        .expect("native string property patch fixture should lower for Linux");
+    assert!(
+        generated.contains("gtk_check_button_set_label(GTK_CHECK_BUTTON(flux__ui_toggle), value)")
+    );
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_navigation), value)"));
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_card), value)"));
+    assert!(
+        generated.contains("gtk_picture_set_alternative_text(GTK_PICTURE(flux__ui_image), value)")
+    );
+    assert!(generated.contains("strcmp(property, \"accessibility_label\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_LABEL, value, -1"));
+    assert!(generated.contains("strcmp(property, \"accessibility_description\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1"));
+    assert!(generated.contains("strcmp(property, \"accessibility_value\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",
