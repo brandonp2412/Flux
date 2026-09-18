@@ -1071,6 +1071,7 @@ fn run() -> Result<(), CliError> {
             }
             verify_reproducibility_metadata(Path::new(&args[1]), Path::new(&args[2]))
         }
+        "cache" => manage_native_cache(&args[1..]),
         "clean" => {
             let path = require_target(&args)?;
             if args.len() != 2 {
@@ -5849,6 +5850,54 @@ fn detect_android_run_abi(requested_device: Option<&str>) -> Option<AndroidAbi> 
         return Some(abi);
     }
     None
+}
+
+fn manage_native_cache(args: &[String]) -> Result<(), CliError> {
+    match args {
+        [command] if command == "path" => {
+            println!("{}", native_build_cache_dir().display());
+            Ok(())
+        }
+        [command] if command == "prune" => {
+            let root = native_build_cache_dir();
+            let placeholder = root.join(".prune-active");
+            prune_native_cache_directory(
+                Some(&root),
+                None,
+                &placeholder,
+                NATIVE_CACHE_RETAINED_ARTIFACTS,
+                Duration::ZERO,
+            );
+            let objects = root.join("objects");
+            prune_native_cache_directory(
+                Some(&objects),
+                Some("o"),
+                &placeholder,
+                NATIVE_CACHE_RETAINED_ARTIFACTS,
+                Duration::ZERO,
+            );
+            println!("pruned: {}", root.display());
+            Ok(())
+        }
+        [command] if command == "clean" => {
+            let root = native_build_cache_dir();
+            if root.is_dir() {
+                fs::remove_dir_all(&root).map_err(|error| {
+                    format!(
+                        "failed to remove native cache '{}': {error}",
+                        root.display()
+                    )
+                })?;
+                println!("removed: {}", root.display());
+            } else {
+                println!("cache: nothing to remove at {}", root.display());
+            }
+            Ok(())
+        }
+        _ => Err(CliError::Message(
+            "cache syntax is 'cache path', 'cache prune', or 'cache clean'".to_string(),
+        )),
+    }
 }
 
 fn clean_target(target: &Path) -> Result<(), CliError> {
@@ -11037,7 +11086,11 @@ fn prune_native_cache_directory(
             Some((modified, path))
         })
         .collect::<Vec<_>>();
-    let mut remaining = artifacts.len().saturating_add(1);
+    let protected_counts =
+        protected.is_file() && protected.extension().and_then(|value| value.to_str()) == extension;
+    let mut remaining = artifacts
+        .len()
+        .saturating_add(usize::from(protected_counts));
     if remaining <= retained {
         return;
     }
@@ -11115,6 +11168,10 @@ fn usage() -> String {
     .replace(
         "--format directory|tar.gz|container|systemd|msix",
         "--format directory|tar.gz|container|systemd|static|msix",
+    )
+    .replace(
+        &format!(" | {command} clean <file.flux|package-dir|flux.toml>"),
+        &format!(" | {command} cache path|prune|clean | {command} clean <file.flux|package-dir|flux.toml>"),
     )
     .replace(
         "[--alloc|--leaks|--sample]",

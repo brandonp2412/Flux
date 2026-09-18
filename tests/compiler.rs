@@ -33334,6 +33334,89 @@ fn release_build_internalizes_and_eliminates_private_leaf_helpers() {
 }
 
 #[test]
+fn native_cache_cli_reports_prunes_and_cleans_global_artifacts() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-cache-cli-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let cache = root.join("cache");
+    let native = cache.join("native");
+    let objects = native.join("objects");
+    fs::create_dir_all(&objects).expect("native cache CLI fixture should be writable");
+
+    let path = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["cache", "path"])
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("cache path should run");
+    assert!(path.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&path.stdout).trim(),
+        native.to_string_lossy()
+    );
+
+    for index in 0..35 {
+        let binary = native.join(format!("{index:02}"));
+        let object = objects.join(format!("{index:02}.o"));
+        fs::write(&binary, format!("binary-{index}"))
+            .expect("binary cache fixture should be writable");
+        fs::write(binary.with_extension("meta"), "sidecar")
+            .expect("binary cache sidecar should be writable");
+        fs::write(&object, format!("object-{index}"))
+            .expect("object cache fixture should be writable");
+        fs::write(object.with_extension("meta"), "sidecar")
+            .expect("object cache sidecar should be writable");
+    }
+
+    let pruned = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["cache", "prune"])
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("cache prune should run");
+    assert!(
+        pruned.status.success(),
+        "cache prune failed: {}",
+        String::from_utf8_lossy(&pruned.stderr)
+    );
+    let binary_count = fs::read_dir(&native)
+        .expect("native cache should remain readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_none())
+        .count();
+    let object_count = fs::read_dir(&objects)
+        .expect("object cache should remain readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+        .count();
+    assert_eq!(binary_count, 32);
+    assert_eq!(object_count, 32);
+
+    let cleaned = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["cache", "clean"])
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("cache clean should run");
+    assert!(
+        cleaned.status.success(),
+        "cache clean failed: {}",
+        String::from_utf8_lossy(&cleaned.stderr)
+    );
+    assert!(
+        !native.exists(),
+        "cache clean should remove the native cache root"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
     let root = std::env::temp_dir().join(format!("flux-native-cache-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
