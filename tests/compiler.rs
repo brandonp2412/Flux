@@ -36655,6 +36655,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     Button action at 2,1
         text: "Action"
         size: 18
+        focusScope: 7
         visible: true
         layoutTransitionMs: 120
         enabled: true
@@ -36708,6 +36709,7 @@ app Screen
     Button action at 2,1
         text: "Updated action"
         size: 24
+        focusScope: 9
         visible: false
         layoutTransitionMs: 120
         enabled: false
@@ -36777,6 +36779,7 @@ app Screen
         ("label", "margin_top", "10"),
         ("action", "text", "Updated action"),
         ("action", "size", "24"),
+        ("action", "focus_scope", "9"),
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
@@ -36801,7 +36804,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 34);
+    assert_eq!(patch.len(), 35);
 
     let generated = second
         .emit_c()
@@ -36860,6 +36863,12 @@ app Screen
     );
     assert!(generated.contains("strcmp(property, \"size\") == 0"));
     assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
+    assert!(
+        generated.contains("strcmp(property, \"focus_scope\") == 0 && flux__ui_action != NULL")
+    );
+    assert!(generated.contains(
+        "g_object_set_data(G_OBJECT(flux__ui_action), \"flux-focus-scope\", (gpointer)(intptr_t)(integer_value + 1))"
+    ));
     assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
     assert!(generated.contains(
         "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
@@ -36944,6 +36953,18 @@ app Screen
         invalid_margin.emit_c().is_err(),
         "target-invalid margin must still reach native validation"
     );
+
+    let invalid_focus_scope = updated.replace("focusScope: 9", "focusScope: -1");
+    fs::write(&entry, invalid_focus_scope).expect("invalid focusScope edit should be writable");
+    cache.invalidate_path(&entry);
+    let diagnostics = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("invalid focusScope must be rejected during semantic analysis");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("focusScope must be between 0 and 2147483647")
+    }));
 
     let _ = fs::remove_dir_all(root);
 }

@@ -1975,6 +1975,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "max_length" => element.kind == "TextInput",
         "max_lines" | "max_width_chars" => element.kind == "Text",
         "size" => element.kind == "Button",
+        "focus_scope" => true,
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
         _ => false,
     }
