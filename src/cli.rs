@@ -10669,7 +10669,7 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     let mut prefix = lines[..first_source_line].concat();
     let mut shared_runtime_unit = None;
     if !native_prefix_is_module_partition_safe(&prefix) {
-        let (partition_prefix, runtime_unit) = partition_native_sqlite_runtime(&prefix)?;
+        let (partition_prefix, runtime_unit) = partition_native_shared_runtime(&prefix)?;
         prefix = partition_prefix;
         shared_runtime_unit = Some(runtime_unit);
     }
@@ -10718,27 +10718,59 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     Some(units)
 }
 
-fn partition_native_sqlite_runtime(prefix: &str) -> Option<(String, String)> {
+fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const SQLITE_SLOTS: &str =
         "static struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];";
     const SQLITE_SHARED_SLOTS: &str = "extern struct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nextern bool flux__sqlite_cleanup_registered;";
     const SQLITE_REGISTERED: &str =
         "    static bool registered = false;\n    if (registered) return;\n    registered = true;";
     const SQLITE_SHARED_REGISTERED: &str = "    if (flux__sqlite_cleanup_registered) return;\n    flux__sqlite_cleanup_registered = true;";
+    const NET_SOCKETS: &str = "static int flux__net_owned_sockets[256];";
+    const NET_SOCKET_COUNT: &str = "static size_t flux__net_owned_socket_count = 0;";
+    const NET_REGISTERED: &str = "static bool flux__net_owned_sockets_registered = false;";
 
-    if !prefix.contains(SQLITE_SLOTS) || !prefix.contains(SQLITE_REGISTERED) {
-        return None;
+    let mut partition_prefix = prefix.to_string();
+    let mut definitions = String::new();
+    let mut isolated = false;
+
+    if prefix.contains(SQLITE_SLOTS) && prefix.contains(SQLITE_REGISTERED) {
+        partition_prefix = partition_prefix
+            .replacen(SQLITE_SLOTS, SQLITE_SHARED_SLOTS, 1)
+            .replacen(SQLITE_REGISTERED, SQLITE_SHARED_REGISTERED, 1);
+        definitions.push_str(
+            "\nstruct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nbool flux__sqlite_cleanup_registered = false;\n",
+        );
+        isolated = true;
     }
 
-    let partition_prefix = prefix
-        .replacen(SQLITE_SLOTS, SQLITE_SHARED_SLOTS, 1)
-        .replacen(SQLITE_REGISTERED, SQLITE_SHARED_REGISTERED, 1);
-    let mut runtime_unit = String::with_capacity(partition_prefix.len() + 192);
-    runtime_unit.push_str(&partition_prefix);
-    runtime_unit.push_str(
-        "\nstruct flux__sqlite_slot flux__sqlite_slots[FLUX__SQLITE_MAX_DATABASES];\nbool flux__sqlite_cleanup_registered = false;\n",
-    );
-    Some((partition_prefix, runtime_unit))
+    if prefix.contains(NET_SOCKETS)
+        && prefix.contains(NET_SOCKET_COUNT)
+        && prefix.contains(NET_REGISTERED)
+    {
+        partition_prefix = partition_prefix
+            .replacen(NET_SOCKETS, "extern int flux__net_owned_sockets[256];", 1)
+            .replacen(
+                NET_SOCKET_COUNT,
+                "extern size_t flux__net_owned_socket_count;",
+                1,
+            )
+            .replacen(
+                NET_REGISTERED,
+                "extern bool flux__net_owned_sockets_registered;",
+                1,
+            );
+        definitions.push_str(
+            "\nint flux__net_owned_sockets[256];\nsize_t flux__net_owned_socket_count = 0;\nbool flux__net_owned_sockets_registered = false;\n",
+        );
+        isolated = true;
+    }
+
+    isolated.then(|| {
+        let mut runtime_unit = String::with_capacity(partition_prefix.len() + definitions.len());
+        runtime_unit.push_str(&partition_prefix);
+        runtime_unit.push_str(&definitions);
+        (partition_prefix, runtime_unit)
+    })
 }
 
 fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
@@ -13275,6 +13307,31 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "cleanup registration must also remain process-wide"
+        );
+
+        let network = "#include <stdbool.h>\n#include <stddef.h>\nstatic int flux__net_owned_sockets[256];\nstatic size_t flux__net_owned_socket_count = 0;\nstatic bool flux__net_owned_sockets_registered = false;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let network_units = partition_native_c_by_source(network)
+            .expect("network socket ownership state should move into one shared runtime unit");
+        assert_eq!(network_units.len(), 3);
+        assert_eq!(
+            network_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "int flux__net_owned_sockets[256];"))
+                .count(),
+            1,
+            "the network socket registry must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            network_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "size_t flux__net_owned_socket_count = 0;"))
+                .count(),
+            1,
+            "the network socket count must have exactly one process-wide definition"
         );
     }
 

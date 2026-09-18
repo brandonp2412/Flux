@@ -6001,7 +6001,33 @@ static inline struct flux__sqlite_i64_error flux__sqlite_query(int64_t handle, c
     if runtime_usage.contains("flux__net_") || runtime_usage.contains("flux__tls_") {
         out.push_str("struct flux__net_i64_error { int64_t v0; const char *v1; };\n");
         out.push_str("static inline struct flux__net_i64_error flux__net_result(int64_t value, const char *error) { struct flux__net_i64_error result = { .v0 = value, .v1 = error }; return result; }\n");
-        out.push_str("static int flux__net_owned_sockets[256]; static size_t flux__net_owned_socket_count = 0; static bool flux__net_owned_sockets_registered = false; static void flux__net_cleanup_sockets(void) { while (flux__net_owned_socket_count > 0) { int socket_handle = flux__net_owned_sockets[--flux__net_owned_socket_count]; if (socket_handle >= 0) close(socket_handle); } } static inline bool flux__net_register_socket(int socket_handle) { if (socket_handle < 0 || flux__net_owned_socket_count >= sizeof(flux__net_owned_sockets) / sizeof(flux__net_owned_sockets[0])) return false; if (!flux__net_owned_sockets_registered) { (void)atexit(flux__net_cleanup_sockets); flux__net_owned_sockets_registered = true; } flux__net_owned_sockets[flux__net_owned_socket_count++] = socket_handle; return true; } static inline void flux__net_unregister_socket(int socket_handle) { for (size_t index = 0; index < flux__net_owned_socket_count; ++index) if (flux__net_owned_sockets[index] == socket_handle) { flux__net_owned_sockets[index] = flux__net_owned_sockets[--flux__net_owned_socket_count]; return; } }\n");
+        out.push_str(r#"static int flux__net_owned_sockets[256];
+static size_t flux__net_owned_socket_count = 0;
+static bool flux__net_owned_sockets_registered = false;
+static void flux__net_cleanup_sockets(void) {
+    while (flux__net_owned_socket_count > 0) {
+        int socket_handle = flux__net_owned_sockets[--flux__net_owned_socket_count];
+        if (socket_handle >= 0) close(socket_handle);
+    }
+}
+static inline bool flux__net_register_socket(int socket_handle) {
+    if (socket_handle < 0 || flux__net_owned_socket_count >= sizeof(flux__net_owned_sockets) / sizeof(flux__net_owned_sockets[0])) return false;
+    if (!flux__net_owned_sockets_registered) {
+        (void)atexit(flux__net_cleanup_sockets);
+        flux__net_owned_sockets_registered = true;
+    }
+    flux__net_owned_sockets[flux__net_owned_socket_count++] = socket_handle;
+    return true;
+}
+static inline void flux__net_unregister_socket(int socket_handle) {
+    for (size_t index = 0; index < flux__net_owned_socket_count; ++index) {
+        if (flux__net_owned_sockets[index] == socket_handle) {
+            flux__net_owned_sockets[index] = flux__net_owned_sockets[--flux__net_owned_socket_count];
+            return;
+        }
+    }
+}
+"#);
     }
     if runtime_usage.contains("flux__net_send_text_progress(")
         || runtime_usage.contains("flux__net_send_text_progress_with_timeout(")
