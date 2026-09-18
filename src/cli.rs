@@ -10733,6 +10733,8 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
     const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
     const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
+    const TIME_ZONE_TRANSACTION_LOCK: &str =
+        "static volatile int flux_time_zone_transaction_lock = 0;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10803,6 +10805,18 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             1,
         );
         definitions.push_str("\nbool flux__websocket_client_sessions[1024];\n");
+        isolated = true;
+    }
+
+    if prefix.contains(TIME_ZONE_TRANSACTION_LOCK) {
+        partition_prefix = partition_prefix.replacen(
+            TIME_ZONE_TRANSACTION_LOCK,
+            "extern volatile int flux_time_zone_transaction_lock;",
+            1,
+        );
+        definitions.push_str(
+            "\n#if defined(__GLIBC__)\nvolatile int flux_time_zone_transaction_lock = 0;\n#endif\n",
+        );
         isolated = true;
     }
 
@@ -13413,6 +13427,22 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the WebSocket client-mode table must have exactly one process-wide definition"
+        );
+
+        let time_zone = "#include <stdint.h>\n#if defined(__GLIBC__)\nstatic volatile int flux_time_zone_transaction_lock = 0;\n#endif\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let time_zone_units = partition_native_c_by_source(time_zone)
+            .expect("the named-time-zone lock should move into one shared runtime unit");
+        assert_eq!(time_zone_units.len(), 3);
+        assert_eq!(
+            time_zone_units
+                .iter()
+                .filter(|unit| {
+                    unit.lines()
+                        .any(|line| line == "volatile int flux_time_zone_transaction_lock = 0;")
+                })
+                .count(),
+            1,
+            "the named-time-zone transaction lock must have exactly one process-wide definition"
         );
     }
 
