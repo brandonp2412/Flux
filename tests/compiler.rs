@@ -36650,6 +36650,8 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         maxWidthChars: 20
         alignX: "start"
         alignY: "start"
+        margin: 4
+        marginTop: 8
     Button action at 2,1
         text: "Action"
         size: 18
@@ -36701,6 +36703,8 @@ app Screen
         maxWidthChars: 40
         alignX: "center"
         alignY: "end"
+        margin: 6
+        marginTop: 10
     Button action at 2,1
         text: "Updated action"
         size: 24
@@ -36769,6 +36773,8 @@ app Screen
         ("label", "max_width_chars", "40"),
         ("label", "align_x", "center"),
         ("label", "align_y", "end"),
+        ("label", "margin", "6"),
+        ("label", "margin_top", "10"),
         ("action", "text", "Updated action"),
         ("action", "size", "24"),
         ("action", "visible", "0"),
@@ -36795,7 +36801,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 32);
+    assert_eq!(patch.len(), 34);
 
     let generated = second
         .emit_c()
@@ -36832,6 +36838,21 @@ app Screen
     assert!(generated.contains("gtk_widget_set_halign(flux__ui_label, alignment)"));
     assert!(generated.contains("strcmp(property, \"align_y\") == 0"));
     assert!(generated.contains("gtk_widget_set_valign(flux__ui_label, alignment)"));
+    assert!(generated.contains("strcmp(property, \"margin\") == 0 && flux__ui_label != NULL"));
+    assert_eq!(
+        generated
+            .matches("gtk_widget_set_margin_top(flux__ui_label, (int)integer_value)")
+            .count(),
+        1,
+        "base margin patch must preserve the explicit marginTop override"
+    );
+    assert_eq!(
+        generated
+            .matches("gtk_widget_set_margin_bottom(flux__ui_label, (int)integer_value)")
+            .count(),
+        1,
+        "base margin patch should update an unoverridden side"
+    );
     assert!(
         generated.contains(
             "gtk_label_set_text(GTK_LABEL(button_label), value); else gtk_button_set_label"
@@ -36905,6 +36926,23 @@ app Screen
     assert!(
         third.development_ui_string_patch_from(&second).is_none(),
         "changing a static patchable bool into a runtime expression must fall back to rebuild"
+    );
+
+    let invalid_margin = updated.replace("margin: 6", "margin: -1");
+    fs::write(&entry, invalid_margin).expect("invalid margin edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_margin = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid margin remains semantically an i64");
+    assert!(
+        invalid_margin
+            .development_ui_string_patch_from(&second)
+            .is_none(),
+        "target-invalid margin must use normal rebuild validation"
+    );
+    assert!(
+        invalid_margin.emit_c().is_err(),
+        "target-invalid margin must still reach native validation"
     );
 
     let _ = fs::remove_dir_all(root);

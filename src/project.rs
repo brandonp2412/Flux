@@ -1975,6 +1975,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "max_length" => element.kind == "TextInput",
         "max_lines" | "max_width_chars" => element.kind == "Text",
         "size" => element.kind == "Button",
+        "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
         _ => false,
     }
 }
@@ -2067,6 +2068,13 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if matches!(
+                    property_name.as_str(),
+                    "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end"
+                ) && !(0..=i64::from(i32::MAX)).contains(&value)
+                {
                     return None;
                 }
                 value.to_string()
