@@ -36445,6 +36445,52 @@ fn project_analysis_cache_hydrates_function_fragments_after_whole_c_hit() {
 }
 
 #[test]
+fn function_codegen_cache_reuses_unchanged_normalized_ir() {
+    let first = fluxc::semantic::SemanticDatabase::analyze(
+        "fn value() -> i64 { 1 }\nfn main() -> i64 { value() }\n",
+        fluxc::SourceId::UNKNOWN,
+    )
+    .expect("initial IR cache source should analyze");
+    let mut cache = fluxc::codegen::FunctionCodegenCache::default();
+    let (_, first_stats) = fluxc::codegen::emit_c_for_target_with_source_metadata_cached(
+        first.program(),
+        first.signatures(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::BTreeMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+        &mut cache,
+    )
+    .expect("initial IR cache source should lower");
+    assert_eq!(first_stats.reused_ir_functions, 0);
+    assert_eq!(first_stats.regenerated_ir_functions, 2);
+
+    let second = fluxc::semantic::SemanticDatabase::analyze(
+        "fn value() -> i64 { 2 }\nfn main() -> i64 { value() }\n",
+        fluxc::SourceId::UNKNOWN,
+    )
+    .expect("updated IR cache source should analyze");
+    let (_, second_stats) = fluxc::codegen::emit_c_for_target_with_source_metadata_cached(
+        second.program(),
+        second.signatures(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::BTreeMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+        &mut cache,
+    )
+    .expect("updated IR cache source should lower");
+    assert_eq!(
+        second_stats.reused_ir_functions, 1,
+        "the unchanged main function should reuse its normalized CFG"
+    );
+    assert_eq!(
+        second_stats.regenerated_ir_functions, 1,
+        "only the edited function should rebuild normalized CFG/typed IR"
+    );
+}
+
+#[test]
 fn project_analysis_cache_clear_discards_parsed_module_entries() {
     let root =
         std::env::temp_dir().join(format!("flux-project-cache-clear-{}", std::process::id()));

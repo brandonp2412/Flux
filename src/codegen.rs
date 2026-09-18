@@ -34,11 +34,13 @@ struct CachedFunctionCodegen {
 #[derive(Debug, Default)]
 pub struct FunctionCodegenCache {
     entries: HashMap<FunctionCodegenCacheKey, CachedFunctionCodegen>,
+    ir_entries: HashMap<String, crate::ir::ControlFlowGraph>,
 }
 
 impl FunctionCodegenCache {
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.ir_entries.clear();
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -132,12 +134,17 @@ impl FunctionCodegenCache {
             }
         }
 
-        (offset == bytes.len()).then_some(Self { entries })
+        (offset == bytes.len()).then_some(Self {
+            entries,
+            ir_entries: HashMap::new(),
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FunctionCodegenStats {
+    pub reused_ir_functions: usize,
+    pub regenerated_ir_functions: usize,
     pub reused_functions: usize,
     pub regenerated_functions: usize,
     pub reused_helpers: usize,
@@ -1394,7 +1401,14 @@ fn emit_c_for_target_with_source_metadata_impl(
     target: NativeTarget,
     mut function_cache: Option<&mut FunctionCodegenCache>,
 ) -> Result<(String, FunctionCodegenStats), Diagnostic> {
-    let function_ir = build_function_ir_cache(program, signatures);
+    let mut codegen_stats = FunctionCodegenStats::default();
+    let function_ir = build_function_ir_cache(
+        program,
+        signatures,
+        source_paths,
+        function_cache.as_deref_mut(),
+        &mut codegen_stats,
+    );
     let mut reachable_interfaces = HashSet::new();
     let mut interface_pack_facts = InterfacePackFacts::external_roots(program, signatures);
     let mut reachable_functions = reachable_function_names(
@@ -1455,7 +1469,6 @@ fn emit_c_for_target_with_source_metadata_impl(
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
     let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
     let mut generated_body = String::new();
-    let mut codegen_stats = FunctionCodegenStats::default();
     let mut used_cache_keys = HashSet::new();
     for helper in &function_helpers {
         let cache_key = FunctionCodegenCacheKey {
@@ -23730,17 +23743,43 @@ fn emit_lambda_body_with_cfg(
 
 type FunctionIrCache = HashMap<String, crate::ir::ControlFlowGraph>;
 
-fn build_function_ir_cache(program: &Program, signatures: &Signatures) -> FunctionIrCache {
-    program
-        .functions
-        .iter()
-        .map(|function| {
-            (
-                function.name.clone(),
-                crate::ir::ControlFlowGraph::from_function(function, signatures),
-            )
-        })
-        .collect()
+fn build_function_ir_cache(
+    program: &Program,
+    signatures: &Signatures,
+    source_paths: &HashMap<SourceId, String>,
+    mut cache: Option<&mut FunctionCodegenCache>,
+    stats: &mut FunctionCodegenStats,
+) -> FunctionIrCache {
+    let mut used_identities = HashSet::with_capacity(program.functions.len());
+    let mut ir = HashMap::with_capacity(program.functions.len());
+
+    for function in &program.functions {
+        let identity = function_codegen_cache_identity(function, source_paths);
+        used_identities.insert(identity.clone());
+        let cfg = if let Some(cached) = cache
+            .as_deref()
+            .and_then(|cache| cache.ir_entries.get(&identity))
+            .cloned()
+        {
+            stats.reused_ir_functions += 1;
+            cached
+        } else {
+            stats.regenerated_ir_functions += 1;
+            let cfg = crate::ir::ControlFlowGraph::from_function(function, signatures);
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.ir_entries.insert(identity, cfg.clone());
+            }
+            cfg
+        };
+        ir.insert(function.name.clone(), cfg);
+    }
+
+    if let Some(cache) = cache {
+        cache
+            .ir_entries
+            .retain(|identity, _| used_identities.contains(identity));
+    }
+    ir
 }
 
 fn runtime_views(program: &Program) -> impl Iterator<Item = &crate::ast::ViewDef> {
