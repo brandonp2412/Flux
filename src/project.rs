@@ -2209,6 +2209,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "bold"
+        && element.kind == "Text"
+        && !development_ui_element_has_property(element, "variant")
+    {
+        let ExprKind::Bool(value) = property.value.kind else {
+            return None;
+        };
+        return Some(if value { "1" } else { "0" }.to_string());
+    }
     if matches!(
         property_name.as_str(),
         "visible"
@@ -2252,6 +2261,12 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "bold"
+        && element.kind == "Text"
+        && !development_ui_element_has_property(element, "variant")
+    {
+        return Some("0".to_string());
+    }
     if matches!(
         property,
         "visible"
@@ -2804,6 +2819,7 @@ fn development_ui_string_literals(
             "can_shrink",
             "selectable",
             "wrap",
+            "bold",
             "italic",
             "underline",
             "strikethrough",

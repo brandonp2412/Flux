@@ -41380,6 +41380,128 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_default_variant_bold_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-bold-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary bold lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Label"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial bold lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial bold lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("bold lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains(
+            "strcmp(property, \"bold\") == 0 && bool_value_valid && flux__ui_label != NULL"
+        )
+    );
+
+    let entry = fs::canonicalize(entry).expect("bold lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        bold: false\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit bold default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit bold default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding bold: false to default body Text must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding body-default bold: false should be an in-process no-op"
+    );
+
+    let bold = explicit_default.replace("bold: false", "bold: true");
+    fs::write(&entry, bold).expect("bold source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("bold source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("bold: true should hot-apply for default body Text"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "bold".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed bold source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed bold source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing bold should restore body default false"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "bold".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let heading_with_override = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        variant: \"heading\"\n        bold: true\n",
+    );
+    fs::write(&entry, &heading_with_override)
+        .expect("heading bold override source should be writable");
+    cache.invalidate_path(&entry);
+    let heading_with_override = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("heading bold override source should analyze");
+
+    let heading_without_override = heading_with_override
+        .sources
+        .iter()
+        .find(|source| source.path == entry)
+        .expect("heading source should remain loaded")
+        .text
+        .replace("        bold: true\n", "");
+    fs::write(&entry, heading_without_override)
+        .expect("heading without bold override should be writable");
+    cache.invalidate_path(&entry);
+    let heading_without_override = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("heading without bold override should analyze");
+    assert!(
+        heading_without_override
+            .development_ui_string_patch_from(&heading_with_override)
+            .is_none(),
+        "removing bold beside an explicit semantic variant must restart so future variant patches keep override precedence"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_password_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-password-lifecycle-{}",
