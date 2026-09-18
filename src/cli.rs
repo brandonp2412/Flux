@@ -10732,6 +10732,7 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const TLS_RESUMPTION_SLOTS: &str =
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
     const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
+    const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10792,6 +10793,16 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         definitions.push_str(
             "\nstruct flux__tls_slot flux__tls_slots[64];\nstruct flux__tls_resumption_slot flux__tls_resumption_slots[64];\nbool flux__tls_cleanup_registered = false;\n",
         );
+        isolated = true;
+    }
+
+    if prefix.contains(WEBSOCKET_CLIENT_SESSIONS) {
+        partition_prefix = partition_prefix.replacen(
+            WEBSOCKET_CLIENT_SESSIONS,
+            "extern bool flux__websocket_client_sessions[1024];",
+            1,
+        );
+        definitions.push_str("\nbool flux__websocket_client_sessions[1024];\n");
         isolated = true;
     }
 
@@ -13387,6 +13398,21 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "TLS cleanup registration must have exactly one process-wide definition"
+        );
+
+        let websocket = "#include <stdbool.h>\n#include <stdint.h>\nstatic bool flux__websocket_client_sessions[1024];\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let websocket_units = partition_native_c_by_source(websocket)
+            .expect("WebSocket client mode state should move into one shared runtime unit");
+        assert_eq!(websocket_units.len(), 3);
+        assert_eq!(
+            websocket_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "bool flux__websocket_client_sessions[1024];"))
+                .count(),
+            1,
+            "the WebSocket client-mode table must have exactly one process-wide definition"
         );
     }
 

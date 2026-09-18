@@ -34787,6 +34787,186 @@ fn native_module_object_cache_isolates_tls_session_registry() {
 }
 
 #[test]
+fn native_module_object_cache_isolates_websocket_client_mode() {
+    if Command::new("openssl").arg("version").output().is_err() {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-websocket-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native WebSocket module cache fixture should be writable");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .expect("WebSocket module-cache fixture port should bind");
+    let port = listener.local_addr().unwrap().port();
+    let sessions = root.join("sessions.flux");
+    let main = root.join("main.flux");
+    fs::write(
+        &sessions,
+        format!(
+            "pub fn openSession() -> (i64, error) {{\n    let (socket, connectError) = net.connect(\"127.0.0.1\", {port})\n    if connectError != nil:\n        return -1, connectError\n    return websocket.connect(socket, \"127.0.0.1:{port}\")\n}}\n"
+        ),
+    )
+    .expect("WebSocket producer module should be writable");
+    fs::write(
+        &main,
+        "import \"sessions.flux\"\n\nfn main() -> i64 {\n    let (session, openError) = openSession()\n    if openError != nil:\n        print(openError)\n        return 1\n    let writeError: error = websocket.writeText(session, \"hello\")\n    if writeError != nil:\n        print(writeError)\n        return 2\n    return 0\n}\n",
+    )
+    .expect("WebSocket consumer module should be writable");
+
+    let cache = root.join("cache");
+    let binary = root.join("websocket-module-cache");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&binary)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("WebSocket module-object build should run");
+    assert!(
+        built.status.success(),
+        "WebSocket module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let object_count = fs::read_dir(cache.join("native/objects"))
+        .expect("native WebSocket module object cache should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+        .count();
+    assert_eq!(
+        object_count, 3,
+        "the WebSocket producer, consumer runtime, and shared client-mode state should compile independently"
+    );
+
+    let fixture_root = root.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("Flux WebSocket client should connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("WebSocket fixture read timeout should be set");
+
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream
+                .read_exact(&mut byte)
+                .expect("WebSocket fixture should receive the client handshake");
+            request.push(byte[0]);
+            assert!(
+                request.len() <= 8192,
+                "WebSocket client handshake should remain bounded"
+            );
+        }
+        let request = String::from_utf8(request).expect("WebSocket handshake should be UTF-8");
+        let key = request
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .expect("WebSocket client handshake should contain a key");
+
+        let sha_input = fixture_root.join("websocket-accept-input");
+        let digest = fixture_root.join("websocket-accept-digest");
+        fs::write(
+            &sha_input,
+            format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+        )
+        .expect("WebSocket accept input should be writable");
+        let hashed = Command::new("openssl")
+            .args(["dgst", "-sha1", "-binary", "-out"])
+            .arg(&digest)
+            .arg(&sha_input)
+            .output()
+            .expect("OpenSSL should hash the WebSocket accept input");
+        assert!(
+            hashed.status.success(),
+            "WebSocket accept SHA-1 failed: {}",
+            String::from_utf8_lossy(&hashed.stderr)
+        );
+        let encoded = Command::new("openssl")
+            .args(["base64", "-A", "-in"])
+            .arg(&digest)
+            .output()
+            .expect("OpenSSL should encode the WebSocket accept digest");
+        assert!(
+            encoded.status.success(),
+            "WebSocket accept Base64 failed: {}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+        let accept =
+            String::from_utf8(encoded.stdout).expect("WebSocket accept digest should be ASCII");
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .expect("WebSocket fixture should send the server handshake");
+        stream
+            .flush()
+            .expect("WebSocket fixture handshake should flush");
+
+        let mut header = [0_u8; 2];
+        stream
+            .read_exact(&mut header)
+            .expect("WebSocket fixture should receive a text frame");
+        assert_eq!(header[0] & 0x0f, 1, "client should send a text frame");
+        let masked = header[1] & 0x80 != 0;
+        let length = usize::from(header[1] & 0x7f);
+        assert!(
+            length < 126,
+            "test WebSocket frame should use a short payload"
+        );
+
+        let mut mask = [0_u8; 4];
+        if masked {
+            stream
+                .read_exact(&mut mask)
+                .expect("masked WebSocket frame should include a mask");
+        }
+        let mut payload = vec![0_u8; length];
+        stream
+            .read_exact(&mut payload)
+            .expect("WebSocket fixture should receive the text payload");
+        if masked {
+            for (index, value) in payload.iter_mut().enumerate() {
+                *value ^= mask[index % mask.len()];
+            }
+        }
+        (masked, payload)
+    });
+
+    let run = Command::new(&binary)
+        .output()
+        .expect("WebSocket module-object binary should run");
+    assert!(
+        run.status.success(),
+        "WebSocket module-object binary failed: {}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let (masked, payload) = server
+        .join()
+        .expect("WebSocket module-cache fixture should finish");
+    assert!(
+        masked,
+        "client mode created in one cached object must remain visible when another object writes"
+    );
+    assert_eq!(payload, b"hello");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_unchanged_linux_ui_root() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-module-cache-{}-{}",
