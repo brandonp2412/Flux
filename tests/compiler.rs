@@ -32333,6 +32333,84 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_cli_keeps_process_for_codegen_equivalent_source_edits() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-run-codegen-equivalent-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary equivalent-codegen project should be writable");
+    let entry = root.join("main.flux");
+    let log = root.join("run.log");
+    let starts = root.join("starts.txt");
+    let initial = format!(
+        r#"fn unused() -> i64 {{ 1 }}
+
+fn main() -> i64 {{
+    print(fs.appendText("{}", "S"))
+    time.sleepMillis(10000)
+    return 0
+}}
+"#,
+        starts.display()
+    );
+    fs::write(&entry, &initial).expect("equivalent-codegen source should be writable");
+
+    let status_path = fluxc::project::development_status_path(&entry)
+        .expect("equivalent-codegen status path should resolve");
+    let _ = fs::remove_file(&status_path);
+    let stdout = fs::File::create(&log).expect("equivalent-codegen log should be writable");
+    let stderr = stdout
+        .try_clone()
+        .expect("equivalent-codegen log should clone");
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("run")
+        .arg(&entry)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("fluxc run should start equivalent-codegen fixture");
+
+    wait_for_log(&log, &["run: started"], Duration::from_secs(5));
+    let started = Instant::now();
+    loop {
+        if fs::read_to_string(&starts).unwrap_or_default() == "S" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed out waiting for initial child process marker"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    fs::write(&entry, initial.replace("{ 1 }", "{ 2 }"))
+        .expect("dead helper edit should be writable");
+    wait_for_log(
+        &log,
+        &["reload: generated native code unchanged; kept process running"],
+        Duration::from_secs(5),
+    );
+    wait_for_run_generation(&status_path, 1, Duration::from_secs(5));
+    let status =
+        fs::read_to_string(&status_path).expect("equivalent-codegen status should be readable");
+    assert!(status.contains("\"state\":\"hot_applied\""));
+    assert!(status.contains("\"reload_method\":\"in_process_unchanged\""));
+    assert!(status.contains("\"native_ms\":0"));
+    assert!(status.contains("\"restart_ms\":0"));
+
+    assert_eq!(
+        fs::read_to_string(&starts).expect("child start marker should remain readable"),
+        "S",
+        "the child process must not restart for codegen-equivalent edits"
+    );
+
+    let _ = runner.kill();
+    let _ = runner.wait();
+    let _ = fs::remove_file(status_path);
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn wait_for_run_generation(path: &std::path::Path, generation: usize, timeout: Duration) {
     let start = Instant::now();
     loop {

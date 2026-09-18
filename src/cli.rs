@@ -5055,20 +5055,26 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         mode,
         "building initial process",
     );
-    let (mut child, mut binary, mut watch_paths, mut development_abi, mut running_analysis) =
-        match start_development_build(target, generation, mode, &mut analysis_cache) {
-            Ok(started) => started,
-            Err(error) => {
-                write_development_status(
-                    target,
-                    "compile_error",
-                    generation,
-                    mode,
-                    "initial build failed",
-                );
-                return Err(error);
-            }
-        };
+    let (
+        mut child,
+        mut binary,
+        mut watch_paths,
+        mut development_abi,
+        mut running_analysis,
+        mut running_generated,
+    ) = match start_development_build(target, generation, mode, &mut analysis_cache) {
+        Ok(started) => started,
+        Err(error) => {
+            write_development_status(
+                target,
+                "compile_error",
+                generation,
+                mode,
+                "initial build failed",
+            );
+            return Err(error);
+        }
+    };
     let mut fingerprints = watch_fingerprints(&watch_paths);
     write_development_status(
         target,
@@ -5260,6 +5266,51 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         if let Some(outcome) = codegen_outcome {
             eprintln!("reload: {}", development_codegen_summary(outcome));
         }
+        if source_only_change && abi_compatible && child.is_some() && generated == running_generated
+        {
+            generation += 1;
+            let timing = DevelopmentReloadTiming {
+                analysis_ms,
+                codegen_ms,
+                native_ms: 0,
+                restart_ms: 0,
+                apply_ms: 0,
+                total_ms: reload_started.elapsed().as_millis(),
+                abi_compatible: true,
+                abi: next_development_abi,
+                reload_method: "in_process_unchanged",
+                state_root_compatible: state_boundary.root_compatible,
+                state_preserved: state_boundary.preserved.len(),
+                state_reset: state_boundary.reset.len(),
+                state_dropped: state_boundary.dropped.len(),
+            };
+            development_abi = next_development_abi;
+            running_analysis = analysis;
+            running_generated = generated;
+            watch_paths = project_watch_paths(target, &sources);
+            fingerprints = watch_fingerprints(&watch_paths);
+            last_analysis_outcome = analysis_outcome;
+            last_codegen_outcome = codegen_outcome;
+            last_reload_timing = Some(timing);
+            write_development_status_with_build(
+                target,
+                "hot_applied",
+                generation,
+                mode,
+                "compatible source change produced identical native code",
+                last_analysis_outcome,
+                last_codegen_outcome,
+                last_reload_timing,
+            );
+            status_state = "hot_applied";
+            eprintln!("reload: generated native code unchanged; kept process running");
+            eprintln!(
+                "reload: ready in {}ms (analysis {}ms, codegen {}ms)",
+                timing.total_ms, timing.analysis_ms, timing.codegen_ms
+            );
+            continue;
+        }
+
         generation += 1;
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
@@ -5296,6 +5347,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         };
         development_abi = next_development_abi;
         running_analysis = analysis;
+        running_generated = generated;
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
@@ -5530,6 +5582,7 @@ fn start_development_build(
         Vec<PathBuf>,
         fluxc::project::DevelopmentAbi,
         fluxc::project::ProjectAnalysis,
+        String,
     ),
     CliError,
 > {
@@ -5559,7 +5612,14 @@ fn start_development_build(
     let child = spawn_development_binary(&binary, target)?;
     let watch_paths = project_watch_paths(target, &sources);
     let development_abi = analysis.development_abi();
-    Ok((Some(child), binary, watch_paths, development_abi, analysis))
+    Ok((
+        Some(child),
+        binary,
+        watch_paths,
+        development_abi,
+        analysis,
+        generated,
+    ))
 }
 
 fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliError> {
