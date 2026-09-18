@@ -39572,6 +39572,74 @@ app Screen(title: "Before", width: 640, height: 480, resizable: true)
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_application_theme_mode() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-theme-mode-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary theme-mode patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(theme: "system")
+"#;
+    fs::write(&entry, initial).expect("initial theme-mode source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial theme-mode analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("theme-mode entry should canonicalize");
+    let dark = initial.replace("theme: \"system\"", "theme: \"dark\"");
+    fs::write(&entry, dark).expect("dark theme source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dark theme analysis should succeed");
+
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "theme-mode values must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("dark theme edit should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "__application__".to_string(),
+            property: "theme".to_string(),
+            value: "dark".to_string(),
+        }]
+    );
+
+    let light = initial.replace("theme: \"system\"", "theme: \"light\"");
+    fs::write(&entry, light).expect("light theme source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("light theme analysis should succeed");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("light theme edit should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "__application__".to_string(),
+            property: "theme".to_string(),
+            value: "light".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_application_layout_direction() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-layout-direction-patch-{}",
@@ -49742,8 +49810,9 @@ app Screen(theme: "dark")
 "#;
     check_source(dark).expect("dark application theme should typecheck");
     let generated = compile_to_c(dark).expect("dark application theme should lower natively");
-    assert!(generated.contains("gtk-application-prefer-dark-theme"));
-    assert!(generated.contains("TRUE, NULL"));
+    assert!(generated.contains(
+        "g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\", TRUE, NULL)"
+    ));
 
     let system = r#"
 view Screen {
@@ -49753,7 +49822,9 @@ view Screen {
 app Screen(theme: "system")
 "#;
     let generated = compile_to_c(system).expect("system theme should preserve platform choice");
-    assert!(!generated.contains("gtk-application-prefer-dark-theme"));
+    assert!(!generated.contains(
+        "g_object_set(gtk_settings_get_default(), \"gtk-application-prefer-dark-theme\""
+    ));
 
     let invalid = r#"
 view Screen {
@@ -61271,6 +61342,39 @@ app Screen(title: "Flux", width: 640, height: 480, resizable: true)
     assert!(generated.contains("gtk_window_set_resizable(hot_window"));
     assert!(generated.contains("gtk_window_get_default_size(hot_window"));
     assert!(generated.contains("gtk_window_set_default_size(hot_window"));
+}
+
+#[test]
+fn linux_hot_reload_patch_updates_theme_mode_in_process() {
+    let source = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen(theme: "system")
+"#;
+    let program = fluxc::parser::parse(source).expect("theme-mode fixture should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("theme-mode fixture should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect("theme-mode fixture should lower for Linux");
+
+    assert!(generated.contains("strcmp(property, \"theme\") == 0"));
+    assert!(
+        generated.contains(
+            "g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", TRUE, NULL)"
+        )
+    );
+    assert!(generated.contains("strcmp(value, \"light\") == 0 || strcmp(value, \"system\") == 0"));
+    assert!(generated.contains(
+        "g_object_set(hot_settings, \"gtk-application-prefer-dark-theme\", FALSE, NULL)"
+    ));
 }
 
 #[test]
