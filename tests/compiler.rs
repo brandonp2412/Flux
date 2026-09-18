@@ -37339,6 +37339,158 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_common_css_colors() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-style-color-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary style color patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r##"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button base at 1,1
+        text: "Base"
+        backgroundColor: "surfaceRaised"
+        borderColor: "outline"
+        borderWidth: 1
+        borderStyle: "solid"
+    Button detailed at 2,1
+        text: "Detailed"
+        backgroundColor: "#112233"
+        borderTopColor: "#445566"
+        borderEndColor: "danger"
+        borderWidth: 1
+        borderStyle: "solid"
+}
+app Screen
+"##;
+    fs::write(&entry, initial).expect("initial style color patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial style color patch analysis should succeed");
+
+    let updated = initial
+        .replace(
+            "backgroundColor: \"surfaceRaised\"",
+            "backgroundColor: \"accent\"",
+        )
+        .replace("borderColor: \"outline\"", "borderColor: \"success\"")
+        .replace(
+            "backgroundColor: \"#112233\"",
+            "backgroundColor: \"#AABBCCDD\"",
+        )
+        .replace("borderTopColor: \"#445566\"", "borderTopColor: \"warning\"")
+        .replace("borderEndColor: \"danger\"", "borderEndColor: \"#778899\"");
+    fs::write(&entry, &updated).expect("updated style color patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("style color patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated style color patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe background and border color edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (element, property, value) in [
+        ("base", "background_color", "accent"),
+        ("base", "border_color", "success"),
+        ("detailed", "background_color", "#AABBCCDD"),
+        ("detailed", "border_top_color", "warning"),
+        ("detailed", "border_end_color", "#778899"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing color hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 5);
+
+    let generated = second
+        .emit_c()
+        .expect("style color patch fixture should lower for Linux");
+    assert!(generated.contains("if (strcmp(value, \"accent\") == 0) return \"@flux_accent\""));
+    assert!(generated.contains("if (strcmp(value, \"success\") == 0) return \"@flux_success\""));
+    assert!(
+        generated.contains("if (value[0] != '#' || !flux__ui_bounded_length(value, 9, &length)")
+    );
+    for provider in [
+        "flux__ui_hot_style_base_background_color",
+        "flux__ui_hot_style_base_border_color",
+        "flux__ui_hot_style_detailed_background_color",
+        "flux__ui_hot_style_detailed_border_top_color",
+        "flux__ui_hot_style_detailed_border_end_color",
+    ] {
+        assert!(
+            generated.contains(&format!("static GtkCssProvider *{provider} = NULL")),
+            "missing bounded hot-style provider {provider}"
+        );
+        assert!(
+            generated.contains(&format!(
+                "gtk_css_provider_load_from_data({provider}, patch_css, -1)"
+            )),
+            "hot-style provider {provider} should be reloaded in place"
+        );
+    }
+    assert!(generated.contains("#flux-ui-base { background-color: %s; }"));
+    assert!(generated.contains("#flux-ui-base { border-color: %s; }"));
+    assert!(generated.contains("#flux-ui-detailed { border-top-color: %s; }"));
+    assert!(generated.contains("#flux-ui-detailed { border-right-color: %s; }"));
+
+    let invalid = updated.replace(
+        "backgroundColor: \"accent\"",
+        "backgroundColor: \"javascript:red\"",
+    );
+    fs::write(&entry, invalid).expect("invalid background color edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid color remains semantically a string");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid CSS color must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid CSS color must still reach native validation"
+    );
+
+    let overridden_initial = initial.replace(
+        "borderColor: \"outline\"",
+        "borderColor: \"outline\"\n        borderTopColor: \"danger\"",
+    );
+    fs::write(&entry, &overridden_initial)
+        .expect("overridden border color source should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden border color source should analyze");
+    let overridden_updated =
+        overridden_initial.replace("borderColor: \"outline\"", "borderColor: \"success\"");
+    fs::write(&entry, overridden_updated)
+        .expect("overridden base border color edit should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden base border color edit should analyze");
+    assert!(
+        overridden_second
+            .development_ui_string_patch_from(&overridden_first)
+            .is_none(),
+        "base border color edits with explicit edge overrides must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_invalid_image_fit_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-image-fit-patch-{}",

@@ -1904,6 +1904,18 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
+        "background_color" => true,
+        "border_color" => ![
+            "border_top_color",
+            "border_bottom_color",
+            "border_start_color",
+            "border_end_color",
+        ]
+        .iter()
+        .any(|property| development_ui_element_has_property(element, property)),
+        "border_top_color" | "border_bottom_color" | "border_start_color" | "border_end_color" => {
+            true
+        }
         "font_family" | "text_align" | "wrap_mode" | "ellipsize" => element.kind == "Text",
         "tooltip" => {
             element.kind != "TextInput"
@@ -2057,6 +2069,18 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "font_family" && value.is_empty() {
+                    return None;
+                }
+                if matches!(
+                    property_name.as_str(),
+                    "background_color"
+                        | "border_color"
+                        | "border_top_color"
+                        | "border_bottom_color"
+                        | "border_start_color"
+                        | "border_end_color"
+                ) && !typecheck::valid_ui_color(value)
+                {
                     return None;
                 }
                 if property_name == "keyboard_type" {
