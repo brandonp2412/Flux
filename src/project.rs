@@ -1984,6 +1984,8 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         "max_lines" | "max_width_chars" => element.kind == "Text",
         "size" => element.kind == "Button",
         "focus_scope" => true,
+        "min_width" => !development_ui_element_has_property(element, "max_width"),
+        "min_height" => !development_ui_element_has_property(element, "max_height"),
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
         _ => false,
     }
@@ -2082,6 +2084,11 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if matches!(property_name.as_str(), "min_width" | "min_height")
+                    && !(1..=i64::from(i32::MAX)).contains(&value)
+                {
                     return None;
                 }
                 if matches!(

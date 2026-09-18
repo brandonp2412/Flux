@@ -37276,6 +37276,117 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_unconstrained_minimum_sizes() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-minimum-size-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary minimum-size patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 120
+    grid rows: auto
+    Text label at 1,1
+        text: "Sized"
+        minWidth: 80
+        minHeight: 20
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial minimum-size patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial minimum-size patch analysis should succeed");
+
+    let updated = initial
+        .replace("minWidth: 80", "minWidth: 140")
+        .replace("minHeight: 20", "minHeight: 30");
+    fs::write(&entry, &updated).expect("updated minimum-size patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("minimum-size patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated minimum-size patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("unconstrained minimum sizes should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_width".to_string())),
+        Some(&"140".to_string())
+    );
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_height".to_string())),
+        Some(&"30".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = second
+        .emit_c()
+        .expect("minimum-size patch fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"min_width\") == 0 && flux__ui_label != NULL"));
+    assert!(
+        generated.contains(
+            "gtk_widget_get_size_request(flux__ui_label, &current_width, &current_height)"
+        )
+    );
+    assert!(generated.contains("if (patched_size < INT64_C(120)) patched_size = INT64_C(120)"));
+    assert!(generated.contains(
+        "gtk_widget_set_size_request(flux__ui_label, (int)patched_size, current_height)"
+    ));
+    assert!(
+        generated.contains(
+            "gtk_widget_set_size_request(flux__ui_label, current_width, (int)patched_size)"
+        )
+    );
+
+    let invalid = updated.replace("minWidth: 140", "minWidth: 0");
+    fs::write(&entry, invalid).expect("invalid minimum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid minimum size remains semantically an i64");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid minimum size must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid minimum size must still reach native validation"
+    );
+
+    let constrained_initial =
+        initial.replace("minWidth: 80", "minWidth: 80\n        maxWidth: 200");
+    fs::write(&entry, &constrained_initial)
+        .expect("constrained minimum-size source should be writable");
+    cache.invalidate_path(&entry);
+    let constrained_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("constrained minimum-size source should analyze");
+    let constrained_updated = constrained_initial.replace("minWidth: 80", "minWidth: 100");
+    fs::write(&entry, constrained_updated)
+        .expect("constrained minimum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let constrained_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("constrained minimum-size edit should analyze");
+    assert!(
+        constrained_second
+            .development_ui_string_patch_from(&constrained_first)
+            .is_none(),
+        "minimum-size edits paired with a maximum must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_restarts_for_selection_state_with_callbacks() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-selection-handler-patch-{}",

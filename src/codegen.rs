@@ -15018,6 +15018,42 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
+        for (property_name, maximum_name, horizontal) in [
+            ("min_width", "max_width", true),
+            ("min_height", "max_height", false),
+        ] {
+            if view_property(element, property_name).is_some()
+                && view_property(element, maximum_name).is_none()
+            {
+                let layout = linux_ui_layout_c_name(element);
+                let fixed = if horizontal {
+                    view.grid
+                        .columns
+                        .get(element.column.saturating_sub(1) as usize)
+                } else {
+                    view.grid.rows.get(element.row.saturating_sub(1) as usize)
+                }
+                .and_then(|track| match track {
+                    crate::ast::GridTrack::Units(value) => Some(*value),
+                    _ => None,
+                });
+                let fixed_floor = fixed.map_or_else(String::new, |fixed| {
+                    format!(
+                        " if (patched_size < INT64_C({fixed})) patched_size = INT64_C({fixed});"
+                    )
+                });
+                let setter = if horizontal {
+                    "gtk_widget_set_size_request({layout}, (int)patched_size, current_height);"
+                } else {
+                    "gtk_widget_set_size_request({layout}, current_width, (int)patched_size);"
+                };
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {layout} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ int current_width = -1; int current_height = -1; gtk_widget_get_size_request({layout}, &current_width, &current_height); long long patched_size = integer_value;{fixed_floor} {setter} }} }}",
+                    c_string(&element.name),
+                    setter = setter.replace("{layout}", &layout)
+                ));
+            }
+        }
         match element.kind.as_str() {
             "Text" => {
                 for (property, setter) in [
