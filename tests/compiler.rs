@@ -33362,15 +33362,26 @@ fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
         .expect("native cache directory should exist")
         .collect::<Result<Vec<_>, _>>()
         .expect("native cache should be readable");
-    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts.len(), 3);
     let cache_artifact = artifacts
         .iter()
         .map(|entry| entry.path())
-        .find(|path| path.extension().is_none())
+        .find(|path| path.is_file() && path.extension().is_none())
         .expect("native cache should contain the binary artifact");
+    let object_dir = cache.join("native/objects");
+    let object = fs::read_dir(&object_dir)
+        .expect("native object cache directory should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+        .expect("native cache should contain a compiled object");
+    let object_modified = fs::metadata(&object)
+        .and_then(|metadata| metadata.modified())
+        .expect("cached object modification time should be readable");
     let first_bytes = fs::read(&first).expect("first build output should be readable");
     fs::write(&cache_artifact, b"corrupt-native-artifact")
         .expect("cache fixture should be replaceable");
+    std::thread::sleep(Duration::from_millis(25));
 
     let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
         .arg("build")
@@ -33390,6 +33401,136 @@ fn native_build_cache_reuses_valid_entries_and_rebuilds_corrupt_entries() {
         first_bytes,
         "a corrupt cached binary must be rebuilt rather than restored"
     );
+    assert_eq!(
+        fs::metadata(&object)
+            .and_then(|metadata| metadata.modified())
+            .expect("cached object modification time should remain readable"),
+        object_modified,
+        "relinking a corrupt final artifact should reuse the valid compiled object"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn native_object_cache_reuses_compilation_across_link_only_changes() {
+    let root =
+        std::env::temp_dir().join(format!("flux-native-object-cache-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("native"))
+        .expect("native object cache fixture should be writable");
+    let native_source = root.join("native/value.c");
+    let native_object = root.join("native/value.o");
+    let native_library = root.join("native/libnativevalue.a");
+
+    let build_library = |value: i64| {
+        fs::write(
+            &native_source,
+            format!(
+                "#include <stdint.h>\nint64_t native_value(void) {{ return INT64_C({value}); }}\n"
+            ),
+        )
+        .expect("native library source should be writable");
+        let compiled = Command::new("clang")
+            .args(["-c", "-std=c17"])
+            .arg(&native_source)
+            .arg("-o")
+            .arg(&native_object)
+            .output()
+            .expect("native library object should compile");
+        assert!(
+            compiled.status.success(),
+            "native library compilation failed: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let archived = Command::new("ar")
+            .arg("rcs")
+            .arg(&native_library)
+            .arg(&native_object)
+            .output()
+            .expect("native static library should archive");
+        assert!(
+            archived.status.success(),
+            "native library archive failed: {}",
+            String::from_utf8_lossy(&archived.stderr)
+        );
+    };
+
+    build_library(1);
+    fs::write(
+        root.join("main.flux"),
+        "extern c \"native_value\" fn nativeValue() -> i64\nfn main() -> i64 {\n    print(nativeValue())\n    return 0\n}\n",
+    )
+    .expect("Flux source should be writable");
+    fs::write(
+        root.join("flux.toml"),
+        "[package]\nformat_version = 1\nname = \"native-object-cache\"\nentry = \"main.flux\"\n\n[native]\nplugin = true\nlibraries = [\"nativevalue\"]\nsearch_paths = [\"native\"]\n",
+    )
+    .expect("Flux manifest should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first native-object build should run");
+    assert!(
+        built.status.success(),
+        "first native-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first native-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "1\n");
+
+    let cached_object = fs::read_dir(cache.join("native/objects"))
+        .expect("native object cache should exist")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+        .expect("native object cache should contain an object");
+    let cached_modified = fs::metadata(&cached_object)
+        .and_then(|metadata| metadata.modified())
+        .expect("cached object modification time should be readable");
+
+    std::thread::sleep(Duration::from_millis(25));
+    build_library(2);
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&root)
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("relinked native-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "relinked native-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        fs::metadata(&cached_object)
+            .and_then(|metadata| metadata.modified())
+            .expect("cached object modification time should remain readable"),
+        cached_modified,
+        "changing only native link inputs must reuse the compiled Flux object"
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("relinked native-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&second_run.stdout),
+        "2\n",
+        "the reused Flux object must still relink against the updated native library"
+    );
+
     let _ = fs::remove_dir_all(&root);
 }
 

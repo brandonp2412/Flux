@@ -61,6 +61,14 @@ impl BuildMode {
             Self::Release => &["-O3", "-flto", "-DNDEBUG"],
         }
     }
+
+    fn clang_link_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Debug => &["-g3"],
+            Self::Profile => &["-O2", "-g"],
+            Self::Release => &["-O3", "-flto"],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10334,61 +10342,136 @@ fn build_native_configured(
         let _ = fs::remove_file(native_cache_metadata_path(&cache));
     }
 
-    let mut command = Command::new("clang");
-    command
-        .args(["-std=c17", "-fwrapv"])
-        .args(mode.clang_args());
-    if let Some(target) = native_target.triple.as_deref() {
-        command.arg(format!("--target={target}"));
+    let object_cache = native_object_cache_path_configured(
+        c_source,
+        mode,
+        instrumentation,
+        native_target,
+        &toolchain_identity,
+        &native_cflags,
+    );
+    let object_is_cached = object_cache.is_file() && native_cache_entry_is_valid(&object_cache);
+    if !object_is_cached && object_cache.exists() {
+        let _ = fs::remove_file(&object_cache);
+        let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
     }
-    if let Some(sysroot) = native_target.sysroot.as_deref() {
-        command.arg(format!("--sysroot={}", sysroot.display()));
-    }
-    if static_link {
-        command.arg("-static");
-    }
-    match instrumentation {
-        NativeInstrumentation::None => {}
-        NativeInstrumentation::Gprof => {
-            command.arg("-pg");
+
+    let mut temporary_object = None;
+    let object = if object_is_cached {
+        object_cache.clone()
+    } else {
+        let object = native_temporary_object_path(output, c_source);
+        let _ = fs::remove_file(&object);
+        let mut compile = Command::new("clang");
+        compile
+            .args(["-std=c17", "-fwrapv"])
+            .args(mode.clang_args());
+        if let Some(target) = native_target.triple.as_deref() {
+            compile.arg(format!("--target={target}"));
         }
-        NativeInstrumentation::Coverage => {
-            command.args(["-fprofile-instr-generate", "-fcoverage-mapping"]);
-            command.arg(format!(
-                "-fcoverage-compilation-dir={COVERAGE_COMPILATION_DIR}"
+        if let Some(sysroot) = native_target.sysroot.as_deref() {
+            compile.arg(format!("--sysroot={}", sysroot.display()));
+        }
+        match instrumentation {
+            NativeInstrumentation::None => {}
+            NativeInstrumentation::Gprof => {
+                compile.arg("-pg");
+            }
+            NativeInstrumentation::Coverage => {
+                compile.args(["-fprofile-instr-generate", "-fcoverage-mapping"]);
+                compile.arg(format!(
+                    "-fcoverage-compilation-dir={COVERAGE_COMPILATION_DIR}"
+                ));
+            }
+            NativeInstrumentation::AddressSanitizer => {
+                compile.arg("-fsanitize=address");
+            }
+            NativeInstrumentation::Timeline => {
+                compile.arg("-DFLUX_PROFILE_TIMELINE=1");
+            }
+        }
+        compile
+            .args(&native_cflags)
+            .args(["-x", "c", "-", "-c"])
+            .arg("-o")
+            .arg(&object);
+        let mut child = compile
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to launch clang compiler: {error}"))?;
+        child
+            .stdin
+            .take()
+            .expect("clang compiler stdin was configured as piped")
+            .write_all(c_source.as_bytes())
+            .map_err(|error| format!("failed to send generated C to clang compiler: {error}"))?;
+        let compile_result = child
+            .wait_with_output()
+            .map_err(|error| format!("failed to wait for clang compiler: {error}"))?;
+        if !compile_result.status.success() {
+            let _ = fs::remove_file(&object);
+            return Err(format!(
+                "native backend compilation failed:\n{}",
+                String::from_utf8_lossy(&compile_result.stderr)
             ));
         }
-        NativeInstrumentation::AddressSanitizer => {
-            command.arg("-fsanitize=address");
+
+        if let Some(parent) = object_cache.parent()
+            && fs::create_dir_all(parent).is_ok()
+        {
+            let temporary_cache =
+                object_cache.with_extension(format!("o.tmp-{}", std::process::id()));
+            if fs::copy(&object, &temporary_cache).is_ok() {
+                if fs::rename(&temporary_cache, &object_cache).is_err() {
+                    let _ = fs::remove_file(&temporary_cache);
+                } else if write_native_cache_metadata(&object_cache).is_err() {
+                    let _ = fs::remove_file(&object_cache);
+                    let _ = fs::remove_file(native_cache_metadata_path(&object_cache));
+                }
+            }
         }
-        NativeInstrumentation::Timeline => {
-            command.arg("-DFLUX_PROFILE_TIMELINE=1");
+        temporary_object = Some(object.clone());
+        object
+    };
+
+    let mut link = Command::new("clang");
+    link.args(mode.clang_link_args());
+    if let Some(target) = native_target.triple.as_deref() {
+        link.arg(format!("--target={target}"));
+    }
+    if let Some(sysroot) = native_target.sysroot.as_deref() {
+        link.arg(format!("--sysroot={}", sysroot.display()));
+    }
+    if static_link {
+        link.arg("-static");
+    }
+    match instrumentation {
+        NativeInstrumentation::None | NativeInstrumentation::Timeline => {}
+        NativeInstrumentation::Gprof => {
+            link.arg("-pg");
+        }
+        NativeInstrumentation::Coverage => {
+            link.arg("-fprofile-instr-generate");
+        }
+        NativeInstrumentation::AddressSanitizer => {
+            link.arg("-fsanitize=address");
         }
     }
-    command.args(&native_cflags);
-    command.args(["-x", "c", "-"]);
-    command.args(&native_libs);
+    link.arg(&object).args(&native_cflags).args(&native_libs);
     let temporary_output = native_temporary_artifact_path(output, c_source);
-    command.arg("-o").arg(&temporary_output);
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to launch clang: {error}"))?;
-    child
-        .stdin
-        .take()
-        .expect("clang stdin was configured as piped")
-        .write_all(c_source.as_bytes())
-        .map_err(|error| format!("failed to send generated C to clang: {error}"))?;
-    let output_result = child
-        .wait_with_output()
-        .map_err(|error| format!("failed to wait for clang: {error}"))?;
+    link.arg("-o").arg(&temporary_output);
+    let output_result = link.stdout(Stdio::piped()).stderr(Stdio::piped()).output();
+    if let Some(object) = temporary_object.as_deref() {
+        let _ = fs::remove_file(object);
+    }
+    let output_result =
+        output_result.map_err(|error| format!("failed to launch clang linker: {error}"))?;
     if !output_result.status.success() {
         let _ = fs::remove_file(&temporary_output);
         return Err(format!(
-            "native backend failed:\n{}",
+            "native backend link failed:\n{}",
             String::from_utf8_lossy(&output_result.stderr)
         ));
     }
@@ -10420,6 +10503,14 @@ fn build_native_configured(
 fn native_temporary_artifact_path(output: &Path, c_source: &str) -> PathBuf {
     output.with_extension(format!(
         "tmp-build-{}-{:016x}",
+        std::process::id(),
+        reproducibility_hash(c_source.as_bytes())
+    ))
+}
+
+fn native_temporary_object_path(output: &Path, c_source: &str) -> PathBuf {
+    output.with_extension(format!(
+        "tmp-object-{}-{:016x}",
         std::process::id(),
         reproducibility_hash(c_source.as_bytes())
     ))
@@ -10788,6 +10879,42 @@ fn native_build_cache_path_configured(
     native_build_cache_dir().join(format!("{hash:016x}"))
 }
 
+fn native_object_cache_path_configured(
+    c_source: &str,
+    mode: BuildMode,
+    instrumentation: NativeInstrumentation,
+    native_target: &NativeTargetOptions,
+    toolchain_identity: &str,
+    native_cflags: &[String],
+) -> PathBuf {
+    let target = native_target.triple.as_deref().unwrap_or("");
+    let sysroot = native_sysroot_cache_identity(native_target.sysroot.as_deref());
+    let mut hash = 0xcbf29ce484222325u64;
+    for bytes in [
+        b"flux-native-object-cache-v1".as_slice(),
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        toolchain_identity.as_bytes(),
+        native_cflags.join("\u{1f}").as_bytes(),
+        mode.name().as_bytes(),
+        instrumentation.cache_tag().as_bytes(),
+        env::consts::OS.as_bytes(),
+        env::consts::ARCH.as_bytes(),
+        target.as_bytes(),
+        sysroot.as_bytes(),
+        c_source.as_bytes(),
+    ] {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    native_build_cache_dir()
+        .join("objects")
+        .join(format!("{hash:016x}.o"))
+}
+
 fn native_sysroot_cache_identity(sysroot: Option<&Path>) -> String {
     let Some(sysroot) = sysroot else {
         return "none".to_string();
@@ -10956,11 +11083,12 @@ mod tests {
         display_flux_symbol, emit_llvm_from_c, find_android_compile_jar, github_repository_parts,
         json_string, linux_desktop_entry, msix_block_map_xml, msix_content_types_xml,
         msix_manifest_xml, msix_version, native_build_cache_path_configured,
-        native_cache_entry_is_valid, native_package_config_for_target, output_with_timeout,
-        package_artifact_name, package_options, parse_adb_devices, profile_options,
-        profile_report_addresses, publish_registry_package_command, registry_publish_options,
-        select_android_run_target, split_symbols_options, stage_android_package_assets,
-        stage_package_assets, symbolize_options, test_options, validate_android_publish_manifest,
+        native_cache_entry_is_valid, native_object_cache_path_configured,
+        native_package_config_for_target, output_with_timeout, package_artifact_name,
+        package_options, parse_adb_devices, profile_options, profile_report_addresses,
+        publish_registry_package_command, registry_publish_options, select_android_run_target,
+        split_symbols_options, stage_android_package_assets, stage_package_assets,
+        symbolize_options, test_options, validate_android_publish_manifest,
         validate_msix_certificate, validate_msix_publisher, waydroid_status_is_running,
         web_dev_options, web_dev_response, web_source_stamp, windows_native_system_libraries,
         windows_publish_options, write_native_cache_metadata,
@@ -11924,6 +12052,61 @@ app OverlayDemo(title: "Overlay")
         assert_ne!(plain, sysrooted);
         assert_ne!(plain, different_clang);
         assert_ne!(plain, different_gtk);
+
+        let object = native_object_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            toolchain,
+            &[],
+        );
+        let object_instrumented = native_object_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::Gprof,
+            &NativeTargetOptions::default(),
+            toolchain,
+            &[],
+        );
+        let object_targeted = native_object_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions {
+                triple: Some("aarch64-unknown-linux-gnu".to_string()),
+                sysroot: None,
+            },
+            toolchain,
+            &[],
+        );
+        let object_different_clang = native_object_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            "clang=clang version newer",
+            &[],
+        );
+        let object_different_cflags = native_object_cache_path_configured(
+            source,
+            BuildMode::Profile,
+            NativeInstrumentation::None,
+            &NativeTargetOptions::default(),
+            toolchain,
+            &["-I/opt/gtk/include".to_string()],
+        );
+        assert_ne!(object, object_instrumented);
+        assert_ne!(object, object_targeted);
+        assert_ne!(object, object_different_clang);
+        assert_ne!(object, object_different_cflags);
+        assert_eq!(
+            object
+                .parent()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str()),
+            Some("objects")
+        );
     }
 
     #[test]
