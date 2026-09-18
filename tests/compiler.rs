@@ -5,8 +5,6 @@ use std::net::{TcpListener, UdpSocket};
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -32378,9 +32376,7 @@ app Screen(onStart: started)
     let _ = fs::remove_file(&status_path);
     let stdout = fs::File::create(&log).expect("UI hot-apply log should be writable");
     let stderr = stdout.try_clone().expect("UI hot-apply log should clone");
-    let mut runner_command = Command::new("xvfb-run");
-    let mut runner = runner_command
-        .process_group(0)
+    let mut runner = Command::new("xvfb-run")
         .arg("-a")
         .arg(env!("CARGO_BIN_EXE_fluxc"))
         .arg("run")
@@ -32469,11 +32465,7 @@ app Screen(onStart: started)
         "adding, changing, and removing root spacing must not restart the UI child"
     );
 
-    let process_group = format!("-{}", runner.id());
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(&process_group)
-        .status();
+    let _ = runner.kill();
     let _ = runner.wait();
     let _ = fs::remove_file(status_path);
     let _ = fs::remove_dir_all(&root);
