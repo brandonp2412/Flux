@@ -33865,8 +33865,8 @@ fn native_module_object_cache_recompiles_only_changed_scalar_module() {
     let first_objects = object_names();
     assert_eq!(
         first_objects.len(),
-        3,
-        "each source module should compile to its own cached object"
+        4,
+        "the two math functions, service function, and entry runtime should compile independently"
     );
 
     fs::write(
@@ -33898,8 +33898,8 @@ fn native_module_object_cache_recompiles_only_changed_scalar_module() {
     let second_objects = object_names();
     assert_eq!(
         second_objects.len(),
-        4,
-        "a body-only edit should add one changed module object and reuse the other two"
+        5,
+        "a body-only imported-function edit should add one object and reuse the other functions"
     );
     assert!(
         first_objects
@@ -34078,7 +34078,11 @@ fn native_module_object_cache_reuses_crypto_linked_module() {
         names
     };
     let first_objects = object_names();
-    assert_eq!(first_objects.len(), 2);
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the private crypto callback, public hash function, and consumer should compile independently"
+    );
 
     fs::write(
         &digest,
@@ -34109,8 +34113,8 @@ fn native_module_object_cache_reuses_crypto_linked_module() {
     let second_objects = object_names();
     assert_eq!(
         second_objects.len(),
-        3,
-        "a body-only crypto module edit should add one native object"
+        4,
+        "a body-only crypto function edit should add one native object"
     );
     assert!(
         first_objects

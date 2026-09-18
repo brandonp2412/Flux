@@ -10658,9 +10658,7 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
     let mut units = Vec::new();
     for source in order {
         let body = bodies.remove(&source)?;
-        if native_body_contains_program_entry(&body)
-            && let Some(function_units) = partition_native_single_source_functions(&prefix, &body)
-        {
+        if let Some(function_units) = partition_native_single_source_functions(&prefix, &body) {
             units.extend(function_units);
             continue;
         }
@@ -10670,11 +10668,6 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
         units.push(unit);
     }
     Some(units)
-}
-
-fn native_body_contains_program_entry(body: &str) -> bool {
-    body.lines()
-        .any(|line| line.trim_start().starts_with("int main("))
 }
 
 fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<Vec<String>> {
@@ -10807,13 +10800,12 @@ fn partition_native_single_source_functions(prefix: &str, body: &str) -> Option<
         cursor = end;
     }
     remainder.push_str(&body[cursor..]);
-    if remainder.trim().is_empty() {
-        return None;
+    if !remainder.trim().is_empty() {
+        let mut remainder_unit = String::with_capacity(shared_prefix.len() + remainder.len());
+        remainder_unit.push_str(&shared_prefix);
+        remainder_unit.push_str(&remainder);
+        units.push(remainder_unit);
     }
-    let mut remainder_unit = String::with_capacity(shared_prefix.len() + remainder.len());
-    remainder_unit.push_str(&shared_prefix);
-    remainder_unit.push_str(&remainder);
-    units.push(remainder_unit);
     Some(units)
 }
 
