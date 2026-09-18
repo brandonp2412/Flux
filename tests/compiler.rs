@@ -32344,6 +32344,94 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
 }
 
 #[test]
+fn run_cli_hot_applies_static_ui_edits_without_restarting_native_process() {
+    if Command::new("xvfb-run").arg("--help").output().is_err()
+        || Command::new("setsid").arg("--help").output().is_err()
+    {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("flux-run-ui-hot-apply-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary UI hot-apply project should be writable");
+    let entry = root.join("main.flux");
+    let log = root.join("run.log");
+    let starts = root.join("starts.txt");
+    let initial = format!(
+        r#"fn started() -> void {{
+    print(fs.appendText("{}", "S"))
+}}
+
+view Screen {{
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Before"
+}}
+app Screen(onStart: started)
+"#,
+        starts.display()
+    );
+    fs::write(&entry, &initial).expect("UI hot-apply source should be writable");
+
+    let status_path = fluxc::project::development_status_path(&entry)
+        .expect("UI hot-apply status path should resolve");
+    let _ = fs::remove_file(&status_path);
+    let stdout = fs::File::create(&log).expect("UI hot-apply log should be writable");
+    let stderr = stdout.try_clone().expect("UI hot-apply log should clone");
+    let mut runner = Command::new("setsid")
+        .arg("xvfb-run")
+        .arg("-a")
+        .arg(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("run")
+        .arg(&entry)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("fluxc run should start the native UI fixture under Xvfb");
+
+    wait_for_log(&log, &["run: started"], Duration::from_secs(8));
+    let started = Instant::now();
+    loop {
+        if fs::read_to_string(&starts).unwrap_or_default() == "S" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "timed out waiting for initial UI child start marker"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    fs::write(&entry, initial.replace("Before", "After"))
+        .expect("UI hot-apply edit should be writable");
+    wait_for_log(
+        &log,
+        &["reload: hot-applied 1 static UI change without restarting"],
+        Duration::from_secs(8),
+    );
+    wait_for_run_generation(&status_path, 1, Duration::from_secs(8));
+    let status = fs::read_to_string(&status_path).expect("UI hot-apply status should be readable");
+    assert!(status.contains("\"state\":\"hot_applied\""));
+    assert!(status.contains("\"reload_method\":\"in_process_string\""));
+    assert!(status.contains("\"native_ms\":0"));
+    assert!(status.contains("\"restart_ms\":0"));
+    assert_eq!(
+        fs::read_to_string(&starts).expect("UI child start marker should remain readable"),
+        "S",
+        "onStart must not run again for an in-process UI patch"
+    );
+
+    let process_group = format!("-{}", runner.id());
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(&process_group)
+        .status();
+    let _ = runner.wait();
+    let _ = fs::remove_file(status_path);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn run_cli_keeps_process_for_codegen_equivalent_source_edits() {
     let root = std::env::temp_dir().join(format!(
         "flux-run-codegen-equivalent-{}",
