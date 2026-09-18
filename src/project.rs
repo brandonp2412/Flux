@@ -1977,6 +1977,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
                     .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
         }
         "max_lines" | "max_width_chars" => element.kind == "Text",
+        "size" => element.kind == "Button",
         _ => false,
     }
 }
@@ -2066,6 +2067,9 @@ fn development_ui_string_literals(
                 }
                 if property_name == "max_width_chars" && !(0..=i64::from(i32::MAX)).contains(&value)
                 {
+                    return None;
+                }
+                if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
                     return None;
                 }
                 value.to_string()

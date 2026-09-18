@@ -36652,6 +36652,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         alignY: "start"
     Button action at 2,1
         text: "Action"
+        size: 18
         visible: true
         layoutTransitionMs: 120
         enabled: true
@@ -36694,7 +36695,8 @@ app Screen
         alignX: "center"
         alignY: "end"
     Button action at 2,1
-        text: "Action"
+        text: "Updated action"
+        size: 24
         visible: false
         layoutTransitionMs: 120
         enabled: false
@@ -36753,6 +36755,8 @@ app Screen
         ("label", "max_width_chars", "40"),
         ("label", "align_x", "center"),
         ("label", "align_y", "end"),
+        ("action", "text", "Updated action"),
+        ("action", "size", "24"),
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
@@ -36774,7 +36778,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 27);
+    assert_eq!(patch.len(), 29);
 
     let generated = second
         .emit_c()
@@ -36811,6 +36815,13 @@ app Screen
     assert!(generated.contains("gtk_widget_set_halign(flux__ui_label, alignment)"));
     assert!(generated.contains("strcmp(property, \"align_y\") == 0"));
     assert!(generated.contains("gtk_widget_set_valign(flux__ui_label, alignment)"));
+    assert!(
+        generated.contains(
+            "gtk_label_set_text(GTK_LABEL(button_label), value); else gtk_button_set_label"
+        )
+    );
+    assert!(generated.contains("strcmp(property, \"size\") == 0"));
+    assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
     assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
     assert!(generated.contains(
         "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
@@ -36968,6 +36979,51 @@ app Screen
             "target-invalid Text layout property must still reach native validation"
         );
     }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_defers_invalid_button_size() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-invalid-button-size-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary invalid Button.size patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+        size: 18
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial Button.size patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Button.size patch analysis should succeed");
+    let entry = fs::canonicalize(entry).expect("Button.size patch entry should canonicalize");
+
+    let invalid = initial.replace("size: 18", "size: 0");
+    fs::write(&entry, invalid).expect("invalid Button.size source should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid Button.size remains semantically an i64");
+    assert!(
+        invalid.development_ui_string_patch_from(&first).is_none(),
+        "target-invalid Button.size must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid Button.size must still reach native validation"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
