@@ -1644,8 +1644,9 @@ fn stopAfterStart() -> void {
 
 view Screen {
     state extent: i64 = 80
+    state count: i64 = 0
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text title at 1,1
         text: "Cross target"
         tooltip: "Native tooltip"
@@ -1655,6 +1656,10 @@ view Screen {
     TextInput email at 2,1
         placeholder: "Email"
         validationMessage: "Enter a valid email"
+    Button action at 3,1
+        text: "Run"
+        shortcut: "Ctrl+Shift+Enter"
+        onPress: count => count + 1
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -41238,6 +41243,21 @@ app Shortcuts
         "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_FALSE, (jboolean)JNI_TRUE)"
     ));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("button shortcut should lower to Win32");
+    assert!(windows.contains("message->wParam == VK_RETURN"));
+    assert!(windows.contains("((GetKeyState(VK_CONTROL) & 0x8000) != 0) == true"));
+    assert!(windows.contains("((GetKeyState(VK_SHIFT) & 0x8000) != 0) == true"));
+    assert!(windows.contains("focused == flux__ui_action"));
+    assert!(windows.contains("flux__win_click_0(); return true;"));
+    assert!(windows.contains("message->message != WM_SYSKEYDOWN"));
+    assert!(windows.contains("flux__win_dispatch_key(&message)"));
+
     let missing_action = r#"
 view Shortcuts {
     grid columns: 1fr
@@ -41283,6 +41303,14 @@ app Shortcuts
     )
     .expect_err("unsupported shortcut syntax must also fail for Android");
     assert!(android_error.message.contains("modifiers Ctrl/Shift/Alt"));
+    let windows_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("unsupported shortcut syntax must also fail for Windows");
+    assert!(windows_error.message.contains("modifiers Ctrl/Shift/Alt"));
 
     let invalid_scope = r#"
 view Shortcuts {
@@ -41361,6 +41389,17 @@ app Shortcuts
     assert!(android.contains(
         "CallVoidMethod(env, activity, register_shortcut, child, child_shortcut, (jboolean)JNI_TRUE, (jboolean)JNI_FALSE)"
     ));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("non-button shortcut should lower to Win32");
+    assert!(windows.contains("message->wParam == 'K'"));
+    assert!(windows.contains("flux__win_tap_0(); return true;"));
+    assert!(windows.contains("flux__win_dispatch_key(&message)"));
 
     let missing_action = r#"
 view Shortcuts {

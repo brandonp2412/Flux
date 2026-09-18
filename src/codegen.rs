@@ -13514,6 +13514,10 @@ fn emit_windows_native_application(
         .elements
         .iter()
         .any(|element| view_property(element, "on_key").is_some());
+    let uses_shortcuts = view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "shortcut").is_some());
     let uses_passive_keyboard_activation = view.elements.iter().any(|element| {
         !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
             && view_property(element, "on_tap").is_some()
@@ -13664,8 +13668,79 @@ fn emit_windows_native_application(
         };
         out.push_str(&format!("static WNDPROC flux__win_focus_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_focus_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_SETFOCUS) {{ {focus_body} }} else if (message == WM_KILLFOCUS) {{ {blur_body} }} return CallWindowProcA(flux__win_focus_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
-    if uses_key_events || uses_passive_keyboard_activation {
-        out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || message->message != WM_KEYDOWN) return false; HWND focused = GetFocus(); if (focused == NULL) return false; char utf8[8] = {0};\n");
+    if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
+        out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
+        for (index, element) in view.elements.iter().enumerate() {
+            let Some(property) = view_property(element, "shortcut") else {
+                continue;
+            };
+            let Some(shortcut) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must be a compile-time string",
+                ));
+            };
+            let Some((control, shift, alt, key)) = crate::typecheck::parse_ui_shortcut(&shortcut)
+            else {
+                return Err(diag(
+                    property.value.span,
+                    "shortcut must use modifiers Ctrl/Shift/Alt plus one key, for example 'Ctrl+K' or 'Ctrl+Shift+Enter'",
+                ));
+            };
+            let virtual_key = match key.as_str() {
+                "Enter" => "VK_RETURN".to_string(),
+                "Space" => "VK_SPACE".to_string(),
+                "Tab" => "VK_TAB".to_string(),
+                "Escape" => "VK_ESCAPE".to_string(),
+                "Delete" => "VK_DELETE".to_string(),
+                "Up" => "VK_UP".to_string(),
+                "Down" => "VK_DOWN".to_string(),
+                "Left" => "VK_LEFT".to_string(),
+                "Right" => "VK_RIGHT".to_string(),
+                key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+                    format!("'{}'", key)
+                }
+                _ => unreachable!("validated portable shortcut key"),
+            };
+            let scope = match view_property(element, "shortcut_scope") {
+                Some(scope) => {
+                    let Some(scope_name) = static_expr_str(&scope.value, signatures) else {
+                        return Err(diag(
+                            scope.value.span,
+                            "shortcutScope must be a compile-time string value",
+                        ));
+                    };
+                    match scope_name.as_str() {
+                        "window" => None,
+                        "focused" => Some(ui_widget_c_name(&element.name)),
+                        _ => {
+                            return Err(diag(
+                                scope.value.span,
+                                "shortcutScope must be 'window' or 'focused'",
+                            ));
+                        }
+                    }
+                }
+                None => None,
+            };
+            let focus_condition = scope
+                .map(|variable| format!(" && focused == {variable}"))
+                .unwrap_or_default();
+            let action = if element.kind == "Button" && view_property(element, "on_press").is_some()
+            {
+                format!("flux__win_click_{index}();")
+            } else if view_property(element, "on_tap").is_some() {
+                format!("flux__win_tap_{index}();")
+            } else {
+                continue;
+            };
+            out.push_str(&format!(
+                "if (message->wParam == {virtual_key} && (((GetKeyState(VK_CONTROL) & 0x8000) != 0) == {}) && (((GetKeyState(VK_SHIFT) & 0x8000) != 0) == {}) && (((GetKeyState(VK_MENU) & 0x8000) != 0) == {}){focus_condition}) {{ {action} return true; }}\n",
+                if control { "true" } else { "false" },
+                if shift { "true" } else { "false" },
+                if alt { "true" } else { "false" },
+            ));
+        }
         for (index, element) in view.elements.iter().enumerate() {
             let variable = ui_widget_c_name(&element.name);
             let on_key = view_property(element, "on_key");
@@ -13674,7 +13749,9 @@ fn emit_windows_native_application(
             if on_key.is_none() && !passive_tap {
                 continue;
             }
-            out.push_str(&format!("if (focused == {variable}) {{ "));
+            out.push_str(&format!(
+                "if (focused != NULL && focused == {variable}) {{ "
+            ));
             if let Some(action) = on_key {
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
@@ -14273,7 +14350,7 @@ fn emit_windows_native_application(
             ui_widget_c_name(&element.name)
         ));
     }
-    let key_dispatch = if uses_key_events || uses_passive_keyboard_activation {
+    let key_dispatch = if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         " if (flux__win_dispatch_key(&message)) continue;"
     } else {
         ""
