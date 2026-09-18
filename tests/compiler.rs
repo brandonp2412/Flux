@@ -36097,6 +36097,59 @@ fn project_analysis_cache_ignores_source_positions_in_module_surfaces() {
 }
 
 #[test]
+fn project_analysis_cache_ignores_view_grid_source_positions_in_module_surfaces() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-incremental-view-positions-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary incremental view project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("view source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial view analysis should succeed");
+
+    let entry = fs::canonicalize(entry).expect("view entry should canonicalize");
+    let shifted = r#"
+
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "updated"
+}
+app Screen
+"#;
+    fs::write(&entry, shifted).expect("line-shifted view source should be writable");
+    cache.invalidate_path(&entry);
+    cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("view body edits with line-only grid shifts should stay incremental");
+    assert_eq!(
+        cache.incremental_typecheck_stats(),
+        fluxc::project::IncrementalTypecheckStats {
+            runs: 1,
+            rechecked_modules: 1,
+            full_runs: 1,
+        }
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",

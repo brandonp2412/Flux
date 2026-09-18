@@ -1742,7 +1742,17 @@ fn module_type_surface(
         .as_ref()
         .filter(|definition| definition.keyword_span.source_id == source_id)
     {
-        write!(surface, "application={application:?};").expect("writing a String cannot fail");
+        let metadata = application
+            .metadata
+            .iter()
+            .map(|field| (&field.name, expr_surface(&field.value)))
+            .collect::<Vec<_>>();
+        write!(
+            surface,
+            "application=({:?},{metadata:?});",
+            application.view_name
+        )
+        .expect("writing a String cannot fail");
     }
 
     for view in program
@@ -1764,7 +1774,15 @@ fn module_type_surface(
                 .iter()
                 .map(|derived| (&derived.name, &derived.ty))
                 .collect::<Vec<_>>(),
-            view.grid
+            (
+                &view.grid.columns,
+                &view.grid.rows,
+                view.grid.flow,
+                view.grid.gap,
+                view.grid.padding,
+                view.grid.scroll,
+                view.grid.overlay,
+            )
         )
         .expect("writing a String cannot fail");
     }
