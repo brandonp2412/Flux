@@ -25,6 +25,14 @@ pub struct ProjectSource {
     pub text: String,
 }
 
+pub const DEVELOPMENT_ABI_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DevelopmentAbi {
+    pub version: u32,
+    pub fingerprint: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectAnalysis {
     pub program: Program,
@@ -34,6 +42,13 @@ pub struct ProjectAnalysis {
 }
 
 impl ProjectAnalysis {
+    pub fn development_abi(&self) -> DevelopmentAbi {
+        DevelopmentAbi {
+            version: DEVELOPMENT_ABI_VERSION,
+            fingerprint: development_abi_fingerprint(self),
+        }
+    }
+
     pub fn emit_c(&self) -> Result<String, Diagnostic> {
         self.emit_c_for_target(codegen::NativeTarget::Linux)
     }
@@ -1808,6 +1823,58 @@ fn module_type_surface(
     }
 
     surface
+}
+
+fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {
+    use std::fmt::Write as _;
+
+    let mut surface = format!("development-abi-v{};", DEVELOPMENT_ABI_VERSION);
+    let mut sources = analysis.sources.iter().collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+    for source in sources {
+        write!(
+            surface,
+            "module=({:?},{:?},{});",
+            source.path,
+            source.module_name,
+            module_type_surface(&analysis.program, &analysis.signatures, source.source_id)
+        )
+        .expect("writing a String cannot fail");
+    }
+
+    for view in &analysis.program.views {
+        let elements = view
+            .elements
+            .iter()
+            .map(|element| {
+                let properties = element
+                    .properties
+                    .iter()
+                    .map(|property| {
+                        (
+                            property.name.as_str(),
+                            property.transition.as_ref().map(|transition| {
+                                (transition.state.as_str(), transition.event_value.as_deref())
+                            }),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    element.kind.as_str(),
+                    element.name.as_str(),
+                    element.row,
+                    element.column,
+                    element.row_span,
+                    element.column_span,
+                    properties,
+                )
+            })
+            .collect::<Vec<_>>();
+        write!(surface, "view-elements=({:?},{elements:?});", view.name)
+            .expect("writing a String cannot fail");
+    }
+
+    stable_bytes_hash(surface.as_bytes())
 }
 
 fn cached_analysis_is_current(

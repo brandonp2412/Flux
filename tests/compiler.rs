@@ -32225,6 +32225,9 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"native_ms\":"));
     assert!(status.contains("\"restart_ms\":"));
     assert!(status.contains("\"reload_total_ms\":"));
+    assert!(status.contains("\"abi_compatible\":true"));
+    assert!(status.contains("\"abi_version\":1"));
+    assert!(status.contains("\"abi_fingerprint\":\""));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -32241,6 +32244,24 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     .expect("repaired dependency should be writable");
     wait_for_log(&log, &["version-three"], Duration::from_secs(5));
     wait_for_run_generation(&status_path, 2, Duration::from_secs(5));
+
+    fs::write(
+        &dependency,
+        "pub fn extra() -> i64 { 1 }\npub fn message() -> str { \"version-four\" }\n",
+    )
+    .expect("structural dependency update should be writable");
+    wait_for_log(
+        &log,
+        &[
+            "version-four",
+            "reload: development ABI changed; controlled restart required",
+        ],
+        Duration::from_secs(5),
+    );
+    wait_for_run_generation(&status_path, 3, Duration::from_secs(5));
+    let status =
+        fs::read_to_string(&status_path).expect("structural run status should be readable");
+    assert!(status.contains("\"abi_compatible\":false"));
 
     let _ = runner.kill();
     let _ = runner.wait();
@@ -36144,6 +36165,74 @@ app Screen
             rechecked_modules: 1,
             full_runs: 1,
         }
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_abi_distinguishes_implementation_edits_from_structural_changes() {
+    let root = std::env::temp_dir().join(format!("flux-development-abi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development ABI project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn helper() -> i64 { 1 }
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "ready"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development ABI source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development ABI analysis should succeed");
+    let first_abi = first.development_abi();
+
+    let entry = fs::canonicalize(entry).expect("development ABI entry should canonicalize");
+    let implementation_edit = r#"
+
+
+fn helper() -> i64 { 2 }
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "updated"
+}
+app Screen
+"#;
+    fs::write(&entry, implementation_edit)
+        .expect("implementation-only development ABI edit should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("implementation-only development ABI edit should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first_abi,
+        "function bodies, UI property values, and source positions are implementation details"
+    );
+
+    let structural_edit =
+        implementation_edit.replace("state count: i64 = 1", "state count: bool = true");
+    fs::write(&entry, structural_edit).expect("structural development ABI edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("structural development ABI edit should analyze");
+    assert_ne!(
+        third.development_abi(),
+        first_abi,
+        "view state layout changes must cross the development ABI boundary"
     );
 
     let _ = fs::remove_dir_all(root);

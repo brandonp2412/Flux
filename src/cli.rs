@@ -5053,7 +5053,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         mode,
         "building initial process",
     );
-    let (mut child, mut binary, mut watch_paths) =
+    let (mut child, mut binary, mut watch_paths, mut development_abi) =
         match start_development_build(target, generation, mode, &mut analysis_cache) {
             Ok(started) => started,
             Err(error) => {
@@ -5154,6 +5154,8 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 continue;
             }
         };
+        let next_development_abi = analysis.development_abi();
+        let abi_compatible = next_development_abi == development_abi;
         let analysis_ms = analysis_started.elapsed().as_millis();
         let sources = analysis.sources.clone();
         let codegen_started = Instant::now();
@@ -5209,7 +5211,10 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             native_ms,
             restart_ms,
             total_ms: reload_started.elapsed().as_millis(),
+            abi_compatible,
+            abi: next_development_abi,
         };
+        development_abi = next_development_abi;
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
@@ -5227,6 +5232,14 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             last_reload_timing,
         );
         status_state = "restarted";
+        eprintln!(
+            "reload: development ABI {}",
+            if timing.abi_compatible {
+                "compatible"
+            } else {
+                "changed; controlled restart required"
+            }
+        );
         eprintln!("reload: rebuilt and restarted after source change");
         eprintln!(
             "reload: ready in {}ms (analysis {}ms, codegen {}ms, native {}ms, restart {}ms)",
@@ -5256,6 +5269,8 @@ struct DevelopmentReloadTiming {
     native_ms: u128,
     restart_ms: u128,
     total_ms: u128,
+    abi_compatible: bool,
+    abi: fluxc::project::DevelopmentAbi,
 }
 
 fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
@@ -5332,12 +5347,15 @@ fn write_development_status_with_build(
     let timing_fields = timing
         .map(|timing| {
             format!(
-                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"reload_total_ms\":{}",
+                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"reload_total_ms\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\"",
                 timing.analysis_ms,
                 timing.codegen_ms,
                 timing.native_ms,
                 timing.restart_ms,
-                timing.total_ms
+                timing.total_ms,
+                timing.abi_compatible,
+                timing.abi.version,
+                timing.abi.fingerprint
             )
         })
         .unwrap_or_default();
@@ -5392,7 +5410,15 @@ fn start_development_build(
     generation: usize,
     mode: BuildMode,
     analysis_cache: &mut fluxc::project::ProjectAnalysisCache,
-) -> Result<(Option<Child>, PathBuf, Vec<PathBuf>), CliError> {
+) -> Result<
+    (
+        Option<Child>,
+        PathBuf,
+        Vec<PathBuf>,
+        fluxc::project::DevelopmentAbi,
+    ),
+    CliError,
+> {
     let analysis = match analysis_cache.analyze_with_overlays(target, &HashMap::new()) {
         Ok(analysis) => analysis,
         Err(diagnostics) => {
@@ -5418,7 +5444,8 @@ fn start_development_build(
     build_native(&generated, &binary, mode, native_package.as_ref())?;
     let child = spawn_development_binary(&binary, target)?;
     let watch_paths = project_watch_paths(target, &sources);
-    Ok((Some(child), binary, watch_paths))
+    let development_abi = analysis.development_abi();
+    Ok((Some(child), binary, watch_paths, development_abi))
 }
 
 fn spawn_development_binary(path: &Path, target: &Path) -> Result<Child, CliError> {
