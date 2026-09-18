@@ -1930,6 +1930,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         }
         "drag_text" => true,
         "context_menu_label" => true,
+        "shortcut_scope" => development_ui_element_has_property(element, "shortcut"),
         "placeholder" => {
             element.kind == "TextInput"
                 && element
@@ -2207,6 +2208,11 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "context_menu_label" && value.is_empty() {
+                    return None;
+                }
+                if property_name == "shortcut_scope"
+                    && !typecheck::SHORTCUT_SCOPES.contains(&value.as_str())
+                {
                     return None;
                 }
                 if property_name == "variant" {

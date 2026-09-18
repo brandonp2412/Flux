@@ -14896,6 +14896,12 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
+        if view_property(element, "shortcut").is_some() {
+            out.push_str(&format!(
+                "static GtkShortcutController *flux__ui_shortcut_controller_{} = NULL;\n",
+                element.name
+            ));
+        }
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -15119,6 +15125,15 @@ fn emit_linux_gtk_application(
         if view_property(element, "context_menu_label").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_label\") == 0 && value_length > 0) {{ char *label_copy = g_strdup(value); if (label_copy != NULL) {{ g_free(flux__ui_context_menu_label_owned_{}); flux__ui_context_menu_label_owned_{} = label_copy; flux__ui_context_menu_label_{} = label_copy; }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name
+            ));
+        }
+        if view_property(element, "shortcut_scope").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut_scope\") == 0 && flux__ui_shortcut_controller_{} != NULL) {{ if (strcmp(value, \"window\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_GLOBAL); else if (strcmp(value, \"focused\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_LOCAL); }}",
                 c_string(&element.name),
                 element.name,
                 element.name,
@@ -16975,9 +16990,9 @@ fn emit_linux_gtk_application(
                 }
                 None => "GTK_SHORTCUT_SCOPE_GLOBAL",
             };
-            let controller = format!("flux__shortcut_controller_{}", element.name);
+            let controller = format!("flux__ui_shortcut_controller_{}", element.name);
             out.push_str(&format!(
-                "    GtkEventController *{controller} = gtk_shortcut_controller_new();\n    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER({controller}), {scope});\n    gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER({controller}), gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, {controller});\n",
+                "    {controller} = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());\n    gtk_shortcut_controller_set_scope({controller}, {scope});\n    gtk_shortcut_controller_add_shortcut({controller}, gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)));\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({controller}));\n",
                 c_string(&trigger),
                 element.name,
             ));

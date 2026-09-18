@@ -39021,6 +39021,72 @@ app ContextCard
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_shortcut_scope() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-shortcut-scope-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary shortcut-scope patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Shortcuts {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 0
+    Button action at 1,1
+        text: "Add"
+        shortcut: "Ctrl+K"
+        shortcutScope: "focused"
+        onPress: count => count + 1
+}
+app Shortcuts
+"#;
+    fs::write(&entry, initial).expect("initial shortcut-scope patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial shortcut-scope patch analysis should succeed");
+
+    let updated = initial.replace("shortcutScope: \"focused\"", "shortcutScope: \"window\"");
+    fs::write(&entry, updated).expect("updated shortcut-scope patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("shortcut-scope patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated shortcut-scope patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("shortcutScope edits should hot-apply to the existing native controller");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "action");
+    assert_eq!(patch[0].property, "shortcut_scope");
+    assert_eq!(patch[0].value, "window");
+
+    let generated = second
+        .emit_c()
+        .expect("shortcut-scope patch fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("static GtkShortcutController *flux__ui_shortcut_controller_action = NULL")
+    );
+    assert!(generated.contains(
+        "flux__ui_shortcut_controller_action = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new())"
+    ));
+    assert!(generated.contains(
+        "strcmp(property, \"shortcut_scope\") == 0 && flux__ui_shortcut_controller_action != NULL"
+    ));
+    assert!(generated.contains(
+        "gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_action, GTK_SHORTCUT_SCOPE_GLOBAL)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_add_controller(flux__ui_action, GTK_EVENT_CONTROLLER(flux__ui_shortcut_controller_action))"
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",
