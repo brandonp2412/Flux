@@ -35348,6 +35348,138 @@ fn native_module_object_cache_isolates_named_time_zone_transaction_lock() {
 }
 
 #[test]
+fn native_module_object_cache_isolates_process_termination_state() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-process-termination-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("native process-termination module cache fixture should be writable");
+    let signals = root.join("signals.flux");
+    let main = root.join("main.flux");
+    let marker = root.join("ready");
+    fs::write(
+        &signals,
+        "pub fn armTermination() -> bool {\n    return process.terminationRequested()\n}\n",
+    )
+    .expect("process-termination producer module should be writable");
+    fs::write(
+        &main,
+        format!(
+            "import \"signals.flux\"\n\nfn main() -> i64 {{\n    let armed: bool = armTermination()\n    if armed:\n        return 5\n    let markerError: error = fs.writeText(\"{}\", \"ready\")\n    if markerError != nil:\n        return 6\n    let start: i64 = process.cpuMillis()\n    while process.cpuMillis() - start < 100:\n        let spin: i64 = process.pid()\n        if spin < 0:\n            return 7\n    if process.terminationRequested():\n        return 0\n    return 8\n}}\n",
+            marker.display()
+        ),
+    )
+    .expect("process-termination consumer module should be writable");
+
+    let cache = root.join("cache");
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native process-termination object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let run_with_signal = |binary: &std::path::Path| {
+        let _ = fs::remove_file(&marker);
+        let child = Command::new(binary)
+            .spawn()
+            .expect("process-termination module-cache binary should start");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            marker.exists(),
+            "partitioned process-termination binary never armed its producer-side signal handler"
+        );
+        let kill = Command::new("kill")
+            .arg("-TERM")
+            .arg(child.id().to_string())
+            .status()
+            .expect("SIGTERM should reach the partitioned process-termination binary");
+        assert!(kill.success());
+        let output = child
+            .wait_with_output()
+            .expect("partitioned process-termination binary should exit");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "consumer-side termination polling must observe the producer-installed handler's shared flag"
+        );
+    };
+
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("process-termination module-object build should run");
+    assert!(
+        built.status.success(),
+        "process-termination module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the process-termination producer, entry runtime, and shared signal state should compile independently"
+    );
+    run_with_signal(&first);
+
+    fs::write(
+        &signals,
+        "pub fn armTermination() -> bool {\n    let requested: bool = process.terminationRequested()\n    if requested:\n        return true\n    return false\n}\n",
+    )
+    .expect("changed process-termination producer module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed process-termination module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed process-termination module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "a process-termination producer body edit should add one object while reusing the entry runtime and shared signal state"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the shared termination state and unchanged entry runtime objects should remain reusable"
+    );
+    run_with_signal(&second);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_isolates_websocket_client_mode() {
     if Command::new("openssl").arg("version").output().is_err() {
         return;

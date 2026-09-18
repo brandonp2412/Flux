@@ -4781,8 +4781,9 @@ fn emit_runtime_prelude(
     }
     if runtime_usage.contains("flux__process_termination_requested(") {
         out.push_str("static volatile sig_atomic_t flux__process_termination_flag = 0;\n");
+        out.push_str("static bool flux__process_termination_handlers_installed = false;\n");
         out.push_str("static void flux__process_termination_handler(int signal_number) { (void)signal_number; flux__process_termination_flag = 1; }\n");
-        out.push_str("static inline void flux__process_install_termination_handlers(void) { static bool installed = false; if (installed) return; struct sigaction action; memset(&action, 0, sizeof(action)); action.sa_handler = flux__process_termination_handler; sigemptyset(&action.sa_mask); if (sigaction(SIGINT, &action, NULL) != 0 || sigaction(SIGTERM, &action, NULL) != 0) { fputs(\"Flux runtime error: failed to install process termination handlers\\n\", stderr); abort(); } installed = true; }\n");
+        out.push_str("static inline void flux__process_install_termination_handlers(void) { if (flux__process_termination_handlers_installed) return; struct sigaction action; memset(&action, 0, sizeof(action)); action.sa_handler = flux__process_termination_handler; sigemptyset(&action.sa_mask); if (sigaction(SIGINT, &action, NULL) != 0 || sigaction(SIGTERM, &action, NULL) != 0) { fputs(\"Flux runtime error: failed to install process termination handlers\\n\", stderr); abort(); } flux__process_termination_handlers_installed = true; }\n");
         out.push_str("static inline bool flux__process_termination_requested(void) { flux__process_install_termination_handlers(); return flux__process_termination_flag != 0; }\n");
     }
     if runtime_usage.contains("flux__process_exit(") {

@@ -10755,6 +10755,10 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
     const TEST_CLOCK_CHANGED: &str =
         "static pthread_cond_t flux__test_clock_changed = PTHREAD_COND_INITIALIZER;";
     const TEST_CLOCK_MILLIS: &str = "static int64_t flux__test_clock_millis = 0;";
+    const PROCESS_TERMINATION_FLAG: &str =
+        "static volatile sig_atomic_t flux__process_termination_flag = 0;";
+    const PROCESS_TERMINATION_HANDLERS_INSTALLED: &str =
+        "static bool flux__process_termination_handlers_installed = false;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10936,6 +10940,26 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             definitions
                 .push_str("pthread_cond_t flux__test_clock_changed = PTHREAD_COND_INITIALIZER;\n");
         }
+        isolated = true;
+    }
+
+    if prefix.contains(PROCESS_TERMINATION_FLAG)
+        && prefix.contains(PROCESS_TERMINATION_HANDLERS_INSTALLED)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                PROCESS_TERMINATION_FLAG,
+                "extern volatile sig_atomic_t flux__process_termination_flag;",
+                1,
+            )
+            .replacen(
+                PROCESS_TERMINATION_HANDLERS_INSTALLED,
+                "extern bool flux__process_termination_handlers_installed;",
+                1,
+            );
+        definitions.push_str(
+            "\nvolatile sig_atomic_t flux__process_termination_flag = 0;\nbool flux__process_termination_handlers_installed = false;\n",
+        );
         isolated = true;
     }
 
@@ -13621,6 +13645,31 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the deterministic test clock must have exactly one process-wide definition"
+        );
+
+        let process_termination = "#include <stdbool.h>\n#include <signal.h>\nstatic volatile sig_atomic_t flux__process_termination_flag = 0;\nstatic bool flux__process_termination_handlers_installed = false;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let process_termination_units = partition_native_c_by_source(process_termination)
+            .expect("process termination state should move into one shared runtime unit");
+        assert_eq!(process_termination_units.len(), 3);
+        assert_eq!(
+            process_termination_units
+                .iter()
+                .filter(|unit| unit.lines().any(|line| {
+                    line == "volatile sig_atomic_t flux__process_termination_flag = 0;"
+                }))
+                .count(),
+            1,
+            "the termination signal flag must have exactly one process-wide definition"
+        );
+        assert_eq!(
+            process_termination_units
+                .iter()
+                .filter(|unit| unit.lines().any(|line| {
+                    line == "bool flux__process_termination_handlers_installed = false;"
+                }))
+                .count(),
+            1,
+            "termination handler installation state must have exactly one process-wide definition"
         );
     }
 
