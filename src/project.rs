@@ -2205,7 +2205,9 @@ fn development_ui_property_lifecycle_patch_value(
     property: &crate::ast::ViewProperty,
 ) -> Option<String> {
     let property_name = typecheck::source_name_to_internal(&property.name);
-    if property.transition.is_some() || !matches!(property_name.as_str(), "visible" | "enabled") {
+    if property.transition.is_some()
+        || !matches!(property_name.as_str(), "visible" | "enabled" | "primary")
+    {
         return None;
     }
     let ExprKind::Bool(value) = property.value.kind else {
@@ -2217,6 +2219,7 @@ fn development_ui_property_lifecycle_patch_value(
 fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
     match property {
         "visible" | "enabled" => Some("1".to_string()),
+        "primary" => Some("0".to_string()),
         _ => None,
     }
 }
@@ -2727,8 +2730,8 @@ fn development_ui_string_literals(
             };
             literals.insert((element.name.clone(), property_name), value);
         }
-        for property_name in ["visible", "enabled"] {
-            if property_name == "enabled"
+        for property_name in ["visible", "enabled", "primary"] {
+            if property_name != "visible"
                 && !development_ui_bool_property_is_patchable(element, property_name)
             {
                 continue;

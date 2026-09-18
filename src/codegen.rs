@@ -16228,12 +16228,10 @@ fn emit_linux_gtk_application(
                 }
             }
             "Button" => {
-                if view_property(element, "primary").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"primary\") == 0 && bool_value_valid && {widget} != NULL) {{ if (bool_value) gtk_widget_add_css_class({widget}, \"suggested-action\"); else gtk_widget_remove_css_class({widget}, \"suggested-action\"); }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"primary\") == 0 && bool_value_valid && {widget} != NULL) {{ if (bool_value) gtk_widget_add_css_class({widget}, \"suggested-action\"); else gtk_widget_remove_css_class({widget}, \"suggested-action\"); }}",
+                    c_string(&element.name)
+                ));
                 if view_property(element, "size").is_some() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"size\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ GtkWidget *button_label = gtk_button_get_child(GTK_BUTTON({widget})); if (GTK_IS_LABEL(button_label)) {{ PangoAttrList *button_attrs = pango_attr_list_new(); pango_attr_list_insert(button_attrs, pango_attr_size_new((int)integer_value * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL(button_label), button_attrs); pango_attr_list_unref(button_attrs); }} }} }}",
