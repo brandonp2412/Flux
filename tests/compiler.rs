@@ -42942,14 +42942,19 @@ fn package_import_namespace_loads_declared_path_dependencies() {
         "import \"pkg:remote/src/lib.flux\"\nfn main() -> i64 { 0 }\n",
     )
     .expect("registry app entry should be writable");
-    fluxc::project::write_lockfile(&app).expect("registry requirement lockfile should be writable");
-    let errors = fluxc::project::check(&app)
-        .expect_err("unresolved registry dependency must not pretend to be local");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("package dependency 'remote' requires dependency resolution")
-    }));
+    let empty_registry = root.join("empty-registry");
+    fs::create_dir_all(&empty_registry).expect("empty registry fixture should be writable");
+    let registry_lock = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lock")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &empty_registry)
+        .output()
+        .expect("registry lock command should run");
+    assert!(!registry_lock.status.success());
+    assert!(
+        String::from_utf8_lossy(&registry_lock.stderr)
+            .contains("no registry release of 'remote' satisfies ^1.2.3")
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -43100,6 +43105,7 @@ fn registry_lock_and_package_import_use_exact_verified_release() {
     let stale = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("check")
         .arg(&app)
+        .arg("--locked")
         .env_remove("FLUX_REGISTRY_DIR")
         .env_remove("FLUX_REGISTRY_URL")
         .env("FLUX_CACHE_DIR", &cache)
@@ -43398,7 +43404,7 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     }
     fs::write(
         app.join("flux.toml"),
-        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath = { path = \"../math\", version = \"^1.2.0\" }\nremote = \"~3.4.0\"\n",
+        "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\nmath = { path = \"../math\", version = \"^1.2.0\" }\n",
     )
     .expect("app manifest should be writable");
     fs::write(
@@ -43453,7 +43459,6 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
     assert!(first.contains("source = \"path:../math\""));
     assert!(first.contains("id = \"math/util\""));
     assert!(first.contains("source = \"path:../util\""));
-    assert!(first.contains("source = \"registry:~3.4.0\""));
 
     let tree = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("tree")
@@ -43470,7 +43475,6 @@ fn reproducible_lockfile_tracks_transitive_dependency_resolution() {
         "app",
         "math 1.4.3 [path:../math]",
         "util 2.0.0 [path:../util]",
-        "remote [registry:~3.4.0]",
     ] {
         assert!(
             tree.contains(expected),
@@ -44048,11 +44052,20 @@ fn dependency_add_remove_commands_update_manifest_and_lock() {
     assert!(!duplicate.status.success());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already declared"));
 
+    let registry = root.join("registry");
+    fs::create_dir_all(registry.join("remote")).expect("registry fixture should be writable");
+    fs::write(
+        registry.join("remote/3.4.2.toml"),
+        "format_version = 1\npackage = \"remote\"\nowner = \"flux-test\"\nrepository = \"https://github.com/flux-test/remote\"\nversion = \"3.4.2\"\nflux = \"*\"\nasset = \"https://github.com/flux-test/remote/releases/download/v3.4.2/remote.fluxpkg\"\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nyanked = false\n",
+    )
+    .expect("registry release metadata should be writable");
+
     let add_registry = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("add")
         .arg(&app)
         .arg("remote")
         .arg("~3.4.0")
+        .env("FLUX_REGISTRY_DIR", &registry)
         .output()
         .expect("flux add registry should run");
     assert!(add_registry.status.success());
@@ -44064,6 +44077,7 @@ fn dependency_add_remove_commands_update_manifest_and_lock() {
         .arg(root.join("missing-git"))
         .arg("--rev")
         .arg("HEAD")
+        .env("FLUX_REGISTRY_DIR", &registry)
         .output()
         .expect("flux add git should run");
     assert!(!add_git.status.success());
@@ -44071,7 +44085,7 @@ fn dependency_add_remove_commands_update_manifest_and_lock() {
     assert!(!manifest.contains("source ="));
     let lock =
         fs::read_to_string(app.join("flux.lock")).expect("updated lockfile should be readable");
-    assert!(lock.contains("source = \"registry:~3.4.0\""));
+    assert!(lock.contains("source = \"registry:https://github.com/flux-test/remote#3.4.2\""));
     assert!(!lock.contains("git:"));
 
     for dependency in ["remote", "dep"] {
@@ -44189,37 +44203,41 @@ fn dependency_fetch_update_and_outdated_cover_local_path_graphs() {
         "[package]\nname = \"app\"\nentry = \"src/main.flux\"\n\n[dependencies]\ndep = { path = \"../dep\", version = \"^1.0.0\" }\nremote = \"~3.4.0\"\n",
     )
     .expect("remote dependency manifest should be writable");
+    let empty_registry = root.join("empty-registry");
+    fs::create_dir_all(&empty_registry).expect("empty registry fixture should be writable");
     let remote_fetch = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("fetch")
         .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &empty_registry)
         .output()
         .expect("remote flux fetch should run");
     assert!(!remote_fetch.status.success());
-    let remote_fetch_error = String::from_utf8_lossy(&remote_fetch.stderr);
-    assert!(remote_fetch_error.contains("dependency fetch transport is not available yet"));
-    assert!(remote_fetch_error.contains("remote [registry:~3.4.0]"));
-
+    assert!(
+        String::from_utf8_lossy(&remote_fetch.stderr)
+            .contains("no registry release of 'remote' satisfies ~3.4.0")
+    );
     let remote_update = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("update")
         .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &empty_registry)
         .output()
         .expect("remote flux update should run");
     assert!(!remote_update.status.success());
     assert!(
         String::from_utf8_lossy(&remote_update.stderr)
-            .contains("registry dependencies require FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL")
+            .contains("no registry release of 'remote' satisfies ~3.4.0")
     );
 
     let remote_outdated = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("outdated")
         .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &empty_registry)
         .output()
         .expect("remote flux outdated should run");
-    assert!(remote_outdated.status.success());
-    assert!(
-        String::from_utf8_lossy(&remote_outdated.stdout)
-            .contains("remote: current ? requirement ~3.4.0 latest unavailable")
-    );
+    assert!(!remote_outdated.status.success());
+    let remote_outdated_error = String::from_utf8_lossy(&remote_outdated.stderr);
+    assert!(remote_outdated_error.contains("dependency 'remote' is missing from the lockfile"));
+    assert!(remote_outdated_error.contains("is stale or invalid"));
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -44309,8 +44327,24 @@ fn dependency_resolution_reports_conflicting_and_cyclic_paths() {
         "[package]\nname = \"right\"\nversion = \"1.0.0\"\nentry = \"lib.flux\"\n\n[dependencies]\nshared = \"~1.4.0\"\n",
     )
     .expect("compatible registry requirement should be writable");
-    fluxc::project::write_lockfile(&app)
-        .expect("overlapping registry requirements should remain resolvable");
+    let registry = root.join("registry");
+    fs::create_dir_all(registry.join("shared")).expect("registry fixture should be writable");
+    fs::write(
+        registry.join("shared/1.4.5.toml"),
+        "format_version = 1\npackage = \"shared\"\nowner = \"flux-test\"\nrepository = \"https://github.com/flux-test/shared\"\nversion = \"1.4.5\"\nflux = \"*\"\nasset = \"https://github.com/flux-test/shared/releases/download/v1.4.5/shared.fluxpkg\"\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nyanked = false\n",
+    )
+    .expect("registry release metadata should be writable");
+    let overlapping = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("lock")
+        .arg(&app)
+        .env("FLUX_REGISTRY_DIR", &registry)
+        .output()
+        .expect("overlapping registry lock should run");
+    assert!(
+        overlapping.status.success(),
+        "overlapping registry requirements should remain resolvable: {}",
+        String::from_utf8_lossy(&overlapping.stderr)
+    );
 
     fs::write(
         right.join("flux.toml"),

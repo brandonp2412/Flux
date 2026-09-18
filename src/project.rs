@@ -6720,7 +6720,7 @@ impl Loader<'_> {
                         DiagnosticStage::Parse,
                         span,
                         format!(
-                            "package dependency '{dependency_name}' requires dependency resolution before it can be imported; configure FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL and refresh flux.lock"
+                            "package dependency '{dependency_name}' requires dependency resolution before it can be imported; refresh flux.lock from the public registry or configure a registry override"
                         ),
                     ));
                     return None;

@@ -2086,12 +2086,9 @@ fn publish_registry_package_command(args: &[String]) -> Result<(), CliError> {
     let registry_repository = options
         .registry_repository
         .or_else(|| env::var("FLUX_REGISTRY_GITHUB_REPO").ok())
-        .ok_or_else(|| {
-            CliError::Message(
-                "package publishing requires '--registry owner/name' or FLUX_REGISTRY_GITHUB_REPO"
-                    .to_string(),
-            )
-        })?;
+        .unwrap_or_else(|| {
+            fluxc::package_ecosystem::DEFAULT_REGISTRY_GITHUB_REPOSITORY.to_string()
+        });
     github_repository_parts(&registry_repository)?;
 
     let nonce = SystemTime::now()

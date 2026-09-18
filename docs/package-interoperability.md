@@ -16,9 +16,10 @@ lock data; use `flux vendor` when a self-contained offline source snapshot is
 required.
 
 Registry metadata is a static index rather than a required service. The
-compiler accepts a checked-out index through `FLUX_REGISTRY_DIR` or the same
-layout from a static mirror through `FLUX_REGISTRY_URL`. Exact lock entries can
-be replayed from verified cache content without contacting a registry.
+compiler uses the public GitHub-backed Flux index by default; `FLUX_REGISTRY_DIR`
+selects a checked-out/private/test index and `FLUX_REGISTRY_URL` selects an
+alternate static mirror. Exact lock entries can be replayed from verified cache
+content without contacting any registry.
 
 Dependency modules use the explicit `pkg:<package>/<module.flux>` namespace.
 Local and Git packages retain their own manifest roots, imports, constants,

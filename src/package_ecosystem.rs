@@ -7,6 +7,9 @@ use std::process::Command;
 
 pub const PACKAGE_ARCHIVE_FORMAT_VERSION: u32 = 1;
 pub const REGISTRY_INDEX_FORMAT_VERSION: u32 = 1;
+pub const DEFAULT_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/brandonp2412/flux-registry/main";
+pub const DEFAULT_REGISTRY_GITHUB_REPOSITORY: &str = "brandonp2412/flux-registry";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryRelease {
@@ -171,10 +174,13 @@ pub fn configured_registry_provider(offline: bool) -> io::Result<ConfiguredRegis
             .map(|provider| provider.with_offline(offline))
             .map(ConfiguredRegistryProvider::Static);
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "registry dependencies require FLUX_REGISTRY_DIR or FLUX_REGISTRY_URL",
-    ))
+    if offline {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "offline registry resolution requires an exact lock or an explicit registry override",
+        ));
+    }
+    StaticRegistryProvider::new(DEFAULT_REGISTRY_URL).map(ConfiguredRegistryProvider::Static)
 }
 
 impl RegistryProvider for DirectoryRegistryProvider {
@@ -2320,6 +2326,39 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn default_registry_provider_points_at_public_static_index() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let previous_directory = std::env::var_os("FLUX_REGISTRY_DIR");
+        let previous_url = std::env::var_os("FLUX_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("FLUX_REGISTRY_DIR");
+            std::env::remove_var("FLUX_REGISTRY_URL");
+        }
+
+        let provider = configured_registry_provider(false).unwrap();
+        assert_eq!(
+            provider,
+            ConfiguredRegistryProvider::Static(
+                StaticRegistryProvider::new(DEFAULT_REGISTRY_URL).unwrap()
+            )
+        );
+        let offline = configured_registry_provider(true).unwrap_err();
+        assert_eq!(offline.kind(), io::ErrorKind::NotFound);
+        assert!(offline.to_string().contains("exact lock"));
+
+        unsafe {
+            match previous_directory {
+                Some(value) => std::env::set_var("FLUX_REGISTRY_DIR", value),
+                None => std::env::remove_var("FLUX_REGISTRY_DIR"),
+            }
+            match previous_url {
+                Some(value) => std::env::set_var("FLUX_REGISTRY_URL", value),
+                None => std::env::remove_var("FLUX_REGISTRY_URL"),
+            }
+        }
     }
 
     #[test]
