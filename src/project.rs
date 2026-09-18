@@ -2209,6 +2209,7 @@ fn development_ui_property_lifecycle_patch_value(
         || !matches!(
             property_name.as_str(),
             "visible"
+                | "clip"
                 | "enabled"
                 | "primary"
                 | "accessibility_hidden"
@@ -2229,7 +2230,7 @@ fn development_ui_property_lifecycle_patch_value(
 fn development_ui_property_lifecycle_default(property: &str) -> Option<String> {
     match property {
         "visible" | "enabled" | "wrap" => Some("1".to_string()),
-        "primary" | "accessibility_hidden" | "read_only" | "can_shrink" | "selectable" => {
+        "primary" | "clip" | "accessibility_hidden" | "read_only" | "can_shrink" | "selectable" => {
             Some("0".to_string())
         }
         _ => None,
@@ -2744,6 +2745,7 @@ fn development_ui_string_literals(
         }
         for property_name in [
             "visible",
+            "clip",
             "enabled",
             "primary",
             "accessibility_hidden",

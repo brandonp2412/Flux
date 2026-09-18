@@ -15790,12 +15790,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "clip").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"clip\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_overflow({host}, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);",
-                c_string(&element.name)
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"clip\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_overflow({host}, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);",
+            c_string(&element.name)
+        ));
         out.push_str(&format!(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_hidden\") == 0 && bool_value_valid && {host} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1);",
             c_string(&element.name)

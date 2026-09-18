@@ -41160,6 +41160,104 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_clip_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-clip-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary clip lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Label"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial clip lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial clip lifecycle source should analyze");
+
+    let generated = first
+        .emit_c()
+        .expect("clip lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains(
+            "strcmp(property, \"clip\") == 0 && bool_value_valid && flux__ui_label != NULL"
+        )
+    );
+    assert!(generated.contains(
+        "gtk_widget_set_overflow(flux__ui_label, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("clip lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        clip: false\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit clip default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit clip default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal clip default must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding clip: false should be an in-process no-op"
+    );
+
+    let clipped = initial.replace(
+        "        text: \"Label\"\n",
+        "        text: \"Label\"\n        clip: true\n",
+    );
+    fs::write(&entry, &clipped).expect("enabled clip lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("enabled clip lifecycle source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("adding clip: true should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "clip".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed clip source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed clip source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing clip should restore the implicit false value"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "clip".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_enabled_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-enabled-lifecycle-{}",
