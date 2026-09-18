@@ -1,5 +1,5 @@
 use crate as fluxc;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -10650,7 +10650,9 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
         bodies.entry(source.clone()).or_default().push_str(line);
     }
     if order.len() < 2 {
-        return None;
+        let source = order.first()?;
+        let body = bodies.remove(source)?;
+        return partition_native_single_source_public_functions(&prefix, &body);
     }
 
     Some(
@@ -10665,6 +10667,187 @@ fn partition_native_c_by_source(c_source: &str) -> Option<Vec<String>> {
             })
             .collect(),
     )
+}
+
+fn partition_native_single_source_public_functions(
+    prefix: &str,
+    body: &str,
+) -> Option<Vec<String>> {
+    let public_functions = prefix
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("static inline "))
+        .filter_map(native_flux_function_symbol)
+        .collect::<BTreeSet<_>>();
+    if public_functions.is_empty() {
+        return None;
+    }
+    let private_functions = prefix
+        .lines()
+        .filter(|line| line.trim_start().starts_with("static inline "))
+        .filter_map(native_flux_function_symbol)
+        .collect::<Vec<_>>();
+
+    let lines = body.split_inclusive('\n').collect::<Vec<_>>();
+    let mut offsets = Vec::with_capacity(lines.len());
+    let mut offset = 0usize;
+    for line in &lines {
+        offsets.push(offset);
+        offset += line.len();
+    }
+
+    let mut ranges = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some(symbol) = native_flux_function_symbol(line) else {
+            continue;
+        };
+        if !public_functions.contains(symbol) {
+            continue;
+        }
+        let Some(symbol_at) = line.find(symbol) else {
+            continue;
+        };
+        let Some(open_at) = line.find('{') else {
+            continue;
+        };
+        if open_at < symbol_at || line[..open_at].contains(';') {
+            continue;
+        }
+        let definition_start = offsets[index];
+        let open = definition_start + open_at;
+        let Some(end) = native_c_block_end(body, open) else {
+            return None;
+        };
+        let start = index
+            .checked_sub(1)
+            .filter(|previous| lines[*previous].trim_start().starts_with("#line "))
+            .map_or(definition_start, |previous| offsets[previous]);
+        let definition = &body[start..end];
+        if private_functions
+            .iter()
+            .any(|private| definition.contains(private))
+            || definition.contains("flux__lambda_")
+            || definition.contains("flux__bind_")
+        {
+            continue;
+        }
+        ranges.push((start, end));
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return None;
+    }
+
+    let mut units = Vec::with_capacity(ranges.len() + 1);
+    let mut remainder = String::with_capacity(body.len());
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        remainder.push_str(&body[cursor..start]);
+        let mut unit = String::with_capacity(prefix.len() + end - start);
+        unit.push_str(prefix);
+        unit.push_str(&body[start..end]);
+        units.push(unit);
+        cursor = end;
+    }
+    remainder.push_str(&body[cursor..]);
+    if remainder.trim().is_empty() {
+        return None;
+    }
+    let mut remainder_unit = String::with_capacity(prefix.len() + remainder.len());
+    remainder_unit.push_str(prefix);
+    remainder_unit.push_str(&remainder);
+    units.push(remainder_unit);
+    Some(units)
+}
+
+fn native_flux_function_symbol(line: &str) -> Option<&str> {
+    let start = line.find("flux__fn_")?;
+    let tail = &line[start..];
+    let length = tail
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        .count();
+    (length > "flux__fn_".len()).then_some(&tail[..length])
+}
+
+fn native_c_block_end(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut quote = None::<u8>;
+    let mut escaped = false;
+    let mut line_comment = false;
+    let mut block_comment = false;
+    let mut cursor = open;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if line_comment {
+            if byte == b'\n' {
+                line_comment = false;
+            }
+            cursor += 1;
+            continue;
+        }
+        if block_comment {
+            if byte == b'*' && bytes.get(cursor + 1) == Some(&b'/') {
+                block_comment = false;
+                cursor += 2;
+            } else {
+                cursor += 1;
+            }
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            cursor += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(cursor + 1) == Some(&b'/') {
+            line_comment = true;
+            cursor += 2;
+            continue;
+        }
+        if byte == b'/' && bytes.get(cursor + 1) == Some(&b'*') {
+            block_comment = true;
+            cursor += 2;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            quote = Some(byte);
+            cursor += 1;
+            continue;
+        }
+        if byte == b'{' {
+            depth += 1;
+        } else if byte == b'}' {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                cursor += 1;
+                if bytes.get(cursor) == Some(&b'\r') {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) == Some(&b'\n') {
+                    cursor += 1;
+                }
+                return Some(cursor);
+            }
+        }
+        cursor += 1;
+    }
+    None
 }
 
 fn native_source_line_path(line: &str) -> Option<&str> {
@@ -12880,6 +13063,30 @@ app OverlayDemo(title: "Overlay")
                 )
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn native_single_source_function_partitioning_keeps_private_dependencies_monolithic() {
+        let generated = "#include <stdint.h>\nstatic inline int64_t flux__fn_private(void);\nint64_t flux__fn_public(void);\n#line 1 \"/tmp/main.flux\"\nint64_t flux__fn_public(void) { return flux__fn_private(); }\n#line 5 \"/tmp/main.flux\"\nstatic inline int64_t flux__fn_private(void) { return 7; }\n#line 9 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_public(); }\n";
+        assert!(
+            partition_native_c_by_source(generated).is_none(),
+            "a public function that depends on a private generated function must retain the monolithic object path"
+        );
+
+        let independent = "#include <stdint.h>\nint64_t flux__fn_public(void);\n#line 1 \"/tmp/main.flux\"\nint64_t flux__fn_public(void) { const char *brace = \"{ still text }\"; (void)brace; return 7; }\n#line 5 \"/tmp/main.flux\"\nint main(void) { return (int)flux__fn_public(); }\n";
+        let units = partition_native_c_by_source(independent)
+            .expect("an independent public function should split from a single-source program");
+        assert_eq!(units.len(), 2);
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.contains("return 7") && !unit.contains("int main(void)"))
+        );
+        assert!(
+            units
+                .iter()
+                .any(|unit| unit.contains("int main(void)") && !unit.contains("return 7"))
         );
     }
 

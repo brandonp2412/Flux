@@ -33586,6 +33586,112 @@ fn native_cache_cli_reports_prunes_and_cleans_global_artifacts() {
 }
 
 #[test]
+fn native_function_object_cache_recompiles_only_changed_public_function() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-function-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native function cache fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "pub fn answer() -> i64 {\n    return 7\n}\n\nfn main() -> i64 {\n    return answer()\n}\n",
+    )
+    .expect("native function cache source should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first function-object build should run");
+    assert!(
+        built.status.success(),
+        "first function-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert_eq!(
+        Command::new(&first)
+            .status()
+            .expect("first function-object binary should run")
+            .code(),
+        Some(7)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native function object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        2,
+        "the public function and remaining program should compile independently"
+    );
+
+    fs::write(
+        &source,
+        "pub fn answer() -> i64 {\n    return 9\n}\n\nfn main() -> i64 {\n    return answer()\n}\n",
+    )
+    .expect("changed native function cache source should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed function-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed function-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        Command::new(&second)
+            .status()
+            .expect("changed function-object binary should run")
+            .code(),
+        Some(9)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        3,
+        "a body-only public-function edit should add exactly one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the unchanged program object should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_recompiles_only_changed_scalar_module() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-module-cache-{}-{}",
