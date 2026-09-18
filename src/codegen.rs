@@ -13161,6 +13161,14 @@ fn emit_windows_native_application(
         .elements
         .iter()
         .any(|element| view_property(element, "tooltip").is_some());
+    let uses_dynamic_layout_constraints = view.elements.iter().any(|element| {
+        ["min_width", "min_height", "max_width", "max_height"]
+            .iter()
+            .any(|property_name| {
+                view_property(element, property_name)
+                    .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+            })
+    });
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13179,6 +13187,9 @@ fn emit_windows_native_application(
         "static int64_t flux__ui_window_width = INT64_C({width});\nstatic int64_t flux__ui_window_height = INT64_C({height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic UINT flux__win_dpi = 96;\n"
     ));
     out.push_str("static bool flux__win_bounded_length(const char *value, size_t maximum, size_t *length) { if (value == NULL || length == NULL) return false; size_t cursor = 0; while (cursor <= maximum && value[cursor] != '\\0') cursor += 1; if (cursor > maximum) return false; *length = cursor; return true; }\n");
+    if uses_dynamic_layout_constraints {
+        out.push_str("static int64_t flux__win_checked_layout_size(int64_t value, const char *name) { if (value < 1 || value > INT32_MAX) { fprintf(stderr, \"Flux runtime error: %s must be between 1 and 2147483647\\n\", name); abort(); } return value; }\n");
+    }
     if uses_tooltips {
         out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, char **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } if (*storage != NULL && strcmp(*storage, text) == 0) return; char *copy = (char *)malloc(length + 1); if (copy == NULL) { fputs(\"Flux runtime error: unable to store tooltip text\\n\", stderr); abort(); } memcpy(copy, text, length + 1); free(*storage); *storage = copy; TOOLINFOA info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageA(flux__win_tooltips, TTM_UPDATETIPTEXTA, 0, (LPARAM)&info); }\n");
     }
@@ -13669,7 +13680,47 @@ fn emit_windows_native_application(
         let row_offset = element.row as i64 - 1;
         let column_span = element.column_span as i64;
         let row_span = element.row_span as i64;
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int minimum_width = flux__win_scale(INT64_C(40)); int minimum_height = flux__win_scale(INT64_C(28)); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        for (minimum_name, maximum_name, source_minimum, source_maximum) in [
+            ("min_width", "max_width", "minWidth", "maxWidth"),
+            ("min_height", "max_height", "minHeight", "maxHeight"),
+        ] {
+            if let (Some(minimum), Some(maximum)) = (
+                view_property(element, minimum_name),
+                view_property(element, maximum_name),
+            ) && let (Some(minimum_value), Some(maximum_value)) = (
+                static_expr_i64(&minimum.value, signatures),
+                static_expr_i64(&maximum.value, signatures),
+            ) && maximum_value < minimum_value
+            {
+                return Err(diag(
+                    maximum.value.span,
+                    &format!("{source_maximum} must be greater than or equal to {source_minimum}"),
+                ));
+            }
+        }
+        let min_width =
+            windows_layout_constraint_value(element, "min_width", "minWidth", view, signatures)?;
+        let min_height =
+            windows_layout_constraint_value(element, "min_height", "minHeight", view, signatures)?;
+        let max_width =
+            windows_layout_constraint_value(element, "max_width", "maxWidth", view, signatures)?;
+        let max_height =
+            windows_layout_constraint_value(element, "max_height", "maxHeight", view, signatures)?;
+        let min_width_value = min_width.as_deref().unwrap_or("INT64_C(40)");
+        let min_height_value = min_height.as_deref().unwrap_or("INT64_C(28)");
+        let max_width_value = max_width.as_deref().unwrap_or("INT64_C(-1)");
+        let max_height_value = max_height.as_deref().unwrap_or("INT64_C(-1)");
+        let width_relationship = if min_width.is_some() && max_width.is_some() {
+            "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
+        } else {
+            ""
+        };
+        let height_relationship = if min_height.is_some() && max_height.is_some() {
+            "if (requested_max_height < requested_min_height) { fputs(\"Flux runtime error: maxHeight must be greater than or equal to minHeight\\n\", stderr); abort(); } "
+        } else {
+            ""
+        };
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
@@ -13678,6 +13729,9 @@ fn emit_windows_native_application(
             "{} = {value};\n",
             ui_derived_c_name(&derived.name)
         ));
+    }
+    if uses_dynamic_layout_constraints {
+        out.push_str("RECT flux__win_refresh_client = {0}; if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client)) { flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top); }\n");
     }
     for element in &view.elements {
         let variable = ui_widget_c_name(&element.name);
@@ -14133,11 +14187,11 @@ fn emit_windows_native_application(
             out.push_str(&format!("SetLastError(0); flux__win_focus_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_focus_proc_{index}); if (flux__win_focus_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
     }
-    out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }");
+    out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); }");
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_apply_fonts();");
     }
-    out.push_str(" flux__win_refresh();\n");
+    out.push_str(" flux__win_refresh(); if (GetClientRect(flux__windows_active_window, &flux__win_client)) flux__win_layout(flux__win_client.right - flux__win_client.left, flux__win_client.bottom - flux__win_client.top);\n");
     if on_restore_state.is_some() {
         out.push_str("flux__win_restore_app_state();\n");
     }
@@ -19825,6 +19879,31 @@ fn static_rich_text_markup(
         ));
     }
     Ok(Some(markup))
+}
+
+fn windows_layout_constraint_value(
+    element: &crate::ast::ViewElement,
+    property_name: &str,
+    source_name: &str,
+    view: &crate::ast::ViewDef,
+    signatures: &Signatures,
+) -> Result<Option<String>, Diagnostic> {
+    let Some(property) = view_property(element, property_name) else {
+        return Ok(None);
+    };
+    if let Some(value) = static_expr_i64(&property.value, signatures) {
+        if !(1..=i64::from(i32::MAX)).contains(&value) {
+            return Err(diag(
+                property.value.span,
+                &format!("{source_name} must be between 1 and {}", i32::MAX),
+            ));
+        }
+        return Ok(Some(format!("INT64_C({value})")));
+    }
+    let value = ui_expr_c(&property.value, view, signatures)?;
+    Ok(Some(format!(
+        "flux__win_checked_layout_size(({value}), \"{source_name}\")"
+    )))
 }
 
 fn linux_size_constraint_value(

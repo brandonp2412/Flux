@@ -1643,11 +1643,14 @@ fn stopAfterStart() -> void {
 }
 
 view Screen {
+    state extent: i64 = 80
     grid columns: 1fr
     grid rows: auto
     Text title at 1,1
         text: "Cross target"
         tooltip: "Native tooltip"
+        minWidth: extent
+        maxWidth: 320
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -40239,6 +40242,26 @@ app DynamicConstraints
     assert!(android.contains("maxWidth must be greater than or equal to minWidth"));
     assert!(android.contains("maxHeight must be greater than or equal to minHeight"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows min/max constraints should lower");
+    assert!(windows.contains("flux__win_checked_layout_size"));
+    assert!(windows.contains(
+        "requested_min_width = flux__win_checked_layout_size((flux__ui_state_minimum), \"minWidth\")"
+    ));
+    assert!(windows.contains(
+        "requested_max_width = flux__win_checked_layout_size((flux__ui_state_maximum), \"maxWidth\")"
+    ));
+    assert!(windows.contains("maxWidth must be greater than or equal to minWidth"));
+    assert!(windows.contains("maxHeight must be greater than or equal to minHeight"));
+    assert!(windows.contains("int maximum_width = flux__win_scale(requested_max_width)"));
+    assert!(windows.contains("RECT flux__win_refresh_client = {0}"));
+    assert!(windows.contains("flux__win_layout(flux__win_refresh_client.right"));
+
     let invalid = r#"
 view InvalidConstraints {
     grid columns: auto
@@ -40254,6 +40277,22 @@ app InvalidConstraints
     let error = compile_to_c(invalid).expect_err("maxWidth below minWidth must be rejected");
     assert!(
         error
+            .message
+            .contains("maxWidth must be greater than or equal to minWidth")
+    );
+    let invalid_program =
+        fluxc::parser::parse(invalid).expect("invalid static Windows constraints should parse");
+    let invalid_signatures = fluxc::typecheck::check(&invalid_program)
+        .expect("invalid static Windows constraints should typecheck before native lowering");
+    let windows_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &invalid_program,
+        &invalid_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows maxWidth below minWidth must be rejected");
+    assert!(
+        windows_error
             .message
             .contains("maxWidth must be greater than or equal to minWidth")
     );
