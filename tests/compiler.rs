@@ -33798,6 +33798,259 @@ fn native_function_object_cache_recompiles_only_changed_private_function() {
 }
 
 #[test]
+fn native_function_object_cache_reuses_partial_application_helpers() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-bind-function-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native bind function cache fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "fn add(left: i64, right: i64) -> i64 {\n    return left + right\n}\n\nfn main() -> i64 {\n    let plusTwo: fn(i64) -> i64 = bind(add, 2)\n    return plusTwo(5)\n}\n",
+    )
+    .expect("native bind function cache source should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first bind function-object build should run");
+    assert!(
+        built.status.success(),
+        "first bind function-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert_eq!(
+        Command::new(&first)
+            .status()
+            .expect("first bind function-object binary should run")
+            .code(),
+        Some(7)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native bind function object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the bound target, generated bind helper, and remaining program should compile independently"
+    );
+
+    fs::write(
+        &source,
+        "fn add(left: i64, right: i64) -> i64 {\n    return left + right + 1\n}\n\nfn main() -> i64 {\n    let plusTwo: fn(i64) -> i64 = bind(add, 2)\n    return plusTwo(5)\n}\n",
+    )
+    .expect("changed bind target source should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed bind target build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed bind target build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        Command::new(&second)
+            .status()
+            .expect("changed bind target binary should run")
+            .code(),
+        Some(8)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "changing only the bound target should add one native object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the generated bind helper and program object should remain reusable"
+    );
+
+    fs::write(
+        &source,
+        "fn add(left: i64, right: i64) -> i64 {\n    return left + right + 1\n}\n\nfn main() -> i64 {\n    let plusTwo: fn(i64) -> i64 = bind(add, 3)\n    return plusTwo(5)\n}\n",
+    )
+    .expect("changed bind helper source should be writable");
+    let third = root.join("third");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&third)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed bind helper build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed bind helper build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        Command::new(&third)
+            .status()
+            .expect("changed bind helper binary should run")
+            .code(),
+        Some(9)
+    );
+
+    let third_objects = object_names();
+    assert_eq!(
+        third_objects.len(),
+        5,
+        "changing only the bound constant should add one generated-helper object"
+    );
+    assert!(
+        second_objects
+            .iter()
+            .all(|object| third_objects.contains(object)),
+        "the bound target and remaining program should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn native_function_object_cache_reuses_anonymous_function_helpers() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-lambda-function-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native lambda function cache fixture should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        "type Mapper = fn(i64) -> i64\n\nfn apply(transform: Mapper, value: i64) -> i64 {\n    return transform(value)\n}\n\nfn main() -> i64 {\n    let mapper: Mapper = fn(value: i64) { value + 2 }\n    return apply(mapper, 5)\n}\n",
+    )
+    .expect("native lambda function cache source should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first lambda function-object build should run");
+    assert!(
+        built.status.success(),
+        "first lambda function-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert_eq!(
+        Command::new(&first)
+            .status()
+            .expect("first lambda function-object binary should run")
+            .code(),
+        Some(7)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native lambda function object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the higher-order function, generated lambda helper, and remaining program should compile independently"
+    );
+
+    fs::write(
+        &source,
+        "type Mapper = fn(i64) -> i64\n\nfn apply(transform: Mapper, value: i64) -> i64 {\n    return transform(value)\n}\n\nfn main() -> i64 {\n    let mapper: Mapper = fn(value: i64) { value + 3 }\n    return apply(mapper, 5)\n}\n",
+    )
+    .expect("changed lambda helper source should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed lambda helper build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed lambda helper build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    assert_eq!(
+        Command::new(&second)
+            .status()
+            .expect("changed lambda helper binary should run")
+            .code(),
+        Some(8)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "changing only the lambda body should add one generated-helper object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "the higher-order function and remaining program should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn native_module_object_cache_recompiles_only_changed_scalar_module() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-module-cache-{}-{}",
