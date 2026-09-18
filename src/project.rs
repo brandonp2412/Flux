@@ -1935,14 +1935,14 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
         "background_color" | "shadow_color" => true,
-        "border_color" => ![
+        "border_color" => [
             "border_top_color",
             "border_bottom_color",
             "border_start_color",
             "border_end_color",
         ]
         .iter()
-        .any(|property| development_ui_element_has_property(element, property)),
+        .any(|property| !development_ui_element_has_property(element, property)),
         "border_top_color" | "border_bottom_color" | "border_start_color" | "border_end_color" => {
             true
         }
@@ -2127,34 +2127,34 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
             .find(|property| typecheck::source_name_to_internal(&property.name) == "min_height")
             .is_none_or(|property| development_ui_i64_literal_value(&property.value).is_some()),
         "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end" => true,
-        "border_width" => ![
+        "border_width" => [
             "border_top_width",
             "border_bottom_width",
             "border_start_width",
             "border_end_width",
         ]
         .iter()
-        .any(|property| development_ui_element_has_property(element, property)),
+        .any(|property| !development_ui_element_has_property(element, property)),
         "border_top_width" | "border_bottom_width" | "border_start_width" | "border_end_width" => {
             true
         }
-        "padding" => ![
+        "padding" => [
             "padding_top",
             "padding_bottom",
             "padding_start",
             "padding_end",
         ]
         .iter()
-        .any(|property| development_ui_element_has_property(element, property)),
+        .any(|property| !development_ui_element_has_property(element, property)),
         "padding_top" | "padding_bottom" | "padding_start" | "padding_end" => true,
-        "radius" => ![
+        "radius" => [
             "radius_top_left",
             "radius_top_right",
             "radius_bottom_left",
             "radius_bottom_right",
         ]
         .iter()
-        .any(|property| development_ui_element_has_property(element, property)),
+        .any(|property| !development_ui_element_has_property(element, property)),
         "radius_top_left" | "radius_top_right" | "radius_bottom_left" | "radius_bottom_right" => {
             true
         }

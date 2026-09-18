@@ -14781,7 +14781,7 @@ fn emit_linux_gtk_application(
             .iter()
             .any(|property_name| {
                 view_property(element, property_name).is_some()
-                    && linux_hot_css_color_property(element, property_name).is_some()
+                    && !linux_hot_css_color_properties(element, property_name).is_empty()
             })
     });
     if uses_hot_css_color {
@@ -15070,7 +15070,7 @@ fn emit_linux_gtk_application(
             "radius_bottom_right",
         ] {
             if view_property(element, property_name).is_some()
-                && linux_hot_css_i64_property(element, property_name).is_some()
+                && !linux_hot_css_i64_properties(element, property_name).is_empty()
             {
                 out.push_str(&format!(
                     "static GtkCssProvider *{} = NULL;\n",
@@ -15088,7 +15088,7 @@ fn emit_linux_gtk_application(
             "color",
         ] {
             if view_property(element, property_name).is_some()
-                && linux_hot_css_color_property(element, property_name).is_some()
+                && !linux_hot_css_color_properties(element, property_name).is_empty()
             {
                 out.push_str(&format!(
                     "static GtkCssProvider *{} = NULL;\n",
@@ -15743,19 +15743,20 @@ fn emit_linux_gtk_application(
             "radius_bottom_left",
             "radius_bottom_right",
         ] {
-            let Some(css_name) = linux_hot_css_i64_property(element, property_name) else {
-                continue;
-            };
-            if view_property(element, property_name).is_none() {
+            let css_names = linux_hot_css_i64_properties(element, property_name);
+            if css_names.is_empty() || view_property(element, property_name).is_none() {
                 continue;
             }
             let provider = linux_ui_hot_style_provider_c_name(element, property_name);
-            let css_format = c_string(&format!(
-                "#flux-ui-{} {{ {css_name}: %lldpx; }}",
-                element.name
-            ));
+            let declarations = css_names
+                .iter()
+                .map(|css_name| format!("{css_name}: %lldpx;"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let css_values = vec!["integer_value"; css_names.len()].join(", ");
+            let css_format = c_string(&format!("#flux-ui-{} {{ {declarations} }}", element.name));
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, integer_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
                 c_string(&element.name)
             ));
         }
@@ -15768,14 +15769,18 @@ fn emit_linux_gtk_application(
             "border_end_color",
             "color",
         ] {
-            let Some(css_name) = linux_hot_css_color_property(element, property_name) else {
-                continue;
-            };
-            if view_property(element, property_name).is_none() {
+            let css_names = linux_hot_css_color_properties(element, property_name);
+            if css_names.is_empty() || view_property(element, property_name).is_none() {
                 continue;
             }
             let provider = linux_ui_hot_style_provider_c_name(element, property_name);
-            let css_format = c_string(&format!("#flux-ui-{} {{ {css_name}: %s; }}", element.name));
+            let declarations = css_names
+                .iter()
+                .map(|css_name| format!("{css_name}: %s;"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let css_values = vec!["css_value"; css_names.len()].join(", ");
+            let css_format = c_string(&format!("#flux-ui-{} {{ {declarations} }}", element.name));
             let text_color_cleanup = if property_name == "color" && element.kind == "Text" {
                 format!(
                     " PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); if (current_attrs != NULL) {{ PangoAttrList *patched_attrs = pango_attr_list_copy(current_attrs); PangoAttrList *removed_attrs = pango_attr_list_filter(patched_attrs, flux__ui_hot_remove_text_color, NULL); if (removed_attrs != NULL) pango_attr_list_unref(removed_attrs); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }}"
@@ -15784,7 +15789,7 @@ fn emit_linux_gtk_application(
                 String::new()
             };
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{{text_color_cleanup} if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, css_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{{text_color_cleanup} if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
                 c_string(&element.name)
             ));
         }
@@ -19862,60 +19867,71 @@ fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
     }
 }
 
-fn linux_hot_css_i64_property(
+fn linux_hot_css_unshadowed_properties(
+    element: &crate::ast::ViewElement,
+    shorthand: &'static str,
+    overrides: &[(&str, &'static str)],
+) -> Vec<&'static str> {
+    if overrides
+        .iter()
+        .all(|(property, _)| view_property(element, property).is_none())
+    {
+        return vec![shorthand];
+    }
+    overrides
+        .iter()
+        .filter_map(|(property, css)| view_property(element, property).is_none().then_some(*css))
+        .collect()
+}
+
+fn linux_hot_css_i64_properties(
     element: &crate::ast::ViewElement,
     property_name: &str,
-) -> Option<&'static str> {
+) -> Vec<&'static str> {
     match property_name {
-        "border_width"
-            if ![
-                "border_top_width",
-                "border_bottom_width",
-                "border_start_width",
-                "border_end_width",
-            ]
-            .iter()
-            .any(|property| view_property(element, property).is_some()) =>
-        {
-            Some("border-width")
-        }
-        "border_top_width" => Some("border-top-width"),
-        "border_bottom_width" => Some("border-bottom-width"),
-        "border_start_width" => Some("border-left-width"),
-        "border_end_width" => Some("border-right-width"),
-        "padding"
-            if ![
-                "padding_top",
-                "padding_bottom",
-                "padding_start",
-                "padding_end",
-            ]
-            .iter()
-            .any(|property| view_property(element, property).is_some()) =>
-        {
-            Some("padding")
-        }
-        "padding_top" => Some("padding-top"),
-        "padding_bottom" => Some("padding-bottom"),
-        "padding_start" => Some("padding-left"),
-        "padding_end" => Some("padding-right"),
-        "radius"
-            if ![
-                "radius_top_left",
-                "radius_top_right",
-                "radius_bottom_left",
-                "radius_bottom_right",
-            ]
-            .iter()
-            .any(|property| view_property(element, property).is_some()) =>
-        {
-            Some("border-radius")
-        }
-        "radius_top_left" => Some("border-top-left-radius"),
-        "radius_top_right" => Some("border-top-right-radius"),
-        "radius_bottom_left" => Some("border-bottom-left-radius"),
-        "radius_bottom_right" => Some("border-bottom-right-radius"),
-        _ => None,
+        "border_width" => linux_hot_css_unshadowed_properties(
+            element,
+            "border-width",
+            &[
+                ("border_top_width", "border-top-width"),
+                ("border_bottom_width", "border-bottom-width"),
+                ("border_start_width", "border-left-width"),
+                ("border_end_width", "border-right-width"),
+            ],
+        ),
+        "border_top_width" => vec!["border-top-width"],
+        "border_bottom_width" => vec!["border-bottom-width"],
+        "border_start_width" => vec!["border-left-width"],
+        "border_end_width" => vec!["border-right-width"],
+        "padding" => linux_hot_css_unshadowed_properties(
+            element,
+            "padding",
+            &[
+                ("padding_top", "padding-top"),
+                ("padding_bottom", "padding-bottom"),
+                ("padding_start", "padding-left"),
+                ("padding_end", "padding-right"),
+            ],
+        ),
+        "padding_top" => vec!["padding-top"],
+        "padding_bottom" => vec!["padding-bottom"],
+        "padding_start" => vec!["padding-left"],
+        "padding_end" => vec!["padding-right"],
+        "radius" => linux_hot_css_unshadowed_properties(
+            element,
+            "border-radius",
+            &[
+                ("radius_top_left", "border-top-left-radius"),
+                ("radius_top_right", "border-top-right-radius"),
+                ("radius_bottom_left", "border-bottom-left-radius"),
+                ("radius_bottom_right", "border-bottom-right-radius"),
+            ],
+        ),
+        "radius_top_left" => vec!["border-top-left-radius"],
+        "radius_top_right" => vec!["border-top-right-radius"],
+        "radius_bottom_left" => vec!["border-bottom-left-radius"],
+        "radius_bottom_right" => vec!["border-bottom-right-radius"],
+        _ => Vec::new(),
     }
 }
 
@@ -19927,30 +19943,28 @@ fn linux_hot_css_time_i64_property(property_name: &str) -> Option<&'static str> 
     }
 }
 
-fn linux_hot_css_color_property(
+fn linux_hot_css_color_properties(
     element: &crate::ast::ViewElement,
     property_name: &str,
-) -> Option<&'static str> {
+) -> Vec<&'static str> {
     match property_name {
-        "background_color" => Some("background-color"),
-        "color" if element.kind == "Text" => Some("color"),
-        "border_color"
-            if ![
-                "border_top_color",
-                "border_bottom_color",
-                "border_start_color",
-                "border_end_color",
-            ]
-            .iter()
-            .any(|property| view_property(element, property).is_some()) =>
-        {
-            Some("border-color")
-        }
-        "border_top_color" => Some("border-top-color"),
-        "border_bottom_color" => Some("border-bottom-color"),
-        "border_start_color" => Some("border-left-color"),
-        "border_end_color" => Some("border-right-color"),
-        _ => None,
+        "background_color" => vec!["background-color"],
+        "color" if element.kind == "Text" => vec!["color"],
+        "border_color" => linux_hot_css_unshadowed_properties(
+            element,
+            "border-color",
+            &[
+                ("border_top_color", "border-top-color"),
+                ("border_bottom_color", "border-bottom-color"),
+                ("border_start_color", "border-left-color"),
+                ("border_end_color", "border-right-color"),
+            ],
+        ),
+        "border_top_color" => vec!["border-top-color"],
+        "border_bottom_color" => vec!["border-bottom-color"],
+        "border_start_color" => vec!["border-left-color"],
+        "border_end_color" => vec!["border-right-color"],
+        _ => Vec::new(),
     }
 }
 

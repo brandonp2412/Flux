@@ -38514,24 +38514,47 @@ app Screen
         "target-invalid padding must still reach native validation"
     );
 
-    let overridden_initial = initial.replace("padding: 4", "padding: 4\n        paddingTop: 2");
-    fs::write(&entry, &overridden_initial).expect("overridden padding source should be writable");
+    let overridden_initial = initial
+        .replace("padding: 4", "padding: 4\n        paddingTop: 2")
+        .replace("radius: 6", "radius: 6\n        radiusTopLeft: 3");
+    fs::write(&entry, &overridden_initial).expect("overridden spacing source should be writable");
     cache.invalidate_path(&entry);
     let overridden_first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("overridden padding source should analyze");
-    let overridden_updated = overridden_initial.replace("padding: 4", "padding: 12");
-    fs::write(&entry, overridden_updated).expect("overridden base padding edit should be writable");
+        .expect("overridden spacing source should analyze");
+    let overridden_updated = overridden_initial
+        .replace("padding: 4", "padding: 12")
+        .replace("radius: 6", "radius: 14");
+    fs::write(&entry, overridden_updated).expect("overridden base spacing edit should be writable");
     cache.invalidate_path(&entry);
     let overridden_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("overridden base padding edit should analyze");
-    assert!(
-        overridden_second
-            .development_ui_string_patch_from(&overridden_first)
-            .is_none(),
-        "base padding edits with explicit side overrides must retain controlled restart"
+        .expect("overridden base spacing edit should analyze");
+    let overridden_patch = overridden_second
+        .development_ui_string_patch_from(&overridden_first)
+        .expect("base spacing edits should preserve explicit side and corner overrides");
+    let overridden_patch = overridden_patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        overridden_patch.get(&("base".to_string(), "padding".to_string())),
+        Some(&"12".to_string())
     );
+    assert_eq!(
+        overridden_patch.get(&("base".to_string(), "radius".to_string())),
+        Some(&"14".to_string())
+    );
+    assert_eq!(overridden_patch.len(), 2);
+    let overridden_generated = overridden_second
+        .emit_c()
+        .expect("overridden spacing patch fixture should lower for Linux");
+    assert!(overridden_generated.contains(
+        "#flux-ui-base { padding-bottom: %lldpx; padding-left: %lldpx; padding-right: %lldpx; }"
+    ));
+    assert!(overridden_generated.contains(
+        "#flux-ui-base { border-top-right-radius: %lldpx; border-bottom-left-radius: %lldpx; border-bottom-right-radius: %lldpx; }"
+    ));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -38645,12 +38668,23 @@ app Screen
     let overridden_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("overridden border width edit should analyze");
-    assert!(
-        overridden_second
-            .development_ui_string_patch_from(&overridden_first)
-            .is_none(),
-        "base border width edits with explicit edge overrides must retain controlled restart"
+    let overridden_patch = overridden_second
+        .development_ui_string_patch_from(&overridden_first)
+        .expect("base border width edits should preserve explicit edge overrides");
+    assert_eq!(
+        overridden_patch,
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "base".to_string(),
+            property: "border_width".to_string(),
+            value: "4".to_string(),
+        }]
     );
+    let overridden_generated = overridden_second
+        .emit_c()
+        .expect("overridden border width patch fixture should lower for Linux");
+    assert!(overridden_generated.contains(
+        "#flux-ui-base { border-bottom-width: %lldpx; border-left-width: %lldpx; border-right-width: %lldpx; }"
+    ));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -38797,12 +38831,23 @@ app Screen
     let overridden_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("overridden base border color edit should analyze");
-    assert!(
-        overridden_second
-            .development_ui_string_patch_from(&overridden_first)
-            .is_none(),
-        "base border color edits with explicit edge overrides must retain controlled restart"
+    let overridden_patch = overridden_second
+        .development_ui_string_patch_from(&overridden_first)
+        .expect("base border color edits should preserve explicit edge overrides");
+    assert_eq!(
+        overridden_patch,
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "base".to_string(),
+            property: "border_color".to_string(),
+            value: "success".to_string(),
+        }]
     );
+    let overridden_generated = overridden_second
+        .emit_c()
+        .expect("overridden border color patch fixture should lower for Linux");
+    assert!(overridden_generated.contains(
+        "#flux-ui-base { border-bottom-color: %s; border-left-color: %s; border-right-color: %s; }"
+    ));
 
     let _ = fs::remove_dir_all(root);
 }
