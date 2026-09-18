@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ast::{Expr, ExprKind, Program, UnaryOp, ViewElement};
+use crate::ast::{Expr, ExprKind, Program, Type, UnaryOp, ViewElement};
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::{codegen, formatter, parser, typecheck};
 
@@ -40,6 +40,14 @@ pub struct DevelopmentUiStringPatch {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentStateBoundary {
+    pub root_compatible: bool,
+    pub preserved: Vec<String>,
+    pub reset: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectAnalysis {
     pub program: Program,
@@ -54,6 +62,13 @@ impl ProjectAnalysis {
             version: DEVELOPMENT_ABI_VERSION,
             fingerprint: development_abi_fingerprint(self),
         }
+    }
+
+    pub fn development_state_boundary_from(
+        &self,
+        previous: &ProjectAnalysis,
+    ) -> DevelopmentStateBoundary {
+        development_state_boundary(self, previous)
     }
 
     pub fn development_ui_string_patch_from(
@@ -2021,6 +2036,105 @@ fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usiz
     let end = start.checked_add(span.length)?;
     (end <= source.len() && source.is_char_boundary(start) && source.is_char_boundary(end))
         .then_some((start, end))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DevelopmentStateContract {
+    ty: Type,
+    text_input_owned: bool,
+}
+
+fn development_root_state_contracts(
+    analysis: &ProjectAnalysis,
+) -> (Option<String>, BTreeMap<String, DevelopmentStateContract>) {
+    let Some(application) = analysis.program.application.as_ref() else {
+        return (None, BTreeMap::new());
+    };
+    let Some(view) = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+    else {
+        return (Some(application.view_name.clone()), BTreeMap::new());
+    };
+    let states = view
+        .states
+        .iter()
+        .map(|state| {
+            let ty = analysis.signatures.canonical_type(&state.ty);
+            let text_input_owned =
+                ty == Type::Str && development_state_accepts_text_input_value(view, &state.name);
+            (
+                state.name.clone(),
+                DevelopmentStateContract {
+                    ty,
+                    text_input_owned,
+                },
+            )
+        })
+        .collect();
+    (Some(view.name.clone()), states)
+}
+
+fn development_state_accepts_text_input_value(
+    view: &crate::ast::ViewDef,
+    state_name: &str,
+) -> bool {
+    view.elements.iter().any(|element| {
+        element.kind == "TextInput"
+            && ["on_change", "on_submit"].iter().any(|property_name| {
+                element.properties.iter().any(|property| {
+                    typecheck::source_name_to_internal(&property.name) == *property_name
+                        && property.transition.as_ref().is_some_and(|transition| {
+                            transition.state == state_name && transition.event_value.is_some()
+                        })
+                })
+            })
+    })
+}
+
+fn development_state_boundary(
+    current: &ProjectAnalysis,
+    previous: &ProjectAnalysis,
+) -> DevelopmentStateBoundary {
+    let (current_root, current_states) = development_root_state_contracts(current);
+    let (previous_root, previous_states) = development_root_state_contracts(previous);
+    let root_compatible = current_root == previous_root;
+
+    if !root_compatible {
+        return DevelopmentStateBoundary {
+            root_compatible,
+            preserved: Vec::new(),
+            reset: current_states.keys().cloned().collect(),
+            dropped: previous_states.keys().cloned().collect(),
+        };
+    }
+
+    let preserved = current_states
+        .iter()
+        .filter_map(|(name, contract)| {
+            (previous_states.get(name) == Some(contract)).then_some(name.clone())
+        })
+        .collect();
+    let reset = current_states
+        .iter()
+        .filter_map(|(name, contract)| {
+            (previous_states.get(name) != Some(contract)).then_some(name.clone())
+        })
+        .collect();
+    let dropped = previous_states
+        .keys()
+        .filter(|name| !current_states.contains_key(*name))
+        .cloned()
+        .collect();
+
+    DevelopmentStateBoundary {
+        root_compatible,
+        preserved,
+        reset,
+        dropped,
+    }
 }
 
 fn development_abi_fingerprint(analysis: &ProjectAnalysis) -> u64 {

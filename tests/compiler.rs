@@ -32263,6 +32263,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
             "version-two",
             "reload: incremental analysis rechecked 1 module",
             "reload: incremental codegen reused 1 function and regenerated 1",
+            "reload: state boundary root compatible • preserved 0 • reset 0 • dropped 0",
             "reload: rebuilt and restarted after source change",
             "reload: ready in ",
         ],
@@ -32283,6 +32284,10 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"abi_compatible\":true"));
     assert!(status.contains("\"abi_version\":1"));
     assert!(status.contains("\"abi_fingerprint\":\""));
+    assert!(status.contains("\"state_root_compatible\":true"));
+    assert!(status.contains("\"state_preserved\":0"));
+    assert!(status.contains("\"state_reset\":0"));
+    assert!(status.contains("\"state_dropped\":0"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -32317,6 +32322,10 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     let status =
         fs::read_to_string(&status_path).expect("structural run status should be readable");
     assert!(status.contains("\"abi_compatible\":false"));
+    assert!(status.contains("\"state_root_compatible\":true"));
+    assert!(status.contains("\"state_preserved\":0"));
+    assert!(status.contains("\"state_reset\":0"));
+    assert!(status.contains("\"state_dropped\":0"));
 
     let _ = runner.kill();
     let _ = runner.wait();
@@ -36288,6 +36297,104 @@ app Screen
         third.development_abi(),
         first_abi,
         "view state layout changes must cross the development ABI boundary"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_state_boundary_preserves_only_name_type_and_ownership_compatible_state() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-state-boundary-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary state boundary project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state enabled: bool = true
+    state count: i64 = 12
+    state message: str = "ready"
+    state obsolete: bool = false
+    Text messageLabel at 1,1
+        text: message
+    Text countLabel at 2,1
+        text: "Count"
+        size: count
+    Text enabledLabel at 3,1
+        text: "Enabled"
+        visible: enabled
+    Text obsoleteLabel at 4,1
+        text: "Old"
+        wrap: obsolete
+}
+app Screen
+"#;
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto
+    state enabled: bool = false
+    state count: bool = false
+    state message: str = "new initializer"
+    state fresh: i64 = 18
+    TextInput messageInput at 1,1
+        text: message
+        onChange: message, value => value
+    Button countControl at 2,1
+        text: "Count"
+        enabled: count
+    Text enabledLabel at 3,1
+        text: "Enabled"
+        visible: enabled
+    Text freshLabel at 4,1
+        text: "Fresh"
+        size: fresh
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial state boundary source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial state boundary analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated state boundary source should be writable");
+    let entry = fs::canonicalize(entry).expect("state boundary entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated state boundary analysis should succeed");
+    assert_ne!(
+        second.development_abi(),
+        first.development_abi(),
+        "state contract and element changes should cross the development ABI boundary"
+    );
+    let boundary = second.development_state_boundary_from(&first);
+    assert!(boundary.root_compatible);
+    assert_eq!(boundary.preserved, vec!["enabled"]);
+    assert_eq!(boundary.reset, vec!["count", "fresh", "message"]);
+    assert_eq!(boundary.dropped, vec!["obsolete"]);
+
+    let renamed = updated
+        .replace("view Screen", "view Next")
+        .replace("app Screen", "app Next");
+    fs::write(&entry, renamed).expect("renamed root source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("renamed root analysis should succeed");
+    let renamed_boundary = third.development_state_boundary_from(&second);
+    assert!(!renamed_boundary.root_compatible);
+    assert!(renamed_boundary.preserved.is_empty());
+    assert_eq!(
+        renamed_boundary.reset,
+        vec!["count", "enabled", "fresh", "message"]
+    );
+    assert_eq!(
+        renamed_boundary.dropped,
+        vec!["count", "enabled", "fresh", "message"]
     );
 
     let _ = fs::remove_dir_all(root);

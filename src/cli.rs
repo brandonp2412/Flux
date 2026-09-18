@@ -5165,6 +5165,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         };
         let next_development_abi = analysis.development_abi();
         let abi_compatible = next_development_abi == development_abi;
+        let state_boundary = analysis.development_state_boundary_from(&running_analysis);
         let analysis_ms = analysis_started.elapsed().as_millis();
         let sources = analysis.sources.clone();
         let source_paths = sources
@@ -5194,6 +5195,10 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     abi_compatible: true,
                     abi: next_development_abi,
                     reload_method: "in_process_string",
+                    state_root_compatible: state_boundary.root_compatible,
+                    state_preserved: state_boundary.preserved.len(),
+                    state_reset: state_boundary.reset.len(),
+                    state_dropped: state_boundary.dropped.len(),
                 };
                 development_abi = next_development_abi;
                 running_analysis = analysis;
@@ -5284,6 +5289,10 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             abi_compatible,
             abi: next_development_abi,
             reload_method: "restart",
+            state_root_compatible: state_boundary.root_compatible,
+            state_preserved: state_boundary.preserved.len(),
+            state_reset: state_boundary.reset.len(),
+            state_dropped: state_boundary.dropped.len(),
         };
         development_abi = next_development_abi;
         running_analysis = analysis;
@@ -5312,6 +5321,26 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 "changed; controlled restart required"
             }
         );
+        eprintln!(
+            "reload: state boundary {} • preserved {} • reset {} • dropped {}",
+            if state_boundary.root_compatible {
+                "root compatible"
+            } else {
+                "root changed"
+            },
+            state_boundary.preserved.len(),
+            state_boundary.reset.len(),
+            state_boundary.dropped.len()
+        );
+        if !state_boundary.reset.is_empty() {
+            eprintln!("reload: reset state: {}", state_boundary.reset.join(", "));
+        }
+        if !state_boundary.dropped.is_empty() {
+            eprintln!(
+                "reload: dropped state: {}",
+                state_boundary.dropped.join(", ")
+            );
+        }
         eprintln!("reload: rebuilt and restarted after source change");
         eprintln!(
             "reload: ready in {}ms (analysis {}ms, codegen {}ms, native {}ms, restart {}ms)",
@@ -5345,6 +5374,10 @@ struct DevelopmentReloadTiming {
     abi_compatible: bool,
     abi: fluxc::project::DevelopmentAbi,
     reload_method: &'static str,
+    state_root_compatible: bool,
+    state_preserved: usize,
+    state_reset: usize,
+    state_dropped: usize,
 }
 
 fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
@@ -5421,7 +5454,7 @@ fn write_development_status_with_build(
     let timing_fields = timing
         .map(|timing| {
             format!(
-                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"apply_ms\":{},\"reload_total_ms\":{},\"reload_method\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\"",
+                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"apply_ms\":{},\"reload_total_ms\":{},\"reload_method\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\",\"state_root_compatible\":{},\"state_preserved\":{},\"state_reset\":{},\"state_dropped\":{}",
                 timing.analysis_ms,
                 timing.codegen_ms,
                 timing.native_ms,
@@ -5431,7 +5464,11 @@ fn write_development_status_with_build(
                 json_string(timing.reload_method),
                 timing.abi_compatible,
                 timing.abi.version,
-                timing.abi.fingerprint
+                timing.abi.fingerprint,
+                timing.state_root_compatible,
+                timing.state_preserved,
+                timing.state_reset,
+                timing.state_dropped
             )
         })
         .unwrap_or_default();
