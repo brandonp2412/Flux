@@ -14950,6 +14950,13 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
+        if view_property(element, "layout_transition_ms").is_some() {
+            let layout = linux_ui_layout_c_name(element);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"layout_transition_ms\") == 0 && {layout} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint)integer_value); }}",
+                c_string(&element.name)
+            ));
+        }
         if view_property(element, "visible").is_some() {
             if view_property(element, "layout_transition_ms").is_some() {
                 let layout = linux_ui_layout_c_name(element);

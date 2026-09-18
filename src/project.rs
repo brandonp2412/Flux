@@ -1987,7 +1987,7 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
             element.kind == "Text"
         }
         "size" => matches!(element.kind.as_str(), "Text" | "Button"),
-        "focus_scope" => true,
+        "focus_scope" | "layout_transition_ms" => true,
         "min_width" => !development_ui_element_has_property(element, "max_width"),
         "min_height" => !development_ui_element_has_property(element, "max_height"),
         "max_width" => !development_ui_element_has_property(element, "min_width"),
@@ -2006,6 +2006,25 @@ fn development_ui_string_literals(
         .views
         .iter()
         .find(|view| view.name == application.view_name)?;
+    let mut layout_transition_duration = None;
+    for element in &view.elements {
+        let Some(property) = element.properties.iter().find(|property| {
+            typecheck::source_name_to_internal(&property.name) == "layout_transition_ms"
+        }) else {
+            continue;
+        };
+        let ExprKind::Int(value) = property.value.kind else {
+            continue;
+        };
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        if layout_transition_duration.is_some_and(|existing| existing != value) {
+            return None;
+        }
+        layout_transition_duration = Some(value);
+    }
+
     let mut literals = BTreeMap::new();
     for element in &view.elements {
         for property in &element.properties {
@@ -2093,6 +2112,11 @@ fn development_ui_string_literals(
                     return None;
                 }
                 if property_name == "size" && !(1..=i64::from(i32::MAX)).contains(&value) {
+                    return None;
+                }
+                if property_name == "layout_transition_ms"
+                    && !(0..=i64::from(i32::MAX)).contains(&value)
+                {
                     return None;
                 }
                 if property_name == "letter_spacing"

@@ -36832,7 +36832,7 @@ app Screen
         size: 24
         focusScope: 9
         visible: false
-        layoutTransitionMs: 120
+        layoutTransitionMs: 200
         enabled: false
         primary: true
     Image image at 3,1
@@ -36911,6 +36911,7 @@ app Screen
         ("action", "size", "24"),
         ("action", "focus_scope", "9"),
         ("action", "visible", "0"),
+        ("action", "layout_transition_ms", "200"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
         ("image", "source", "updated.png"),
@@ -36934,7 +36935,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 44);
+    assert_eq!(patch.len(), 45);
 
     let generated = second
         .emit_c()
@@ -36945,6 +36946,9 @@ app Screen
     assert!(generated.contains("gtk_widget_set_visible(flux__ui_label, bool_value)"));
     assert!(generated.contains(
         "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_revealer_set_transition_duration(GTK_REVEALER(flux__ui_layout_action), (guint)integer_value)"
     ));
     assert!(generated.contains(
         "gtk_widget_set_overflow(flux__ui_label, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE)"
@@ -37115,6 +37119,24 @@ app Screen
         "target-invalid margin must still reach native validation"
     );
 
+    let invalid_transition = updated.replace("layoutTransitionMs: 200", "layoutTransitionMs: -1");
+    fs::write(&entry, invalid_transition)
+        .expect("invalid layoutTransitionMs edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid_transition = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid layoutTransitionMs remains semantically an i64");
+    assert!(
+        invalid_transition
+            .development_ui_string_patch_from(&second)
+            .is_none(),
+        "target-invalid layoutTransitionMs must use normal rebuild validation"
+    );
+    assert!(
+        invalid_transition.emit_c().is_err(),
+        "target-invalid layoutTransitionMs must still reach native validation"
+    );
+
     let invalid_focus_scope = updated.replace("focusScope: 9", "focusScope: -1");
     fs::write(&entry, invalid_focus_scope).expect("invalid focusScope edit should be writable");
     cache.invalidate_path(&entry);
@@ -37126,6 +37148,58 @@ app Screen
             .message
             .contains("focusScope must be between 0 and 2147483647")
     }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_preserves_layout_transition_view_invariant() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-layout-transition-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary layout-transition patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Button first at 1,1
+        text: "First"
+        visible: true
+        layoutTransitionMs: 120
+    Button second at 2,1
+        text: "Second"
+        visible: true
+        layoutTransitionMs: 120
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial layout-transition source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial layout-transition analysis should succeed");
+
+    let invalid_source = initial.replacen("layoutTransitionMs: 120", "layoutTransitionMs: 200", 1);
+    fs::write(&entry, invalid_source)
+        .expect("mismatched layout-transition source should be writable");
+    let entry = fs::canonicalize(entry).expect("layout-transition entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("mismatched layout-transition source should remain semantically typed");
+
+    assert!(
+        invalid.development_ui_string_patch_from(&first).is_none(),
+        "a hot patch must not bypass the one-duration-per-view transition invariant"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "the ordinary Linux rebuild must reject mismatched layout transition durations"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
