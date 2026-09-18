@@ -1584,6 +1584,18 @@ fn emit_c_for_target_with_source_metadata_impl(
         }
     }
     let runtime_usage = format!("{generated_body}{application_body}");
+    if target != NativeTarget::Linux && runtime_usage.contains("flux__linux_") {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "linux.* platform APIs require the Linux target",
+        ));
+    }
+    if runtime_usage.contains("flux__linux_secure_") && program.application.is_none() {
+        return Err(Diagnostic::global(
+            DiagnosticStage::Codegen,
+            "linux secure storage requires an application target",
+        ));
+    }
     if target != NativeTarget::Windows && runtime_usage.contains("flux__windows_") {
         return Err(Diagnostic::global(
             DiagnosticStage::Codegen,
@@ -2113,6 +2125,7 @@ fn runtime_codegen_identifier_relevant(identifier: &str) -> bool {
         "flux__frame_",
         "flux__fs_",
         "flux__json_",
+        "flux__linux_",
         "flux__list",
         "flux__locale_",
         "flux__map",
@@ -2503,6 +2516,9 @@ fn emit_runtime_prelude(
     if uses_gtk {
         out.push_str("#include <gtk/gtk.h>\n");
     }
+    if runtime_usage.contains("flux__linux_secure_") {
+        out.push_str("#include <libsecret/secret.h>\n");
+    }
     if uses_windows {
         out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
         if runtime_usage.contains("flux__windows_secure_") {
@@ -2547,6 +2563,11 @@ fn emit_runtime_prelude(
         || uses_locale_resources;
     let uses_frame_request = runtime_usage.contains("flux__frame_request(");
     let uses_frame_timeline = runtime_usage.contains("flux__frame_timeline(");
+    let uses_linux_secure_store = runtime_usage.contains("flux__linux_secure_store(");
+    let uses_linux_secure_read = runtime_usage.contains("flux__linux_secure_read(");
+    let uses_linux_secure_remove = runtime_usage.contains("flux__linux_secure_remove(");
+    let uses_linux_secure_storage =
+        uses_linux_secure_store || uses_linux_secure_read || uses_linux_secure_remove;
     let uses_windows_process_id = runtime_usage.contains("flux__windows_process_id(");
     let uses_windows_uptime_millis = runtime_usage.contains("flux__windows_uptime_millis(");
     let uses_windows_message_box = runtime_usage.contains("flux__windows_message_box(");
@@ -3814,6 +3835,18 @@ fn emit_runtime_prelude(
     if uses_windows {
         out.push_str("static wchar_t *flux__windows_utf8_to_wide(const char *value) { if (value == NULL) return NULL; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\n");
         out.push_str("static char *flux__windows_wide_to_utf8(const wchar_t *value) { if (value == NULL) return NULL; int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, NULL, 0, NULL, NULL); if (length <= 0) return NULL; char *utf8 = (char *)malloc((size_t)length); if (utf8 == NULL) return NULL; if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, utf8, length, NULL, NULL) <= 0) { free(utf8); return NULL; } return utf8; }\n");
+    }
+    if uses_linux_secure_storage && uses_gtk {
+        out.push_str("const char *flux__linux_application_identity(void);\nstatic const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };\nstatic bool flux__linux_secure_text(const char *value, size_t maximum, bool require_nonempty) { if (value == NULL || (require_nonempty && value[0] == '\\0')) return false; size_t length = 0; while (length <= maximum && value[length] != '\\0') length += 1; return length <= maximum && g_utf8_validate(value, (gssize)length, NULL); }\nstatic bool flux__linux_secure_inputs(const char *key, const char **identity) { if (identity == NULL || !flux__linux_secure_text(key, 1024, true)) return false; *identity = flux__linux_application_identity(); return flux__linux_secure_text(*identity, 1024, true); }\n");
+    }
+    if uses_linux_secure_store && uses_gtk {
+        out.push_str("static bool flux__linux_secure_store(const char *key, const char *value) { const char *identity = NULL; if (!flux__linux_secure_inputs(key, &identity) || !flux__linux_secure_text(value, 65536, false)) return false; GError *error = NULL; gboolean stored = secret_password_store_sync(&flux__linux_secure_schema, SECRET_COLLECTION_DEFAULT, \"Flux secure value\", value, NULL, &error, \"application\", identity, \"key\", key, NULL); bool ok = stored && error == NULL; if (error != NULL) g_error_free(error); return ok; }\n");
+    }
+    if uses_linux_secure_read && uses_gtk {
+        out.push_str("static bool flux__linux_secure_read(const char *key, void (*callback)(const char *)) { const char *identity = NULL; if (callback == NULL || !flux__linux_secure_inputs(key, &identity)) return false; GError *error = NULL; gchar *password = secret_password_lookup_sync(&flux__linux_secure_schema, NULL, &error, \"application\", identity, \"key\", key, NULL); bool found = false; if (error == NULL && password != NULL && flux__linux_secure_text(password, 65536, false)) { callback(password); found = true; } if (password != NULL) { secret_password_wipe(password); secret_password_free(password); } if (error != NULL) g_error_free(error); return found; }\n");
+    }
+    if uses_linux_secure_remove && uses_gtk {
+        out.push_str("static bool flux__linux_secure_remove(const char *key) { const char *identity = NULL; if (!flux__linux_secure_inputs(key, &identity)) return false; GError *error = NULL; (void)secret_password_clear_sync(&flux__linux_secure_schema, NULL, &error, \"application\", identity, \"key\", key, NULL); bool ok = error == NULL; if (error != NULL) g_error_free(error); return ok; }\n");
     }
     if uses_windows_process_id && uses_windows {
         out.push_str("static int64_t flux__windows_process_id(void) { return (int64_t)GetCurrentProcessId(); }\n");
@@ -14864,7 +14897,8 @@ fn emit_linux_gtk_application(
     theme_css.push_str(APPLICATION_THEME_CSS_RULES);
 
     out.push_str(&format!(
-        "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic GtkWidget *flux__ui_root_grid = NULL;\nstatic gboolean flux__ui_system_prefer_dark_theme = FALSE;\n#ifdef FLUX_PROFILE_TIMELINE\nstatic GtkWidget *flux__profile_overlay_label = NULL;\n#endif\n"
+        "static int64_t flux__ui_window_width = INT64_C({initial_window_width});\nstatic int64_t flux__ui_window_height = INT64_C({initial_window_height});\nstatic int64_t flux__ui_display_scale = INT64_C(1);\nstatic GtkWidget *flux__ui_root_grid = NULL;\nstatic gboolean flux__ui_system_prefer_dark_theme = FALSE;\nconst char *flux__linux_application_identity(void) {{ return {}; }}\n#ifdef FLUX_PROFILE_TIMELINE\nstatic GtkWidget *flux__profile_overlay_label = NULL;\n#endif\n",
+        c_string(&application_id)
     ));
     if hot_application_theme_palette {
         out.push_str("static GtkCssProvider *flux__ui_theme_provider = NULL;\n");
@@ -39934,6 +39968,34 @@ fn emit_qualified_call(
         };
         return Ok((call, vec![Type::Error], None));
     }
+    if namespace == "linux" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid linux platform call reached code generation",
+            ));
+        }
+        let binding = crate::linux_bindings::binding_named(name)
+            .ok_or_else(|| diag(span, "unknown linux platform call reached code generation"))?;
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                "invalid linux platform call reached code generation",
+            ));
+        }
+        let values = args
+            .iter()
+            .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+            .collect::<Result<Vec<_>, _>>()?;
+        let returns = match binding.returns {
+            crate::linux_bindings::LinuxBindingReturn::Bool => vec![Type::Bool],
+        };
+        return Ok((
+            format!("{}({})", binding.runtime_symbol(), values.join(", ")),
+            returns,
+            None,
+        ));
+    }
     if namespace == "windows" {
         if !named_args.is_empty() {
             return Err(diag(
@@ -41377,6 +41439,34 @@ fn emit_qualified_call(
                 return Err(diag(span, "invalid textInput call reached code generation"));
             }
         }
+    }
+    if namespace == "linux" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                "invalid linux platform call reached code generation",
+            ));
+        }
+        let binding = crate::linux_bindings::binding_named(name)
+            .ok_or_else(|| diag(span, "unknown linux platform call reached code generation"))?;
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                "invalid linux platform call reached code generation",
+            ));
+        }
+        let values = args
+            .iter()
+            .map(|arg| emit_expr(arg, env, signatures).map(|value| value.code))
+            .collect::<Result<Vec<_>, _>>()?;
+        let returns = match binding.returns {
+            crate::linux_bindings::LinuxBindingReturn::Bool => vec![Type::Bool],
+        };
+        return Ok((
+            format!("{}({})", binding.runtime_symbol(), values.join(", ")),
+            returns,
+            None,
+        ));
     }
     if namespace == "windows" {
         if !named_args.is_empty() {

@@ -1942,6 +1942,23 @@ fn add_qualified_namespace_completions(
         }
         return true;
     }
+    if namespace == "linux" {
+        for binding in crate::linux_bindings::LINUX_BINDINGS {
+            let params = binding
+                .params
+                .iter()
+                .map(|param| param.signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!(
+                "fn linux.{}({params}) -> {}",
+                binding.name,
+                binding.return_name()
+            );
+            push_completion_item(items, seen, binding.name, 3, &detail);
+        }
+        return true;
+    }
     if namespace == "windows" {
         for (label, detail) in [
             ("processId", "fn windows.processId() -> i64"),
@@ -5311,6 +5328,21 @@ fn signature_help_for_document_cached(
                     ));
                 }
                 _ => {}
+            }
+        }
+        if namespace == "linux" {
+            if let Some(binding) = crate::linux_bindings::binding_named(implementation_member) {
+                let params = binding
+                    .params
+                    .iter()
+                    .map(|param| param.signature)
+                    .collect::<Vec<_>>();
+                return Some(signature_help_for_builtin(
+                    &format!("linux.{member}"),
+                    &params,
+                    binding.return_name(),
+                    active_parameter,
+                ));
             }
         }
         if namespace == "windows" {
@@ -11624,6 +11656,78 @@ mod tests {
         .expect("keepScreenOn should have signature help")
         .to_json();
         assert!(help.contains("fn android.awake(enabled: bool) -> void"));
+    }
+
+    #[test]
+    fn linux_secure_storage_calls_have_completion_and_signature_help() {
+        let completion_uri = "file:///tmp/linux-platform-completion.flux";
+        let completion_source = "fn main() -> i64 {\n    linux.\n    return 0\n}\n";
+        let completion_documents =
+            HashMap::from([(completion_uri.to_string(), completion_source.to_string())]);
+        let completion_line = 1;
+        let completion_cursor = completion_source
+            .lines()
+            .nth(completion_line)
+            .unwrap()
+            .len();
+        let items = JsonValue::Array(completion_items_at_cursor(
+            completion_uri,
+            completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(completion_cursor),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        for expected in [
+            "fn linux.secureStore(key: str, value: str) -> bool",
+            "fn linux.secureRead(key: str, callback: fn(str) -> void) -> bool",
+            "fn linux.secureRemove(key: str) -> bool",
+        ] {
+            assert!(
+                items.contains(expected),
+                "missing Linux completion {expected}"
+            );
+        }
+
+        let uri = "file:///tmp/linux-platform-signatures.flux";
+        let source = "fn show(value: str) -> void {\n    print(value)\n}\nfn main() -> i64 {\n    print(linux.secureStore(\"session\", \"opaque\"))\n    print(linux.secureRead(\"session\", show))\n    print(linux.secureRemove(\"session\"))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "linux.secureStore(",
+                "fn linux.secureStore(key: str, value: str) -> bool",
+            ),
+            (
+                "linux.secureRead(",
+                "fn linux.secureRead(key: str, callback: fn(str) -> void) -> bool",
+            ),
+            (
+                "linux.secureRemove(",
+                "fn linux.secureRemove(key: str) -> bool",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("Linux platform call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("Linux platform call should have signature help")
+            .to_json();
+            assert!(
+                help.contains(expected),
+                "missing Linux signature {expected}"
+            );
+        }
     }
 
     #[test]

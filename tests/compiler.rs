@@ -50715,6 +50715,130 @@ app Screen(onConfigurationChanged: configurationChanged)
 }
 
 #[test]
+fn linux_secure_storage_uses_application_scoped_secret_service_values() {
+    let source = r#"
+fn secureValue(value: str) -> void {
+    print(value)
+}
+
+fn started() -> void {
+    print(linux.secureStore("session", "opaque"))
+    print(linux.secureRead("session", secureValue))
+    print(linux.secureRemove("session"))
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Secure"
+}
+app Screen(id: "nz.flux.secure", onStart: started)
+"#;
+    check_source(source).expect("Linux secure storage should typecheck");
+    let generated = compile_to_c(source).expect("Linux secure storage should lower");
+    for native_api in [
+        "secret_password_store_sync(",
+        "secret_password_lookup_sync(",
+        "secret_password_clear_sync(",
+        "secret_password_wipe(",
+    ] {
+        assert!(generated.contains(native_api), "missing {native_api}");
+    }
+    assert!(generated.contains("#include <libsecret/secret.h>"));
+    assert!(generated.contains("static const SecretSchema flux__linux_secure_schema"));
+    assert!(
+        generated.contains("flux__linux_application_identity(void) { return \"nz.flux.secure\"; }")
+    );
+    assert!(generated.contains("{ \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }"));
+    assert!(generated.contains("{ \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }"));
+    assert!(generated.contains("flux__linux_secure_store(\"session\", \"opaque\")"));
+    assert!(generated.contains("flux__linux_secure_read(\"session\", flux__fn_secureValue)"));
+    assert!(generated.contains("flux__linux_secure_remove(\"session\")"));
+    assert!(generated.contains("flux__linux_secure_text(password, 65536, false)"));
+
+    let normal_app = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+}
+app Screen(id: "nz.flux.plain")
+"#;
+    let normal_generated = compile_to_c(normal_app).expect("ordinary Linux app should lower");
+    assert!(!normal_generated.contains("#include <libsecret/secret.h>"));
+    assert!(!normal_generated.contains("secret_password_store_sync("));
+
+    let program = fluxc::parser::parse(source).expect("Linux secure source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Linux secure source should typecheck");
+    let wrong_target = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Linux secure storage should reject non-Linux targets");
+    assert!(
+        wrong_target
+            .message
+            .contains("linux.* platform APIs require the Linux target")
+    );
+
+    let headless = fluxc::parser::parse(
+        "fn main() -> i64 {\n    print(linux.secureStore(\"session\", \"opaque\"))\n    return 0\n}\n",
+    )
+    .expect("headless Linux secure source should parse");
+    let headless_signatures = fluxc::typecheck::check(&headless)
+        .expect("headless Linux secure source should typecheck before target selection");
+    let headless_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &headless,
+        &headless_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Linux,
+    )
+    .expect_err("Linux secure storage should require application identity");
+    assert!(
+        headless_error
+            .message
+            .contains("linux secure storage requires an application target")
+    );
+
+    if Command::new("pkg-config")
+        .args(["--exists", "gtk4", "libsecret-1"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-linux-secure-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("Linux secure compile directory should be writable");
+        let source_path = root.join("main.flux");
+        let binary = root.join("secure-app");
+        fs::write(&source_path, source).expect("Linux secure source should be writable");
+        let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+            .args(["build", source_path.to_str().unwrap(), "-o"])
+            .arg(&binary)
+            .output()
+            .expect("Flux should launch for Linux secure native build");
+        assert!(
+            built.status.success(),
+            "Linux secure native build failed: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        assert!(
+            binary.is_file(),
+            "Linux secure native build should emit a binary"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn linux_application_state_restoration_uses_bounded_atomic_storage() {
     let source = r#"
 fn saveState() -> str {

@@ -6504,6 +6504,9 @@ fn emit_llvm_from_c(c_source: &str) -> Result<String, String> {
     if c_source.contains("#include <sqlite3.h>") {
         cflags.extend(pkg_config_flags("--cflags", "sqlite3")?);
     }
+    if c_source.contains("#include <libsecret/secret.h>") {
+        cflags.extend(pkg_config_flags("--cflags", "libsecret-1")?);
+    }
     let mut command = Command::new("clang");
     command
         .args([
@@ -11620,12 +11623,25 @@ fn build_native_configured(
     } else {
         Vec::new()
     };
+    let libsecret = c_source.contains("#include <libsecret/secret.h>");
+    let libsecret_cflags = if libsecret {
+        pkg_config_flags("--cflags", "libsecret-1")?
+    } else {
+        Vec::new()
+    };
+    let libsecret_libs = if libsecret {
+        pkg_config_flags("--libs", "libsecret-1")?
+    } else {
+        Vec::new()
+    };
     let mut native_cflags = gtk_cflags;
     native_cflags.extend(sqlite_cflags);
     native_cflags.extend(crypto_cflags);
+    native_cflags.extend(libsecret_cflags);
     let mut native_libs = gtk_libs;
     native_libs.extend(sqlite_libs);
     native_libs.extend(crypto_libs);
+    native_libs.extend(libsecret_libs);
     if native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows {
         native_libs.extend(
             windows_native_system_libraries(c_source)
@@ -11650,7 +11666,8 @@ fn build_native_configured(
     let cache_enabled = native_package.is_none_or(|native_package| {
         native_package.libraries.is_empty() && native_package.search_paths.is_empty()
     });
-    let toolchain_identity = native_toolchain_cache_identity(gtk, sqlite, native_target)?;
+    let toolchain_identity =
+        native_toolchain_cache_identity(gtk, sqlite, libsecret, native_target)?;
     let cache = native_build_cache_path_configured(
         c_source,
         mode,
@@ -11975,8 +11992,9 @@ fn write_reproducibility_metadata(
         .unwrap_or_else(|| "none".to_string());
     let gtk = generated.contains("#include <gtk/gtk.h>");
     let sqlite = generated.contains("#include <sqlite3.h>");
-    let toolchain =
-        native_toolchain_cache_identity(gtk, sqlite, native_target).map_err(CliError::Message)?;
+    let libsecret = generated.contains("#include <libsecret/secret.h>");
+    let toolchain = native_toolchain_cache_identity(gtk, sqlite, libsecret, native_target)
+        .map_err(CliError::Message)?;
     let sysroot_hash = native_sysroot_cache_identity(native_target.sysroot.as_deref());
     let mut metadata = String::new();
     metadata.push_str("format = \"flux-reproducibility-v1\"\n");
@@ -12196,6 +12214,7 @@ fn write_native_cache_metadata(cache: &Path) -> io::Result<()> {
 fn native_toolchain_cache_identity(
     gtk: bool,
     sqlite: bool,
+    libsecret: bool,
     native_target: &NativeTargetOptions,
 ) -> Result<String, String> {
     let clang = command_first_line("clang", &["--version"])?;
@@ -12219,6 +12238,10 @@ fn native_toolchain_cache_identity(
     if sqlite {
         let sqlite_version = command_first_line("pkg-config", &["--modversion", "sqlite3"])?;
         identity.push_str(&format!("\nsqlite3={sqlite_version}"));
+    }
+    if libsecret {
+        let libsecret_version = command_first_line("pkg-config", &["--modversion", "libsecret-1"])?;
+        identity.push_str(&format!("\nlibsecret1={libsecret_version}"));
     }
     Ok(identity)
 }

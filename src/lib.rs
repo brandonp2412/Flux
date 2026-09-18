@@ -6,6 +6,7 @@ pub mod codegen;
 pub mod diagnostic;
 pub mod formatter;
 pub mod ir;
+pub mod linux_bindings;
 pub mod lsp;
 pub mod package_ecosystem;
 pub mod parser;

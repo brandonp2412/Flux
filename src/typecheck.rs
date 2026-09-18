@@ -11813,6 +11813,50 @@ fn check_qualified_call(
             }
         }
     }
+    if namespace == "linux" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("linux.{name} accepts positional arguments only"),
+            ));
+        }
+        let Some(binding) = crate::linux_bindings::binding_named(name) else {
+            return Err(diag(
+                *name_span,
+                &format!("linux module has no function '{name}'"),
+            ));
+        };
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                &format!(
+                    "linux.{name} expects {} argument{}, got {}",
+                    binding.params.len(),
+                    if binding.params.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            ));
+        }
+        for (argument, parameter) in args.iter().zip(binding.params.iter()) {
+            let actual = type_of_expr(argument, env, signatures)?;
+            let expected = match parameter.ty {
+                crate::linux_bindings::LinuxBindingType::Str => Type::Str,
+                crate::linux_bindings::LinuxBindingType::StrCallback => Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                },
+            };
+            require_type(
+                argument.span,
+                &expected,
+                &actual,
+                &format!("linux.{name} {}", parameter.name),
+            )?;
+        }
+        return Ok(match binding.returns {
+            crate::linux_bindings::LinuxBindingReturn::Bool => vec![Type::Bool],
+        });
+    }
     if namespace == "windows" {
         if !named_args.is_empty() {
             return Err(diag(
@@ -13873,6 +13917,50 @@ fn check_qualified_call(
                 ));
             }
         }
+    }
+    if namespace == "linux" {
+        if !named_args.is_empty() {
+            return Err(diag(
+                span,
+                &format!("linux.{name} accepts positional arguments only"),
+            ));
+        }
+        let Some(binding) = crate::linux_bindings::binding_named(name) else {
+            return Err(diag(
+                *name_span,
+                &format!("linux module has no function '{name}'"),
+            ));
+        };
+        if args.len() != binding.params.len() {
+            return Err(diag(
+                span,
+                &format!(
+                    "linux.{name} expects {} argument{}, got {}",
+                    binding.params.len(),
+                    if binding.params.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            ));
+        }
+        for (argument, parameter) in args.iter().zip(binding.params.iter()) {
+            let actual = type_of_expr(argument, env, signatures)?;
+            let expected = match parameter.ty {
+                crate::linux_bindings::LinuxBindingType::Str => Type::Str,
+                crate::linux_bindings::LinuxBindingType::StrCallback => Type::Function {
+                    params: vec![Type::Str],
+                    returns: Vec::new(),
+                },
+            };
+            require_type(
+                argument.span,
+                &expected,
+                &actual,
+                &format!("linux.{name} {}", parameter.name),
+            )?;
+        }
+        return Ok(match binding.returns {
+            crate::linux_bindings::LinuxBindingReturn::Bool => vec![Type::Bool],
+        });
     }
     if namespace == "windows" {
         if !named_args.is_empty() {
