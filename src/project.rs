@@ -1997,7 +1997,7 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
-        "autofocus" => true,
+        "autofocus" | "drag_translate" | "pinch_scale" => true,
         "selectable" | "wrap" | "bold" | "italic" | "underline" | "strikethrough" => {
             element.kind == "Text"
         }

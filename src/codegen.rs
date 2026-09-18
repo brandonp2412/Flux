@@ -14517,15 +14517,21 @@ fn emit_linux_gtk_application(
     );
     for element in &view.elements {
         if view_property(element, "drag_translate").is_some() {
+            let enabled = static_gesture_transform_enabled(element, "drag_translate", signatures)?;
             out.push_str(&format!(
-                "static int64_t {} = INT64_C(0);\nstatic int64_t {} = INT64_C(0);\n",
+                "static bool {} = {};\nstatic int64_t {} = INT64_C(0);\nstatic int64_t {} = INT64_C(0);\n",
+                ui_gesture_translate_enabled_c_name(&element.name),
+                if enabled { "true" } else { "false" },
                 ui_gesture_translate_x_c_name(&element.name),
                 ui_gesture_translate_y_c_name(&element.name)
             ));
         }
         if view_property(element, "pinch_scale").is_some() {
+            let enabled = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
             out.push_str(&format!(
-                "static int64_t {} = INT64_C(100);\n",
+                "static bool {} = {};\nstatic int64_t {} = INT64_C(100);\n",
+                ui_gesture_scale_enabled_c_name(&element.name),
+                if enabled { "true" } else { "false" },
                 ui_gesture_scale_c_name(&element.name)
             ));
         }
@@ -14962,6 +14968,7 @@ fn emit_linux_gtk_application(
         ));
     }
     out.push('\n');
+    out.push_str("static inline void flux__ui_refresh(void);\n");
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
     for element in &view.elements {
         let widget = ui_widget_c_name(&element.name);
@@ -15346,6 +15353,23 @@ fn emit_linux_gtk_application(
             };
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"autofocus\") == 0 && bool_value_valid && bool_value && {widget} != NULL) {{{ensure_focusable} gtk_widget_grab_focus({widget}); }}",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "drag_translate").is_some() {
+            let enabled = ui_gesture_translate_enabled_c_name(&element.name);
+            let translate_x = ui_gesture_translate_x_c_name(&element.name);
+            let translate_y = ui_gesture_translate_y_c_name(&element.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_translate\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {{ {translate_x} = INT64_C(0); {translate_y} = INT64_C(0); }} flux__ui_refresh(); }}",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "pinch_scale").is_some() {
+            let enabled = ui_gesture_scale_enabled_c_name(&element.name);
+            let scale = ui_gesture_scale_c_name(&element.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"pinch_scale\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {scale} = INT64_C(100); flux__ui_refresh(); }}",
                 c_string(&element.name)
             ));
         }
@@ -16098,9 +16122,9 @@ fn emit_linux_gtk_application(
             ));
         }
         let drag_action = view_property(element, "on_drag");
-        let drag_translate =
-            static_gesture_transform_enabled(element, "drag_translate", signatures)?;
-        if drag_action.is_some() || drag_translate {
+        let has_drag_action = drag_action.is_some();
+        let drag_translate = view_property(element, "drag_translate").is_some();
+        if has_drag_action || drag_translate {
             let callback = if let Some(action) = drag_action {
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
@@ -16115,17 +16139,23 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            let gesture_update = if drag_translate {
-                format!(
-                    "{} = (int64_t)offset_x; {} = (int64_t)offset_y; ",
+            let gesture_body = if drag_translate {
+                let enabled = ui_gesture_translate_enabled_c_name(&element.name);
+                let update = format!(
+                    "{} = (int64_t)offset_x; {} = (int64_t)offset_y;",
                     ui_gesture_translate_x_c_name(&element.name),
                     ui_gesture_translate_y_c_name(&element.name)
-                )
+                );
+                if has_drag_action {
+                    format!("{callback}if ({enabled}) {{ {update} }} flux__ui_refresh();")
+                } else {
+                    format!("if ({enabled}) {{ {update} flux__ui_refresh(); }}")
+                }
             } else {
-                String::new()
+                format!("{callback}flux__ui_refresh();")
             };
             out.push_str(&format!(
-                "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {callback}{gesture_update}flux__ui_refresh(); }}\n",
+                "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {gesture_body} }}\n",
                 element.name,
             ));
         }
@@ -16143,8 +16173,9 @@ fn emit_linux_gtk_application(
             ));
         }
         let scale_action = view_property(element, "on_scale");
-        let pinch_scale = static_gesture_transform_enabled(element, "pinch_scale", signatures)?;
-        if scale_action.is_some() || pinch_scale {
+        let has_scale_action = scale_action.is_some();
+        let pinch_scale = view_property(element, "pinch_scale").is_some();
+        if has_scale_action || pinch_scale {
             let callback = if let Some(action) = scale_action {
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
@@ -16159,16 +16190,22 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            let gesture_update = if pinch_scale {
-                format!(
-                    "{} = (int64_t)(scale * 100.0 + 0.5); ",
+            let gesture_body = if pinch_scale {
+                let enabled = ui_gesture_scale_enabled_c_name(&element.name);
+                let update = format!(
+                    "{} = (int64_t)(scale * 100.0 + 0.5);",
                     ui_gesture_scale_c_name(&element.name)
-                )
+                );
+                if has_scale_action {
+                    format!("{callback}if ({enabled}) {{ {update} }} flux__ui_refresh();")
+                } else {
+                    format!("if ({enabled}) {{ {update} flux__ui_refresh(); }}")
+                }
             } else {
-                String::new()
+                format!("{callback}flux__ui_refresh();")
             };
             out.push_str(&format!(
-                "static void flux__ui_scale_{}(GtkGestureZoom *gesture, double scale, gpointer data) {{ (void)gesture; (void)data; {callback}{gesture_update}flux__ui_refresh(); }}\n",
+                "static void flux__ui_scale_{}(GtkGestureZoom *gesture, double scale, gpointer data) {{ (void)gesture; (void)data; {gesture_body} }}\n",
                 element.name,
             ));
         }
@@ -17375,7 +17412,7 @@ fn emit_linux_gtk_application(
             ));
         }
         if view_property(element, "on_drag").is_some()
-            || static_gesture_transform_enabled(element, "drag_translate", signatures)?
+            || view_property(element, "drag_translate").is_some()
         {
             let controller = format!("flux__drag_{}", element.name);
             out.push_str(&format!(
@@ -17403,7 +17440,7 @@ fn emit_linux_gtk_application(
             ));
         }
         if view_property(element, "on_scale").is_some()
-            || static_gesture_transform_enabled(element, "pinch_scale", signatures)?
+            || view_property(element, "pinch_scale").is_some()
         {
             let controller = format!("flux__scale_{}", element.name);
             out.push_str(&format!(
@@ -21004,12 +21041,20 @@ fn static_gesture_transform_enabled(
     })
 }
 
+fn ui_gesture_translate_enabled_c_name(name: &str) -> String {
+    format!("flux__gesture_translate_enabled_{name}")
+}
+
 fn ui_gesture_translate_x_c_name(name: &str) -> String {
     format!("flux__gesture_translate_x_{name}")
 }
 
 fn ui_gesture_translate_y_c_name(name: &str) -> String {
     format!("flux__gesture_translate_y_{name}")
+}
+
+fn ui_gesture_scale_enabled_c_name(name: &str) -> String {
+    format!("flux__gesture_scale_enabled_{name}")
 }
 
 fn ui_gesture_scale_c_name(name: &str) -> String {
@@ -21074,22 +21119,26 @@ fn emit_dynamic_transform_refresh(
     let mut scale_y_percent = view_property(element, "scale_y_percent")
         .map(|property| ui_expr_c(&property.value, view, signatures))
         .unwrap_or_else(|| Ok(scale_percent.clone()))?;
-    if static_gesture_transform_enabled(element, "drag_translate", signatures)? {
+    if view_property(element, "drag_translate").is_some() {
+        let enabled = ui_gesture_translate_enabled_c_name(&element.name);
         translate_x = format!(
-            "({translate_x}) + {}",
+            "({translate_x}) + ({enabled} ? {} : INT64_C(0))",
             ui_gesture_translate_x_c_name(&element.name)
         );
         translate_y = format!(
-            "({translate_y}) + {}",
+            "({translate_y}) + ({enabled} ? {} : INT64_C(0))",
             ui_gesture_translate_y_c_name(&element.name)
         );
     }
-    if static_gesture_transform_enabled(element, "pinch_scale", signatures)? {
+    if view_property(element, "pinch_scale").is_some() {
+        let enabled = ui_gesture_scale_enabled_c_name(&element.name);
         let gesture_scale = ui_gesture_scale_c_name(&element.name);
-        scale_x_percent =
-            format!("((double)({scale_x_percent}) * (double)({gesture_scale}) / 100.0)");
-        scale_y_percent =
-            format!("((double)({scale_y_percent}) * (double)({gesture_scale}) / 100.0)");
+        scale_x_percent = format!(
+            "((double)({scale_x_percent}) * (double)({enabled} ? {gesture_scale} : INT64_C(100)) / 100.0)"
+        );
+        scale_y_percent = format!(
+            "((double)({scale_y_percent}) * (double)({enabled} ? {gesture_scale} : INT64_C(100)) / 100.0)"
+        );
     }
     let skew_x_degrees = value("skew_x_degrees", "0")?;
     let skew_y_degrees = value("skew_y_degrees", "0")?;

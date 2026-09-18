@@ -39383,6 +39383,99 @@ app Focus
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_gesture_transform_toggles() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-gesture-transform-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary gesture-transform patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Motion {
+    grid columns: 1fr
+    grid rows: auto
+    Text tile at 1,1
+        text: "Move"
+        dragTranslate: false
+        pinchScale: false
+}
+app Motion
+"#;
+    fs::write(&entry, initial).expect("initial gesture-transform source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial gesture-transform analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("disabled gesture-transform fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__gesture_translate_enabled_tile = false;"));
+    assert!(generated.contains("static bool flux__gesture_scale_enabled_tile = false;"));
+    assert!(generated.contains("gtk_gesture_drag_new()"));
+    assert!(generated.contains("gtk_gesture_zoom_new()"));
+    assert!(generated.contains(
+        "strcmp(property, \"drag_translate\") == 0 && bool_value_valid && flux__ui_tile != NULL"
+    ));
+    assert!(generated.contains(
+        "flux__gesture_translate_enabled_tile = bool_value; if (!bool_value) { flux__gesture_translate_x_tile = INT64_C(0); flux__gesture_translate_y_tile = INT64_C(0); } flux__ui_refresh();"
+    ));
+    assert!(generated.contains(
+        "flux__gesture_scale_enabled_tile = bool_value; if (!bool_value) flux__gesture_scale_tile = INT64_C(100); flux__ui_refresh();"
+    ));
+
+    let omitted = initial
+        .replace("        dragTranslate: false\n", "")
+        .replace("        pinchScale: false\n", "");
+    let omitted_generated =
+        compile_to_c(&omitted).expect("omitted gesture transforms should lower for Linux");
+    assert!(!omitted_generated.contains("flux__gesture_translate_enabled_tile"));
+    assert!(!omitted_generated.contains("flux__gesture_scale_enabled_tile"));
+    assert!(!omitted_generated.contains("gtk_gesture_drag_new()"));
+    assert!(!omitted_generated.contains("gtk_gesture_zoom_new()"));
+
+    let updated = initial
+        .replace("dragTranslate: false", "dragTranslate: true")
+        .replace("pinchScale: false", "pinchScale: true");
+    fs::write(&entry, updated).expect("enabled gesture-transform source should be writable");
+    let entry = fs::canonicalize(entry).expect("gesture-transform entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("enabled gesture-transform analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("gesture-transform enablement should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("tile".to_string(), "drag_translate".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(
+        patch.get(&("tile".to_string(), "pinch_scale".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("disabled gesture-transform source should be writable");
+    cache.invalidate_path(&entry);
+    let disabled = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("disabled gesture-transform analysis should succeed");
+    let patch = disabled
+        .development_ui_string_patch_from(&second)
+        .expect("gesture-transform disablement should hot-apply");
+    assert_eq!(patch.len(), 2);
+    assert!(patch.iter().all(|record| record.value == "0"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_shortcut_scope() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-shortcut-scope-patch-{}",
@@ -43105,15 +43198,22 @@ app DirectManipulation
     check_source(source).expect("gesture transform properties should be typed common bools");
 
     let linux = compile_to_c(source).expect("gesture transforms should lower directly on Linux");
+    assert!(linux.contains("static bool flux__gesture_translate_enabled_card = true;"));
     assert!(linux.contains("static int64_t flux__gesture_translate_x_card = INT64_C(0);"));
     assert!(linux.contains("static int64_t flux__gesture_translate_y_card = INT64_C(0);"));
+    assert!(linux.contains("static bool flux__gesture_scale_enabled_card = true;"));
     assert!(linux.contains("static int64_t flux__gesture_scale_card = INT64_C(100);"));
     assert!(linux.contains("gtk_gesture_drag_new()"));
     assert!(linux.contains("gtk_gesture_zoom_new()"));
     assert!(linux.contains("flux__gesture_translate_x_card = (int64_t)offset_x;"));
     assert!(linux.contains("flux__gesture_scale_card = (int64_t)(scale * 100.0 + 0.5);"));
-    assert!(linux.contains("(INT64_C(8)) + flux__gesture_translate_x_card"));
-    assert!(linux.contains("flux__gesture_scale_card"));
+    assert!(linux.contains(
+        "flux__gesture_translate_enabled_card ? flux__gesture_translate_x_card : INT64_C(0)"
+    ));
+    assert!(
+        linux
+            .contains("flux__gesture_scale_enabled_card ? flux__gesture_scale_card : INT64_C(100)")
+    );
 
     let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
         .expect("gesture transform fixture should analyze");
