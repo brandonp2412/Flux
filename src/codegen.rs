@@ -15083,6 +15083,12 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
+        if view_property(element, "accessibility_role").is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_role\") == 0 && {host} != NULL) {{ const char *role_description = NULL; bool heading_role = false; if (strcmp(value, \"label\") == 0) role_description = \"label\"; else if (strcmp(value, \"heading\") == 0) {{ role_description = \"heading\"; heading_role = true; }} else if (strcmp(value, \"button\") == 0) role_description = \"button\"; else if (strcmp(value, \"textBox\") == 0) role_description = \"text box\"; else if (strcmp(value, \"checkbox\") == 0) role_description = \"checkbox\"; else if (strcmp(value, \"radio\") == 0) role_description = \"radio\"; else if (strcmp(value, \"image\") == 0) role_description = \"image\"; else if (strcmp(value, \"switch\") == 0) role_description = \"switch\"; if (role_description != NULL) {{ gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, role_description, -1); if (heading_role) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_LEVEL, 1, -1); else gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_LEVEL); }} }}",
+                c_string(&element.name)
+            ));
+        }
         if view_property(element, "status").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"status\") == 0 && {host} != NULL) {{ bool status_valid = strcmp(value, \"normal\") == 0 || strcmp(value, \"loading\") == 0 || strcmp(value, \"empty\") == 0 || strcmp(value, \"error\") == 0; if (status_valid) {{ gtk_widget_remove_css_class({host}, \"flux-status-loading\"); gtk_widget_remove_css_class({host}, \"flux-status-empty\"); gtk_widget_remove_css_class({host}, \"flux-status-error\"); if (strcmp(value, \"loading\") == 0) gtk_widget_add_css_class({host}, \"flux-status-loading\"); else if (strcmp(value, \"empty\") == 0) gtk_widget_add_css_class({host}, \"flux-status-empty\"); else if (strcmp(value, \"error\") == 0) gtk_widget_add_css_class({host}, \"flux-status-error\"); }} }}",

@@ -1949,7 +1949,10 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                 .iter()
                 .any(|property| development_ui_element_has_property(element, property))
         }
-        "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
+        "accessibility_label"
+        | "accessibility_description"
+        | "accessibility_value"
+        | "accessibility_role" => true,
         "accessibility_action_label" => {
             !development_ui_element_has_property(element, "accessibility_description")
         }
@@ -2189,6 +2192,11 @@ fn development_ui_string_literals(
                     if !valid {
                         return None;
                     }
+                }
+                if property_name == "accessibility_role"
+                    && !typecheck::ACCESSIBILITY_ROLES.contains(&value.as_str())
+                {
+                    return None;
                 }
                 if property_name == "text_align" {
                     let valid = matches!(value.as_str(), "left" | "center" | "right" | "fill");

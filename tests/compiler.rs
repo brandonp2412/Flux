@@ -36524,6 +36524,7 @@ fn development_ui_string_patch_covers_native_labels_alt_text_and_accessibility()
         accessibilityLabel: "Toggle accessible before"
         accessibilityDescription: "Toggle description before"
         accessibilityValue: "off"
+        accessibilityRole: "checkbox"
     Radio radio at 2,1
         label: "Radio before"
     Nav navigation at 3,1
@@ -36554,6 +36555,7 @@ app Screen
         .replace("Toggle accessible before", "Toggle accessible after")
         .replace("Toggle description before", "Toggle description after")
         .replace("\"off\"", "\"on\"")
+        .replace("\"checkbox\"", "\"switch\"")
         .replace("Radio before", "Radio after")
         .replace("Nav before", "Nav after")
         .replace("Chart before", "Chart after")
@@ -36585,6 +36587,7 @@ app Screen
             "Toggle description after",
         ),
         ("toggle", "accessibility_value", "on"),
+        ("toggle", "accessibility_role", "switch"),
         ("radio", "label", "Radio after"),
         ("navigation", "label", "Nav after"),
         ("chart", "label", "Chart after"),
@@ -36599,7 +36602,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 11);
+    assert_eq!(patch.len(), 12);
 
     let generated = second
         .emit_c()
@@ -36618,6 +36621,9 @@ app Screen
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1"));
     assert!(generated.contains("strcmp(property, \"accessibility_value\") == 0"));
     assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1"));
+    assert!(generated.contains("strcmp(property, \"accessibility_role\") == 0"));
+    assert!(generated.contains("GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION, role_description, -1"));
+    assert!(generated.contains("gtk_accessible_reset_property"));
 
     let _ = fs::remove_dir_all(root);
 }
