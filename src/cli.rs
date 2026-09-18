@@ -10750,6 +10750,11 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static _Thread_local int64_t flux__worker_current_id = INT64_C(0);";
     const WORKER_CURRENT_ERROR: &str =
         "static _Thread_local const char *flux__worker_current_error = NULL;";
+    const TEST_CLOCK_MUTEX: &str =
+        "static pthread_mutex_t flux__test_clock_mutex = PTHREAD_MUTEX_INITIALIZER;";
+    const TEST_CLOCK_CHANGED: &str =
+        "static pthread_cond_t flux__test_clock_changed = PTHREAD_COND_INITIALIZER;";
+    const TEST_CLOCK_MILLIS: &str = "static int64_t flux__test_clock_millis = 0;";
 
     let mut partition_prefix = prefix.to_string();
     let mut definitions = String::new();
@@ -10902,6 +10907,34 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             );
             definitions
                 .push_str("pthread_cond_t flux__worker_changed = PTHREAD_COND_INITIALIZER;\n");
+        }
+        isolated = true;
+    }
+
+    if prefix.contains(TEST_CLOCK_MILLIS) {
+        partition_prefix = partition_prefix.replacen(
+            TEST_CLOCK_MILLIS,
+            "extern int64_t flux__test_clock_millis;",
+            1,
+        );
+        definitions.push_str("\nint64_t flux__test_clock_millis = 0;\n");
+        if prefix.contains(TEST_CLOCK_MUTEX) {
+            partition_prefix = partition_prefix.replacen(
+                TEST_CLOCK_MUTEX,
+                "extern pthread_mutex_t flux__test_clock_mutex;",
+                1,
+            );
+            definitions
+                .push_str("pthread_mutex_t flux__test_clock_mutex = PTHREAD_MUTEX_INITIALIZER;\n");
+        }
+        if prefix.contains(TEST_CLOCK_CHANGED) {
+            partition_prefix = partition_prefix.replacen(
+                TEST_CLOCK_CHANGED,
+                "extern pthread_cond_t flux__test_clock_changed;",
+                1,
+            );
+            definitions
+                .push_str("pthread_cond_t flux__test_clock_changed = PTHREAD_COND_INITIALIZER;\n");
         }
         isolated = true;
     }
@@ -13573,6 +13606,21 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the current worker identity must have exactly one external thread-local definition"
+        );
+
+        let test_clock = "#include <stdint.h>\nstatic int64_t flux__test_clock_millis = 0;\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let test_clock_units = partition_native_c_by_source(test_clock)
+            .expect("the deterministic test clock should move into one shared runtime unit");
+        assert_eq!(test_clock_units.len(), 3);
+        assert_eq!(
+            test_clock_units
+                .iter()
+                .filter(|unit| unit
+                    .lines()
+                    .any(|line| line == "int64_t flux__test_clock_millis = 0;"))
+                .count(),
+            1,
+            "the deterministic test clock must have exactly one process-wide definition"
         );
     }
 
