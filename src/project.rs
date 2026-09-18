@@ -1904,7 +1904,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
-        "background_color" => true,
+        "background_color" | "shadow_color" => true,
         "border_color" => ![
             "border_top_color",
             "border_bottom_color",
@@ -2086,6 +2086,7 @@ fn development_ui_string_literals(
                 if matches!(
                     property_name.as_str(),
                     "background_color"
+                        | "shadow_color"
                         | "border_color"
                         | "border_top_color"
                         | "border_bottom_color"

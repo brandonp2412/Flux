@@ -37610,6 +37610,78 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_shadow_color() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-shadow-color-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary shadow color patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Shadow"
+        shadowColor: "shadow"
+        shadowBlur: 8
+        shadowOffsetX: 2
+        shadowOffsetY: 3
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial shadow color patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial shadow color patch analysis should succeed");
+
+    let updated = initial.replace("shadowColor: \"shadow\"", "shadowColor: \"accent\"");
+    fs::write(&entry, &updated).expect("updated shadow color patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("shadow color patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated shadow color patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("shadow color edits should hot-apply");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "action");
+    assert_eq!(patch[0].property, "shadow_color");
+    assert_eq!(patch[0].value, "accent");
+
+    let generated = second
+        .emit_c()
+        .expect("shadow color patch fixture should lower for Linux");
+    assert!(
+        generated.contains("static GtkCssProvider *flux__ui_hot_style_action_shadow_color = NULL")
+    );
+    assert!(generated.contains("#flux-ui-action { box-shadow: 2px 3px 8px %s; }"));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow_color, patch_css, -1)"
+    ));
+
+    let invalid = updated.replace("shadowColor: \"accent\"", "shadowColor: \"javascript:red\"");
+    fs::write(&entry, invalid).expect("invalid shadow color edit should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("invalid shadow color remains semantically a string");
+    assert!(
+        invalid.development_ui_string_patch_from(&second).is_none(),
+        "target-invalid shadow color must use normal rebuild validation"
+    );
+    assert!(
+        invalid.emit_c().is_err(),
+        "target-invalid shadow color must still reach native validation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_css_transition_timing_and_border_style() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-css-transition-patch-{}",

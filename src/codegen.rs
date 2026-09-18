@@ -14741,6 +14741,12 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
+        if view_property(element, "shadow_color").is_some() {
+            out.push_str(&format!(
+                "static GtkCssProvider *{} = NULL;\n",
+                linux_ui_hot_style_provider_c_name(element, "shadow_color")
+            ));
+        }
         for property_name in [
             "transition_ms",
             "transition_delay_ms",
@@ -15165,6 +15171,22 @@ fn emit_linux_gtk_application(
             let css_format = c_string(&format!("#flux-ui-{} {{ {css_name}: %s; }}", element.name));
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, css_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                c_string(&element.name)
+            ));
+        }
+        if view_property(element, "shadow_color").is_some() {
+            let shadow_blur = static_style_i64(element, "shadow_blur", signatures)?.unwrap_or(0);
+            let shadow_offset_x =
+                static_style_i64(element, "shadow_offset_x", signatures)?.unwrap_or(0);
+            let shadow_offset_y =
+                static_style_i64(element, "shadow_offset_y", signatures)?.unwrap_or(0);
+            let provider = linux_ui_hot_style_provider_c_name(element, "shadow_color");
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ box-shadow: {shadow_offset_x}px {shadow_offset_y}px {shadow_blur}px %s; }}",
+                element.name
+            ));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"shadow_color\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, css_value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
                 c_string(&element.name)
             ));
         }
