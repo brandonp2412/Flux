@@ -13156,11 +13156,14 @@ fn emit_windows_native_application(
             || view_property(element, "accessibility_role").is_some()
             || view_property(element, "accessibility_action_label").is_some()
             || view_property(element, "accessibility_hidden").is_some()
+            || (element.kind == "TextInput"
+                && view_property(element, "validation_message").is_some())
     });
-    let uses_tooltips = view
-        .elements
-        .iter()
-        .any(|element| view_property(element, "tooltip").is_some());
+    let uses_tooltips = view.elements.iter().any(|element| {
+        view_property(element, "tooltip").is_some()
+            || (element.kind == "TextInput"
+                && view_property(element, "validation_message").is_some())
+    });
     let uses_dynamic_layout_constraints = view.elements.iter().any(|element| {
         ["min_width", "min_height", "max_width", "max_height"]
             .iter()
@@ -13333,7 +13336,10 @@ fn emit_windows_native_application(
                 element.name
             ));
         }
-        if view_property(element, "tooltip").is_some() {
+        if view_property(element, "tooltip").is_some()
+            || (element.kind == "TextInput"
+                && view_property(element, "validation_message").is_some())
+        {
             out.push_str(&format!(
                 "static char *flux__win_tooltip_text_{} = NULL;\n",
                 element.name
@@ -13823,7 +13829,17 @@ fn emit_windows_native_application(
                 }
             }
         }
-        if let Some(property) = view_property(element, "tooltip") {
+        if element.kind == "TextInput"
+            && let Some(validation) = view_property(element, "validation_message")
+        {
+            let validation_value = ui_expr_c(&validation.value, view, signatures)?;
+            let fallback = if let Some(tooltip) = view_property(element, "tooltip") {
+                ui_expr_c(&tooltip.value, view, signatures)?
+            } else {
+                c_string("")
+            };
+            out.push_str(&format!("const char *flux__win_validation_message_{} = {validation_value}; const char *flux__win_effective_tooltip_{} = (flux__win_validation_message_{} != NULL && flux__win_validation_message_{}[0] != '\\0') ? flux__win_validation_message_{} : {fallback}; flux__win_set_tooltip({variable}, &flux__win_tooltip_text_{}, flux__win_effective_tooltip_{});\n", element.name, element.name, element.name, element.name, element.name, element.name, element.name));
+        } else if let Some(property) = view_property(element, "tooltip") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "flux__win_set_tooltip({variable}, &flux__win_tooltip_text_{}, {value});\n",
@@ -13849,6 +13865,13 @@ fn emit_windows_native_application(
             ));
         }
         if let Some(property) = view_property(element, "accessibility_description") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_accessibility_set_description({variable}, {value});\n"
+            ));
+        } else if element.kind == "TextInput"
+            && let Some(property) = view_property(element, "validation_message")
+        {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "flux__win_accessibility_set_description({variable}, {value});\n"
@@ -14156,7 +14179,10 @@ fn emit_windows_native_application(
             "0".to_string()
         };
         out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {text}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
-        if view_property(element, "tooltip").is_some() {
+        if view_property(element, "tooltip").is_some()
+            || (element.kind == "TextInput"
+                && view_property(element, "validation_message").is_some())
+        {
             out.push_str(&format!("TOOLINFOA flux__win_toolinfo_{index} = {{0}}; flux__win_toolinfo_{index}.cbSize = sizeof(flux__win_toolinfo_{index}); flux__win_toolinfo_{index}.uFlags = TTF_IDISHWND | TTF_SUBCLASS; flux__win_toolinfo_{index}.hwnd = flux__windows_active_window; flux__win_toolinfo_{index}.uId = (UINT_PTR){variable}; flux__win_toolinfo_{index}.lpszText = \"\"; if (!SendMessageA(flux__win_tooltips, TTM_ADDTOOLA, 0, (LPARAM)&flux__win_toolinfo_{index})) return 1;\n"));
         }
         if let Some(property) = view_property(element, "accessibility_role") {
@@ -14263,11 +14289,11 @@ fn emit_windows_native_application(
         out.push_str(" flux__win_delete_brushes();");
     }
     if uses_tooltips {
-        for element in view
-            .elements
-            .iter()
-            .filter(|element| view_property(element, "tooltip").is_some())
-        {
+        for element in view.elements.iter().filter(|element| {
+            view_property(element, "tooltip").is_some()
+                || (element.kind == "TextInput"
+                    && view_property(element, "validation_message").is_some())
+        }) {
             out.push_str(&format!(
                 " free(flux__win_tooltip_text_{}); flux__win_tooltip_text_{} = NULL;",
                 element.name, element.name

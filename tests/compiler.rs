@@ -1645,13 +1645,16 @@ fn stopAfterStart() -> void {
 view Screen {
     state extent: i64 = 80
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text title at 1,1
         text: "Cross target"
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
         marginStart: extent
+    TextInput email at 2,1
+        placeholder: "Email"
+        validationMessage: "Enter a valid email"
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -1697,7 +1700,7 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
             .args(["-o"])
             .arg(&binary)
             .arg(&c_path)
-            .args(["-luser32", "-lgdi32", "-lcomctl32"])
+            .args(["-luser32", "-lgdi32", "-lcomctl32", "-lole32"])
             .output()
             .expect("winegcc should run for Windows executable validation");
         assert!(
@@ -39125,6 +39128,21 @@ app Form
     assert!(android.contains("setTextInputValidationMessage"));
     assert!(android.contains("Enter a valid email address"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("TextInput validation message should lower on Windows");
+    assert!(windows.contains("flux__win_validation_message_email"));
+    assert!(windows.contains("flux__win_effective_tooltip_email"));
+    assert!(windows.contains("flux__win_set_tooltip(flux__ui_email"));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(flux__ui_email, \"Enter a valid email address\")"
+    ));
+    assert!(windows.contains("TTM_ADDTOOLA"));
+
     let dynamic = r#"
 view Form {
     state validation: str = "normal"
@@ -39161,6 +39179,21 @@ app Form
     assert!(android.contains("refresh_validation_message_method"));
     assert!(linux.contains("gtk_entry_set_icon_tooltip_text(GTK_ENTRY(flux__ui_email)"));
     assert!(android.contains("if (changed_state == -1 || changed_state == 0) {"));
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic TextInput validation message should lower on Windows");
+    assert!(
+        windows
+            .contains("const char *flux__win_validation_message_email = flux__ui_state_validation")
+    );
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(flux__ui_email, flux__ui_state_validation)"
+    ));
+    assert!(windows.contains("flux__win_set_tooltip(flux__ui_email"));
 
     let invalid = r#"
 view Form {
