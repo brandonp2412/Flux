@@ -36684,7 +36684,7 @@ app Screen
         enabled: false
         primary: true
     Image image at 3,1
-        source: "image.png"
+        source: "updated.png"
         fit: "cover"
         canShrink: false
     TextInput input at 4,1
@@ -36731,6 +36731,7 @@ app Screen
         ("action", "visible", "0"),
         ("action", "enabled", "0"),
         ("action", "primary", "1"),
+        ("image", "source", "updated.png"),
         ("image", "fit", "cover"),
         ("image", "can_shrink", "0"),
         ("input", "read_only", "1"),
@@ -36746,7 +36747,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 17);
+    assert_eq!(patch.len(), 18);
 
     let generated = second
         .emit_c()
@@ -36771,6 +36772,10 @@ app Screen
     ));
     assert!(
         generated.contains("gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_image), bool_value)")
+    );
+    assert!(generated.contains("strcmp(property, \"source\") == 0"));
+    assert!(
+        generated.contains("gtk_picture_set_filename(GTK_PICTURE(flux__ui_image), image_source)")
     );
     assert!(generated.contains("strcmp(property, \"fit\") == 0"));
     assert!(

@@ -1901,7 +1901,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
             "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
         ),
         "title" => element.kind == "Card",
-        "alt" | "fit" => element.kind == "Image",
+        "source" | "alt" | "fit" => element.kind == "Image",
         "tooltip" => {
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
