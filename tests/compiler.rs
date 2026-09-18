@@ -36634,7 +36634,7 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let entry = root.join("main.flux");
     let initial = r#"view Screen {
     grid columns: 1fr
-    grid rows: auto auto auto auto auto
+    grid rows: auto auto auto auto auto auto auto
     Text label at 1,1
         text: "Label"
         visible: true
@@ -36674,12 +36674,18 @@ fn development_ui_string_patch_covers_safe_static_scalar_properties() {
         keyboardType: "text"
         maxLength: 48
         multiline: true
+    Toggle toggle at 6,1
+        label: "Toggle"
+        checked: true
+    Radio radio at 7,1
+        label: "Radio"
+        selected: false
 }
 app Screen
 "#;
     let updated = r#"view Screen {
     grid columns: 1fr
-    grid rows: auto auto auto auto auto
+    grid rows: auto auto auto auto auto auto auto
     Text label at 1,1
         text: "Label"
         visible: false
@@ -36719,6 +36725,12 @@ app Screen
         keyboardType: "url"
         maxLength: 96
         multiline: true
+    Toggle toggle at 6,1
+        label: "Toggle"
+        checked: false
+    Radio radio at 7,1
+        label: "Radio"
+        selected: true
 }
 app Screen
 "#;
@@ -36774,6 +36786,8 @@ app Screen
         ("notes", "read_only", "1"),
         ("notes", "keyboard_type", "url"),
         ("notes", "max_length", "96"),
+        ("toggle", "checked", "0"),
+        ("radio", "selected", "1"),
     ] {
         assert_eq!(
             patch.get(&(element.to_string(), property.to_string())),
@@ -36781,7 +36795,7 @@ app Screen
             "missing hot patch for {element}.{property}"
         );
     }
-    assert_eq!(patch.len(), 30);
+    assert_eq!(patch.len(), 32);
 
     let generated = second
         .emit_c()
@@ -36867,6 +36881,20 @@ app Screen
     );
     assert!(generated.contains("static gint flux__ui_max_length_notes = 96"));
     assert!(generated.contains("flux__ui_max_length_notes = (gint)integer_value"));
+    assert!(generated.contains(
+        "strcmp(property, \"checked\") == 0 && bool_value_valid && flux__ui_toggle != NULL"
+    ));
+    assert!(
+        generated
+            .contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_toggle), bool_value)")
+    );
+    assert!(generated.contains(
+        "strcmp(property, \"selected\") == 0 && bool_value_valid && flux__ui_radio != NULL"
+    ));
+    assert!(
+        generated
+            .contains("gtk_check_button_set_active(GTK_CHECK_BUTTON(flux__ui_radio), bool_value)")
+    );
 
     let dynamic = updated.replace("visible: false", "visible: windowIsCompact");
     fs::write(&entry, dynamic).expect("dynamic bool edit should be writable");
@@ -37072,6 +37100,57 @@ app Screen
     assert!(
         second.development_ui_string_patch_from(&first).is_none(),
         "TextInput.text with onChange must use controlled restart instead of synthesizing an application change event"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_restarts_for_selection_state_with_callbacks() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-selection-handler-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary selection-handler patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state enabled: bool = true
+    state selected: i64 = 0
+    grid columns: 1fr
+    grid rows: auto auto
+    Toggle toggle at 1,1
+        label: "Toggle"
+        checked: true
+        onChange: enabled => !enabled
+    Radio radio at 2,1
+        label: "Radio"
+        selected: false
+        onSelect: selected => 1
+}
+app Screen
+"#;
+    let updated = initial
+        .replace("checked: true", "checked: false")
+        .replace("selected: false", "selected: true");
+    fs::write(&entry, initial).expect("initial selection-handler source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial selection-handler analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated selection-handler source should be writable");
+    let entry = fs::canonicalize(entry).expect("selection-handler patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated selection-handler analysis should succeed");
+
+    assert!(
+        second.development_ui_string_patch_from(&first).is_none(),
+        "Toggle.checked or Radio.selected with callbacks must use controlled restart instead of synthesizing application selection events"
     );
 
     let _ = fs::remove_dir_all(root);
