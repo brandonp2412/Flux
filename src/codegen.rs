@@ -14706,6 +14706,29 @@ fn emit_linux_gtk_application(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"alt\") == 0 && {widget} != NULL) gtk_picture_set_alternative_text(GTK_PICTURE({widget}), value);",
                 c_string(&element.name)
             )),
+            "TextInput" => {
+                if view_property(element, "validation_state").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",
+                        c_string(&element.name)
+                    ));
+                }
+                if view_property(element, "validation_message").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_widget_set_tooltip_text({widget}, (value != NULL && value[0] != '\\0') ? value : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+                        c_string(&element.name)
+                    ));
+                    let multiline = view_property(element, "multiline")
+                        .and_then(|property| static_expr_bool(&property.value, signatures))
+                        .unwrap_or(false);
+                    if !multiline {
+                        out.push_str(&format!(
+                            " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_entry_set_icon_from_icon_name(GTK_ENTRY({widget}), GTK_ENTRY_ICON_SECONDARY, (value != NULL && value[0] != '\\0') ? \"dialog-information-symbolic\" : NULL); gtk_entry_set_icon_tooltip_text(GTK_ENTRY({widget}), GTK_ENTRY_ICON_SECONDARY, value); }}",
+                            c_string(&element.name)
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
         if view_property(element, "tooltip").is_some() {

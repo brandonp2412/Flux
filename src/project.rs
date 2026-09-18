@@ -1865,6 +1865,13 @@ fn module_type_surface(
     surface
 }
 
+fn development_ui_element_has_property(element: &ViewElement, property: &str) -> bool {
+    element
+        .properties
+        .iter()
+        .any(|candidate| typecheck::source_name_to_internal(&candidate.name) == property)
+}
+
 fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "text" => {
@@ -1880,7 +1887,23 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "alt" => element.kind == "Image",
-        "tooltip" => element.kind != "TextInput",
+        "tooltip" => {
+            element.kind != "TextInput"
+                || !development_ui_element_has_property(element, "validation_message")
+        }
+        "validation_state" => element.kind == "TextInput",
+        "validation_message" => {
+            element.kind == "TextInput"
+                && !development_ui_element_has_property(element, "tooltip")
+                && ![
+                    "accessibility_description",
+                    "accessibility_action_label",
+                    "accessibility_long_press_label",
+                    "accessibility_actions",
+                ]
+                .iter()
+                .any(|property| development_ui_element_has_property(element, property))
+        }
         "accessibility_label" | "accessibility_description" | "accessibility_value" => true,
         _ => false,
     }

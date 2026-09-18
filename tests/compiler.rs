@@ -36640,6 +36640,121 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_handles_disjoint_text_input_validation_and_tooltips() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-input-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary TextInput patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput email at 1,1
+        validationState: "error"
+        validationMessage: "Before validation"
+    TextInput search at 2,1
+        tooltip: "Before tooltip"
+}
+app Form
+"#;
+    let updated = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput email at 1,1
+        validationState: "success"
+        validationMessage: "After validation"
+    TextInput search at 2,1
+        tooltip: "After tooltip"
+}
+app Form
+"#;
+    fs::write(&entry, initial).expect("initial TextInput patch source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput patch source should analyze");
+
+    fs::write(&entry, updated).expect("updated TextInput patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("TextInput patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated TextInput patch source should analyze");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("disjoint TextInput validation and tooltip edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(
+        patch.get(&("email".to_string(), "validation_state".to_string())),
+        Some(&"success".to_string())
+    );
+    assert_eq!(
+        patch.get(&("email".to_string(), "validation_message".to_string())),
+        Some(&"After validation".to_string())
+    );
+    assert_eq!(
+        patch.get(&("search".to_string(), "tooltip".to_string())),
+        Some(&"After tooltip".to_string())
+    );
+    assert_eq!(patch.len(), 3);
+
+    let generated = second
+        .emit_c()
+        .expect("TextInput patch fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"validation_state\") == 0 && flux__ui_email != NULL")
+    );
+    assert!(
+        generated.contains("gtk_widget_remove_css_class(flux__ui_email, \"flux-input-error\")")
+    );
+    assert!(generated.contains("const char *validation = flux__ui_validation_state(value)"));
+    assert!(
+        generated
+            .contains("strcmp(property, \"validation_message\") == 0 && flux__ui_email != NULL")
+    );
+    assert!(generated.contains(
+        "gtk_entry_set_icon_from_icon_name(GTK_ENTRY(flux__ui_email), GTK_ENTRY_ICON_SECONDARY"
+    ));
+    assert!(generated.contains("strcmp(property, \"tooltip\") == 0 && flux__ui_search != NULL"));
+
+    let conflicting_initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        tooltip: "General help"
+        validationMessage: "Before validation"
+}
+app Form
+"#;
+    let conflicting_updated = conflicting_initial.replace("Before validation", "After validation");
+    fs::write(&entry, conflicting_initial)
+        .expect("conflicting TextInput source should be writable");
+    cache.invalidate_path(&entry);
+    let conflict_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("conflicting TextInput source should analyze");
+    fs::write(&entry, conflicting_updated).expect("conflicting TextInput edit should be writable");
+    cache.invalidate_path(&entry);
+    let conflict_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("conflicting TextInput edit should analyze");
+    assert!(
+        conflict_second
+            .development_ui_string_patch_from(&conflict_first)
+            .is_none(),
+        "validation-message edits that interact with an explicit tooltip must use controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",
