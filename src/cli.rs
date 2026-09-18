@@ -5114,6 +5114,8 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         }
 
         fingerprints = debounce_changes(&watch_paths, current);
+        let reload_started = Instant::now();
+        let analysis_started = Instant::now();
         write_development_status(
             target,
             "compiling",
@@ -5146,7 +5148,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 continue;
             }
         };
+        let analysis_ms = analysis_started.elapsed().as_millis();
         let sources = analysis.sources.clone();
+        let codegen_started = Instant::now();
         let generated = match analysis_cache.emit_c_for_target_cached(
             target,
             &analysis,
@@ -5169,6 +5173,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 continue;
             }
         };
+        let codegen_ms = codegen_started.elapsed().as_millis();
         let codegen_outcome = analysis_cache.last_codegen_outcome();
         if let Some(outcome) = codegen_outcome {
             eprintln!("reload: {}", development_codegen_summary(outcome));
@@ -5176,6 +5181,7 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         generation += 1;
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
+        let native_started = Instant::now();
         if let Err(message) = build_native(&generated, &next_binary, mode, native_package.as_ref())
         {
             write_development_status(target, "compile_error", generation, mode, &message);
@@ -5184,10 +5190,20 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             let _ = fs::remove_file(&next_binary);
             continue;
         }
+        let native_ms = native_started.elapsed().as_millis();
 
+        let restart_started = Instant::now();
         stop_child_for_reload(&mut child);
         let previous_binary = std::mem::replace(&mut binary, next_binary);
         child = Some(spawn_development_binary(&binary, target)?);
+        let restart_ms = restart_started.elapsed().as_millis();
+        let timing = DevelopmentReloadTiming {
+            analysis_ms,
+            codegen_ms,
+            native_ms,
+            restart_ms,
+            total_ms: reload_started.elapsed().as_millis(),
+        };
         let _ = fs::remove_file(previous_binary);
         watch_paths = project_watch_paths(target, &sources);
         fingerprints = watch_fingerprints(&watch_paths);
@@ -5199,9 +5215,18 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             "rebuilt and restarted after source change",
             analysis_outcome,
             codegen_outcome,
+            Some(timing),
         );
         status_state = "restarted";
         eprintln!("reload: rebuilt and restarted after source change");
+        eprintln!(
+            "reload: ready in {}ms (analysis {}ms, codegen {}ms, native {}ms, restart {}ms)",
+            timing.total_ms,
+            timing.analysis_ms,
+            timing.codegen_ms,
+            timing.native_ms,
+            timing.restart_ms
+        );
     }
 }
 
@@ -5212,7 +5237,16 @@ fn write_development_status(
     mode: BuildMode,
     message: &str,
 ) {
-    write_development_status_with_build(target, state, generation, mode, message, None, None);
+    write_development_status_with_build(target, state, generation, mode, message, None, None, None);
+}
+
+#[derive(Clone, Copy)]
+struct DevelopmentReloadTiming {
+    analysis_ms: u128,
+    codegen_ms: u128,
+    native_ms: u128,
+    restart_ms: u128,
+    total_ms: u128,
 }
 
 fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
@@ -5252,6 +5286,7 @@ fn write_development_status_with_build(
     message: &str,
     analysis_outcome: Option<fluxc::project::ProjectAnalysisOutcome>,
     codegen_outcome: Option<fluxc::project::ProjectCodegenOutcome>,
+    timing: Option<DevelopmentReloadTiming>,
 ) {
     let Ok(path) = fluxc::project::development_status_path(target) else {
         return;
@@ -5285,14 +5320,27 @@ fn write_development_status_with_build(
         Some(fluxc::project::ProjectCodegenOutcome::Full) => ",\"codegen\":\"full\"".to_string(),
         None => String::new(),
     };
+    let timing_fields = timing
+        .map(|timing| {
+            format!(
+                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"reload_total_ms\":{}",
+                timing.analysis_ms,
+                timing.codegen_ms,
+                timing.native_ms,
+                timing.restart_ms,
+                timing.total_ms
+            )
+        })
+        .unwrap_or_default();
     let payload = format!(
-        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{}{} }}\n",
+        "{{\"version\":1,\"state\":{},\"generation\":{generation},\"mode\":{},\"runner_pid\":{},\"updated_unix_ms\":{updated_unix_ms},\"message\":{}{}{}{} }}\n",
         json_string(state),
         json_string(mode.name()),
         std::process::id(),
         json_string(message),
         analysis_fields,
         codegen_fields,
+        timing_fields,
     );
     let temp = path.with_file_name(format!(
         ".{}.{}.tmp",

@@ -32209,6 +32209,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
             "reload: incremental analysis rechecked 1 module",
             "reload: incremental codegen reused 1 function and regenerated 1",
             "reload: rebuilt and restarted after source change",
+            "reload: ready in ",
         ],
         Duration::from_secs(5),
     );
@@ -32219,6 +32220,11 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"codegen\":\"incremental\""));
     assert!(status.contains("\"reused_functions\":1"));
     assert!(status.contains("\"regenerated_functions\":1"));
+    assert!(status.contains("\"analysis_ms\":"));
+    assert!(status.contains("\"codegen_ms\":"));
+    assert!(status.contains("\"native_ms\":"));
+    assert!(status.contains("\"restart_ms\":"));
+    assert!(status.contains("\"reload_total_ms\":"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
