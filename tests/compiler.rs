@@ -37019,29 +37019,90 @@ fn flux_test_coverage_reports_flux_source_lines() {
         return;
     }
 
-    let path = std::env::temp_dir().join(format!("flux-coverage-test-{}.flux", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "flux-coverage-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("coverage fixture directory should be writable");
+    let path = root.join("coverage.flux");
+    let cache = root.join("cache");
     fs::write(
         &path,
         "fn choose(flag: bool) -> i64 {\n    if flag:\n        return 1\n    return 2\n}\n\nfn main() -> i64 {\n    let value: i64 = choose(false)\n    if value == 2:\n        return 0\n    return 1\n}\n",
     )
     .expect("coverage Flux test should be writable");
-    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
-        .arg("test")
-        .arg(&path)
-        .arg("--coverage")
-        .output()
-        .expect("flux test --coverage should run");
-    let _ = fs::remove_file(&path);
+    let run_coverage = || {
+        Command::new(env!("CARGO_BIN_EXE_flux"))
+            .arg("test")
+            .arg(&path)
+            .arg("--coverage")
+            .env("FLUX_CACHE_DIR", &cache)
+            .output()
+            .expect("flux test --coverage should run")
+    };
+    let first = run_coverage();
     assert!(
-        output.status.success(),
+        first.status.success(),
         "flux test --coverage failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&first.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&first.stdout);
     assert!(stdout.contains("coverage: Flux source lines"));
     assert!(stdout.contains(&path.display().to_string()));
     assert!(stdout.contains("TOTAL"));
     assert!(!stdout.contains("<stdin>"));
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("coverage object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 2,
+        "coverage-instrumented functions should compile into independent objects"
+    );
+
+    fs::write(
+        &path,
+        "fn choose(flag: bool) -> i64 {\n    if flag:\n        return 3\n    return 2\n}\n\nfn main() -> i64 {\n    let value: i64 = choose(false)\n    if value == 2:\n        return 0\n    return 1\n}\n",
+    )
+    .expect("changed coverage Flux test should be writable");
+    let second = run_coverage();
+    assert!(
+        second.status.success(),
+        "changed flux test --coverage failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(second_stdout.contains("coverage: Flux source lines"));
+    assert!(!second_stdout.contains("<stdin>"));
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "a coverage-instrumented body edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged coverage-instrumented objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
