@@ -36505,6 +36505,141 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_covers_safe_static_boolean_properties() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-ui-bool-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary development bool patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text label at 1,1
+        text: "Label"
+        visible: true
+        clip: false
+        focusable: true
+        accessibilityHidden: false
+        selectable: true
+        wrap: true
+    Button action at 2,1
+        text: "Action"
+        visible: true
+        layoutTransitionMs: 120
+        enabled: true
+        primary: false
+    Image image at 3,1
+        source: "image.png"
+        canShrink: true
+}
+app Screen
+"#;
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text label at 1,1
+        text: "Label"
+        visible: false
+        clip: true
+        focusable: false
+        accessibilityHidden: true
+        selectable: false
+        wrap: false
+    Button action at 2,1
+        text: "Action"
+        visible: false
+        layoutTransitionMs: 120
+        enabled: false
+        primary: true
+    Image image at 3,1
+        source: "image.png"
+        canShrink: false
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("development bool patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial development bool patch analysis should succeed");
+
+    fs::write(&entry, updated).expect("development bool patch edit should be writable");
+    let entry = fs::canonicalize(entry).expect("development bool patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated development bool patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("safe static boolean edits should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for (element, property, value) in [
+        ("label", "visible", "0"),
+        ("label", "clip", "1"),
+        ("label", "focusable", "0"),
+        ("label", "accessibility_hidden", "1"),
+        ("label", "selectable", "0"),
+        ("label", "wrap", "0"),
+        ("action", "visible", "0"),
+        ("action", "enabled", "0"),
+        ("action", "primary", "1"),
+        ("image", "can_shrink", "0"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 10);
+
+    let generated = second
+        .emit_c()
+        .expect("native boolean property patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"visible\") == 0 && bool_value_valid && flux__ui_label != NULL"
+    ));
+    assert!(generated.contains("gtk_widget_set_visible(flux__ui_label, bool_value)"));
+    assert!(generated.contains(
+        "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_overflow(flux__ui_label, bool_value ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE)"
+    ));
+    assert!(generated.contains("gtk_widget_set_focusable(flux__ui_label, bool_value)"));
+    assert!(generated.contains("GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1"));
+    assert!(generated.contains("gtk_label_set_selectable(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
+    assert!(generated.contains("gtk_widget_set_sensitive(flux__ui_action, bool_value)"));
+    assert!(generated.contains(
+        "if (bool_value) gtk_widget_add_css_class(flux__ui_action, \"suggested-action\")"
+    ));
+    assert!(
+        generated.contains("gtk_picture_set_can_shrink(GTK_PICTURE(flux__ui_image), bool_value)")
+    );
+
+    let dynamic = updated.replace("visible: false", "visible: windowIsCompact");
+    fs::write(&entry, dynamic).expect("dynamic bool edit should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic bool edit should analyze");
+    assert!(
+        third.development_ui_string_patch_from(&second).is_none(),
+        "changing a static patchable bool into a runtime expression must fall back to rebuild"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",

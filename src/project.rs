@@ -1886,6 +1886,20 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
     }
 }
 
+fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
+    match property {
+        "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
+        "selectable" | "wrap" => element.kind == "Text",
+        "enabled" => matches!(
+            element.kind.as_str(),
+            "Button" | "TextInput" | "Toggle" | "Radio"
+        ),
+        "primary" => element.kind == "Button",
+        "can_shrink" => element.kind == "Image",
+        _ => false,
+    }
+}
+
 fn development_ui_string_literals(
     analysis: &ProjectAnalysis,
 ) -> Option<BTreeMap<(String, String), String>> {
@@ -1899,16 +1913,27 @@ fn development_ui_string_literals(
     for element in &view.elements {
         for property in &element.properties {
             let property_name = typecheck::source_name_to_internal(&property.name);
-            if !development_ui_string_property_is_patchable(element, &property_name) {
-                continue;
-            }
-            let ExprKind::Str(value) = &property.value.kind else {
+            let value = if development_ui_string_property_is_patchable(element, &property_name) {
+                let ExprKind::Str(value) = &property.value.kind else {
+                    continue;
+                };
+                if value.as_bytes().contains(&0) {
+                    return None;
+                }
+                value.clone()
+            } else if development_ui_bool_property_is_patchable(element, &property_name) {
+                let ExprKind::Bool(value) = property.value.kind else {
+                    continue;
+                };
+                if value {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                }
+            } else {
                 continue;
             };
-            if value.as_bytes().contains(&0) {
-                return None;
-            }
-            literals.insert((element.name.clone(), property_name), value.clone());
+            literals.insert((element.name.clone(), property_name), value);
         }
     }
     Some(literals)
@@ -1928,13 +1953,12 @@ fn development_ui_string_masked_sources(
         .iter()
         .flat_map(|element| {
             element.properties.iter().filter(move |property| {
-                development_ui_string_property_is_patchable(
-                    element,
-                    &typecheck::source_name_to_internal(&property.name),
-                )
+                let property_name = typecheck::source_name_to_internal(&property.name);
+                development_ui_string_property_is_patchable(element, &property_name)
+                    || development_ui_bool_property_is_patchable(element, &property_name)
             })
         })
-        .filter(|property| matches!(property.value.kind, ExprKind::Str(_)))
+        .filter(|property| matches!(property.value.kind, ExprKind::Str(_) | ExprKind::Bool(_)))
         .map(|property| property.value.span)
         .collect::<Vec<_>>();
 
