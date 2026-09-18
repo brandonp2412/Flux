@@ -15798,12 +15798,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "accessibility_hidden").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_hidden\") == 0 && bool_value_valid && {host} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1);",
-                c_string(&element.name)
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_hidden\") == 0 && bool_value_valid && {host} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1);",
+            c_string(&element.name)
+        ));
         if view_property(element, "focusable").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"focusable\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_focusable({host}, bool_value);",

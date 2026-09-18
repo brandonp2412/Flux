@@ -1438,6 +1438,8 @@ Verified Milestone 29 enabled-state lifecycle follow-up: literal `enabled` decla
 
 Verified Milestone 29 primary-button lifecycle follow-up: literal Button `primary` declarations are now ABI-stable whether present or omitted. The implicit compiler-owned value is `false`, the live GTK suggested-action patch path exists even when `primary` was omitted at launch, explicit `primary: false` is a zero-work source edit, `primary: true` updates the existing button style in process, and removing the declaration restores the ordinary button style. State-driven primary styling remains structural and uses controlled restart.
 
+Verified Milestone 29 accessibility-hidden lifecycle follow-up: literal `accessibilityHidden` declarations are now ABI-stable whether present or omitted. Development analysis models the implicit accessible state as `false`, keeps the GTK accessible-state patch path available even when the property was omitted at launch, treats explicit `false` as a no-op, hot-applies `true` to the existing native accessibility object, and restores the implicit visible-to-accessibility state when the declaration is removed. State-driven accessibility visibility remains structural and uses controlled restart.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
