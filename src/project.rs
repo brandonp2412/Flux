@@ -1876,6 +1876,14 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
                         .any(|property| property.name == "rich_text"))
         }
         "tooltip" => element.kind != "TextInput",
+        "placeholder" => {
+            element.kind == "TextInput"
+                && element
+                    .properties
+                    .iter()
+                    .find(|property| property.name == "multiline")
+                    .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
+        }
         _ => false,
     }
 }

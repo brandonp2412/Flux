@@ -14693,6 +14693,17 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
+        if element.kind == "TextInput"
+            && view_property(element, "placeholder").is_some()
+            && !view_property(element, "multiline")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false)
+        {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), value);",
+                c_string(&element.name)
+            ));
+        }
     }
     out.push_str(" free(name); free(property); free(value); } fclose(file); remove(path); }\n\n");
     emit_ui_refresh(out, view, signatures)?;

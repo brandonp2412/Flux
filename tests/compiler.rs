@@ -36304,13 +36304,16 @@ fn development_ui_string_patch_accepts_only_supported_static_root_edits() {
 
 view Screen {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text label at 1,1
         text: "ready"
         tooltip: "Label tip"
     Button action at 2,1
         text: "Go"
         tooltip: "Action tip"
+    TextInput query at 3,1
+        placeholder: "Search"
+        multiline: false
 }
 app Screen
 "#;
@@ -36329,13 +36332,16 @@ fn helper() -> i64 { 1 }
 
 view Screen {
     grid columns: 1fr
-    grid rows: auto auto
+    grid rows: auto auto auto
     Text label at 1,1
         text: "updated"
         tooltip: "Updated label tip"
     Button action at 2,1
         text: "Run"
         tooltip: "Updated action tip"
+    TextInput query at 3,1
+        placeholder: "Find Flux"
+        multiline: false
 }
 app Screen
 "#;
@@ -36369,6 +36375,11 @@ app Screen
                 element: "label".to_string(),
                 property: "tooltip".to_string(),
                 value: "Updated label tip".to_string(),
+            },
+            fluxc::project::DevelopmentUiStringPatch {
+                element: "query".to_string(),
+                property: "placeholder".to_string(),
+                value: "Find Flux".to_string(),
             },
         ]
     );
@@ -54342,6 +54353,7 @@ view Screen {
         tooltip: "State label"
     TextInput input at 2,1
         text: message
+        placeholder: "Type here"
         onChange: message, value => value
 }
 app Screen
@@ -54379,6 +54391,8 @@ app Screen
     assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_label), value)"));
     assert!(generated.contains("strcmp(property, \"tooltip\") == 0"));
     assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_label, value)"));
+    assert!(generated.contains("strcmp(property, \"placeholder\") == 0"));
+    assert!(generated.contains("gtk_entry_set_placeholder_text(GTK_ENTRY(flux__ui_input), value)"));
     assert!(generated.contains("flux__ui_restore_reload_state();"));
 }
 
