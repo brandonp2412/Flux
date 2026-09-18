@@ -73244,3 +73244,110 @@ fn main() -> i64 {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn development_ui_string_patch_hot_applies_uncontrolled_selection_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-selection-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary selection lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Toggle toggle at 1,1
+        label: "Toggle"
+    Radio radio at 2,1
+        label: "Radio"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial selection lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial selection lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("selection lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"checked\") == 0 && bool_value_valid && flux__ui_toggle != NULL"
+    ));
+    assert!(generated.contains(
+        "strcmp(property, \"selected\") == 0 && bool_value_valid && flux__ui_radio != NULL"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("selection lifecycle entry should canonicalize");
+    let explicit_default = initial
+        .replace(
+            "        label: \"Toggle\"\n",
+            "        label: \"Toggle\"\n        checked: false\n",
+        )
+        .replace(
+            "        label: \"Radio\"\n",
+            "        label: \"Radio\"\n        selected: false\n",
+        );
+    fs::write(&entry, &explicit_default).expect("explicit selection defaults should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit selection defaults should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding false selection defaults should be an in-process no-op"
+    );
+
+    let active = explicit_default
+        .replace("checked: false", "checked: true")
+        .replace("selected: false", "selected: true");
+    fs::write(&entry, active).expect("active selection source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("active selection source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let active_patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("uncontrolled selection values should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        active_patch.get(&("toggle".to_string(), "checked".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(
+        active_patch.get(&("radio".to_string(), "selected".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(active_patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed selection source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed selection lifecycle source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    let restored_patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing selection declarations should restore false defaults")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        restored_patch.get(&("toggle".to_string(), "checked".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(
+        restored_patch.get(&("radio".to_string(), "selected".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(restored_patch.len(), 2);
+
+    let _ = fs::remove_dir_all(root);
+}
