@@ -40,6 +40,96 @@ impl FunctionCodegenCache {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+
+    pub(crate) fn encode_persisted(&self) -> Vec<u8> {
+        const MAGIC: &[u8] = b"FLUXFC1\0";
+
+        fn push_u64(bytes: &mut Vec<u8>, value: usize) {
+            bytes.extend_from_slice(&(value as u64).to_le_bytes());
+        }
+
+        let mut entries = self.entries.iter().collect::<Vec<_>>();
+        entries.sort_by(|(left_key, _), (right_key, _)| {
+            left_key.identity.cmp(&right_key.identity).then_with(|| {
+                left_key
+                    .incoming_temp_counter
+                    .cmp(&right_key.incoming_temp_counter)
+            })
+        });
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        push_u64(&mut bytes, entries.len());
+        for (key, entry) in entries {
+            push_u64(&mut bytes, key.identity.len());
+            bytes.extend_from_slice(key.identity.as_bytes());
+            push_u64(&mut bytes, key.incoming_temp_counter);
+            push_u64(&mut bytes, entry.next_temp_counter);
+            push_u64(&mut bytes, entry.generated.len());
+            bytes.extend_from_slice(entry.generated.as_bytes());
+        }
+        bytes
+    }
+
+    pub(crate) fn decode_persisted(bytes: &[u8]) -> Option<Self> {
+        const MAGIC: &[u8] = b"FLUXFC1\0";
+        const MAX_ENTRIES: usize = 100_000;
+
+        fn read_u64(bytes: &[u8], offset: &mut usize) -> Option<usize> {
+            let end = offset.checked_add(8)?;
+            let raw: [u8; 8] = bytes.get(*offset..end)?.try_into().ok()?;
+            *offset = end;
+            usize::try_from(u64::from_le_bytes(raw)).ok()
+        }
+
+        fn read_bytes<'a>(bytes: &'a [u8], offset: &mut usize, length: usize) -> Option<&'a [u8]> {
+            let end = offset.checked_add(length)?;
+            let value = bytes.get(*offset..end)?;
+            *offset = end;
+            Some(value)
+        }
+
+        if !bytes.starts_with(MAGIC) {
+            return None;
+        }
+        let mut offset = MAGIC.len();
+        let count = read_u64(bytes, &mut offset)?;
+        if count > MAX_ENTRIES {
+            return None;
+        }
+
+        let mut entries = HashMap::with_capacity(count);
+        for _ in 0..count {
+            let identity_length = read_u64(bytes, &mut offset)?;
+            let identity =
+                String::from_utf8(read_bytes(bytes, &mut offset, identity_length)?.to_vec())
+                    .ok()?;
+            let incoming_temp_counter = read_u64(bytes, &mut offset)?;
+            let next_temp_counter = read_u64(bytes, &mut offset)?;
+            let generated_length = read_u64(bytes, &mut offset)?;
+            let generated =
+                String::from_utf8(read_bytes(bytes, &mut offset, generated_length)?.to_vec())
+                    .ok()?;
+            let key = FunctionCodegenCacheKey {
+                identity,
+                incoming_temp_counter,
+            };
+            if entries
+                .insert(
+                    key,
+                    CachedFunctionCodegen {
+                        generated,
+                        next_temp_counter,
+                    },
+                )
+                .is_some()
+            {
+                return None;
+            }
+        }
+
+        (offset == bytes.len()).then_some(Self { entries })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -35248,6 +35248,161 @@ fn project_analysis_cache_incrementally_rechecks_body_only_module_edits() {
 }
 
 #[test]
+fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-durable-function-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("durable function-codegen project should be writable");
+    let dependency = root.join("dep.flux");
+    let entry = root.join("main.flux");
+    fs::write(&dependency, "pub fn value() -> i64 { 1 }\n").expect("dependency should be writable");
+    fs::write(
+        &entry,
+        "import \"dep.flux\"\nfn main() -> i64 { value() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = first_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial source should analyze");
+    let first_c = first_cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial source should emit C");
+    assert_eq!(
+        first_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+    assert!(
+        fs::read_dir(root.join(".flux/cache"))
+            .expect("durable cache directory should be readable")
+            .filter_map(Result::ok)
+            .any(|entry| entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("function-codegen-"))),
+        "initial codegen should persist reusable function fragments"
+    );
+
+    fs::write(&dependency, "pub fn value() -> i64 { 2 }\n")
+        .expect("updated dependency should be writable");
+    let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
+    let second = second_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated source should analyze in a fresh cache");
+    assert_eq!(
+        second_cache.last_outcome(),
+        Some(fluxc::project::ProjectAnalysisOutcome::Full),
+        "a fresh analysis cache should not depend on prior in-memory state"
+    );
+    let second_c = second_cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("updated source should reuse durable function codegen");
+    assert_ne!(first_c, second_c);
+    assert_eq!(
+        second_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 1,
+            regenerated_functions: 1,
+        })
+    );
+    assert_eq!(
+        second_c,
+        second
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("durable incremental codegen should match a fresh full emission")
+    );
+
+    let mut third_cache = fluxc::project::ProjectAnalysisCache::default();
+    let third = third_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("unchanged source should analyze in another fresh cache");
+    let third_c = third_cache
+        .emit_c_for_target_cached(&entry, &third, fluxc::codegen::NativeTarget::Linux)
+        .expect("complete generated C should remain reusable");
+    assert_eq!(second_c, third_c);
+    assert_eq!(
+        third_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Cached)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_function_codegen_cache_ignores_corrupt_durable_fragments() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-project-corrupt-function-codegen-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("corrupt function-codegen project should be writable");
+    let entry = root.join("main.flux");
+    fs::write(
+        &entry,
+        "fn helper() -> i64 { 1 }\nfn main() -> i64 { helper() }\n",
+    )
+    .expect("entry should be writable");
+
+    let mut first_cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = first_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial source should analyze");
+    first_cache
+        .emit_c_for_target_cached(&entry, &first, fluxc::codegen::NativeTarget::Linux)
+        .expect("initial source should emit C");
+
+    let durable = fs::read_dir(root.join(".flux/cache"))
+        .expect("durable cache directory should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("function-codegen-"))
+        })
+        .expect("initial codegen should persist function fragments");
+    fs::write(&durable, b"corrupt durable function cache")
+        .expect("durable cache should be corruptible for the regression");
+
+    fs::write(
+        &entry,
+        "fn helper() -> i64 { 2 }\nfn main() -> i64 { helper() }\n",
+    )
+    .expect("updated entry should be writable");
+    let mut second_cache = fluxc::project::ProjectAnalysisCache::default();
+    let second = second_cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated source should analyze");
+    let incremental = second_cache
+        .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
+        .expect("corrupt durable fragments should fall back to full codegen");
+    assert_eq!(
+        second_cache.last_codegen_outcome(),
+        Some(fluxc::project::ProjectCodegenOutcome::Full)
+    );
+    assert_eq!(
+        incremental,
+        second
+            .emit_c_for_target(fluxc::codegen::NativeTarget::Linux)
+            .expect("fallback codegen should match fresh full emission")
+    );
+    let repaired = fs::read(&durable).expect("fallback codegen should republish durable fragments");
+    assert_ne!(
+        repaired, b"corrupt durable function cache",
+        "the corrupt bytes must not survive fallback codegen"
+    );
+    assert!(
+        repaired.starts_with(b"flux-project-function-codegen-v1:"),
+        "fallback codegen should replace corruption with a versioned durable artifact"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_ignores_source_positions_in_module_surfaces() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-positions-{}",

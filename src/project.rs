@@ -10,6 +10,9 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v1";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
+const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-codegen-v1";
+const PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT: usize = 8;
+const PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
@@ -731,6 +734,125 @@ fn codegen_cache_fingerprint(
     hash
 }
 
+fn function_codegen_cache_context_fingerprint(
+    analysis: &ProjectAnalysis,
+    native_target: codegen::NativeTarget,
+) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut add = |bytes: &[u8]| {
+        hash = stable_bytes_hash_with_seed(bytes, hash);
+    };
+    add(PROJECT_FUNCTION_CODEGEN_CACHE_VERSION.as_bytes());
+    add(native_target_cache_tag(native_target).as_bytes());
+    add(analysis
+        .signatures
+        .package_constants_fingerprint()
+        .as_bytes());
+    for source in &analysis.sources {
+        add(source.path.to_string_lossy().as_bytes());
+        add(source.module_name.as_bytes());
+        add(
+            module_type_surface(&analysis.program, &analysis.signatures, source.source_id)
+                .as_bytes(),
+        );
+    }
+    for (locale, entries) in &analysis.translations {
+        add(locale.as_bytes());
+        for (key, value) in entries {
+            add(key.as_bytes());
+            add(value.as_bytes());
+        }
+    }
+    hash
+}
+
+fn function_codegen_cache_path(target: &Path, fingerprint: u64) -> PathBuf {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    root.join(".flux")
+        .join("cache")
+        .join(format!("function-codegen-{fingerprint:016x}.bin"))
+}
+
+fn read_function_codegen_cache(
+    analysis: &ProjectAnalysis,
+    target: &Path,
+    native_target: codegen::NativeTarget,
+) -> Option<codegen::FunctionCodegenCache> {
+    let fingerprint = function_codegen_cache_context_fingerprint(analysis, native_target);
+    let path = function_codegen_cache_path(target, fingerprint);
+    if fs::metadata(&path).ok()?.len() > PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES {
+        return None;
+    }
+    let cached = fs::read(&path).ok()?;
+    let decoded = (|| {
+        let newline = cached.iter().position(|byte| *byte == b'\n')?;
+        let header = std::str::from_utf8(&cached[..newline]).ok()?;
+        let header_prefix = format!("{PROJECT_FUNCTION_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:");
+        let checksum = header.strip_prefix(&header_prefix)?;
+        let payload = &cached[newline + 1..];
+        (checksum == format!("{:016x}", stable_bytes_hash(payload)))
+            .then(|| codegen::FunctionCodegenCache::decode_persisted(payload))
+            .flatten()
+    })();
+    if decoded.is_none() {
+        remove_binary_cache_artifact_if_unchanged(&path, &cached);
+    }
+    decoded
+}
+
+fn remove_binary_cache_artifact_if_unchanged(path: &Path, inspected: &[u8]) {
+    let Ok(current) = fs::read(path) else {
+        return;
+    };
+    if current == inspected {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn store_function_codegen_cache(
+    analysis: &ProjectAnalysis,
+    target: &Path,
+    native_target: codegen::NativeTarget,
+    cache: &codegen::FunctionCodegenCache,
+) {
+    let fingerprint = function_codegen_cache_context_fingerprint(analysis, native_target);
+    let path = function_codegen_cache_path(target, fingerprint);
+    let payload = cache.encode_persisted();
+    if payload.len() as u64 > PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES {
+        return;
+    }
+    let header = format!(
+        "{PROJECT_FUNCTION_CODEGEN_CACHE_VERSION}:{fingerprint:016x}:{:016x}\n",
+        stable_bytes_hash(&payload)
+    );
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let persisted = File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(header.as_bytes())?;
+            file.write_all(&payload)?;
+            file.sync_all()
+        })
+        .is_ok();
+    if persisted {
+        if fs::rename(&temporary, &path).is_err() {
+            let _ = fs::remove_file(&temporary);
+            return;
+        }
+        prune_function_codegen_cache(path.parent(), &path);
+    }
+}
+
 fn native_target_cache_tag(native_target: codegen::NativeTarget) -> &'static str {
     match native_target {
         codegen::NativeTarget::Linux => "linux",
@@ -774,6 +896,35 @@ fn prune_codegen_cache(directory: Option<&Path>, current: &Path) {
         .collect::<Vec<_>>();
     artifacts.sort_by(|left, right| right.0.cmp(&left.0));
     for (_, path) in artifacts.into_iter().skip(PROJECT_CODEGEN_CACHE_LIMIT - 1) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn prune_function_codegen_cache(directory: Option<&Path>, current: &Path) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut artifacts = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.path() != current
+                && entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with("function-codegen-") && name.ends_with(".bin")
+                })
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| right.0.cmp(&left.0));
+    for (_, path) in artifacts
+        .into_iter()
+        .skip(PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT - 1)
+    {
         let _ = fs::remove_file(path);
     }
 }
@@ -1164,22 +1315,32 @@ impl ProjectAnalysisCache {
             Some(ProjectAnalysisOutcome::Incremental { .. })
         ) {
             function_cache.clear();
+            if let Some(durable) = read_function_codegen_cache(analysis, target, native_target) {
+                *function_cache = durable;
+            }
         }
         let fingerprint = codegen_cache_fingerprint(analysis, native_target);
         persist_typed_ir_manifest(analysis, target, native_target, fingerprint);
         let (generated, stats) =
             analysis.emit_c_for_target_with_function_cache(native_target, function_cache)?;
         analysis.store_cached_c_for_target(target, native_target, &generated);
+        store_function_codegen_cache(analysis, target, native_target, function_cache);
         self.generated_c.insert(cache_key, generated.clone());
-        self.last_codegen_outcome = Some(match self.last_outcome {
-            Some(ProjectAnalysisOutcome::Incremental { .. }) => {
+        self.last_codegen_outcome = Some(
+            if stats.reused_functions > 0
+                || matches!(
+                    self.last_outcome,
+                    Some(ProjectAnalysisOutcome::Incremental { .. })
+                )
+            {
                 ProjectCodegenOutcome::Incremental {
                     reused_functions: stats.reused_functions,
                     regenerated_functions: stats.regenerated_functions,
                 }
-            }
-            _ => ProjectCodegenOutcome::Full,
-        });
+            } else {
+                ProjectCodegenOutcome::Full
+            },
+        );
         Ok(generated)
     }
 
