@@ -14860,6 +14860,22 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
+        if element.kind == "TextInput"
+            && view_property(element, "on_submit").is_some()
+            && let Some(property) = view_property(element, "submit_on_enter")
+        {
+            let Some(submit_on_enter) = static_expr_bool(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
+                ));
+            };
+            out.push_str(&format!(
+                "static bool flux__ui_submit_on_enter_{} = {};\n",
+                element.name,
+                if submit_on_enter { "true" } else { "false" }
+            ));
+        }
     }
     out.push('\n');
     out.push_str("static void flux__ui_apply_reload_patch(void) { const char *path = getenv(\"FLUX_HOT_RELOAD_PATCH_PATH\"); if (path == NULL || path[0] == '\\0') return; FILE *file = fopen(path, \"rb\"); if (file == NULL) return; unsigned char magic[4]; uint32_t version = 0; uint32_t count = 0; if (fread(magic, sizeof(magic), 1, file) != 1 || memcmp(magic, \"FLXP\", 4) != 0 || fread(&version, sizeof(version), 1, file) != 1 || version != 2 || fread(&count, sizeof(count), 1, file) != 1 || count > 4096) { fclose(file); remove(path); return; } for (uint32_t record = 0; record < count; ++record) { uint32_t name_length = 0; uint32_t property_length = 0; uint32_t value_length = 0; if (fread(&name_length, sizeof(name_length), 1, file) != 1 || name_length > 1024 || fread(&property_length, sizeof(property_length), 1, file) != 1 || property_length > 128 || fread(&value_length, sizeof(value_length), 1, file) != 1 || value_length > 65536) { fclose(file); remove(path); return; } char *name = malloc((size_t)name_length + 1); char *property = malloc((size_t)property_length + 1); char *value = malloc((size_t)value_length + 1); if (name == NULL || property == NULL || value == NULL || (name_length != 0 && fread(name, 1, name_length, file) != name_length) || (property_length != 0 && fread(property, 1, property_length, file) != property_length) || (value_length != 0 && fread(value, 1, value_length, file) != value_length)) { free(name); free(property); free(value); fclose(file); remove(path); return; } name[name_length] = '\\0'; property[property_length] = '\\0'; value[value_length] = '\\0'; bool bool_value_valid = value_length == 1 && (value[0] == '0' || value[0] == '1'); bool bool_value = bool_value_valid && value[0] == '1';");
@@ -14975,6 +14991,15 @@ fn emit_linux_gtk_application(
                             c_string(&element.name)
                         ));
                     }
+                }
+                if view_property(element, "submit_on_enter").is_some()
+                    && view_property(element, "on_submit").is_some()
+                {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_{} = bool_value;",
+                        c_string(&element.name),
+                        element.name
+                    ));
                 }
                 if view_property(element, "password").is_some() {
                     let multiline = view_property(element, "multiline")
@@ -15632,22 +15657,36 @@ fn emit_linux_gtk_application(
                 let Some(action) = view_property(element, property_name) else {
                     continue;
                 };
+                let submit_guard = if property_name == "on_submit"
+                    && view_property(element, "submit_on_enter").is_some()
+                {
+                    if multiline {
+                        format!(
+                            " if (!flux__ui_submit_on_enter_{}) return FALSE;",
+                            element.name
+                        )
+                    } else {
+                        format!(" if (!flux__ui_submit_on_enter_{}) return;", element.name)
+                    }
+                } else {
+                    String::new()
+                };
                 if let Some(transition) = &action.transition {
                     let setter = ui_set_state_c_name(&transition.state);
                     let state_index = ui_state_index(view, &transition.state);
                     if multiline && property_name == "on_change" {
                         out.push_str(&format!(
-                            "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data; GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); }}\n",
+                            "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); }}\n",
                             element.name,
                         ));
                     } else if multiline {
                         out.push_str(&format!(
-                            "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data; if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); return TRUE; }}\n",
+                            "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {setter}(text); g_free(text); flux__ui_refresh_changed({state_index}); return TRUE; }}\n",
                             element.name,
                         ));
                     } else {
                         out.push_str(&format!(
-                            "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {setter}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed({state_index}); }}\n",
+                            "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{submit_guard} {setter}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh_changed({state_index}); }}\n",
                             element.name,
                         ));
                     }
@@ -15663,19 +15702,19 @@ fn emit_linux_gtk_application(
                 };
                 if multiline && property_name == "on_change" {
                     out.push_str(&format!(
-                        "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data; GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
+                        "static void flux__ui_{callback_name}_{}(GtkTextBuffer *buffer, gpointer data) {{ (void)data;{submit_guard} GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); }}\n",
                         element.name,
                         function_c_name(function),
                     ));
                 } else if multiline {
                     out.push_str(&format!(
-                        "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data; if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
+                        "static gboolean flux__ui_{callback_name}_{}(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {{ (void)keycode; (void)state; (void)data;{submit_guard} if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) return FALSE; GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); GtkTextIter start; GtkTextIter end; gtk_text_buffer_get_bounds(buffer, &start, &end); gchar *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE); {}(text); g_free(text); flux__ui_refresh(); return TRUE; }}\n",
                         element.name,
                         function_c_name(function),
                     ));
                 } else {
                     out.push_str(&format!(
-                        "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data; {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
+                        "static void flux__ui_{callback_name}_{}(GtkWidget *widget, gpointer data) {{ (void)data;{submit_guard} {}(gtk_editable_get_text(GTK_EDITABLE(widget))); flux__ui_refresh(); }}\n",
                         element.name,
                         function_c_name(function),
                     ));
@@ -16654,7 +16693,9 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if view_property(element, "on_submit").is_some() && submit_on_enter {
+                if view_property(element, "on_submit").is_some()
+                    && (submit_on_enter || view_property(element, "submit_on_enter").is_some())
+                {
                     if multiline {
                         let controller = format!("flux__submit_controller_{}", element.name);
                         out.push_str(&format!(

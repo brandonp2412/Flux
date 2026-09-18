@@ -38815,6 +38815,86 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_submit_on_enter_without_rewiring_callbacks() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-submit-on-enter-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary submit-on-enter patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn submit(value: str) -> void {
+    print(value)
+}
+
+view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput single at 1,1
+        submitOnEnter: false
+        onSubmit: submit
+    TextInput multi at 2,1
+        multiline: true
+        submitOnEnter: false
+        onSubmit: submit
+}
+app Form
+"#;
+    fs::write(&entry, initial).expect("initial submit-on-enter patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial submit-on-enter patch analysis should succeed");
+
+    let updated = initial.replace("submitOnEnter: false", "submitOnEnter: true");
+    fs::write(&entry, updated).expect("updated submit-on-enter patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("submit-on-enter patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated submit-on-enter patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("submitOnEnter edits with existing callbacks should hot-apply");
+    let patch = patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("single".to_string(), "submit_on_enter".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(
+        patch.get(&("multi".to_string(), "submit_on_enter".to_string())),
+        Some(&"1".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = second
+        .emit_c()
+        .expect("submit-on-enter patch fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_single = true"));
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_multi = true"));
+    assert!(generated.contains(
+        "strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_single = bool_value"
+    ));
+    assert!(generated.contains(
+        "strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_multi = bool_value"
+    ));
+    assert!(generated.contains("if (!flux__ui_submit_on_enter_single) return;"));
+    assert!(generated.contains("if (!flux__ui_submit_on_enter_multi) return FALSE;"));
+    assert!(generated.contains(
+        "g_signal_connect(flux__ui_single, \"activate\", G_CALLBACK(flux__ui_submit_single), NULL)"
+    ));
+    assert!(generated.contains(
+        "GtkEventController *flux__submit_controller_multi = gtk_event_controller_key_new()"
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",
@@ -43761,7 +43841,9 @@ app Form
     check_source(no_enter_submit).expect("submitOnEnter should be a typed TextInput bool property");
     let generated = compile_to_c(no_enter_submit)
         .expect("single-line TextInput may opt out of Enter submission on Linux");
-    assert!(!generated.contains("g_signal_connect(flux__ui_query, \"activate\""));
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_query = false"));
+    assert!(generated.contains("if (!flux__ui_submit_on_enter_query) return;"));
+    assert!(generated.contains("g_signal_connect(flux__ui_query, \"activate\""));
 
     let linux_multiline = r#"
 fn submit(value: str) -> void {

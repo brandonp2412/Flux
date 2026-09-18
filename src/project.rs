@@ -1980,6 +1980,9 @@ fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &s
             "Button" | "TextInput" | "Toggle" | "Radio"
         ),
         "read_only" => element.kind == "TextInput",
+        "submit_on_enter" => {
+            element.kind == "TextInput" && development_ui_element_has_property(element, "on_submit")
+        }
         "password" => {
             element.kind == "TextInput"
                 && element
