@@ -5,6 +5,8 @@ use std::net::{TcpListener, UdpSocket};
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -32345,9 +32347,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
 
 #[test]
 fn run_cli_hot_applies_static_ui_edits_without_restarting_native_process() {
-    if Command::new("xvfb-run").arg("--help").output().is_err()
-        || Command::new("setsid").arg("--help").output().is_err()
-    {
+    if Command::new("xvfb-run").arg("--help").output().is_err() {
         return;
     }
     let root = std::env::temp_dir().join(format!("flux-run-ui-hot-apply-{}", std::process::id()));
@@ -32378,8 +32378,9 @@ app Screen(onStart: started)
     let _ = fs::remove_file(&status_path);
     let stdout = fs::File::create(&log).expect("UI hot-apply log should be writable");
     let stderr = stdout.try_clone().expect("UI hot-apply log should clone");
-    let mut runner = Command::new("setsid")
-        .arg("xvfb-run")
+    let mut runner_command = Command::new("xvfb-run");
+    let mut runner = runner_command
+        .process_group(0)
         .arg("-a")
         .arg(env!("CARGO_BIN_EXE_fluxc"))
         .arg("run")
