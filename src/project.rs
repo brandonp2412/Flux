@@ -89,6 +89,16 @@ impl ProjectAnalysis {
             return None;
         }
 
+        if current.iter().any(|(key, value)| {
+            key.1 == "autofocus"
+                && value == "0"
+                && previous_literals
+                    .get(key)
+                    .is_some_and(|previous| previous == "1")
+        }) {
+            return None;
+        }
+
         Some(
             current
                 .into_iter()
@@ -1987,6 +1997,7 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "visible" | "clip" | "focusable" | "accessibility_hidden" => true,
+        "autofocus" => true,
         "selectable" | "wrap" | "bold" | "italic" | "underline" | "strikethrough" => {
             element.kind == "Text"
         }

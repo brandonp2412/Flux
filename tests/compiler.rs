@@ -39320,6 +39320,69 @@ app Shortcuts
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_autofocus_enable_only() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-autofocus-patch-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary autofocus patch project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Focus {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Focus me"
+        autofocus: false
+}
+app Focus
+"#;
+    fs::write(&entry, initial).expect("initial autofocus patch source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial autofocus patch analysis should succeed");
+
+    let updated = initial.replace("autofocus: false", "autofocus: true");
+    fs::write(&entry, updated).expect("updated autofocus patch source should be writable");
+    let entry = fs::canonicalize(entry).expect("autofocus patch entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated autofocus patch analysis should succeed");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("enabling autofocus should hot-apply to the existing native control");
+    assert_eq!(patch.len(), 1);
+    assert_eq!(patch[0].element, "action");
+    assert_eq!(patch[0].property, "autofocus");
+    assert_eq!(patch[0].value, "1");
+
+    let generated = second
+        .emit_c()
+        .expect("autofocus patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "strcmp(property, \"autofocus\") == 0 && bool_value_valid && bool_value && flux__ui_action != NULL"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_focusable(flux__ui_action, TRUE); gtk_widget_grab_focus(flux__ui_action);"
+    ));
+
+    fs::write(&entry, initial).expect("disabled autofocus source should be writable");
+    cache.invalidate_path(&entry);
+    let disabled = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("disabled autofocus patch analysis should succeed");
+    assert!(
+        disabled.development_ui_string_patch_from(&second).is_none(),
+        "disabling autofocus must use the controlled restart path"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_shortcut_scope() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-shortcut-scope-patch-{}",
