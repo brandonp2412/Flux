@@ -7177,7 +7177,11 @@ mod tests {
         let formatted_ir = fs::read_dir(&ir_dir)
             .expect("typed IR cache directory should remain readable after formatting")
             .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().ends_with(".manifest"))
+            .find(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("ir-") && name.ends_with(".manifest")
+            })
             .expect("formatted manifest should remain discoverable")
             .path();
         let formatted_manifest =
