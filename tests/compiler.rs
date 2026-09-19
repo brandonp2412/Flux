@@ -42647,6 +42647,117 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_image_alt_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-image-alt-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary image alt lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state altText: str = "Hero"
+    grid columns: 1fr
+    grid rows: auto
+    Image hero at 1,1
+        source: "hero.png"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial image alt lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial image alt lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("image alt lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"alt\") == 0 && flux__ui_hero != NULL"));
+    assert!(
+        generated.contains("gtk_picture_set_alternative_text(GTK_PICTURE(flux__ui_hero), value)")
+    );
+
+    let entry = fs::canonicalize(entry).expect("image alt lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        source: \"hero.png\"
+",
+        "        source: \"hero.png\"
+        alt: \"\"
+",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit image alt default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit image alt default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding Image.alt: empty text must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit empty alt text should be an in-process no-op"
+    );
+
+    let described = explicit_default.replace("alt: \"\"", "alt: \"Hero image\"");
+    fs::write(&entry, &described).expect("described image alt source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("described image alt source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("Image.alt text should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "alt".to_string(),
+            value: "Hero image".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed image alt source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed image alt source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing Image.alt should restore empty text"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "alt".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        source: \"hero.png\"
+",
+        "        source: \"hero.png\"
+        alt: altText
+",
+    );
+    fs::write(&entry, dynamic).expect("dynamic image alt source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic image alt source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven Image.alt declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_image_fit_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-image-fit-lifecycle-{}",
