@@ -42647,6 +42647,129 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_default_text_line_height_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-line-height-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text line height lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state leading: i64 = 150
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text line height source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text line height source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text line height lifecycle fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("strcmp(property, \"line_height_percent\") == 0 && flux__ui_body != NULL")
+    );
+    assert!(generated.contains("pango_attr_line_height_new((double)integer_value / 100.0)"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text line height lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        lineHeightPercent: 140\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit text line height default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text line height default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding lineHeightPercent: 140 must not change the default Text development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the body semantic line height should be an in-process no-op"
+    );
+
+    let taller = explicit_default.replace("lineHeightPercent: 140", "lineHeightPercent: 150");
+    fs::write(&entry, &taller).expect("taller line height source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("taller line height source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("line height should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "line_height_percent".to_string(),
+            value: "150".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text line height should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text line height should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing line height should restore the body semantic default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "line_height_percent".to_string(),
+            value: "140".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        lineHeightPercent: leading\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text line height source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text line height source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven line height must retain controlled restart"
+    );
+
+    let variant = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        variant: \"heading\"\n        lineHeightPercent: 130\n",
+    );
+    fs::write(&entry, variant).expect("variant line height source should be writable");
+    cache.invalidate_path(&entry);
+    let variant = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("variant line height source should analyze");
+    assert!(
+        variant.development_ui_string_patch_from(&fourth).is_none(),
+        "explicit variant/line-height precedence must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_letter_spacing_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-letter-spacing-lifecycle-{}",
