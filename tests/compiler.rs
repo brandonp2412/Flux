@@ -42647,6 +42647,114 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_ellipsize_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-ellipsize-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text ellipsize lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state truncation: str = "end"
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text ellipsize source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text ellipsize source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text ellipsize lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"ellipsize\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("gtk_label_set_ellipsize(GTK_LABEL(flux__ui_body), ellipsize)"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text ellipsize lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        r#"    Text body at 1,1
+        ellipsize: "none"
+"#,
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit text ellipsize default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text ellipsize default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding ellipsize: none must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit no-ellipsize state should be an in-process no-op"
+    );
+
+    let truncated = explicit_default.replace("ellipsize: \"none\"", "ellipsize: \"end\"");
+    fs::write(&entry, &truncated).expect("truncated text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("truncated text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("ellipsize end should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "ellipsize".to_string(),
+            value: "end".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed ellipsize should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed ellipsize should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing ellipsize should restore none"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "ellipsize".to_string(),
+            value: "none".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        ellipsize: truncation\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic ellipsize source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic ellipsize source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven ellipsize must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_max_lines_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-max-lines-lifecycle-{}",
