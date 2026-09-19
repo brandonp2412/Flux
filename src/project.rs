@@ -2275,6 +2275,18 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "tooltip"
+        && (element.kind != "TextInput"
+            || !development_ui_element_has_property(element, "validation_message"))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "background_color" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2526,6 +2538,12 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
+    }
+    if property == "tooltip"
+        && (element.kind != "TextInput"
+            || !development_ui_element_has_property(element, "validation_message"))
+    {
+        return Some(String::new());
     }
     if property == "placeholder" && development_ui_text_input_is_single_line(element) {
         return Some(String::new());
@@ -3136,6 +3154,7 @@ fn development_ui_string_literals(
             "alt",
             "source",
             "validation_state",
+            "tooltip",
             "placeholder",
             "max_length",
             "background_color",

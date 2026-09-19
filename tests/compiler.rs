@@ -47545,6 +47545,144 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_tooltip_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-tooltip-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary tooltip lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state help: str = "Dynamic help"
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial tooltip source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial tooltip source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("tooltip lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"tooltip\") == 0 && flux__ui_action != NULL"));
+    assert!(generated.contains(
+        "gtk_widget_set_tooltip_text(flux__ui_action, (value != NULL && value[0] != '\\0') ? value : NULL)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("tooltip lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "    Button action at 1,1\n",
+        "    Button action at 1,1\n        tooltip: \"General help\"\n",
+    );
+    fs::write(&entry, &explicit).expect("explicit tooltip should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit tooltip should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding tooltip should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "tooltip".to_string(),
+            value: "General help".to_string(),
+        }]
+    );
+
+    let updated = explicit.replace("General help", "Updated help");
+    fs::write(&entry, &updated).expect("updated tooltip should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated tooltip should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("tooltip edits should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "tooltip".to_string(),
+            value: "Updated help".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed tooltip should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed tooltip should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing tooltip should clear it in-process"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "tooltip".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Button action at 1,1\n",
+        "    Button action at 1,1\n        tooltip: help\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic tooltip source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic tooltip source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven tooltip must retain controlled restart"
+    );
+
+    let input_initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+}
+app Form
+"#;
+    let input_conflict = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        tooltip: "General help"
+        validationMessage: "Invalid"
+}
+app Form
+"#;
+    fs::write(&entry, input_initial).expect("initial TextInput source should be writable");
+    cache.invalidate_path(&entry);
+    let input_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput source should analyze");
+    fs::write(&entry, input_conflict).expect("conflicting TextInput source should be writable");
+    cache.invalidate_path(&entry);
+    let input_conflict = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("conflicting TextInput source should analyze");
+    assert!(
+        input_conflict
+            .development_ui_string_patch_from(&input_first)
+            .is_none(),
+        "tooltip lifecycle must retain controlled restart when validation-message precedence is introduced"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_handles_disjoint_text_input_validation_and_tooltips() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-input-patch-{}",
