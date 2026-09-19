@@ -42647,6 +42647,137 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_default_text_max_width_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-max-width-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text max width lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state width: i64 = 40
+    grid columns: 1fr
+    grid rows: auto auto
+    Text body at 1,1
+        text: "Body"
+    Text heading at 2,1
+        variant: "heading"
+        text: "Heading"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text max width source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text max width source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text max width lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"max_width_chars\") == 0 && flux__ui_body != NULL")
+    );
+    assert!(
+        !generated
+            .contains("strcmp(property, \"max_width_chars\") == 0 && flux__ui_heading != NULL")
+    );
+    assert!(generated.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_body), 72)"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text max width lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        maxWidthChars: 72\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit text max width default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text max width default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding maxWidthChars: 72 to default body text must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit body max width should be an in-process no-op"
+    );
+
+    let narrower = explicit_default.replace("maxWidthChars: 72", "maxWidthChars: 40");
+    fs::write(&entry, &narrower).expect("narrow text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("narrow text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("default-variant maxWidthChars should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_width_chars".to_string(),
+            value: "40".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text max width should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text max width should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing maxWidthChars should restore the body semantic default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_width_chars".to_string(),
+            value: "72".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        maxWidthChars: width\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text max width source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text max width source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven maxWidthChars must retain controlled restart"
+    );
+
+    let variant_override = initial.replace(
+        "        variant: \"heading\"\n",
+        "        variant: \"heading\"\n        maxWidthChars: 40\n",
+    );
+    fs::write(&entry, variant_override).expect("variant max width source should be writable");
+    cache.invalidate_path(&entry);
+    let variant_override = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("variant max width source should analyze");
+    assert!(
+        variant_override
+            .development_ui_string_patch_from(&fourth)
+            .is_none(),
+        "adding maxWidthChars beside an explicit semantic variant must restart to preserve precedence"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_single_line_max_length_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-max-length-lifecycle-{}",

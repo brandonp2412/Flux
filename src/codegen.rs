@@ -15480,7 +15480,9 @@ fn emit_linux_gtk_application(
                         c_string(&element.name)
                     ));
                 }
-                if view_property(element, "max_width_chars").is_some() {
+                if view_property(element, "max_width_chars").is_some()
+                    || view_property(element, "variant").is_none()
+                {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"max_width_chars\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_label_set_max_width_chars(GTK_LABEL({widget}), integer_value == 0 ? -1 : (int)integer_value); }}",
                         c_string(&element.name)
