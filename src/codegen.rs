@@ -14921,7 +14921,8 @@ fn emit_linux_gtk_application(
         out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
     }
     let uses_hot_css_color = view.elements.iter().any(|element| {
-        view_property(element, "shadow_color").is_some()
+        element.kind == "Text"
+            || view_property(element, "shadow_color").is_some()
             || [
                 "background_color",
                 "border_color",
@@ -14940,11 +14941,7 @@ fn emit_linux_gtk_application(
     if uses_hot_css_color {
         out.push_str("static const char *flux__ui_hot_css_color(const char *value) { if (value == NULL) return NULL; if (strcmp(value, \"surface\") == 0) return \"@flux_surface\"; if (strcmp(value, \"surfaceRaised\") == 0) return \"@flux_surface_raised\"; if (strcmp(value, \"text\") == 0) return \"@flux_text\"; if (strcmp(value, \"textMuted\") == 0) return \"@flux_text_muted\"; if (strcmp(value, \"accent\") == 0) return \"@flux_accent\"; if (strcmp(value, \"onAccent\") == 0) return \"@flux_on_accent\"; if (strcmp(value, \"outline\") == 0) return \"@flux_outline\"; if (strcmp(value, \"danger\") == 0) return \"@flux_danger\"; if (strcmp(value, \"success\") == 0) return \"@flux_success\"; if (strcmp(value, \"warning\") == 0) return \"@flux_warning\"; if (strcmp(value, \"shadow\") == 0) return \"@flux_shadow\"; if (strcmp(value, \"transparent\") == 0) return \"transparent\"; size_t length = 0; if (value[0] != '#' || !flux__ui_bounded_length(value, 9, &length) || (length != 7 && length != 9)) return NULL; for (size_t index = 1; index < length; index += 1) { char byte = value[index]; bool hex = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'); if (!hex) return NULL; } return value; }\n");
     }
-    if view
-        .elements
-        .iter()
-        .any(|element| element.kind == "Text" && view_property(element, "color").is_some())
-    {
+    if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("static gboolean flux__ui_hot_remove_text_color(PangoAttribute *attribute, gpointer data) { (void)data; if (attribute == NULL || attribute->klass == NULL) return FALSE; PangoAttrType type = attribute->klass->type; return type == PANGO_ATTR_FOREGROUND || type == PANGO_ATTR_FOREGROUND_ALPHA; }\n");
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
@@ -15237,7 +15234,8 @@ fn emit_linux_gtk_application(
             "border_end_color",
             "color",
         ] {
-            if view_property(element, property_name).is_some()
+            if (view_property(element, property_name).is_some()
+                || (element.kind == "Text" && property_name == "color"))
                 && !linux_hot_css_color_properties(element, property_name).is_empty()
             {
                 out.push_str(&format!(
@@ -15907,7 +15905,10 @@ fn emit_linux_gtk_application(
             "color",
         ] {
             let css_names = linux_hot_css_color_properties(element, property_name);
-            if css_names.is_empty() || view_property(element, property_name).is_none() {
+            if css_names.is_empty()
+                || (view_property(element, property_name).is_none()
+                    && !(element.kind == "Text" && property_name == "color"))
+            {
                 continue;
             }
             let provider = linux_ui_hot_style_provider_c_name(element, property_name);
@@ -15925,10 +15926,17 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{{text_color_cleanup} if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
-                c_string(&element.name)
-            ));
+            if property_name == "color" && element.kind == "Text" {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"color\") == 0 && {widget} != NULL) {{{text_color_cleanup} if (value_length == 0) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
+                    c_string(&element.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{{text_color_cleanup} if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                    c_string(&element.name)
+                ));
+            }
         }
         if linux_hot_shadow_values(element, signatures).is_some() {
             let provider = linux_ui_hot_shadow_provider_c_name(element);
