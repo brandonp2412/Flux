@@ -42647,6 +42647,136 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_single_line_placeholder_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-placeholder-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary placeholder lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state hint: str = "Search"
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput input at 1,1
+        text: "Input"
+    TextInput notes at 2,1
+        multiline: true
+        text: "Notes"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial placeholder source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial placeholder source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("placeholder lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"placeholder\") == 0 && flux__ui_input != NULL"));
+    assert!(!generated.contains(
+        "strcmp(property, \"placeholder\") == 0 && flux__ui_notes != NULL && flux__ui_placeholder_notes != NULL"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("placeholder lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    TextInput input at 1,1\n",
+        r#"    TextInput input at 1,1
+        placeholder: ""
+"#,
+    );
+    fs::write(&entry, &explicit_default).expect("explicit placeholder default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit placeholder default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding an empty single-line placeholder must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit empty placeholder should be an in-process no-op"
+    );
+
+    let hinted = explicit_default.replace("placeholder: \"\"", "placeholder: \"Search\"");
+    fs::write(&entry, &hinted).expect("placeholder text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("placeholder text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("single-line placeholder should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "placeholder".to_string(),
+            value: "Search".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed placeholder should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed placeholder should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing placeholder should restore empty text"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "placeholder".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    TextInput input at 1,1\n",
+        r#"    TextInput input at 1,1
+        placeholder: hint
+"#,
+    );
+    fs::write(&entry, dynamic).expect("dynamic placeholder source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic placeholder source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven placeholders must retain controlled restart"
+    );
+
+    let multiline = initial.replace(
+        "    TextInput notes at 2,1\n",
+        r#"    TextInput notes at 2,1
+        placeholder: "Notes hint"
+"#,
+    );
+    fs::write(&entry, multiline).expect("multiline placeholder source should be writable");
+    cache.invalidate_path(&entry);
+    let multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("multiline placeholder source should analyze");
+    assert!(
+        multiline
+            .development_ui_string_patch_from(&fourth)
+            .is_none(),
+        "adding a multiline placeholder must restart so the native overlay can be constructed"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_validation_state_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-validation-state-lifecycle-{}",

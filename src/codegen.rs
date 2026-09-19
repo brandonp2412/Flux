@@ -15693,18 +15693,20 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
-        if element.kind == "TextInput" && view_property(element, "placeholder").is_some() {
+        if element.kind == "TextInput" {
             let multiline = view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false);
             if multiline {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL && flux__ui_placeholder_{} != NULL) {{ gtk_label_set_text(GTK_LABEL(flux__ui_placeholder_{}), value); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_widget_set_visible(flux__ui_placeholder_{}, value_length > 0 && gtk_text_buffer_get_char_count(buffer) == 0); }}",
-                    c_string(&element.name),
-                    element.name,
-                    element.name,
-                    element.name,
-                ));
+                if view_property(element, "placeholder").is_some() {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL && flux__ui_placeholder_{} != NULL) {{ gtk_label_set_text(GTK_LABEL(flux__ui_placeholder_{}), value); GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW({widget})); gtk_widget_set_visible(flux__ui_placeholder_{}, value_length > 0 && gtk_text_buffer_get_char_count(buffer) == 0); }}",
+                        c_string(&element.name),
+                        element.name,
+                        element.name,
+                        element.name,
+                    ));
+                }
             } else {
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"placeholder\") == 0 && {widget} != NULL) gtk_entry_set_placeholder_text(GTK_ENTRY({widget}), value);",

@@ -2201,6 +2201,15 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
     }
 }
 
+fn development_ui_text_input_is_single_line(element: &ViewElement) -> bool {
+    element.kind == "TextInput"
+        && element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "multiline")
+            .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
+}
+
 fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
@@ -2209,6 +2218,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "placeholder" && development_ui_text_input_is_single_line(element) {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "validation_state" && element.kind == "TextInput" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2300,6 +2318,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "placeholder" && development_ui_text_input_is_single_line(element) {
+        return Some(String::new());
+    }
     if property == "validation_state" && element.kind == "TextInput" {
         return Some("normal".to_string());
     }
@@ -2879,6 +2900,7 @@ fn development_ui_string_literals(
             "alt",
             "source",
             "validation_state",
+            "placeholder",
         ] {
             if element
                 .properties
