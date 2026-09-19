@@ -32398,18 +32398,12 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
         "pub fn extra() -> i64 { 1 }\npub fn message() -> str { \"version-four\" }\n",
     )
     .expect("structural dependency update should be writable");
-    wait_for_log(
-        &log,
-        &[
-            "version-four",
-            "reload: development ABI changed; controlled restart required",
-        ],
-        Duration::from_secs(5),
-    );
+    wait_for_log(&log, &["version-four"], Duration::from_secs(5));
     wait_for_run_generation(&status_path, 3, Duration::from_secs(5));
     let status =
         fs::read_to_string(&status_path).expect("structural run status should be readable");
     assert!(status.contains("\"abi_compatible\":false"));
+    assert!(status.contains("\"reload_method\":\"restart\""));
     assert!(status.contains("\"state_root_compatible\":true"));
     assert!(status.contains("\"state_preserved\":0"));
     assert!(status.contains("\"state_reset\":0"));
