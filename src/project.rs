@@ -2275,6 +2275,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "font_family" && element.kind == "Text" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.is_empty() || value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "variant"
         && element.kind == "Text"
         && !["size", "bold", "line_height_percent", "max_width_chars"]
@@ -2473,6 +2482,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "font_family" && element.kind == "Text" {
+        return Some(String::new());
+    }
     if property == "variant" && element.kind == "Text" {
         return Some("body".to_string());
     }
@@ -3096,6 +3108,7 @@ fn development_ui_string_literals(
             "validation_state",
             "placeholder",
             "max_length",
+            "font_family",
             "variant",
             "size",
             "max_width_chars",

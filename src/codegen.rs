@@ -14948,6 +14948,7 @@ fn emit_linux_gtk_application(
         out.push_str("static gboolean flux__ui_hot_remove_text_color(PangoAttribute *attribute, gpointer data) { (void)data; if (attribute == NULL || attribute->klass == NULL) return FALSE; PangoAttrType type = attribute->klass->type; return type == PANGO_ATTR_FOREGROUND || type == PANGO_ATTR_FOREGROUND_ALPHA; }\n");
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str("static gboolean flux__ui_hot_remove_text_family(PangoAttribute *attribute, gpointer data) { (void)data; if (attribute == NULL || attribute->klass == NULL) return FALSE; return attribute->klass->type == PANGO_ATTR_FAMILY; }\n");
         let mut helper = String::from(
             "static bool flux__ui_hot_text_variant(const char *value, int *size, bool *bold, double *line_height, int *max_width_chars) { if (value == NULL || size == NULL || bold == NULL || line_height == NULL || max_width_chars == NULL) return false;",
         );
@@ -16151,12 +16152,10 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"size\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_size_new((int)integer_value * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
                     c_string(&element.name)
                 ));
-                if view_property(element, "font_family").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"font_family\") == 0 && value_length > 0 && {widget} != NULL) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_family_new(value)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"font_family\") == 0 && {widget} != NULL) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); if (value_length == 0) {{ PangoAttrList *removed_attrs = pango_attr_list_filter(patched_attrs, flux__ui_hot_remove_text_family, NULL); if (removed_attrs != NULL) pango_attr_list_unref(removed_attrs); }} else {{ pango_attr_list_change(patched_attrs, pango_attr_family_new(value)); }} gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }}",
+                    c_string(&element.name)
+                ));
                 for (property, attribute) in [
                     (
                         "bold",

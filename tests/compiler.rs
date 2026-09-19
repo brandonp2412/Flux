@@ -40965,6 +40965,115 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_font_family_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-font-family-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text font family lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state family: str = "Serif"
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text font family source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text font family source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text font family lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "static gboolean flux__ui_hot_remove_text_family(PangoAttribute *attribute, gpointer data)"
+    ));
+    assert!(generated.contains("strcmp(property, \"font_family\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("attribute->klass->type == PANGO_ATTR_FAMILY"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text font family lifecycle entry should canonicalize");
+    let sans = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        fontFamily: \"DejaVu Sans\"\n",
+    );
+    fs::write(&entry, &sans).expect("explicit text font family should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text font family should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding fontFamily should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "font_family".to_string(),
+            value: "DejaVu Sans".to_string(),
+        }]
+    );
+
+    let serif = sans.replace("DejaVu Sans", "Serif");
+    fs::write(&entry, &serif).expect("updated text font family should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated text font family should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("fontFamily edits should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "font_family".to_string(),
+            value: "Serif".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text font family should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text font family should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing fontFamily should restore native inheritance"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "font_family".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        fontFamily: family\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text font family source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text font family source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven fontFamily must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_variant_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-variant-lifecycle-{}",
