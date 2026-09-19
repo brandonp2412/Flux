@@ -1793,10 +1793,12 @@ fn windows_backend_refreshes_dynamic_color_properties_in_place() {
 view Screen {
     state tint: str = "#1f2328"
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text title at 1,1
         text: "Dynamic color"
         color: tint
+        backgroundColor: tint
+    TextInput input at 2,1
         backgroundColor: tint
 }
 app Screen
@@ -1817,6 +1819,11 @@ app Screen
     assert!(generated.contains("flux__win_set_dynamic_text_color"));
     assert!(generated.contains("&flux__win_dynamic_brush_title_background_color"));
     assert!(generated.contains("&flux__win_dynamic_color_title_color"));
+    assert!(generated.contains("&flux__win_dynamic_brush_input_background_color"));
+    assert!(
+        generated.contains("case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT:")
+    );
+    assert!(generated.contains("if (control == flux__ui_input)"));
 }
 
 #[test]

@@ -14525,7 +14525,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
     }
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
-    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
+    out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for element in view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
