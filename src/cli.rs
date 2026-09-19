@@ -5331,7 +5331,8 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
         let next_binary = development_binary_path(generation);
         let native_package = native_package_config_for_target(target)?;
         let native_started = Instant::now();
-        if let Err(message) = build_native(&generated, &next_binary, mode, native_package.as_ref())
+        if let Err(message) =
+            build_development_native(&generated, &next_binary, mode, native_package.as_ref())
         {
             write_development_status(target, "compile_error", generation, mode, &message);
             status_state = "compile_error";
@@ -5659,7 +5660,7 @@ fn start_development_build(
     };
     let binary = development_binary_path(generation);
     let native_package = native_package_config_for_target(target)?;
-    build_native(&generated, &binary, mode, native_package.as_ref())?;
+    build_development_native(&generated, &binary, mode, native_package.as_ref())?;
     let child = spawn_development_binary(&binary, target)?;
     let watch_paths = project_watch_paths(target, &sources);
     let development_abi = analysis.development_abi();
@@ -10612,6 +10613,16 @@ fn native_package_config_for_target(
                     .join("\n"),
             )
         })
+}
+
+fn build_development_native(
+    c_source: &str,
+    output: &Path,
+    mode: BuildMode,
+    native_package: Option<&fluxc::project::NativePackageConfig>,
+) -> Result<(), String> {
+    let c_source = format!("#define FLUX_DEVELOPMENT_RELOAD 1\n{c_source}");
+    build_native(&c_source, output, mode, native_package)
 }
 
 fn build_native(
