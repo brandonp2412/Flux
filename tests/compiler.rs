@@ -40965,6 +40965,130 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_variant_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-variant-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary text variant lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text variant source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text variant source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text variant lifecycle fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_hot_text_variant"));
+    assert!(generated.contains("strcmp(property, \"variant\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("pango_attr_size_new(variant_size * PANGO_SCALE)"));
+    assert!(
+        generated.contains(
+            "pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
+        )
+    );
+    assert!(generated.contains("pango_attr_line_height_new(variant_line_height)"));
+    assert!(generated.contains(
+        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_body), variant_max_width_chars)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("text variant lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        variant: \"body\"\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit text variant default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text variant default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding variant: body must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit body variant should be an in-process no-op"
+    );
+
+    let heading = explicit_default.replace("variant: \"body\"", "variant: \"heading\"");
+    fs::write(&entry, &heading).expect("heading variant source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("heading variant source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("heading variant should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "variant".to_string(),
+            value: "heading".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text variant should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text variant should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing text variant should restore body"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "variant".to_string(),
+            value: "body".to_string(),
+        }]
+    );
+
+    let overridden_source = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        size: 18\n",
+    );
+    fs::write(&entry, &overridden_source).expect("overridden text source should be writable");
+    cache.invalidate_path(&entry);
+    let overridden = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden text source should analyze");
+    let overridden_variant_source = overridden_source.replace(
+        "        size: 18\n",
+        "        variant: \"heading\"\n        size: 18\n",
+    );
+    fs::write(&entry, overridden_variant_source)
+        .expect("overridden variant source should be writable");
+    cache.invalidate_path(&entry);
+    let overridden_variant = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("overridden variant source should analyze");
+    assert!(
+        overridden_variant
+            .development_ui_string_patch_from(&overridden)
+            .is_none(),
+        "adding a variant beside explicit semantic overrides must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_variants_with_explicit_override_precedence() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-variant-patch-{}",

@@ -14947,11 +14947,7 @@ fn emit_linux_gtk_application(
     {
         out.push_str("static gboolean flux__ui_hot_remove_text_color(PangoAttribute *attribute, gpointer data) { (void)data; if (attribute == NULL || attribute->klass == NULL) return FALSE; PangoAttrType type = attribute->klass->type; return type == PANGO_ATTR_FOREGROUND || type == PANGO_ATTR_FOREGROUND_ALPHA; }\n");
     }
-    if view
-        .elements
-        .iter()
-        .any(|element| element.kind == "Text" && view_property(element, "variant").is_some())
-    {
+    if view.elements.iter().any(|element| element.kind == "Text") {
         let mut helper = String::from(
             "static bool flux__ui_hot_text_variant(const char *value, int *size, bool *bold, double *line_height, int *max_width_chars) { if (value == NULL || size == NULL || bold == NULL || line_height == NULL || max_width_chars == NULL) return false;",
         );
@@ -16115,7 +16111,7 @@ fn emit_linux_gtk_application(
                         c_string(&element.name)
                     ));
                 }
-                if view_property(element, "variant").is_some() {
+                {
                     let mut attribute_updates = String::new();
                     if view_property(element, "size").is_none() {
                         attribute_updates.push_str(

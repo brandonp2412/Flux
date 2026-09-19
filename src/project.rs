@@ -87,6 +87,12 @@ impl ProjectAnalysis {
             &mut current,
             &mut previous_literals,
         )?;
+        development_ui_text_variant_lifecycle_defaults(
+            self,
+            previous,
+            &mut current,
+            &mut previous_literals,
+        )?;
         if current.keys().ne(previous_literals.keys()) {
             return None;
         }
@@ -2097,6 +2103,57 @@ fn development_application_geometry_lifecycle_defaults(
     Some(())
 }
 
+fn development_ui_text_variant_lifecycle_defaults(
+    current_analysis: &ProjectAnalysis,
+    previous_analysis: &ProjectAnalysis,
+    current: &mut BTreeMap<(String, String), String>,
+    previous: &mut BTreeMap<(String, String), String>,
+) -> Option<()> {
+    let current_application = current_analysis.program.application.as_ref()?;
+    let previous_application = previous_analysis.program.application.as_ref()?;
+    let current_view = current_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == current_application.view_name)?;
+    let previous_view = previous_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == previous_application.view_name)?;
+
+    for current_element in &current_view.elements {
+        if current_element.kind != "Text" {
+            continue;
+        }
+        let Some(previous_element) = previous_view
+            .elements
+            .iter()
+            .find(|element| element.name == current_element.name && element.kind == "Text")
+        else {
+            continue;
+        };
+        let current_has_variant = development_ui_element_has_property(current_element, "variant");
+        let previous_has_variant = development_ui_element_has_property(previous_element, "variant");
+        if current_has_variant == previous_has_variant {
+            continue;
+        }
+        let semantic_overrides = ["size", "bold", "line_height_percent", "max_width_chars"];
+        if semantic_overrides.iter().any(|property| {
+            development_ui_element_has_property(current_element, property)
+                || development_ui_element_has_property(previous_element, property)
+        }) {
+            continue;
+        }
+        for property in semantic_overrides {
+            let key = (current_element.name.clone(), property.to_string());
+            current.remove(&key);
+            previous.remove(&key);
+        }
+    }
+    Some(())
+}
+
 fn development_ui_element_has_property(element: &ViewElement, property: &str) -> bool {
     element
         .properties
@@ -2218,6 +2275,23 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "variant"
+        && element.kind == "Text"
+        && !["size", "bold", "line_height_percent", "max_width_chars"]
+            .iter()
+            .any(|name| development_ui_element_has_property(element, name))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(
+            value.as_str(),
+            "body" | "caption" | "heading" | "title" | "display"
+        ) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "text_align" && element.kind == "Text" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2399,6 +2473,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "variant" && element.kind == "Text" {
+        return Some("body".to_string());
+    }
     if property == "text_align" && element.kind == "Text" {
         return Some("left".to_string());
     }
@@ -3019,6 +3096,7 @@ fn development_ui_string_literals(
             "validation_state",
             "placeholder",
             "max_length",
+            "variant",
             "size",
             "max_width_chars",
             "max_lines",
@@ -3040,6 +3118,24 @@ fn development_ui_string_literals(
                 continue;
             };
             literals.insert((element.name.clone(), property_name.to_string()), default);
+        }
+
+        if element.kind == "Text"
+            && development_ui_element_has_property(element, "variant")
+            && !["size", "bold", "line_height_percent", "max_width_chars"]
+                .iter()
+                .any(|name| development_ui_element_has_property(element, name))
+        {
+            for (property, value) in [
+                ("size", "16"),
+                ("bold", "0"),
+                ("line_height_percent", "140"),
+                ("max_width_chars", "72"),
+            ] {
+                literals
+                    .entry((element.name.clone(), property.to_string()))
+                    .or_insert_with(|| value.to_string());
+            }
         }
     }
     Some(literals)
