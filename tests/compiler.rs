@@ -1529,6 +1529,39 @@ app Screen
 }
 
 #[test]
+fn windows_backend_applies_text_max_width_chars_to_native_layout() {
+    let source = r#"
+view Screen {
+    state width: i64 = 24
+    grid columns: 1fr
+    grid rows: auto auto
+    Text title at 1,1
+        text: "Title"
+        maxWidthChars: width
+    Text body at 2,1
+        text: "Body"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows text width source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows text width source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows text width source should lower to Windows");
+    assert!(generated.contains("GetTextMetricsA(dc, &metrics)"));
+    assert!(
+        generated.contains("flux__win_text_width_for_chars(flux__ui_title, flux__ui_state_width)")
+    );
+    assert!(generated.contains("flux__win_text_width_for_chars(flux__ui_body, INT64_C(72))"));
+    assert!(generated.contains("RECT flux__win_refresh_client = {0}"));
+}
+
+#[test]
 fn windows_backend_loads_images_through_native_bitmap_controls() {
     let source = r#"
 view Screen {

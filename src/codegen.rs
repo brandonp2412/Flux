@@ -13617,7 +13617,13 @@ fn emit_windows_native_application(
                 .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
         })
     });
-    let uses_dynamic_layout = uses_dynamic_layout_constraints || uses_dynamic_margins;
+    let uses_dynamic_text_widths = view.elements.iter().any(|element| {
+        element.kind == "Text"
+            && view_property(element, "max_width_chars")
+                .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+    });
+    let uses_dynamic_layout =
+        uses_dynamic_layout_constraints || uses_dynamic_margins || uses_dynamic_text_widths;
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13642,6 +13648,9 @@ fn emit_windows_native_application(
     }
     if uses_dynamic_margins {
         out.push_str("static int64_t flux__win_checked_margin(int64_t value, const char *name) { if (value < 0 || value > INT32_MAX) { fprintf(stderr, \"Flux runtime error: %s must be between 0 and 2147483647\\n\", name); abort(); } return value; }\n");
+    }
+    if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str("static int flux__win_text_width_for_chars(HWND control, int64_t chars) { if (control == NULL) return INT32_MAX; if (chars < 0 || chars > INT32_MAX) { fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); } if (chars == 0) return INT32_MAX; HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int average = metrics.tmAveCharWidth > 0 ? metrics.tmAveCharWidth : 1; int64_t measured = chars * (int64_t)average; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
     if uses_tooltips {
         out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, char **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } if (*storage != NULL && strcmp(*storage, text) == 0) return; char *copy = (char *)malloc(length + 1); if (copy == NULL) { fputs(\"Flux runtime error: unable to store tooltip text\\n\", stderr); abort(); } memcpy(copy, text, length + 1); free(*storage); *storage = copy; TOOLINFOA info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageA(flux__win_tooltips, TTM_UPDATETIPTEXTA, 0, (LPARAM)&info); }\n");
@@ -14325,6 +14334,33 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         let min_height_value = min_height.as_deref().unwrap_or("INT64_C(28)");
         let max_width_value = max_width.as_deref().unwrap_or("INT64_C(-1)");
         let max_height_value = max_height.as_deref().unwrap_or("INT64_C(-1)");
+        let text_width_chars = if element.kind == "Text" {
+            let (_, _, _, default_max_width_chars) = text_semantic_typography(element, signatures)?;
+            match view_property(element, "max_width_chars") {
+                Some(property) => match static_expr_i64(&property.value, signatures) {
+                    Some(value) => {
+                        if value < 0 || value > i64::from(i32::MAX) {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.maxWidthChars must be between 0 and 2147483647",
+                            ));
+                        }
+                        format!("INT64_C({value})")
+                    }
+                    None => ui_expr_c(&property.value, view, signatures)?,
+                },
+                None => format!("INT64_C({default_max_width_chars})"),
+            }
+        } else {
+            "INT64_C(0)".to_string()
+        };
+        let text_width_limit = if element.kind == "Text" {
+            format!(
+                "int text_maximum_width = flux__win_text_width_for_chars({variable}, {text_width_chars}); if (control_width > text_maximum_width) control_width = text_maximum_width; "
+            )
+        } else {
+            String::new()
+        };
         let width_relationship = if min_width.is_some() && max_width.is_some() {
             "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
         } else {
@@ -14335,7 +14371,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         } else {
             ""
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top; x = adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x; y = adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y; int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top; x = adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x; y = adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y; int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{text_width_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
@@ -14616,7 +14652,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER); RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }}{dpi_font_refresh} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
+    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
