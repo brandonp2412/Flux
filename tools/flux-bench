@@ -347,8 +347,14 @@ def main():
     parser.add_argument(
         "--max-ui-size-ratio",
         type=float,
-        default=float(os.environ.get("FLUX_PERF_MAX_UI_SIZE_RATIO", "2.0")),
-        help="maximum Flux native-UI binary size / best native baseline before failure (default: 2.0)",
+        default=float(os.environ.get("FLUX_PERF_MAX_UI_SIZE_RATIO", "3.0")),
+        help="maximum Flux native-UI binary size / best native baseline before failure (default: 3.0)",
+    )
+    parser.add_argument(
+        "--max-ui-size-bytes",
+        type=int,
+        default=int(os.environ.get("FLUX_PERF_MAX_UI_SIZE_BYTES", "65536")),
+        help="maximum Flux native-UI binary size before failure (default: 65536 bytes)",
     )
     parser.add_argument(
         "--max-ui-runtime-ratio",
@@ -378,6 +384,8 @@ def main():
         parser.error("--max-ratio must be positive")
     if args.max_ui_size_ratio <= 0:
         parser.error("--max-ui-size-ratio must be positive")
+    if args.max_ui_size_bytes <= 0:
+        parser.error("--max-ui-size-bytes must be positive")
     if args.max_ui_runtime_ratio <= 0:
         parser.error("--max-ui-runtime-ratio must be positive")
     if args.ui_timeout <= 0:
@@ -397,7 +405,10 @@ def main():
                 if args.ui_timing
                 else benchmark_artifact(paths)
             )
-            if result["flux_size_vs_best_native"] > args.max_ui_size_ratio:
+            if (
+                result["flux_size_vs_best_native"] > args.max_ui_size_ratio
+                or result["binary_bytes"]["flux"] > args.max_ui_size_bytes
+            ):
                 failures.append(name)
             if result["kind"] == "ui_runtime" and (
                 result["flux_startup_vs_best_native"] > args.max_ui_runtime_ratio
@@ -415,6 +426,7 @@ def main():
         "batch": args.batch,
         "max_ratio": args.max_ratio,
         "max_ui_size_ratio": args.max_ui_size_ratio,
+        "max_ui_size_bytes": args.max_ui_size_bytes,
         "max_ui_runtime_ratio": args.max_ui_runtime_ratio,
         "ui_timing": args.ui_timing,
         "workloads": results,
@@ -427,7 +439,8 @@ def main():
         print(
             f"Flux performance gate: {args.runs} rounds x {args.batch} executions, "
             f"max checked-Rust ratio {args.max_ratio:.2f}x, "
-            f"max native-UI size ratio {args.max_ui_size_ratio:.2f}x, "
+            f"max native-UI size ratio {args.max_ui_size_ratio:.2f}x / "
+            f"{args.max_ui_size_bytes} bytes, "
             f"max native-UI runtime ratio {args.max_ui_runtime_ratio:.2f}x"
         )
         for name, result in results.items():
