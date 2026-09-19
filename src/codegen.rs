@@ -13933,7 +13933,70 @@ fn emit_windows_native_application(
         out.push_str("static void flux__win_set_dynamic_background(HWND control, HBRUSH *brush, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || brush == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(next); *current = next; *has_color = *brush != NULL; InvalidateRect(control, NULL, TRUE); } }\nstatic void flux__win_set_dynamic_text_color(HWND control, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { *current = next; *has_color = true; InvalidateRect(control, NULL, TRUE); } }\n");
     }
     if view.elements.iter().any(|element| element.kind == "Image") {
-        out.push_str("static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\\0') source_length += 1; if (source_length > 65536) return NULL; if (strncmp(source, \"asset://\", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\\0' || *relative == '/' || strstr(relative, \"..\") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\\\'); if (separator == NULL) return NULL; *separator = '\\0'; size_t size = strlen(module) + strlen(\"\\\\assets\\\\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, \"%s\\\\assets\\\\%s\", module, relative); return path; }\nstatic void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source) { if (control == NULL || current == NULL) return; char *path = flux__win_image_source_path(source); if (path == NULL || path[0] == '\\0') { free(path); if (*current != NULL) { SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, 0); DeleteObject(*current); *current = NULL; } return; } HBITMAP next = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); free(path); if (next == NULL) return; HBITMAP previous = (HBITMAP)SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)next); if (previous != NULL && previous != next) DeleteObject(previous); *current = next; }\n");
+        out.push_str(r#"static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\0') source_length += 1; if (source_length > 65536) return NULL; if (strncmp(source, "asset://", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\0' || *relative == '/' || strstr(relative, "..") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\'); if (separator == NULL) return NULL; *separator = '\0'; size_t size = strlen(module) + strlen("\\assets\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, "%s\\assets\\%s", module, relative); return path; }
+static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source, const char *fit) {
+    if (control == NULL || current == NULL) return;
+    if (fit == NULL) fit = "contain";
+    bool fit_fill = strcmp(fit, "fill") == 0;
+    bool fit_contain = strcmp(fit, "contain") == 0;
+    bool fit_cover = strcmp(fit, "cover") == 0;
+    bool fit_scale_down = strcmp(fit, "scaleDown") == 0 || strcmp(fit, "scale_down") == 0;
+    if (!fit_fill && !fit_contain && !fit_cover && !fit_scale_down) {
+        fputs("Flux runtime error: Image.fit must be one of 'fill', 'contain', 'cover', or 'scaleDown'\n", stderr);
+        abort();
+    }
+    char *path = flux__win_image_source_path(source);
+    if (path == NULL || path[0] == '\0') {
+        free(path);
+        if (*current != NULL) {
+            SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, 0);
+            DeleteObject(*current);
+            *current = NULL;
+        }
+        return;
+    }
+    HBITMAP next = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+    free(path);
+    if (next == NULL) return;
+    BITMAP bitmap = {0};
+    RECT client = {0};
+    if (GetObjectA(next, sizeof(bitmap), &bitmap) == sizeof(bitmap) && GetClientRect(control, &client)) {
+        int64_t source_width = (int64_t)bitmap.bmWidth;
+        int64_t source_height = (int64_t)bitmap.bmHeight;
+        int64_t target_width = (int64_t)(client.right - client.left);
+        int64_t target_height = (int64_t)(client.bottom - client.top);
+        if (source_width > 0 && source_height > 0 && target_width > 0 && target_height > 0) {
+            int64_t output_width = source_width;
+            int64_t output_height = source_height;
+            if (fit_fill) {
+                output_width = target_width;
+                output_height = target_height;
+            } else if (!(fit_scale_down && source_width <= target_width && source_height <= target_height)) {
+                bool source_is_wider = source_width * target_height > target_width * source_height;
+                if (((fit_contain || fit_scale_down) && source_is_wider) || (fit_cover && !source_is_wider)) {
+                    output_width = target_width;
+                    output_height = source_height * target_width / source_width;
+                } else {
+                    output_height = target_height;
+                    output_width = source_width * target_height / source_height;
+                }
+                if (output_width < 1) output_width = 1;
+                if (output_height < 1) output_height = 1;
+            }
+            if (output_width != source_width || output_height != source_height) {
+                HBITMAP scaled = (HBITMAP)CopyImage(next, IMAGE_BITMAP, (int)output_width, (int)output_height, 0);
+                if (scaled != NULL && scaled != next) {
+                    DeleteObject(next);
+                    next = scaled;
+                }
+            }
+        }
+    }
+    HBITMAP previous = (HBITMAP)SendMessageA(control, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)next);
+    if (previous != NULL && previous != next) DeleteObject(previous);
+    *current = next;
+}
+"#);
     }
     if view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -14327,8 +14390,13 @@ fn emit_windows_native_application(
             if let Some(property) = view_property(element, property_name) {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 if element.kind == "Image" {
+                    let fit = if let Some(fit_property) = view_property(element, "fit") {
+                        ui_expr_c(&fit_property.value, view, signatures)?
+                    } else {
+                        c_string("contain")
+                    };
                     out.push_str(&format!(
-                        "flux__win_set_bitmap({variable}, &flux__win_bitmap_{}, {value});\n",
+                        "flux__win_set_bitmap({variable}, &flux__win_bitmap_{}, {value}, {fit});\n",
                         element.name
                     ));
                 } else {

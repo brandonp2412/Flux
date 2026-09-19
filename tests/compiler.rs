@@ -1532,12 +1532,13 @@ app Screen
 fn windows_backend_loads_images_through_native_bitmap_controls() {
     let source = r#"
 view Screen {
+    state imageFit: str = "contain"
     grid columns: 1fr
     grid rows: 1fr
     Image logo at 1,1
         source: "asset://logo.bmp"
         alt: "Flux logo"
-        fit: "contain"
+        fit: imageFit
 }
 app Screen(title: "Image")
 "#;
@@ -1561,6 +1562,12 @@ app Screen(title: "Image")
     assert!(generated.contains("LR_CREATEDIBSECTION"));
     assert!(generated.contains("SS_BITMAP | SS_CENTERIMAGE"));
     assert!(generated.contains("flux__win_set_bitmap(flux__ui_logo"));
+    assert!(generated.contains("flux__ui_state_imageFit"));
+    assert!(generated.contains("GetObjectA(next, sizeof(bitmap), &bitmap)"));
+    assert!(generated.contains("GetClientRect(control, &client)"));
+    assert!(generated.contains("CopyImage(next, IMAGE_BITMAP"));
+    assert!(generated.contains("fit_scale_down"));
+    assert!(generated.contains("\"contain\""));
 }
 
 #[test]
@@ -1697,7 +1704,7 @@ view Screen {
     state extent: i64 = 80
     state count: i64 = 0
     grid columns: 1fr
-    grid rows: auto auto auto
+    grid rows: auto auto auto auto
     Text title at 1,1
         text: "Cross target"
         tooltip: "Native tooltip"
@@ -1711,6 +1718,9 @@ view Screen {
         text: "Run"
         shortcut: "Ctrl+Shift+Enter"
         onPress: count => count + 1
+    Image logo at 4,1
+        source: "logo.bmp"
+        fit: "cover"
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
