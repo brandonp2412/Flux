@@ -42647,6 +42647,111 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_align_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-align-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary text align lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state alignment: str = "right"
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text align source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text align source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text align lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"text_align\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("gtk_label_set_justify(GTK_LABEL(flux__ui_body), justify)"));
+
+    let entry = fs::canonicalize(entry).expect("text align lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        r#"    Text body at 1,1
+        textAlign: "left"
+"#,
+    );
+    fs::write(&entry, &explicit_default).expect("explicit text align default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text align default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding textAlign: left must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit left alignment should be an in-process no-op"
+    );
+
+    let centered = explicit_default.replace("textAlign: \"left\"", "textAlign: \"center\"");
+    fs::write(&entry, &centered).expect("centered text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("centered text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("center alignment should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "text_align".to_string(),
+            value: "center".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text align should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text align should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing text align should restore left"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "text_align".to_string(),
+            value: "left".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        textAlign: alignment\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text align source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text align source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven text alignment must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_ellipsize_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-ellipsize-lifecycle-{}",

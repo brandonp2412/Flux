@@ -2218,6 +2218,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "text_align" && element.kind == "Text" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(value.as_str(), "left" | "center" | "right" | "fill") {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "ellipsize" && element.kind == "Text" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2354,6 +2363,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "text_align" && element.kind == "Text" {
+        return Some("left".to_string());
+    }
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
     }
@@ -2955,6 +2967,7 @@ fn development_ui_string_literals(
             "max_length",
             "max_width_chars",
             "max_lines",
+            "text_align",
             "ellipsize",
         ] {
             if element
