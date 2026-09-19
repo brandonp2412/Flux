@@ -15514,12 +15514,10 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"alt\") == 0 && {widget} != NULL) gtk_picture_set_alternative_text(GTK_PICTURE({widget}), value);",
                     c_string(&element.name)
                 ));
-                if view_property(element, "fit").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"fit\") == 0 && {widget} != NULL) {{ GtkContentFit content_fit = GTK_CONTENT_FIT_CONTAIN; bool content_fit_valid = true; if (strcmp(value, \"fill\") == 0) content_fit = GTK_CONTENT_FIT_FILL; else if (strcmp(value, \"contain\") == 0) content_fit = GTK_CONTENT_FIT_CONTAIN; else if (strcmp(value, \"cover\") == 0) content_fit = GTK_CONTENT_FIT_COVER; else if (strcmp(value, \"scaleDown\") == 0 || strcmp(value, \"scale_down\") == 0) content_fit = GTK_CONTENT_FIT_SCALE_DOWN; else content_fit_valid = false; if (content_fit_valid) gtk_picture_set_content_fit(GTK_PICTURE({widget}), content_fit); }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"fit\") == 0 && {widget} != NULL) {{ GtkContentFit content_fit = GTK_CONTENT_FIT_CONTAIN; bool content_fit_valid = true; if (strcmp(value, \"fill\") == 0) content_fit = GTK_CONTENT_FIT_FILL; else if (strcmp(value, \"contain\") == 0) content_fit = GTK_CONTENT_FIT_CONTAIN; else if (strcmp(value, \"cover\") == 0) content_fit = GTK_CONTENT_FIT_COVER; else if (strcmp(value, \"scaleDown\") == 0 || strcmp(value, \"scale_down\") == 0) content_fit = GTK_CONTENT_FIT_SCALE_DOWN; else content_fit_valid = false; if (content_fit_valid) gtk_picture_set_content_fit(GTK_PICTURE({widget}), content_fit); }}",
+                    c_string(&element.name)
+                ));
             }
             "TextInput" => {
                 if view_property(element, "text").is_some()

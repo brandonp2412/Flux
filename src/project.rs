@@ -2209,6 +2209,18 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "fit" && element.kind == "Image" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(
+            value.as_str(),
+            "fill" | "contain" | "cover" | "scaleDown" | "scale_down"
+        ) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "bold"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "variant")
@@ -2261,6 +2273,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "fit" && element.kind == "Image" {
+        return Some("contain".to_string());
+    }
     if property == "bold"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "variant")
@@ -2827,6 +2842,7 @@ fn development_ui_string_literals(
             "checked",
             "selected",
             "margin",
+            "fit",
         ] {
             if element
                 .properties

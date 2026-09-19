@@ -42647,6 +42647,117 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_image_fit_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-image-fit-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary image fit lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state selectedFit: str = "contain"
+    grid columns: 1fr
+    grid rows: auto
+    Image hero at 1,1
+        source: "hero.png"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial image fit lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial image fit lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("image fit lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"fit\") == 0 && flux__ui_hero != NULL"));
+    assert!(
+        generated.contains("gtk_picture_set_content_fit(GTK_PICTURE(flux__ui_hero), content_fit)")
+    );
+
+    let entry = fs::canonicalize(entry).expect("image fit lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        source: \"hero.png\"
+",
+        "        source: \"hero.png\"
+        fit: \"contain\"
+",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit image fit default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit image fit default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding Image.fit: contain must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit contain fit should be an in-process no-op"
+    );
+
+    let cover = explicit_default.replace("fit: \"contain\"", "fit: \"cover\"");
+    fs::write(&entry, &cover).expect("cover image fit source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("cover image fit source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("Image.fit cover should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "fit".to_string(),
+            value: "cover".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed image fit source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed image fit source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing Image.fit should restore contain"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "hero".to_string(),
+            property: "fit".to_string(),
+            value: "contain".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        source: \"hero.png\"
+",
+        "        source: \"hero.png\"
+        fit: selectedFit
+",
+    );
+    fs::write(&entry, dynamic).expect("dynamic image fit source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic image fit source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "runtime Image.fit declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
