@@ -32443,9 +32443,10 @@ view Screen {{
     Text label at 1,1
         text: "Before"
 }}
-app Screen(onStart: started)
+app Screen(id: "app.flux.hotapply{}", onStart: started)
 "#,
-        starts.display()
+        starts.display(),
+        std::process::id()
     );
     fs::write(&entry, &initial).expect("UI hot-apply source should be writable");
 
@@ -32531,7 +32532,7 @@ app Screen(onStart: started)
     assert!(status.contains("\"reload_method\":\"in_process_string\""));
 
     fs::write(&entry, &after_text).expect("removed grid spacing should be writable");
-    wait_for_run_generation(&status_path, 4, Duration::from_secs(8));
+    wait_for_run_reload_method(&status_path, 4, "in_process_string", Duration::from_secs(8));
     let status = fs::read_to_string(&status_path)
         .expect("removed spacing hot-apply status should be readable");
     assert!(status.contains("\"reload_method\":\"in_process_string\""));
@@ -32637,6 +32638,37 @@ fn wait_for_run_generation(path: &std::path::Path, generation: usize, timeout: D
         assert!(
             start.elapsed() < timeout,
             "timed out waiting for run generation {generation}; status was:\n{text}"
+        );
+        thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn wait_for_run_reload_method(
+    path: &std::path::Path,
+    minimum_generation: usize,
+    method: &str,
+    timeout: Duration,
+) {
+    let start = Instant::now();
+    let method_marker = format!("\"reload_method\":\"{method}\"");
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        let generation = text
+            .split_once("\"generation\":")
+            .and_then(|(_, tail)| {
+                let digits = tail
+                    .chars()
+                    .take_while(|character| character.is_ascii_digit())
+                    .collect::<String>();
+                digits.parse::<usize>().ok()
+            })
+            .unwrap_or(0);
+        if generation >= minimum_generation && text.contains(&method_marker) {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for run generation >= {minimum_generation} with reload method {method}; status was:\n{text}"
         );
         thread::sleep(Duration::from_millis(40));
     }
