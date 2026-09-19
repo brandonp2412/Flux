@@ -2209,6 +2209,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "source" && element.kind == "Image" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "alt" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2282,7 +2291,7 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
-    if property == "alt" && element.kind == "Image" {
+    if matches!(property, "source" | "alt") && element.kind == "Image" {
         return Some(String::new());
     }
     if property == "fit" && element.kind == "Image" {
@@ -2856,6 +2865,7 @@ fn development_ui_string_literals(
             "margin",
             "fit",
             "alt",
+            "source",
         ] {
             if element
                 .properties

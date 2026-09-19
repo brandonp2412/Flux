@@ -15504,12 +15504,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             )),
             "Image" => {
-                if view_property(element, "source").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"source\") == 0 && {widget} != NULL) {{ gchar *image_source = flux__ui_bounded_image_source_path(value); gtk_picture_set_filename(GTK_PICTURE({widget}), image_source); g_free(image_source); }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"source\") == 0 && {widget} != NULL) {{ if (value != NULL && value[0] == '\\0') gtk_picture_set_paintable(GTK_PICTURE({widget}), NULL); else {{ gchar *image_source = flux__ui_bounded_image_source_path(value); gtk_picture_set_filename(GTK_PICTURE({widget}), image_source); g_free(image_source); }} }}",
+                    c_string(&element.name)
+                ));
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"alt\") == 0 && {widget} != NULL) gtk_picture_set_alternative_text(GTK_PICTURE({widget}), value);",
                     c_string(&element.name)
