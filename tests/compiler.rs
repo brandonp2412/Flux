@@ -45259,6 +45259,120 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_background_color_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-background-color-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary background color lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state tone: str = "accent"
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial background color source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial background color source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("background color lifecycle fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("static GtkCssProvider *flux__ui_hot_style_action_background_color = NULL")
+    );
+    assert!(
+        generated
+            .contains("strcmp(property, \"background_color\") == 0 && flux__ui_action != NULL")
+    );
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_background_color, \"\", -1)"
+    ));
+
+    let entry =
+        fs::canonicalize(entry).expect("background color lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "    Button action at 1,1\n",
+        "    Button action at 1,1\n        backgroundColor: \"surfaceRaised\"\n",
+    );
+    fs::write(&entry, &explicit).expect("explicit background color should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit background color should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding backgroundColor should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "background_color".to_string(),
+            value: "surfaceRaised".to_string(),
+        }]
+    );
+
+    let custom = explicit.replace("surfaceRaised", "#112233");
+    fs::write(&entry, &custom).expect("custom background color should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("custom background color should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("backgroundColor edits should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "background_color".to_string(),
+            value: "#112233".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed background color should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed background color should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing backgroundColor should clear the per-element provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "background_color".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Button action at 1,1\n",
+        "    Button action at 1,1\n        backgroundColor: tone\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic background color source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic background color source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven backgroundColor must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_common_css_colors() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-style-color-patch-{}",

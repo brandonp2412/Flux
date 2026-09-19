@@ -2275,6 +2275,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "background_color" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !typecheck::valid_ui_color(value) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -2494,6 +2503,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "background_color" {
+        return Some(String::new());
+    }
     if property == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3126,6 +3138,7 @@ fn development_ui_string_literals(
             "validation_state",
             "placeholder",
             "max_length",
+            "background_color",
             "color",
             "font_family",
             "variant",

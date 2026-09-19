@@ -14922,6 +14922,7 @@ fn emit_linux_gtk_application(
     }
     let uses_hot_css_color = view.elements.iter().any(|element| {
         element.kind == "Text"
+            || !linux_hot_css_color_properties(element, "background_color").is_empty()
             || view_property(element, "shadow_color").is_some()
             || [
                 "background_color",
@@ -15235,6 +15236,7 @@ fn emit_linux_gtk_application(
             "color",
         ] {
             if (view_property(element, property_name).is_some()
+                || property_name == "background_color"
                 || (element.kind == "Text" && property_name == "color"))
                 && !linux_hot_css_color_properties(element, property_name).is_empty()
             {
@@ -15907,6 +15909,7 @@ fn emit_linux_gtk_application(
             let css_names = linux_hot_css_color_properties(element, property_name);
             if css_names.is_empty()
                 || (view_property(element, property_name).is_none()
+                    && property_name != "background_color"
                     && !(element.kind == "Text" && property_name == "color"))
             {
                 continue;
@@ -15926,9 +15929,11 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            if property_name == "color" && element.kind == "Text" {
+            if property_name == "background_color"
+                || (property_name == "color" && element.kind == "Text")
+            {
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"color\") == 0 && {widget} != NULL) {{{text_color_cleanup} if (value_length == 0) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{{text_color_cleanup} if (value_length == 0) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
                     c_string(&element.name)
                 ));
             } else {
