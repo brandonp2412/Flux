@@ -2227,6 +2227,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "wrap_mode" && element.kind == "Text" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(value.as_str(), "word" | "char" | "wordChar" | "word_char") {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "ellipsize" && element.kind == "Text" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2365,6 +2374,9 @@ fn development_ui_property_lifecycle_default(
 ) -> Option<String> {
     if property == "text_align" && element.kind == "Text" {
         return Some("left".to_string());
+    }
+    if property == "wrap_mode" && element.kind == "Text" {
+        return Some("word".to_string());
     }
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
@@ -2968,6 +2980,7 @@ fn development_ui_string_literals(
             "max_width_chars",
             "max_lines",
             "text_align",
+            "wrap_mode",
             "ellipsize",
         ] {
             if element

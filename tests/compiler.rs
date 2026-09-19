@@ -42752,6 +42752,114 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_wrap_mode_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-wrap-mode-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text wrap mode lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state wrapping: str = "char"
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text wrap mode source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text wrap mode source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text wrap mode lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"wrap_mode\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("gtk_label_set_wrap_mode(GTK_LABEL(flux__ui_body), wrap_mode)"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text wrap mode lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        r#"    Text body at 1,1
+        wrapMode: "word"
+"#,
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit text wrap mode default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text wrap mode default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding wrapMode: word must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit word wrap mode should be an in-process no-op"
+    );
+
+    let character = explicit_default.replace("wrapMode: \"word\"", "wrapMode: \"char\"");
+    fs::write(&entry, &character).expect("character wrap mode source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("character wrap mode source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("character wrap mode should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "wrap_mode".to_string(),
+            value: "char".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text wrap mode should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text wrap mode should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing text wrap mode should restore word"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "wrap_mode".to_string(),
+            value: "word".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        wrapMode: wrapping\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text wrap mode source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text wrap mode source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven text wrap mode must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_ellipsize_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-ellipsize-lifecycle-{}",
