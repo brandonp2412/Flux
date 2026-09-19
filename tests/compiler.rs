@@ -42647,6 +42647,118 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_max_lines_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-max-lines-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text max lines lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state lineLimit: i64 = 2
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text max lines source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text max lines source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text max lines lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"max_lines\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains(
+        "gtk_label_set_lines(GTK_LABEL(flux__ui_body), integer_value == 0 ? -1 : (int)integer_value)"
+    ));
+
+    let entry =
+        fs::canonicalize(entry).expect("text max lines lifecycle entry should canonicalize");
+    let limited = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        maxLines: 2\n",
+    );
+    fs::write(&entry, &limited).expect("limited text source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("limited text source should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal maxLines must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("maxLines should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_lines".to_string(),
+            value: "2".to_string(),
+        }]
+    );
+
+    let one_line = limited.replace("maxLines: 2", "maxLines: 1");
+    fs::write(&entry, &one_line).expect("single line source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("single line source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("maxLines changes should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_lines".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed max lines should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed max lines should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing maxLines should restore unlimited lines"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_lines".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        maxLines: lineLimit\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic max lines source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic max lines source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven maxLines must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_default_text_max_width_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-max-width-lifecycle-{}",
@@ -43742,7 +43854,9 @@ app Screen
     assert!(generated.contains("gtk_label_set_ellipsize(GTK_LABEL(flux__ui_label), ellipsize)"));
     assert!(generated.contains("strcmp(property, \"max_lines\") == 0"));
     assert!(
-        generated.contains("gtk_label_set_lines(GTK_LABEL(flux__ui_label), (int)integer_value)")
+        generated.contains(
+            "gtk_label_set_lines(GTK_LABEL(flux__ui_label), integer_value == 0 ? -1 : (int)integer_value)"
+        )
     );
     assert!(generated.contains("strcmp(property, \"max_width_chars\") == 0"));
     assert!(generated.contains(
