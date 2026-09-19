@@ -47616,9 +47616,8 @@ app Screen
         .emit_c()
         .expect("tooltip lifecycle fixture should lower for Linux");
     assert!(generated.contains("strcmp(property, \"tooltip\") == 0 && flux__ui_action != NULL"));
-    assert!(generated.contains(
-        "gtk_widget_set_tooltip_text(flux__ui_action, (value != NULL && value[0] != '\\0') ? value : NULL)"
-    ));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_action, value)"));
+    assert!(generated.contains("gtk_widget_set_tooltip_text(flux__ui_action, NULL)"));
 
     let entry = fs::canonicalize(entry).expect("tooltip lifecycle entry should canonicalize");
     let explicit = initial.replace(

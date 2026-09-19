@@ -15638,7 +15638,7 @@ fn emit_linux_gtk_application(
         }
         if element.kind != "TextInput" || view_property(element, "validation_message").is_none() {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"tooltip\") == 0 && {widget} != NULL) gtk_widget_set_tooltip_text({widget}, (value != NULL && value[0] != '\\0') ? value : NULL);",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"tooltip\") == 0 && {widget} != NULL) {{ if (value != NULL && value[0] != '\\0') gtk_widget_set_tooltip_text({widget}, value); else gtk_widget_set_tooltip_text({widget}, NULL); }}",
                 c_string(&element.name)
             ));
         }
