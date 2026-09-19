@@ -42647,6 +42647,123 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_default_text_size_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-size-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary text size lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state textSize: i64 = 18
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text size source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text size source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text size lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"size\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
+
+    let entry = fs::canonicalize(entry).expect("text size lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        size: 16\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit text size default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text size default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding size: 16 must not change the default Text development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the body semantic size should be an in-process no-op"
+    );
+
+    let larger = explicit_default.replace("size: 16", "size: 18");
+    fs::write(&entry, &larger).expect("larger text size source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("larger text size source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("text size should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "size".to_string(),
+            value: "18".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text size should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text size should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing text size should restore the body semantic default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "size".to_string(),
+            value: "16".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        size: textSize\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text size source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text size source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven text size must retain controlled restart"
+    );
+
+    let variant = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        variant: \"heading\"\n        size: 22\n",
+    );
+    fs::write(&entry, variant).expect("variant text size source should be writable");
+    cache.invalidate_path(&entry);
+    let variant = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("variant text size source should analyze");
+    assert!(
+        variant.development_ui_string_patch_from(&fourth).is_none(),
+        "explicit variant/size precedence must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_default_text_line_height_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-line-height-lifecycle-{}",
