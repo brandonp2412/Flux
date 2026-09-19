@@ -2209,6 +2209,15 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if property_name == "validation_state" && element.kind == "TextInput" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !typecheck::TEXT_INPUT_VALIDATION_STATES.contains(&value.as_str()) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "source" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2291,6 +2300,9 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if property == "validation_state" && element.kind == "TextInput" {
+        return Some("normal".to_string());
+    }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
         return Some(String::new());
     }
@@ -2866,6 +2878,7 @@ fn development_ui_string_literals(
             "fit",
             "alt",
             "source",
+            "validation_state",
         ] {
             if element
                 .properties

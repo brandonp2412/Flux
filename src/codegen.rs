@@ -14913,7 +14913,11 @@ fn emit_linux_gtk_application(
         c_string(&theme_css_format)
     ));
     out.push_str("static bool flux__ui_hot_theme_color(const char *value) { if (value == NULL || value[0] != '#') return false; size_t length = 0; if (!flux__ui_bounded_length(value, 9, &length) || (length != 7 && length != 9)) return false; for (size_t index = 1; index < length; ++index) { char byte = value[index]; bool hex = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F'); if (!hex) return false; } return true; }\n");
-    if view_uses_text_input_validation(view) {
+    if view
+        .elements
+        .iter()
+        .any(|element| element.kind == "TextInput")
+    {
         out.push_str("static const char *flux__ui_validation_state(const char *value) { if (value == NULL) return \"normal\"; if (strcmp(value, \"error\") == 0 || strcmp(value, \"success\") == 0 || strcmp(value, \"warning\") == 0) return value; return \"normal\"; }\n");
     }
     let uses_hot_css_color = view.elements.iter().any(|element| {
@@ -15603,12 +15607,10 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if view_property(element, "validation_state").is_some() {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",
+                    c_string(&element.name)
+                ));
                 if view_property(element, "validation_message").is_some() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_widget_set_tooltip_text({widget}, (value != NULL && value[0] != '\\0') ? value : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",

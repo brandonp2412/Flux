@@ -42647,6 +42647,119 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_validation_state_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-validation-state-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary validation state lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state validation: str = "error"
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: "Input"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial validation state source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial validation state source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("validation state lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"validation_state\") == 0 && flux__ui_input != NULL")
+    );
+    assert!(
+        generated.contains("gtk_widget_remove_css_class(flux__ui_input, \"flux-input-error\")")
+    );
+
+    let entry =
+        fs::canonicalize(entry).expect("validation state lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    TextInput input at 1,1\n",
+        r#"    TextInput input at 1,1
+        validationState: "normal"
+"#,
+    );
+    fs::write(&entry, &explicit_default).expect("explicit validation default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit validation default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding validationState: normal must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit normal validation state should be an in-process no-op"
+    );
+
+    let invalid = explicit_default.replace("normal", "error");
+    fs::write(&entry, &invalid).expect("error validation source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("error validation source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("validationState error should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "validation_state".to_string(),
+            value: "error".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed validation state should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed validation state should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing validationState should restore normal"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "validation_state".to_string(),
+            value: "normal".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    TextInput input at 1,1\n",
+        r#"    TextInput input at 1,1
+        validationState: validation
+"#,
+    );
+    fs::write(&entry, dynamic).expect("dynamic validation state source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic validation state source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven validationState declarations must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_image_source_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-image-source-lifecycle-{}",
