@@ -2227,6 +2227,16 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "max_length" && development_ui_text_input_is_single_line(element) {
+        if !development_ui_i64_property_is_patchable(element, &property_name) {
+            return None;
+        }
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "validation_state" && element.kind == "TextInput" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2320,6 +2330,9 @@ fn development_ui_property_lifecycle_default(
 ) -> Option<String> {
     if property == "placeholder" && development_ui_text_input_is_single_line(element) {
         return Some(String::new());
+    }
+    if property == "max_length" && development_ui_text_input_is_single_line(element) {
+        return Some("0".to_string());
     }
     if property == "validation_state" && element.kind == "TextInput" {
         return Some("normal".to_string());
@@ -2901,6 +2914,7 @@ fn development_ui_string_literals(
             "source",
             "validation_state",
             "placeholder",
+            "max_length",
         ] {
             if element
                 .properties

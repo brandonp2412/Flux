@@ -15590,22 +15590,22 @@ fn emit_linux_gtk_application(
                         c_string(&element.name)
                     ));
                 }
-                if view_property(element, "max_length").is_some() {
-                    let multiline = view_property(element, "multiline")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(false);
-                    if multiline {
+                let multiline = view_property(element, "multiline")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                if multiline {
+                    if view_property(element, "max_length").is_some() {
                         out.push_str(&format!(
                             " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) flux__ui_max_length_{} = (gint)integer_value; }}",
                             c_string(&element.name),
                             element.name
                         ));
-                    } else {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_entry_set_max_length(GTK_ENTRY({widget}), (int)integer_value); }}",
-                            c_string(&element.name)
-                        ));
                     }
+                } else {
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_entry_set_max_length(GTK_ENTRY({widget}), (int)integer_value); }}",
+                        c_string(&element.name)
+                    ));
                 }
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_state\") == 0 && {widget} != NULL) {{ gtk_widget_remove_css_class({widget}, \"flux-input-error\"); gtk_widget_remove_css_class({widget}, \"flux-input-success\"); gtk_widget_remove_css_class({widget}, \"flux-input-warning\"); const char *validation = flux__ui_validation_state(value); if (strcmp(validation, \"normal\") != 0) {{ gchar *validation_class = g_strdup_printf(\"flux-input-%s\", validation); gtk_widget_add_css_class({widget}, validation_class); g_free(validation_class); }} }}",

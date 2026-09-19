@@ -42647,6 +42647,132 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_single_line_max_length_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-max-length-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary max length lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state limit: i64 = 12
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput input at 1,1
+        text: "Input"
+    TextInput notes at 2,1
+        multiline: true
+        text: "Notes"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial max length source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial max length source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("max length lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"max_length\") == 0 && flux__ui_input != NULL"));
+    assert!(
+        generated
+            .contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_input), (int)integer_value)")
+    );
+    assert!(!generated.contains("flux__ui_max_length_notes"));
+
+    let entry = fs::canonicalize(entry).expect("max length lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    TextInput input at 1,1\n",
+        "    TextInput input at 1,1\n        maxLength: 0\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit max length default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit max length default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding maxLength: 0 must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit unlimited max length should be an in-process no-op"
+    );
+
+    let limited = explicit_default.replace("maxLength: 0", "maxLength: 12");
+    fs::write(&entry, &limited).expect("limited input source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("limited input source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("single-line maxLength should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "max_length".to_string(),
+            value: "12".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed max length should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed max length should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing maxLength should restore unlimited input"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "input".to_string(),
+            property: "max_length".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    TextInput input at 1,1\n",
+        "    TextInput input at 1,1\n        maxLength: limit\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic max length source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic max length source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven maxLength must retain controlled restart"
+    );
+
+    let multiline = initial.replace(
+        "    TextInput notes at 2,1\n",
+        "    TextInput notes at 2,1\n        maxLength: 12\n",
+    );
+    fs::write(&entry, multiline).expect("multiline max length source should be writable");
+    cache.invalidate_path(&entry);
+    let multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("multiline max length source should analyze");
+    assert!(
+        multiline
+            .development_ui_string_patch_from(&fourth)
+            .is_none(),
+        "adding multiline maxLength must restart so the insert callback can be constructed"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_single_line_placeholder_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-placeholder-lifecycle-{}",
