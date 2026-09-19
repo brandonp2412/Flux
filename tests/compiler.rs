@@ -7954,6 +7954,7 @@ fn main() -> i64 {{
     let (ready, readyError) = net.waitReadable(socket, 1000)
     print(ready)
     print(readyError)
+    time.sleepMillis(50)
     let (received, receiveError) = net.readBytesFromMany(socket, 64, 8, consume)
     print(received)
     print(receiveError)
