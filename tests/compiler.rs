@@ -42647,6 +42647,114 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_letter_spacing_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-letter-spacing-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary text letter spacing lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state tracking: i64 = 2
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Body"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial text letter spacing source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial text letter spacing source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("text letter spacing lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"letter_spacing\") == 0 && flux__ui_body != NULL")
+    );
+    assert!(generated.contains("pango_attr_letter_spacing_new((int)integer_value * PANGO_SCALE)"));
+
+    let entry =
+        fs::canonicalize(entry).expect("text letter spacing lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        letterSpacing: 0\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit text letter spacing default should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit text letter spacing default should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding letterSpacing: 0 must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding zero letter spacing should be an in-process no-op"
+    );
+
+    let spaced = explicit_default.replace("letterSpacing: 0", "letterSpacing: 2");
+    fs::write(&entry, &spaced).expect("spaced text source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("spaced text source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("letter spacing should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "letter_spacing".to_string(),
+            value: "2".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed text letter spacing should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed text letter spacing should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing letter spacing should restore zero"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "letter_spacing".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        letterSpacing: tracking\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic text letter spacing source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic text letter spacing source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven letter spacing must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_align_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-align-lifecycle-{}",

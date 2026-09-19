@@ -2281,6 +2281,13 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if property_name == "letter_spacing" && element.kind == "Text" {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(i64::from(i32::MIN / 1024)..=i64::from(i32::MAX / 1024)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "validation_state" && element.kind == "TextInput" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2394,6 +2401,9 @@ fn development_ui_property_lifecycle_default(
         return Some("72".to_string());
     }
     if property == "max_lines" && element.kind == "Text" {
+        return Some("0".to_string());
+    }
+    if property == "letter_spacing" && element.kind == "Text" {
         return Some("0".to_string());
     }
     if property == "validation_state" && element.kind == "TextInput" {
@@ -2979,6 +2989,7 @@ fn development_ui_string_literals(
             "max_length",
             "max_width_chars",
             "max_lines",
+            "letter_spacing",
             "text_align",
             "wrap_mode",
             "ellipsize",
