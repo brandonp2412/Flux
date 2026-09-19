@@ -13586,6 +13586,7 @@ fn emit_windows_native_application(
             || view_property(element, "accessibility_role").is_some()
             || view_property(element, "accessibility_action_label").is_some()
             || view_property(element, "accessibility_hidden").is_some()
+            || (element.kind == "Image" && view_property(element, "alt").is_some())
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
     });
@@ -14367,6 +14368,13 @@ fn emit_windows_native_application(
             ));
         }
         if let Some(property) = view_property(element, "accessibility_label") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_accessibility_set_name({variable}, {value});\n"
+            ));
+        } else if element.kind == "Image"
+            && let Some(property) = view_property(element, "alt")
+        {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "flux__win_accessibility_set_name({variable}, {value});\n"

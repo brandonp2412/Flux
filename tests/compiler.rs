@@ -1564,6 +1564,50 @@ app Screen(title: "Image")
 }
 
 #[test]
+fn windows_image_alt_uses_native_accessible_name_with_explicit_label_precedence() {
+    let source = r#"
+view Screen {
+    state altText: str = "Dynamic logo"
+    grid columns: 1fr 1fr
+    grid rows: 1fr
+    Image dynamic at 1,1
+        source: "asset://dynamic.bmp"
+        alt: altText
+    Image branded at 1,2
+        source: "asset://brand.bmp"
+        alt: "Fallback brand"
+        accessibilityLabel: "Brand mark"
+}
+app Screen(title: "Accessible images")
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows image alt source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows image alt source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows image alt source should lower to native Win32 C");
+
+    assert!(generated.contains("#include <oleacc.h>"));
+    assert!(
+        generated.contains(
+            "flux__win_accessibility_set_name(flux__ui_dynamic, flux__ui_state_altText);"
+        )
+    );
+    assert!(
+        generated.contains("flux__win_accessibility_set_name(flux__ui_branded, \"Brand mark\");")
+    );
+    assert!(
+        !generated
+            .contains("flux__win_accessibility_set_name(flux__ui_branded, \"Fallback brand\");")
+    );
+    assert!(generated.contains("PROPID_ACC_NAME"));
+}
+
+#[test]
 fn windows_backend_uses_native_tooltips_and_refreshes_dynamic_text() {
     let source = r#"
 view Screen {
