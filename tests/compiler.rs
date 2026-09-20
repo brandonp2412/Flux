@@ -50318,9 +50318,19 @@ app Screen
     let generated = first
         .emit_c()
         .expect("minimum-size lifecycle fixture should lower for Linux");
-    assert!(generated.contains("strcmp(property, \"min_width\") == 0 && flux__ui_label != NULL"));
-    assert!(generated.contains("strcmp(property, \"min_height\") == 0 && flux__ui_label != NULL"));
-    assert!(generated.contains("strcmp(property, \"min_height\") == 0 && flux__ui_action != NULL"));
+    assert!(
+        generated
+            .contains("strcmp(property, \"min_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(
+        generated
+            .contains("strcmp(property, \"min_height\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(
+        generated.contains(
+            "strcmp(property, \"min_height\") == 0 && flux__ui_constraint_action != NULL"
+        )
+    );
     assert!(generated.contains("strcmp(value, \"__flux_minimum_size_default__\") == 0"));
     assert!(generated.contains("long long patched_size = INT64_C(120)"));
     assert!(generated.contains("long long patched_size = INT64_C(-1)"));
@@ -50576,6 +50586,121 @@ app Screen
             .development_ui_string_patch_from(&dynamic_first)
             .is_none(),
         "minimum-size edits paired with a dynamic maximum must retain normal rebuild validation"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_maximum_size_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-maximum-size-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary maximum-size lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 240
+    grid rows: 120
+    Text label at 1,1
+        text: "Sized"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial maximum-size lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial maximum-size lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("maximum-size lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkWidget *flux__ui_constraint_label = NULL;"
+    ));
+    assert!(
+        generated.contains(
+            "flux__ui_constraint_label = flux_size_constraint_new(flux__ui_label, -1, -1)"
+        )
+    );
+    assert!(
+        generated
+            .contains("strcmp(property, \"max_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(
+        generated
+            .contains("strcmp(property, \"max_height\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(generated.contains("strcmp(value, \"__flux_maximum_size_default__\") == 0"));
+
+    let entry = fs::canonicalize(entry).expect("maximum-size lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "    Text label at 1,1\n",
+        "    Text label at 1,1\n        maxWidth: 200\n        maxHeight: 80\n",
+    );
+    fs::write(&entry, &explicit).expect("explicit maximum-size source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit maximum-size source should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal maximum-size declarations must not change the development ABI"
+    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal maximum sizes should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("label".to_string(), "max_width".to_string())),
+        Some(&"200".to_string())
+    );
+    assert_eq!(
+        patch.get(&("label".to_string(), "max_height".to_string())),
+        Some(&"80".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed maximum-size declarations should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed maximum-size declarations should analyze");
+    assert_eq!(third.development_abi(), second.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing literal maximum sizes should restore omitted defaults")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for key in [
+        ("label".to_string(), "max_width".to_string()),
+        ("label".to_string(), "max_height".to_string()),
+    ] {
+        assert_eq!(
+            patch.get(&key),
+            Some(&"__flux_maximum_size_default__".to_string())
+        );
+    }
+    assert_eq!(patch.len(), 2);
+
+    let dynamic = initial.replace(
+        "    Text label at 1,1\n",
+        "    state limit: i64 = 200\n    Text label at 1,1\n        maxWidth: limit\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic maximum-size source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic maximum-size source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&third).is_none(),
+        "state-driven maximum sizes must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);

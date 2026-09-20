@@ -16989,11 +16989,16 @@ fn emit_linux_gtk_application(
             )
         })?;
     let _ = view_layout_transition_duration(view, signatures)?;
-    if view.elements.iter().any(|element| {
+    let has_size_constraints = view.elements.iter().any(|element| {
         view_property(element, "max_width").is_some()
             || view_property(element, "max_height").is_some()
-    }) {
+    });
+    if has_size_constraints {
         emit_linux_size_constraint_runtime(out);
+    } else if !view.elements.is_empty() {
+        out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+        emit_linux_size_constraint_runtime(out);
+        out.push_str("#endif\n");
     }
 
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
@@ -17330,6 +17335,11 @@ fn emit_linux_gtk_application(
         {
             out.push_str(&format!(
                 "static GtkWidget *{} = NULL;\n",
+                linux_ui_constraint_c_name(element)
+            ));
+        } else {
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkWidget *{} = NULL;\n#endif\n",
                 linux_ui_constraint_c_name(element)
             ));
         }
@@ -18338,7 +18348,11 @@ fn emit_linux_gtk_application(
             ));
         }
         for (property_name, horizontal) in [("min_width", true), ("min_height", false)] {
-            let layout = linux_ui_layout_c_name(element);
+            let layout = if view_property(element, property_name).is_some() {
+                linux_ui_layout_c_name(element)
+            } else {
+                linux_ui_hot_layout_c_name(element)
+            };
             let fixed = if horizontal {
                 view.grid
                     .columns
@@ -18381,13 +18395,11 @@ fn emit_linux_gtk_application(
             ("max_width", "flux_size_constraint_set_max_width"),
             ("max_height", "flux_size_constraint_set_max_height"),
         ] {
-            if view_property(element, property_name).is_some() {
-                let constraint = linux_ui_constraint_c_name(element);
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {constraint} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {setter}({constraint}, (int)integer_value); }}",
-                    c_string(&element.name)
-                ));
-            }
+            let constraint = linux_ui_constraint_c_name(element);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {constraint} != NULL) {{ if (strcmp(value, \"__flux_maximum_size_default__\") == 0) {setter}({constraint}, -1); else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {setter}({constraint}, (int)integer_value); }} }}",
+                c_string(&element.name)
+            ));
         }
         match element.kind.as_str() {
             "Text" => {
@@ -20211,10 +20223,10 @@ fn emit_linux_gtk_application(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
         }
-        let constrained_variable = if view_property(element, "max_width").is_some()
-            || view_property(element, "max_height").is_some()
-        {
-            let constraint = linux_ui_constraint_c_name(element);
+        let has_max_constraint = view_property(element, "max_width").is_some()
+            || view_property(element, "max_height").is_some();
+        let constraint = linux_ui_constraint_c_name(element);
+        let constrained_variable = if has_max_constraint {
             let max_width = linux_size_constraint_value(
                 out,
                 element,
@@ -20238,10 +20250,14 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    {constraint} = flux_size_constraint_new({variable}, (int)({max_width}), (int)({max_height}));\n"
             ));
-            constraint
+            constraint.clone()
         } else {
-            variable
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    {constraint} = flux_size_constraint_new({variable}, -1, -1);\n#endif\n"
+            ));
+            variable.clone()
         };
+        let has_layout_transition = view_property(element, "layout_transition_ms").is_some();
         let layout_variable = if let Some(duration) =
             static_non_negative_style_i64(element, "layout_transition_ms", signatures)?
         {
@@ -20251,20 +20267,51 @@ fn emit_linux_gtk_application(
                 .transpose()?
                 .unwrap_or_else(|| "true".to_string());
             out.push_str(&format!(
-                "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {constrained_variable});\n    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
+                "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n"
+            ));
+            if has_max_constraint {
+                out.push_str(&format!(
+                    "    gtk_revealer_set_child(GTK_REVEALER({layout}), {constrained_variable});\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "#ifdef FLUX_DEVELOPMENT_RELOAD\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {constraint});\n#else\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {variable});\n#endif\n"
+                ));
+            }
+            out.push_str(&format!(
+                "    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
             ));
             layout
         } else {
             constrained_variable
         };
-        emit_grid_sizing(out, view, element, &layout_variable, signatures)?;
-        out.push_str(&format!(
-            "    gtk_grid_attach(GTK_GRID(grid), {layout_variable}, {}, {}, {}, {});\n",
-            element.column - 1,
-            element.row - 1,
-            element.column_span,
-            element.row_span,
-        ));
+        let sizing_variable = if !has_max_constraint && !has_layout_transition {
+            variable.clone()
+        } else {
+            layout_variable.clone()
+        };
+        emit_grid_sizing(out, view, element, &sizing_variable, signatures)?;
+        if !has_max_constraint && !has_layout_transition {
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    gtk_grid_attach(GTK_GRID(grid), {constraint}, {}, {}, {}, {});\n#else\n    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n#endif\n",
+                element.column - 1,
+                element.row - 1,
+                element.column_span,
+                element.row_span,
+                element.column - 1,
+                element.row - 1,
+                element.column_span,
+                element.row_span,
+            ));
+        } else {
+            out.push_str(&format!(
+                "    gtk_grid_attach(GTK_GRID(grid), {layout_variable}, {}, {}, {}, {});\n",
+                element.column - 1,
+                element.row - 1,
+                element.column_span,
+                element.row_span,
+            ));
+        }
     }
     let overlay_columns = view.grid.columns.len().max(1);
     out.push_str(&format!(
@@ -22299,6 +22346,14 @@ fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
         linux_ui_constraint_c_name(element)
     } else {
         linux_ui_host_c_name(element)
+    }
+}
+
+fn linux_ui_hot_layout_c_name(element: &crate::ast::ViewElement) -> String {
+    if view_property(element, "layout_transition_ms").is_some() {
+        linux_ui_layout_c_name(element)
+    } else {
+        linux_ui_constraint_c_name(element)
     }
 }
 
