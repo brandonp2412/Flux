@@ -1606,6 +1606,101 @@ app Screen
 }
 
 #[test]
+fn windows_uniform_radius_uses_native_window_regions_and_refreshes() {
+    let source = r#"
+view Screen {
+    state corner: i64 = 8
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Rounded"
+        radius: corner
+    Button action at 2,1
+        text: "Round more"
+        onPress: corner => corner + 2
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows radius source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows radius source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("uniform Windows radius should lower through native regions");
+    assert!(
+        windows
+            .contains("HRGN region = CreateRoundRectRgn(0, 0, right, bottom, diameter, diameter)")
+    );
+    assert!(windows.contains("SetWindowRgn(control, region, TRUE)"));
+    assert!(windows.contains("int64_t requested_radius = flux__ui_state_corner;"));
+    assert!(windows.contains(
+        "flux__win_set_radius(flux__ui_label, control_width, control_height, requested_radius)"
+    ));
+    assert!(windows.contains(
+        "Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer"
+    ));
+    assert!(windows.contains(
+        "if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client))"
+    ));
+
+    let invalid = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Bad radius"
+        radius: -1
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(invalid).expect("negative radius source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("negative radius source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows radius must fail target lowering");
+    assert!(
+        error
+            .message
+            .contains("radius must be non-negative and fit within a 32-bit signed integer")
+    );
+
+    let per_corner = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Detailed"
+        radiusTopLeft: 4
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(per_corner).expect("per-corner radius source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("per-corner radius source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("per-corner Windows radius must not be silently ignored");
+    assert!(
+        error
+            .message
+            .contains("radiusTopLeft is not yet supported; use uniform radius")
+    );
+}
+
+#[test]
 fn windows_translate_offsets_are_dpi_aware_and_refresh_with_state() {
     let source = r#"
 view Screen {
@@ -2312,6 +2407,7 @@ view Screen {
         text: "Cross target"
         status: "loading"
         selectable: true
+        radius: 6
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320

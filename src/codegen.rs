@@ -14282,6 +14282,32 @@ fn emit_windows_native_application(
         }
     }
     for element in &view.elements {
+        for (property_name, source_name) in [
+            ("radius_top_left", "radiusTopLeft"),
+            ("radius_top_right", "radiusTopRight"),
+            ("radius_bottom_right", "radiusBottomRight"),
+            ("radius_bottom_left", "radiusBottomLeft"),
+        ] {
+            if let Some(property) = view_property(element, property_name) {
+                return Err(diag(
+                    property.value.span,
+                    &format!(
+                        "bootstrap Windows {source_name} is not yet supported; use uniform radius"
+                    ),
+                ));
+            }
+        }
+        if let Some(property) = view_property(element, "radius")
+            && let Some(value) = static_expr_i64(&property.value, signatures)
+            && !(0..=i64::from(i32::MAX)).contains(&value)
+        {
+            return Err(diag(
+                property.value.span,
+                "radius must be non-negative and fit within a 32-bit signed integer",
+            ));
+        }
+    }
+    for element in &view.elements {
         if let Some(property) = view_property(element, "status") {
             let Some(status) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -14354,11 +14380,16 @@ fn emit_windows_native_application(
                 .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
         })
     });
+    let uses_dynamic_radius = view.elements.iter().any(|element| {
+        view_property(element, "radius")
+            .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+    });
     let uses_dynamic_layout = uses_dynamic_layout_constraints
         || uses_dynamic_margins
         || uses_dynamic_text_layout
         || uses_dynamic_text_typography
-        || uses_dynamic_transforms;
+        || uses_dynamic_transforms
+        || uses_dynamic_radius;
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -14887,6 +14918,13 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     *current = next;
 }
 "#);
+    }
+    if view
+        .elements
+        .iter()
+        .any(|element| view_property(element, "radius").is_some())
+    {
+        out.push_str("static void flux__win_set_radius(HWND control, int width, int height, int64_t radius) { if (control == NULL) return; if (radius < 0 || radius > INT32_MAX) { fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); } if (radius == 0) { if (!SetWindowRgn(control, NULL, TRUE)) { fputs(\"Flux runtime error: unable to clear Windows control radius\\n\", stderr); abort(); } return; } int physical_radius = flux__win_scale(radius); if (physical_radius < 1) physical_radius = 1; int diameter = physical_radius > INT32_MAX / 2 ? INT32_MAX : physical_radius * 2; int right = width >= INT32_MAX ? INT32_MAX : width + 1; int bottom = height >= INT32_MAX ? INT32_MAX : height + 1; HRGN region = CreateRoundRectRgn(0, 0, right, bottom, diameter, diameter); if (region == NULL) { fputs(\"Flux runtime error: unable to create Windows rounded region\\n\", stderr); abort(); } if (!SetWindowRgn(control, region, TRUE)) { DeleteObject(region); fputs(\"Flux runtime error: unable to apply Windows control radius\\n\", stderr); abort(); } }\n");
     }
     if view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -15430,6 +15468,20 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             };
         let translate_x_value = translate_value("translate_x", "translateX")?;
         let translate_y_value = translate_value("translate_y", "translateY")?;
+        let radius_value = match view_property(element, "radius") {
+            Some(property) => match static_expr_i64(&property.value, signatures) {
+                Some(value) => format!("INT64_C({value})"),
+                None => ui_expr_c(&property.value, view, signatures)?,
+            },
+            None => "INT64_C(0)".to_string(),
+        };
+        let apply_radius = if view_property(element, "radius").is_some() {
+            format!(
+                "flux__win_set_radius({variable}, control_width, control_height, requested_radius); "
+            )
+        } else {
+            String::new()
+        };
         for (minimum_name, maximum_name, source_minimum, source_maximum) in [
             ("min_width", "max_width", "minWidth", "maxWidth"),
             ("min_height", "max_height", "minHeight", "maxHeight"),
@@ -15519,7 +15571,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         } else {
             ""
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int64_t requested_translate_x = {translate_x_value}; int64_t requested_translate_y = {translate_y_value}; int64_t requested_radius = {radius_value}; if (requested_translate_x < INT32_MIN || requested_translate_x > INT32_MAX) {{ fputs(\"Flux runtime error: translateX must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_translate_y < INT32_MIN || requested_translate_y > INT32_MAX) {{ fputs(\"Flux runtime error: translateY must fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (requested_radius < 0 || requested_radius > INT32_MAX) {{ fputs(\"Flux runtime error: radius must be non-negative and fit within a 32-bit signed integer\\n\", stderr); abort(); }} int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int physical_translate_x = flux__win_scale(requested_translate_x); int physical_translate_y = flux__win_scale(requested_translate_y); int64_t adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x; int64_t adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y; x = adjusted_x < INT32_MIN ? INT32_MIN : (adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x); y = adjusted_y < INT32_MIN ? INT32_MIN : (adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y); int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); {apply_radius}}}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
