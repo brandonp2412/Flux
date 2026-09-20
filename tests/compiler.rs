@@ -51675,8 +51675,8 @@ app ContextCard
         .expect("same-shape context menu item edits should hot-apply");
     assert_eq!(patch.len(), 1);
     assert_eq!(patch[0].element, "card");
-    assert_eq!(patch[0].property, "context_menu_item_0");
-    assert_eq!(patch[0].value, "Archive");
+    assert_eq!(patch[0].property, "context_menu_items");
+    assert_eq!(patch[0].value, "2|7:Archive6:Delete");
 
     let generated = second
         .emit_c()
@@ -51684,25 +51684,84 @@ app ContextCard
     assert!(
         generated.contains("static const char *flux__ui_context_menu_item_card_0 = \"Archive\"")
     );
-    assert!(generated.contains("static char *flux__ui_context_menu_item_owned_card_0 = NULL"));
-    assert!(
-        generated.contains("strcmp(property, \"context_menu_item_0\") == 0 && value_length > 0")
-    );
-    assert!(generated.contains("gtk_button_new_with_label(flux__ui_context_menu_item_card_0)"));
-    assert!(generated.contains("g_free(flux__ui_context_menu_item_owned_card_0)"));
+    assert!(generated.contains("static char **flux__ui_context_menu_items_owned_card = NULL"));
+    assert!(generated.contains("static size_t flux__ui_context_menu_items_count_card = 2"));
+    assert!(generated.contains("strcmp(property, \"context_menu_items\") == 0"));
+    assert!(generated.contains("flux__ui_context_menu_items_patch_card(value, value_length)"));
+    assert!(generated.contains(
+        "for (size_t item_index = 0; item_index < flux__ui_context_menu_items_count_card; ++item_index)"
+    ));
+    assert!(generated.contains("gtk_button_new_with_label(item_label)"));
+    assert!(generated.contains("flux__ui_context_menu_items_clear_card();"));
+    if Command::new("pkg-config")
+        .args(["--exists", "gtk4"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        let c_path = root.join("context-menu-hot-reload.c");
+        fs::write(&c_path, &generated)
+            .expect("generated context-menu hot-reload C should be writable");
+        let cflags = String::from_utf8(
+            Command::new("pkg-config")
+                .args(["--cflags", "gtk4"])
+                .output()
+                .expect("pkg-config should return GTK cflags")
+                .stdout,
+        )
+        .expect("GTK cflags should be UTF-8");
+        let compile = Command::new("clang")
+            .args(["-std=c17", "-fsyntax-only", "-DFLUX_DEVELOPMENT_RELOAD"])
+            .args(cflags.split_whitespace())
+            .arg(&c_path)
+            .output()
+            .expect("Clang should validate context-menu development C");
+        assert!(
+            compile.status.success(),
+            "context-menu development C should compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+    }
 
     let reshaped = updated.replace(
         "contextMenuItems: [\"Archive\", \"Delete\"]",
         "contextMenuItems: [\"Archive\", \"Delete\", \"Share\"]",
     );
-    fs::write(&entry, reshaped).expect("reshaped context-menu items source should be writable");
+    fs::write(&entry, &reshaped).expect("reshaped context-menu items source should be writable");
     cache.invalidate_path(&entry);
     let third = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("reshaped context-menu items analysis should succeed");
-    assert!(
-        third.development_ui_string_patch_from(&second).is_none(),
-        "context menu item count changes must fall back to rebuild"
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("context menu item count growth should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "context_menu_items".to_string(),
+            value: "3|7:Archive6:Delete5:Share".to_string(),
+        }]
+    );
+
+    let shrunk = reshaped.replace(
+        "contextMenuItems: [\"Archive\", \"Delete\", \"Share\"]",
+        "contextMenuItems: [\"Archive\"]",
+    );
+    fs::write(&entry, shrunk).expect("shrunk context-menu items source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("shrunk context-menu items analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("context menu item count shrink should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "context_menu_items".to_string(),
+            value: "1|7:Archive".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

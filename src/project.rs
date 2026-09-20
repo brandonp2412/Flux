@@ -2355,6 +2355,26 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
     }
 }
 
+fn development_context_menu_items_patch_value(labels: &[String]) -> Option<String> {
+    use std::fmt::Write as _;
+
+    if labels.is_empty() || labels.len() > 4096 {
+        return None;
+    }
+    let mut value = format!("{}|", labels.len());
+    for label in labels {
+        if label.is_empty() || label.as_bytes().contains(&0) {
+            return None;
+        }
+        write!(value, "{}:", label.len()).ok()?;
+        value.push_str(label);
+        if value.len() > 65536 {
+            return None;
+        }
+    }
+    Some(value)
+}
+
 fn development_ui_rich_text_lifecycle_is_safe(
     current: &ProjectAnalysis,
     previous: &ProjectAnalysis,
@@ -3740,12 +3760,8 @@ fn development_ui_string_literals(
                         format!("Actions: {}", labels.join("; ")),
                     );
                 } else {
-                    for (index, value) in labels.into_iter().enumerate() {
-                        literals.insert(
-                            (element.name.clone(), format!("context_menu_item_{index}")),
-                            value,
-                        );
-                    }
+                    let value = development_context_menu_items_patch_value(&labels)?;
+                    literals.insert((element.name.clone(), property_name), value);
                 }
                 continue;
             }

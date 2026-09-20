@@ -17665,14 +17665,54 @@ fn emit_linux_gtk_application(
         if let Some(items) = static_context_menu_items(element, signatures)? {
             for (index, label) in items.iter().enumerate() {
                 out.push_str(&format!(
-                    "static const char *flux__ui_context_menu_item_{}_{} = {};\nstatic char *flux__ui_context_menu_item_owned_{}_{} = NULL;\n",
+                    "static const char *flux__ui_context_menu_item_{}_{} = {};\n",
                     element.name,
                     index,
                     c_string(label),
-                    element.name,
-                    index
                 ));
             }
+            let initial_label_cases = items
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    format!(
+                        "case {index}: return flux__ui_context_menu_item_{}_{index};",
+                        element.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static char **flux__ui_context_menu_items_owned_{} = NULL;\nstatic size_t flux__ui_context_menu_items_count_{} = {};\n",
+                element.name,
+                element.name,
+                items.len(),
+            ));
+            out.push_str(&format!(
+                "static const char *flux__ui_context_menu_item_label_{}(size_t index) {{ if (index >= flux__ui_context_menu_items_count_{}) return NULL; if (flux__ui_context_menu_items_owned_{} != NULL) return flux__ui_context_menu_items_owned_{}[index]; switch (index) {{ {initial_label_cases} default: return NULL; }} }}\n",
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+            ));
+            out.push_str(&format!(
+                "static void flux__ui_context_menu_items_clear_{}(void) {{ if (flux__ui_context_menu_items_owned_{} == NULL) return; for (size_t index = 0; index < flux__ui_context_menu_items_count_{}; ++index) g_free(flux__ui_context_menu_items_owned_{}[index]); g_free(flux__ui_context_menu_items_owned_{}); flux__ui_context_menu_items_owned_{} = NULL; }}\n",
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+            ));
+            out.push_str(&format!(
+                "static bool flux__ui_context_menu_items_patch_{}(const char *value, size_t value_length) {{ if (value == NULL || value_length == 0 || value[0] < '0' || value[0] > '9') return false; char *count_end = NULL; unsigned long long parsed_count = strtoull(value, &count_end, 10); const char *limit = value + value_length; if (count_end == value || count_end >= limit || *count_end != '|' || parsed_count == 0 || parsed_count > 4096) return false; size_t item_count = (size_t)parsed_count; char **replacement = g_new0(char *, item_count); if (replacement == NULL) return false; const char *cursor = count_end + 1; size_t parsed = 0; bool valid = true; for (; parsed < item_count; ++parsed) {{ if (cursor >= limit || *cursor < '0' || *cursor > '9') {{ valid = false; break; }} char *length_end = NULL; unsigned long long parsed_length = strtoull(cursor, &length_end, 10); if (length_end == cursor || length_end >= limit || *length_end != ':' || parsed_length == 0) {{ valid = false; break; }} cursor = length_end + 1; if (parsed_length > (unsigned long long)(limit - cursor) || memchr(cursor, '\\0', (size_t)parsed_length) != NULL) {{ valid = false; break; }} replacement[parsed] = g_strndup(cursor, (gsize)parsed_length); if (replacement[parsed] == NULL) {{ valid = false; break; }} cursor += (size_t)parsed_length; }} if (cursor != limit) valid = false; if (!valid || parsed != item_count) {{ for (size_t index = 0; index < item_count; ++index) g_free(replacement[index]); g_free(replacement); return false; }} flux__ui_context_menu_items_clear_{}(); flux__ui_context_menu_items_owned_{} = replacement; flux__ui_context_menu_items_count_{} = item_count; return true; }}\n",
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+            ));
+            out.push_str("#endif\n");
         }
         if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
@@ -17934,16 +17974,12 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
-        if let Some(items) = static_context_menu_items(element, signatures)? {
-            for index in 0..items.len() {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_item_{index}\") == 0 && value_length > 0) {{ char *label_copy = g_strdup(value); if (label_copy != NULL) {{ g_free(flux__ui_context_menu_item_owned_{}_{index}); flux__ui_context_menu_item_owned_{}_{index} = label_copy; flux__ui_context_menu_item_{}_{index} = label_copy; }} }}",
-                    c_string(&element.name),
-                    element.name,
-                    element.name,
-                    element.name
-                ));
-            }
+        if static_context_menu_items(element, signatures)?.is_some() {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_items\") == 0) {{ flux__ui_context_menu_items_patch_{}(value, value_length); }}",
+                c_string(&element.name),
+                element.name,
+            ));
         }
         if linux_ui_has_shortcut_action(element) {
             out.push_str(&format!(
@@ -18849,6 +18885,14 @@ fn emit_linux_gtk_application(
             };
             let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
                 let mut body = "GtkWidget *popover = gtk_popover_new(); GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0); gtk_popover_set_child(GTK_POPOVER(popover), menu_box); gtk_widget_set_parent(popover, anchor); GdkRectangle point = {(int)x, (int)y, 1, 1}; gtk_popover_set_pointing_to(GTK_POPOVER(popover), &point); ".to_string();
+                body.push_str("\n#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                body.push_str(&format!(
+                    "for (size_t item_index = 0; item_index < flux__ui_context_menu_items_count_{}; ++item_index) {{ const char *item_label = flux__ui_context_menu_item_label_{}(item_index); if (item_label == NULL) continue; GtkWidget *item = gtk_button_new_with_label(item_label); g_object_set_data(G_OBJECT(item), \"flux-menu-index\", GINT_TO_POINTER((int)item_index)); gtk_box_append(GTK_BOX(menu_box), item); g_signal_connect(item, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); }} ",
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
+                body.push_str("\n#else\n");
                 for (index, _label) in items.iter().enumerate() {
                     body.push_str(&format!(
                         "GtkWidget *item_{index} = gtk_button_new_with_label(flux__ui_context_menu_item_{}_{index}); g_object_set_data(G_OBJECT(item_{index}), \"flux-menu-index\", GINT_TO_POINTER({index})); gtk_box_append(GTK_BOX(menu_box), item_{index}); g_signal_connect(item_{index}, \"clicked\", G_CALLBACK(flux__ui_context_menu_item_select_{}), popover); ",
@@ -18856,6 +18900,7 @@ fn emit_linux_gtk_application(
                         element.name,
                     ));
                 }
+                body.push_str("\n#endif\n");
                 body.push_str(&format!(
                     "g_signal_connect(popover, \"closed\", G_CALLBACK(flux__ui_context_menu_closed_{}), NULL); gtk_popover_popup(GTK_POPOVER(popover)); ",
                     element.name,
@@ -20523,13 +20568,13 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
-        if let Some(items) = static_context_menu_items(element, signatures)? {
-            for index in 0..items.len() {
-                out.push_str(&format!(
-                    "    g_free(flux__ui_context_menu_item_owned_{}_{index});\n",
-                    element.name
-                ));
-            }
+        if static_context_menu_items(element, signatures)?.is_some() {
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "    flux__ui_context_menu_items_clear_{}();\n",
+                element.name
+            ));
+            out.push_str("#endif\n");
         }
     }
     out.push_str("    g_object_unref(application);\n    return status;\n}\n");
