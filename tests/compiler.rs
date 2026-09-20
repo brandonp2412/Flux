@@ -51247,59 +51247,104 @@ app Form
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_drag_text_content() {
+fn development_ui_string_patch_hot_applies_drag_text_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
-        "flux-development-drag-text-patch-{}",
+        "flux-development-drag-text-lifecycle-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temporary dragText patch project should be writable");
+    fs::create_dir_all(&root).expect("temporary dragText lifecycle project should be writable");
     let entry = root.join("main.flux");
     let initial = r#"view DragDrop {
     grid columns: 1fr
     grid rows: auto
     Text source at 1,1
         text: "Drag"
-        dragText: "before"
 }
 app DragDrop
 "#;
-    fs::write(&entry, initial).expect("initial dragText patch source should be writable");
+    fs::write(&entry, initial).expect("initial dragText lifecycle source should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("initial dragText patch analysis should succeed");
-
-    let updated = initial.replace("dragText: \"before\"", "dragText: \"after\"");
-    fs::write(&entry, updated).expect("updated dragText patch source should be writable");
-    let entry = fs::canonicalize(entry).expect("dragText patch entry should canonicalize");
-    cache.invalidate_path(&entry);
-    let second = cache
-        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("updated dragText patch analysis should succeed");
-    let patch = second
-        .development_ui_string_patch_from(&first)
-        .expect("dragText edits should hot-apply to the existing native drag source");
-    assert_eq!(patch.len(), 1);
-    assert_eq!(patch[0].element, "source");
-    assert_eq!(patch[0].property, "drag_text");
-    assert_eq!(patch[0].value, "after");
-
-    let generated = second
+        .expect("initial dragText lifecycle analysis should succeed");
+    let generated = first
         .emit_c()
-        .expect("dragText patch fixture should lower for Linux");
-    assert!(generated.contains("static GtkDragSource *flux__ui_drag_source_source = NULL"));
-    assert!(generated.contains("flux__ui_drag_source_source = gtk_drag_source_new()"));
+        .expect("dragText lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkDragSource *flux__ui_drag_source_source = NULL;"
+    ));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_drag_source_source = gtk_drag_source_new();"
+    ));
     assert!(
         generated.contains(
             "strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_source != NULL"
         )
     );
-    assert!(generated.contains("gdk_content_provider_new_typed(G_TYPE_STRING, value)"));
-    assert!(
-        generated
-            .contains("gtk_drag_source_set_content(flux__ui_drag_source_source, drag_content)")
+    assert!(generated.contains(
+        "if (value_length == 0) gtk_drag_source_set_content(flux__ui_drag_source_source, NULL)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("dragText lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "        text: \"Drag\"\n",
+        "        text: \"Drag\"\n        dragText: \"before\"\n",
+    );
+    fs::write(&entry, &explicit).expect("added dragText source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("added dragText analysis should succeed");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding dragText must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding dragText should hot-apply to the retained native drag source"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "source".to_string(),
+            property: "drag_text".to_string(),
+            value: "before".to_string(),
+        }]
+    );
+
+    let updated = explicit.replace("dragText: \"before\"", "dragText: \"after\"");
+    fs::write(&entry, &updated).expect("updated dragText source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated dragText analysis should succeed");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("dragText edits should hot-apply to the existing native drag source"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "source".to_string(),
+            property: "drag_text".to_string(),
+            value: "after".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed dragText source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed dragText analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing dragText should clear the retained native drag source"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "source".to_string(),
+            property: "drag_text".to_string(),
+            value: String::new(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

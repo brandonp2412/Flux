@@ -2478,6 +2478,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "drag_text" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.is_empty() || value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if matches!(
         property_name.as_str(),
         "background_color"
@@ -3121,7 +3130,7 @@ fn development_ui_property_lifecycle_default(
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
     }
-    if property == "tooltip" {
+    if matches!(property, "tooltip" | "drag_text") {
         return Some(String::new());
     }
     if property == "placeholder" && development_ui_text_input_is_single_line(element) {
@@ -3852,6 +3861,7 @@ fn development_ui_string_literals(
             "focus_scope",
             "accessibility_order",
             "tooltip",
+            "drag_text",
             "placeholder",
             "keyboard_type",
             "submit_on_enter",

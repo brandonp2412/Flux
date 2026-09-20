@@ -17604,6 +17604,11 @@ fn emit_linux_gtk_application(
                 "static GtkDragSource *flux__ui_drag_source_{} = NULL;\n",
                 element.name
             ));
+        } else {
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkDragSource *flux__ui_drag_source_{} = NULL;\n#endif\n",
+                element.name
+            ));
         }
         if let Some(property) = view_property(element, "context_menu_label") {
             let Some(label) = static_expr_str(&property.value, signatures) else {
@@ -17873,14 +17878,13 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "drag_text").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_{} != NULL) {{ GdkContentProvider *drag_content = gdk_content_provider_new_typed(G_TYPE_STRING, value); if (drag_content != NULL) {{ gtk_drag_source_set_content(flux__ui_drag_source_{}, drag_content); g_object_unref(drag_content); }} }}",
-                c_string(&element.name),
-                element.name,
-                element.name
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_text\") == 0 && flux__ui_drag_source_{} != NULL) {{ if (value_length == 0) gtk_drag_source_set_content(flux__ui_drag_source_{}, NULL); else {{ GdkContentProvider *drag_content = gdk_content_provider_new_typed(G_TYPE_STRING, value); if (drag_content != NULL) {{ gtk_drag_source_set_content(flux__ui_drag_source_{}, drag_content); g_object_unref(drag_content); }} }} }}",
+            c_string(&element.name),
+            element.name,
+            element.name,
+            element.name
+        ));
         if view_property(element, "context_menu_label").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"context_menu_label\") == 0 && value_length > 0) {{ char *label_copy = g_strdup(value); if (label_copy != NULL) {{ g_free(flux__ui_context_menu_label_owned_{}); flux__ui_context_menu_label_owned_{} = label_copy; flux__ui_context_menu_label_{} = label_copy; }} }}",
@@ -20113,6 +20117,11 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    GdkContentProvider *{content} = gdk_content_provider_new_typed(G_TYPE_STRING, {});\n    {source} = gtk_drag_source_new();\n    gtk_drag_source_set_actions({source}, GDK_ACTION_COPY);\n    gtk_drag_source_set_content({source}, {content});\n    g_object_unref({content});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({source}));\n",
                 c_string(&text),
+            ));
+        } else {
+            let source = format!("flux__ui_drag_source_{}", element.name);
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    {source} = gtk_drag_source_new();\n    gtk_drag_source_set_actions({source}, GDK_ACTION_COPY);\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({source}));\n#endif\n"
             ));
         }
         if view_property(element, "on_drop").is_some() {
