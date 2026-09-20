@@ -14571,6 +14571,27 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         out.push_str(&format!("static WNDPROC flux__win_double_tap_orig_{index} = NULL;\nstatic bool flux__win_double_tap_armed_{index} = false;\nstatic DWORD flux__win_double_tap_time_{index} = 0;\nstatic int flux__win_double_tap_x_{index} = 0;\nstatic int flux__win_double_tap_y_{index} = 0;\nstatic LRESULT CALLBACK flux__win_double_tap_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcA(flux__win_double_tap_orig_{index}, hwnd, message, wparam, lparam); if (message == WM_LBUTTONUP) {{ DWORD now = (DWORD)GetMessageTime(); int x = (int)(short)LOWORD(lparam); int y = (int)(short)HIWORD(lparam); int dx = x - flux__win_double_tap_x_{index}; int dy = y - flux__win_double_tap_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (flux__win_double_tap_armed_{index} && (DWORD)(now - flux__win_double_tap_time_{index}) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ flux__win_double_tap_armed_{index} = false; {event_body} }} else {{ flux__win_double_tap_armed_{index} = true; flux__win_double_tap_time_{index} = now; flux__win_double_tap_x_{index} = x; flux__win_double_tap_y_{index} = y; }} }} return result; }}\n"));
     }
     for (index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_long_press") else {
+            continue;
+        };
+        let event_body = if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            format!(
+                "{} = {next}; flux__win_refresh();",
+                ui_state_c_name(&transition.state)
+            )
+        } else {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onLongPress requires a named fn() -> void callback or state transition",
+                ));
+            };
+            format!("{}(); flux__win_refresh();", function_c_name(function))
+        };
+        out.push_str(&format!("static WNDPROC flux__win_long_press_orig_{index} = NULL;\nstatic bool flux__win_long_press_armed_{index} = false;\nstatic bool flux__win_long_press_consumed_{index} = false;\nstatic POINT flux__win_long_press_start_{index} = {{0}};\nstatic const UINT_PTR flux__win_long_press_timer_{index} = (UINT_PTR)(0xF100u + {index}u);\nstatic LRESULT CALLBACK flux__win_long_press_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); flux__win_long_press_start_{index} = point; flux__win_long_press_armed_{index} = SetTimer(hwnd, flux__win_long_press_timer_{index}, GetDoubleClickTime(), NULL) != 0; flux__win_long_press_consumed_{index} = false; return result; }} if (message == WM_MOUSEMOVE && flux__win_long_press_armed_{index}) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} }} }} if (message == WM_TIMER && wparam == flux__win_long_press_timer_{index}) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (flux__win_long_press_armed_{index} && inside_threshold) {{ flux__win_long_press_consumed_{index} = true; {event_body} }} flux__win_long_press_armed_{index} = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); flux__win_long_press_consumed_{index} = false; return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} return CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
         let Some(action) = view_property(element, "on_drag") else {
             continue;
         };
@@ -15085,8 +15106,13 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         };
         if click_action.is_some() {
             out.push_str(&format!(
-                "case {}: if (HIWORD(wparam) == BN_CLICKED) flux__win_click_{index}(); return 0;\n",
-                1000 + index
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {}flux__win_click_{index}(); }} return 0;\n",
+                1000 + index,
+                if view_property(element, "on_long_press").is_some() {
+                    format!("if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; return 0; }} ")
+                } else {
+                    String::new()
+                }
             ));
         } else if matches!(element.kind.as_str(), "Toggle" | "Radio") {
             let action_name = if element.kind == "Toggle" {
@@ -15111,7 +15137,14 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             } else {
                 "STN_CLICKED"
             };
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) flux__win_tap_{index}(); return 0;\n", 1000 + index));
+            let consume_long_press = if view_property(element, "on_long_press").is_some() {
+                format!(
+                    "if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; return 0; }} "
+                )
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) {{ {consume_long_press}flux__win_tap_{index}(); }} return 0;\n", 1000 + index));
         }
     }
     let mut context_menu_messages = String::new();
@@ -15427,6 +15460,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
         if view_property(element, "on_double_tap").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_double_tap_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_double_tap_proc_{index}); if (flux__win_double_tap_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "on_long_press").is_some() {
+            out.push_str(&format!("SetLastError(0); flux__win_long_press_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_{index}); if (flux__win_long_press_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
         if view_property(element, "on_drag").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_{index}); if (flux__win_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));

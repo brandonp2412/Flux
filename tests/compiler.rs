@@ -1965,6 +1965,7 @@ view Screen {
         size: 18
         shortcut: "Ctrl+Shift+Enter"
         onPress: count => count + 1
+        onLongPress: count => count + 1
     Image logo at 4,1
         source: "logo.bmp"
         fit: "cover"
@@ -53880,6 +53881,16 @@ app HoverCard
     assert!(windows.contains("flux__win_hover_proc_0"));
     assert!(windows.contains("flux__win_hover_proc_1"));
     assert!(windows.contains("flux__win_double_tap_proc_0"));
+    assert!(windows.contains("flux__win_long_press_proc_0"));
+    assert!(windows.contains("flux__win_long_press_timer_0"));
+    assert!(
+        windows
+            .contains("SetTimer(hwnd, flux__win_long_press_timer_0, GetDoubleClickTime(), NULL)")
+    );
+    assert!(windows.contains("KillTimer(hwnd, flux__win_long_press_timer_0)"));
+    assert!(windows.contains("GetSystemMetrics(SM_CXDRAG)"));
+    assert!(windows.contains("GetSystemMetrics(SM_CYDRAG)"));
+    assert!(windows.contains("flux__win_long_press_consumed_0 = true; flux__ui_state_hovered = true; flux__win_refresh();"));
     assert!(windows.contains("GetDoubleClickTime()"));
     assert!(windows.contains("SM_CXDOUBLECLK"));
     assert!(windows.contains("SM_CYDOUBLECLK"));
