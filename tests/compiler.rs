@@ -1407,6 +1407,39 @@ fn main() -> i64 {
 }
 
 #[test]
+fn minimal_windows_application_declares_root_window_handle_before_use() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Windows runtime smoke"
+}
+
+app Screen(title: "Flux Windows runtime smoke")
+"#;
+    let program = fluxc::parser::parse(source).expect("minimal Windows application should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("minimal Windows application should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("minimal Windows application should lower");
+
+    let declaration = generated
+        .find("static HWND flux__windows_active_window = NULL;")
+        .expect("Windows GUI runtime should declare its root window handle");
+    let first_use = generated
+        .find("flux__windows_active_window = CreateWindowExW(")
+        .expect("Windows GUI runtime should create its root window");
+    assert!(declaration < first_use);
+    assert!(generated.contains("LoadCursorW(NULL, MAKEINTRESOURCEW(32512))"));
+}
+
+#[test]
 fn windows_backend_emits_native_win32_window_controls_and_click_dispatch() {
     let source = r##"
 view Screen {

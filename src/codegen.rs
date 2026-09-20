@@ -1788,7 +1788,6 @@ fn emit_c_for_target_with_source_metadata_impl(
             uses_linux_application,
             uses_android,
             uses_windows,
-            uses_windows_font_family,
         );
         harden_generated_http_text_argument_checks(&mut runtime_prelude);
         codegen_stats.regenerated_runtime_fragments += 1;
@@ -2307,7 +2306,6 @@ fn emit_runtime_prelude(
     uses_gtk: bool,
     uses_android: bool,
     uses_windows: bool,
-    uses_windows_font_family: bool,
 ) {
     let uses_byte_timeout = runtime_usage.contains("flux__net_send_bytes_with_timeout(")
         || runtime_usage.contains("flux__net_send_bytes_progress_with_timeout(");
@@ -2598,20 +2596,7 @@ fn emit_runtime_prelude(
     let uses_file_dialog = uses_file_dialog_open_file
         || uses_file_dialog_save_file
         || uses_file_dialog_select_directory;
-    if uses_windows
-        && (uses_windows_open
-            || uses_clipboard_set_text
-            || uses_clipboard_read_text
-            || uses_menu_show
-            || uses_tray_show
-            || uses_file_dialog
-            || uses_windows_message_box
-            || uses_windows_open
-            || uses_windows_font_family
-            || runtime_usage.contains("flux__focus_")
-            || runtime_usage.contains("flux__text_input_selection_")
-            || runtime_usage.contains("flux__text_input_set_"))
-    {
+    if uses_windows {
         out.push_str("static HWND flux__windows_active_window = NULL;\n");
     }
     let uses_focus_next = runtime_usage.contains("flux__focus_next(");
@@ -15788,7 +15773,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleW(NULL); WNDCLASSW wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = L\"FluxNativeWindow\"; wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512)); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExW({window_ex_style}, wc.lpszClassName, L\"\", {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1; flux__win_set_text_if_changed(flux__windows_active_window, {});\n", width, height, c_string(&title)));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
