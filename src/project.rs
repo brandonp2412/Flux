@@ -2594,6 +2594,7 @@ fn development_ui_property_lifecycle_patch_value(
             | "underline"
             | "strikethrough"
             | "password"
+            | "submit_on_enter"
             | "checked"
             | "selected"
     ) {
@@ -2726,6 +2727,17 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "status" {
         return Some("normal".to_string());
+    }
+    if property == "submit_on_enter"
+        && element.kind == "TextInput"
+        && development_ui_element_has_property(element, "on_submit")
+        && element
+            .properties
+            .iter()
+            .find(|property| typecheck::source_name_to_internal(&property.name) == "multiline")
+            .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
+    {
+        return Some("1".to_string());
     }
     if property == "shortcut_scope" && development_ui_element_has_property(element, "shortcut") {
         return Some("window".to_string());
@@ -3321,6 +3333,7 @@ fn development_ui_string_literals(
             "tooltip",
             "placeholder",
             "keyboard_type",
+            "submit_on_enter",
             "max_length",
             "background_color",
             "color",

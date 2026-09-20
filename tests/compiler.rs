@@ -48784,6 +48784,104 @@ app Form
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_single_line_submit_on_enter_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-submit-on-enter-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary submit-on-enter lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn submit(value: str) -> void {
+    print(value)
+}
+
+view Form {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput single at 1,1
+        onSubmit: submit
+    TextInput multi at 2,1
+        multiline: true
+        onSubmit: submit
+}
+app Form
+"#;
+    fs::write(&entry, initial)
+        .expect("initial submit-on-enter lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial submit-on-enter lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("initial submit-on-enter lifecycle fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_single = true"));
+    assert!(generated.contains(
+        "strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_single = bool_value"
+    ));
+    assert!(generated.contains("if (!flux__ui_submit_on_enter_single) return;"));
+    assert!(!generated.contains("flux__ui_submit_on_enter_multi"));
+
+    let disabled = initial.replace(
+        "    TextInput single at 1,1\n",
+        "    TextInput single at 1,1\n        submitOnEnter: false\n",
+    );
+    fs::write(&entry, disabled).expect("disabled submit-on-enter source should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("submit-on-enter lifecycle entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("disabled submit-on-enter lifecycle analysis should succeed");
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding submitOnEnter: false should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "single".to_string(),
+            property: "submit_on_enter".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("restored submit-on-enter source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored submit-on-enter lifecycle analysis should succeed");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing single-line submitOnEnter should restore the true default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "single".to_string(),
+            property: "submit_on_enter".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    let unsafe_multiline_enable = initial.replace(
+        "        multiline: true\n",
+        "        multiline: true\n        submitOnEnter: true\n",
+    );
+    fs::write(&entry, unsafe_multiline_enable)
+        .expect("multiline submit-on-enter source should be writable");
+    cache.invalidate_path(&entry);
+    let multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("multiline submit-on-enter lifecycle analysis should succeed");
+    assert!(
+        multiline.development_ui_string_patch_from(&third).is_none(),
+        "adding submitOnEnter to an omitted multiline input must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_drag_text_content() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-drag-text-patch-{}",
