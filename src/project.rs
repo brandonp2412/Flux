@@ -2462,6 +2462,26 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "validation_message"
+        && element.kind == "TextInput"
+        && !development_ui_element_has_property(element, "tooltip")
+        && ![
+            "accessibility_description",
+            "accessibility_action_label",
+            "accessibility_long_press_label",
+            "accessibility_actions",
+        ]
+        .iter()
+        .any(|property| development_ui_element_has_property(element, property))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "status" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2597,10 +2617,7 @@ fn development_ui_property_lifecycle_default(
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
     }
-    if property == "tooltip"
-        && (element.kind != "TextInput"
-            || !development_ui_element_has_property(element, "validation_message"))
-    {
+    if property == "tooltip" {
         return Some(String::new());
     }
     if property == "placeholder" && development_ui_text_input_is_single_line(element) {
@@ -2641,6 +2658,20 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "validation_state" && element.kind == "TextInput" {
         return Some("normal".to_string());
+    }
+    if property == "validation_message"
+        && element.kind == "TextInput"
+        && !development_ui_element_has_property(element, "tooltip")
+        && ![
+            "accessibility_description",
+            "accessibility_action_label",
+            "accessibility_long_press_label",
+            "accessibility_actions",
+        ]
+        .iter()
+        .any(|candidate| development_ui_element_has_property(element, candidate))
+    {
+        return Some(String::new());
     }
     if property == "status" {
         return Some("normal".to_string());
@@ -3227,6 +3258,7 @@ fn development_ui_string_literals(
             "alt",
             "source",
             "validation_state",
+            "validation_message",
             "status",
             "shortcut_scope",
             "focus_scope",

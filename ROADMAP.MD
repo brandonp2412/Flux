@@ -1532,6 +1532,8 @@ Verified Milestone 29 TextInput keyboard-type lifecycle follow-up: literal `keyb
 
 Verified Milestone 29 Button-size lifecycle follow-up: literal `Button.size` declarations now hot-add, hot-edit, and hot-remove without changing the development ABI. Linux runners keep the button-label Pango size patch path available even when no explicit size existed at launch; positive source sizes install the explicit native text size, while declaration removal uses a compiler-private zero lifecycle sentinel to clear the label attribute list and return sizing to the platform/theme default. Source-level zero and negative sizes remain invalid.
 
+Verified Milestone 29 TextInput validation-message lifecycle follow-up: literal `validationMessage` declarations now hot-add, hot-edit, and hot-remove when no tooltip or competing accessibility-description surface is present. Linux runners keep the validation-feedback patch path available even when no message existed at launch; removal clears the native tooltip, accessibility description, and single-line information icon. Tooltip/accessibility precedence changes remain controlled-restart boundaries rather than guessing ordering between competing native feedback surfaces.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

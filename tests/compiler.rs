@@ -49659,6 +49659,98 @@ app Form
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_validation_message_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-validation-message-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary validation-message lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+}
+app Form
+"#;
+    fs::write(&entry, initial)
+        .expect("initial validation-message lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial validation-message lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("validation-message lifecycle fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("strcmp(property, \"validation_message\") == 0 && flux__ui_email != NULL")
+    );
+    assert!(generated.contains("strcmp(property, \"tooltip\") == 0 && flux__ui_email != NULL"));
+
+    let entry =
+        fs::canonicalize(entry).expect("validation-message lifecycle entry should canonicalize");
+    let with_validation = initial.replace(
+        "    TextInput email at 1,1\n",
+        "    TextInput email at 1,1\n        validationMessage: \"Before validation\"\n",
+    );
+    fs::write(&entry, &with_validation).expect("validation message should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("validation-message analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding validationMessage should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "validation_message".to_string(),
+            value: "Before validation".to_string(),
+        }]
+    );
+    let updated = with_validation.replace("Before validation", "After validation");
+    fs::write(&entry, &updated).expect("updated validation message should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated validation-message analysis should succeed");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("editing validationMessage should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "validation_message".to_string(),
+            value: "After validation".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed validation message should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed validation-message analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing validationMessage should clear native feedback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "validation_message".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_analysis_cache_incrementally_rechecks_changed_view_bodies() {
     let root = std::env::temp_dir().join(format!(
         "flux-project-incremental-view-{}",
