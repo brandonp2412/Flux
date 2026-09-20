@@ -13595,6 +13595,29 @@ fn emit_windows_native_application(
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
     });
+    let uses_input_scopes = view.elements.iter().any(|element| {
+        element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+    });
+    if uses_input_scopes {
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| element.kind == "TextInput")
+        {
+            if let Some(property) = view_property(element, "keyboard_type")
+                && let Some(value) = static_expr_str(&property.value, signatures)
+                && !matches!(
+                    value.as_str(),
+                    "text" | "email" | "number" | "decimal" | "phone" | "url"
+                )
+            {
+                return Err(diag(
+                    property.value.span,
+                    "TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'",
+                ));
+            }
+        }
+    }
     let uses_dynamic_layout_constraints = view.elements.iter().any(|element| {
         ["min_width", "min_height", "max_width", "max_height"]
             .iter()
@@ -13676,6 +13699,9 @@ fn emit_windows_native_application(
     }
     out.push_str("static void flux__win_enable_dpi_awareness(void) { HMODULE user32 = GetModuleHandleA(\"user32.dll\"); if (user32 != NULL) { typedef BOOL (WINAPI *flux__set_dpi_context_fn)(HANDLE); flux__set_dpi_context_fn set_context = (flux__set_dpi_context_fn)(void *)GetProcAddress(user32, \"SetProcessDpiAwarenessContext\"); if (set_context != NULL && set_context((HANDLE)(INT_PTR)-4)) return; } (void)SetProcessDPIAware(); }\nstatic UINT flux__win_query_dpi(HWND hwnd) { HDC dc = GetDC(hwnd); if (dc == NULL) return 96; int value = GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(hwnd, dc); return value > 0 ? (UINT)value : 96; }\nstatic int flux__win_scale(int64_t logical) { if (logical <= 0) return (int)logical; int64_t scaled = (logical * (int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); return scaled > INT32_MAX ? INT32_MAX : (int)scaled; }\nstatic int64_t flux__win_unscale(int physical) { return ((int64_t)physical * INT64_C(96) + (int64_t)flux__win_dpi / INT64_C(2)) / (int64_t)flux__win_dpi; }\n");
     out.push_str("static void flux__win_set_application_id(const char *application_id) { wchar_t *wide = flux__windows_utf8_to_wide(application_id); if (wide == NULL) return; HMODULE shell32 = LoadLibraryA(\"shell32.dll\"); if (shell32 != NULL) { typedef HRESULT (WINAPI *flux__set_app_id_fn)(LPCWSTR); flux__set_app_id_fn set_app_id = (flux__set_app_id_fn)(void *)GetProcAddress(shell32, \"SetCurrentProcessExplicitAppUserModelID\"); if (set_app_id != NULL) (void)set_app_id(wide); FreeLibrary(shell32); } free(wide); }\n");
+    if uses_input_scopes {
+        out.push_str("typedef HRESULT (WINAPI *flux__win_set_input_scope_fn)(HWND, int);\nstatic HMODULE flux__win_msctf = NULL;\nstatic flux__win_set_input_scope_fn flux__win_set_input_scope_api = NULL;\nstatic void flux__win_input_scope_init(void) { flux__win_msctf = LoadLibraryA(\"Msctf.dll\"); if (flux__win_msctf == NULL) return; flux__win_set_input_scope_api = (flux__win_set_input_scope_fn)(void *)GetProcAddress(flux__win_msctf, \"SetInputScope\"); if (flux__win_set_input_scope_api == NULL) { FreeLibrary(flux__win_msctf); flux__win_msctf = NULL; } }\nstatic int flux__win_input_scope_value(const char *value) { if (value != NULL && strcmp(value, \"text\") == 0) return 57; if (value != NULL && strcmp(value, \"email\") == 0) return 5; if (value != NULL && strcmp(value, \"number\") == 0) return 28; if (value != NULL && strcmp(value, \"decimal\") == 0) return 29; if (value != NULL && strcmp(value, \"phone\") == 0) return 32; if (value != NULL && strcmp(value, \"url\") == 0) return 1; fputs(\"Flux runtime error: TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'\\n\", stderr); abort(); }\nstatic void flux__win_set_input_scope(HWND control, const char *value) { int scope = flux__win_input_scope_value(value); if (control != NULL && flux__win_set_input_scope_api != NULL) (void)flux__win_set_input_scope_api(control, scope); }\nstatic void flux__win_clear_input_scope(HWND control) { if (control != NULL && flux__win_set_input_scope_api != NULL) (void)flux__win_set_input_scope_api(control, 0); }\nstatic void flux__win_input_scope_shutdown(void) { flux__win_set_input_scope_api = NULL; if (flux__win_msctf != NULL) { FreeLibrary(flux__win_msctf); flux__win_msctf = NULL; } }\n");
+    }
     if uses_accessibility {
         out.push_str("static IAccPropServices *flux__win_accessibility = NULL;\nstatic bool flux__win_com_should_uninitialize = false;\nstatic wchar_t *flux__win_accessibility_wide(const char *text) { if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0); if (length <= 0) return NULL; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return NULL; if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) { free(wide); return NULL; } return wide; }\nstatic void flux__win_accessibility_init(void) { HRESULT initialized = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); if (SUCCEEDED(initialized)) flux__win_com_should_uninitialize = true; else if (initialized != RPC_E_CHANGED_MODE) return; (void)CoCreateInstance(&CLSID_AccPropServices, NULL, CLSCTX_INPROC_SERVER, &IID_IAccPropServices, (void **)&flux__win_accessibility); }\nstatic void flux__win_accessibility_set_name(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_NAME, wide); free(wide); }\nstatic void flux__win_accessibility_set_description(HWND control, const char *text) { if (control == NULL || flux__win_accessibility == NULL) return; wchar_t *wide = flux__win_accessibility_wide(text); if (wide == NULL) return; (void)flux__win_accessibility->lpVtbl->SetHwndPropStr(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_DESCRIPTION, wide); free(wide); }\nstatic void flux__win_accessibility_set_role(HWND control, LONG role) { if (control == NULL || flux__win_accessibility == NULL) return; VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = role; (void)flux__win_accessibility->lpVtbl->SetHwndProp(flux__win_accessibility, control, OBJID_CLIENT, CHILDID_SELF, PROPID_ACC_ROLE, value); VariantClear(&value); }\nstatic void flux__win_accessibility_shutdown(void) { if (flux__win_accessibility != NULL) { flux__win_accessibility->lpVtbl->Release(flux__win_accessibility); flux__win_accessibility = NULL; } if (flux__win_com_should_uninitialize) { CoUninitialize(); flux__win_com_should_uninitialize = false; } }\n");
     }
@@ -14713,6 +14739,12 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str(&format!("flux__win_set_cue({variable}, {value});\n"));
             }
+            if let Some(property) = view_property(element, "keyboard_type") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "flux__win_set_input_scope({variable}, {value});\n"
+                ));
+            }
             if let Some(property) = view_property(element, "read_only") {
                 let value = ui_expr_c(&property.value, view, signatures)?;
                 out.push_str(&format!("if ({variable} != NULL) SendMessageA({variable}, EM_SETREADONLY, ({value}) ? TRUE : FALSE, 0);\n"));
@@ -14863,7 +14895,22 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break;{context_menu_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
+    let input_scope_close = if uses_input_scopes {
+        let mut cleanup = String::from(" case WM_CLOSE: {");
+        for element in view.elements.iter().filter(|element| {
+            element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+        }) {
+            cleanup.push_str(&format!(
+                " flux__win_clear_input_scope({});",
+                ui_widget_c_name(&element.name)
+            ));
+        }
+        cleanup.push_str(" DestroyWindow(hwnd); return 0; }");
+        cleanup
+    } else {
+        String::new()
+    };
+    out.push_str(&format!("default: break; }} break;{context_menu_messages}{input_scope_close} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
@@ -14877,7 +14924,12 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
+    let input_scope_init = if uses_input_scopes {
+        " flux__win_input_scope_init();"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA({window_ex_style}, wc.lpszClassName, {}, {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
@@ -15149,6 +15201,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 element.name, element.name
             ));
         }
+    }
+    if uses_input_scopes {
+        out.push_str(" flux__win_input_scope_shutdown();");
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");

@@ -2292,6 +2292,111 @@ app Screen(title: "Windows input")
 }
 
 #[test]
+fn windows_text_input_keyboard_type_maps_to_native_input_scopes() {
+    let source = r#"
+view Screen {
+    state scope: str = "email"
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput dynamic at 1,1
+        text: ""
+        keyboardType: scope
+    TextInput phone at 2,1
+        text: ""
+        keyboardType: "phone"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows input-scope source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows input-scope source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows input-scope source should lower to native Win32 C");
+
+    assert!(generated.contains("LoadLibraryA(\"Msctf.dll\")"));
+    assert!(generated.contains("GetProcAddress(flux__win_msctf, \"SetInputScope\")"));
+    assert!(generated.contains("if (value != NULL && strcmp(value, \"email\") == 0) return 5"));
+    assert!(generated.contains("if (value != NULL && strcmp(value, \"number\") == 0) return 28"));
+    assert!(generated.contains("if (value != NULL && strcmp(value, \"decimal\") == 0) return 29"));
+    assert!(generated.contains("if (value != NULL && strcmp(value, \"phone\") == 0) return 32"));
+    assert!(
+        generated.contains("flux__win_set_input_scope(flux__ui_dynamic, flux__ui_state_scope)")
+    );
+    assert!(generated.contains("flux__win_set_input_scope(flux__ui_phone, \"phone\")"));
+    assert!(generated.contains("case WM_CLOSE: { flux__win_clear_input_scope(flux__ui_dynamic);"));
+    assert!(generated.contains("flux__win_clear_input_scope(flux__ui_phone);"));
+    assert!(generated.contains("flux__win_input_scope_shutdown();"));
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-input-scope-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("Windows input-scope syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, generated).expect("generated Windows input-scope C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate generated Windows input-scope C");
+        let _ = fs::remove_dir_all(&root);
+        assert!(
+            result.status.success(),
+            "generated Windows input-scope C should validate against Wine headers: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
+fn windows_text_input_keyboard_type_rejects_invalid_static_scope() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput input at 1,1
+        text: ""
+        keyboardType: "carrierPigeon"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("invalid Windows input scope should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("invalid Windows input scope should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows must reject an unsupported TextInput.keyboardType");
+    assert!(error.message.contains(
+        "TextInput.keyboardType must be one of 'text', 'email', 'number', 'decimal', 'phone', or 'url'"
+    ));
+}
+
+#[test]
 fn windows_desktop_integration_lowers_directly_to_win32_apis() {
     let source = r#"
 fn clipboardText(value: str) -> void {
