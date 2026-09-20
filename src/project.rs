@@ -111,14 +111,26 @@ impl ProjectAnalysis {
             return None;
         }
 
-        if current.iter().any(|((element, property), value)| {
-            property == "accessibility_description"
-                && previous_literals
-                    .get(&(element.clone(), property.clone()))
-                    .is_some_and(|previous| previous != value)
-                && current.get(&(element.clone(), "validation_message".to_string()))
-                    != previous_literals.get(&(element.clone(), "validation_message".to_string()))
-        }) {
+        let mut description_channel_changes = BTreeMap::<String, usize>::new();
+        for ((element, property), value) in &current {
+            if matches!(
+                property.as_str(),
+                "accessibility_description"
+                    | "accessibility_action_label"
+                    | "accessibility_long_press_label"
+                    | "accessibility_actions"
+                    | "validation_message"
+            ) && previous_literals.get(&(element.clone(), property.clone())) != Some(value)
+            {
+                *description_channel_changes
+                    .entry(element.clone())
+                    .or_default() += 1;
+            }
+        }
+        if description_channel_changes
+            .values()
+            .any(|change_count| *change_count > 1)
+        {
             return None;
         }
 
@@ -2672,6 +2684,46 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "accessibility_action_label"
+        && element.kind != "TextInput"
+        && ![
+            "accessibility_description",
+            "accessibility_long_press_label",
+            "accessibility_actions",
+        ]
+        .iter()
+        .any(|candidate| development_ui_element_has_property(element, candidate))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0)
+            || value == DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL
+        {
+            return None;
+        }
+        return Some(value.clone());
+    }
+    if property_name == "accessibility_long_press_label"
+        && element.kind != "TextInput"
+        && ![
+            "accessibility_description",
+            "accessibility_action_label",
+            "accessibility_actions",
+        ]
+        .iter()
+        .any(|candidate| development_ui_element_has_property(element, candidate))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0)
+            || value == DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL
+        {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "accessibility_role" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2914,7 +2966,12 @@ fn development_ui_property_lifecycle_default(
     ) {
         return Some(DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
-    if property == "accessibility_description" {
+    if matches!(
+        property,
+        "accessibility_description"
+            | "accessibility_action_label"
+            | "accessibility_long_press_label"
+    ) {
         return Some(DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
@@ -3521,6 +3578,8 @@ fn development_ui_string_literals(
             "transition_easing",
             "accessibility_label",
             "accessibility_description",
+            "accessibility_action_label",
+            "accessibility_long_press_label",
             "accessibility_value",
             "accessibility_role",
             "fit",

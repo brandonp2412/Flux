@@ -42540,6 +42540,161 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_accessibility_action_label_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-action-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary accessibility action lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn tapped() -> void {
+    print("tap")
+}
+
+fn held() -> void {
+    print("hold")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text tapTarget at 1,1
+        text: "Tap"
+        onTap: tapped
+    Text holdTarget at 2,1
+        text: "Hold"
+        onLongPress: held
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial accessibility action lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial accessibility action lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("accessibility action lifecycle fixture should lower for Linux");
+    for property in [
+        "accessibility_action_label",
+        "accessibility_long_press_label",
+    ] {
+        assert!(generated.contains(&format!("strcmp(property, \"{property}\") == 0")));
+    }
+    assert!(generated.contains(
+        "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action_tapTarget), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION)"
+    ));
+
+    let explicit = initial
+        .replace(
+            "        onTap: tapped\n",
+            "        onTap: tapped\n        accessibilityActionLabel: \"Open\"\n",
+        )
+        .replace(
+            "        onLongPress: held\n",
+            "        onLongPress: held\n        accessibilityLongPressLabel: \"Hold\"\n",
+        );
+    let entry =
+        fs::canonicalize(entry).expect("accessibility action lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit accessibility action labels should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit accessibility action labels should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding accessibility action labels should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&(
+            "tapTarget".to_string(),
+            "accessibility_action_label".to_string()
+        )),
+        Some(&"Open".to_string())
+    );
+    assert_eq!(
+        patch.get(&(
+            "holdTarget".to_string(),
+            "accessibility_long_press_label".to_string()
+        )),
+        Some(&"Hold".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed accessibility action labels should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed accessibility action labels should analyze");
+    assert_eq!(third.development_abi(), second.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing accessibility action labels should reset the native description")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (element, property) in [
+        ("tapTarget", "accessibility_action_label"),
+        ("holdTarget", "accessibility_long_press_label"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&"__flux_accessibility_property_default__".to_string())
+        );
+    }
+    assert_eq!(patch.len(), 2);
+
+    let swap_initial = r#"fn tapped() -> void {
+    print("tap")
+}
+
+fn held() -> void {
+    print("hold")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text target at 1,1
+        text: "Target"
+        onTap: tapped
+        onLongPress: held
+        accessibilityActionLabel: "Open"
+}
+app Screen
+"#;
+    fs::write(&entry, swap_initial).expect("accessibility action swap baseline should be writable");
+    cache.invalidate_path(&entry);
+    let swap_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("accessibility action swap baseline should analyze");
+    let swap_updated = swap_initial.replace(
+        "        accessibilityActionLabel: \"Open\"\n",
+        "        accessibilityLongPressLabel: \"Hold\"\n",
+    );
+    fs::write(&entry, swap_updated).expect("accessibility action swap update should be writable");
+    cache.invalidate_path(&entry);
+    let swap_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("accessibility action swap update should analyze");
+    assert!(
+        swap_second
+            .development_ui_string_patch_from(&swap_first)
+            .is_none(),
+        "simultaneously swapping native accessibility description owners must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_custom_accessibility_action_descriptions() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-accessibility-actions-patch-{}",

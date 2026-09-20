@@ -17894,19 +17894,19 @@ fn emit_linux_gtk_application(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_description\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
             c_string(&element.name)
         ));
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_action_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+            c_string(&element.name)
+        ));
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
+            c_string(&element.name)
+        ));
         if view_property(element, "accessibility_description").is_none()
-            && view_property(element, "accessibility_action_label").is_some()
+            && view_property(element, "accessibility_action_label").is_none()
+            && view_property(element, "accessibility_long_press_label").is_none()
+            && view_property(element, "accessibility_actions").is_some()
         {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_action_label\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
-                c_string(&element.name)
-            ));
-        } else if view_property(element, "accessibility_long_press_label").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_long_press_label\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
-                c_string(&element.name)
-            ));
-        } else if view_property(element, "accessibility_actions").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_actions\") == 0 && {host} != NULL) gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1);",
                 c_string(&element.name)
