@@ -17364,6 +17364,11 @@ fn emit_linux_gtk_application(
                         | "border_bottom_width"
                         | "border_start_width"
                         | "border_end_width"
+                        | "padding"
+                        | "padding_top"
+                        | "padding_bottom"
+                        | "padding_start"
+                        | "padding_end"
                 ))
                 && !linux_hot_css_i64_properties(element, property_name).is_empty()
             {
@@ -18077,8 +18082,14 @@ fn emit_linux_gtk_application(
                     | "border_start_width"
                     | "border_end_width"
             );
+            let padding_property = matches!(
+                property_name,
+                "padding" | "padding_top" | "padding_bottom" | "padding_start" | "padding_end"
+            );
             if css_names.is_empty()
-                || (view_property(element, property_name).is_none() && !border_width_property)
+                || (view_property(element, property_name).is_none()
+                    && !border_width_property
+                    && !padding_property)
             {
                 continue;
             }
@@ -18098,6 +18109,11 @@ fn emit_linux_gtk_application(
                 ));
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (integer_value < 0) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ const char *patch_format = integer_value > 0 ? {solid_css_format} : {css_format}; char *patch_css = g_strdup_printf(patch_format, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
+                    c_string(&element.name)
+                ));
+            } else if padding_property {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (integer_value < 0) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
                     c_string(&element.name)
                 ));
             } else {
@@ -19961,6 +19977,7 @@ fn emit_linux_gtk_application(
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
+        emit_lifecycle_padding_style_setup(out, element, &variable, signatures)?;
         emit_lifecycle_border_style_setup(out, element, &variable, signatures)?;
         emit_lifecycle_color_style_setup(out, element, &variable, signatures)?;
         emit_dynamic_transform_setup(out, element, &variable, signatures)?;
@@ -22278,16 +22295,7 @@ fn linux_hot_css_i64_properties(
         "border_bottom_width" => vec!["border-bottom-width"],
         "border_start_width" => vec!["border-left-width"],
         "border_end_width" => vec!["border-right-width"],
-        "padding" => linux_hot_css_unshadowed_properties(
-            element,
-            "padding",
-            &[
-                ("padding_top", "padding-top"),
-                ("padding_bottom", "padding-bottom"),
-                ("padding_start", "padding-left"),
-                ("padding_end", "padding-right"),
-            ],
-        ),
+        "padding" => vec!["padding"],
         "padding_top" => vec!["padding-top"],
         "padding_bottom" => vec!["padding-bottom"],
         "padding_start" => vec!["padding-left"],
@@ -23422,6 +23430,44 @@ fn emit_element_alignment(
     Ok(())
 }
 
+fn emit_lifecycle_padding_style_setup(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    for property_name in [
+        "padding",
+        "padding_top",
+        "padding_bottom",
+        "padding_start",
+        "padding_end",
+    ] {
+        let css_names = linux_hot_css_i64_properties(element, property_name);
+        if css_names.is_empty() {
+            continue;
+        }
+        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+        out.push_str(&format!(
+            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n"
+        ));
+        let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? else {
+            continue;
+        };
+        let declarations = css_names
+            .iter()
+            .map(|css_name| format!("{css_name}: {value}px;"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let css = format!("#flux-ui-{} {{ {declarations} }}", element.name);
+        out.push_str(&format!(
+            "    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            c_string(&css)
+        ));
+    }
+    Ok(())
+}
+
 fn emit_lifecycle_border_style_setup(
     out: &mut String,
     element: &crate::ast::ViewElement,
@@ -23559,22 +23605,6 @@ fn emit_element_style(
         c_string(&widget_name)
     ));
     let mut declarations = Vec::new();
-    let padding = static_non_negative_style_i64(element, "padding", signatures)?;
-    for (property_name, css_name) in [
-        ("padding_top", "padding-top"),
-        ("padding_bottom", "padding-bottom"),
-        ("padding_start", "padding-left"),
-        ("padding_end", "padding-right"),
-    ] {
-        let value = if view_property(element, property_name).is_some() {
-            static_non_negative_style_i64(element, property_name, signatures)?
-        } else {
-            padding
-        };
-        if let Some(value) = value {
-            declarations.push(format!("{css_name}: {value}px;"));
-        }
-    }
     let radius = static_non_negative_style_i64(element, "radius", signatures)?;
     if let Some(value) = radius {
         declarations.push(format!("border-radius: {value}px;"));

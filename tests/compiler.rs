@@ -47363,12 +47363,180 @@ app Screen
     let overridden_generated = overridden_second
         .emit_c()
         .expect("overridden spacing patch fixture should lower for Linux");
-    assert!(overridden_generated.contains(
-        "#flux-ui-base { padding-bottom: %lldpx; padding-left: %lldpx; padding-right: %lldpx; }"
-    ));
+    assert!(overridden_generated.contains("#flux-ui-base { padding: %lldpx; }"));
+    let setup = overridden_generated
+        .find("gtk_widget_set_name(flux__ui_base, \"flux-ui-base\")")
+        .expect("padding setup should name the live widget");
+    let setup = &overridden_generated[setup..];
+    let base_padding_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_padding)")
+        .expect("base padding provider should be registered from launch");
+    let top_padding_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_padding_top)")
+        .expect("top padding provider should be registered from launch");
+    assert!(
+        base_padding_provider < top_padding_provider,
+        "edge padding providers must retain precedence over the base provider"
+    );
     assert!(overridden_generated.contains(
         "#flux-ui-base { border-top-right-radius: %lldpx; border-bottom-left-radius: %lldpx; border-bottom-right-radius: %lldpx; }"
     ));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_padding_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-padding-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary padding lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state spacing: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    Text action at 1,1
+        text: "Padding"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial padding lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial padding lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial padding lifecycle fixture should lower for Linux");
+    for property in [
+        "padding",
+        "padding_top",
+        "padding_bottom",
+        "padding_start",
+        "padding_end",
+    ] {
+        assert!(generated.contains(&format!(
+            "static GtkCssProvider *flux__ui_hot_style_action_{property} = NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"{property}\") == 0 && flux__ui_action != NULL"
+        )));
+    }
+    let setup = generated
+        .find("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")")
+        .expect("padding lifecycle setup should name the live widget");
+    let setup = &generated[setup..];
+    let base_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_padding)")
+        .expect("base padding provider should be registered from launch");
+    let top_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_padding_top)")
+        .expect("top padding provider should be registered from launch");
+    let bottom_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_padding_bottom)")
+        .expect("bottom padding provider should be registered from launch");
+    let start_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_padding_start)")
+        .expect("start padding provider should be registered from launch");
+    let end_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_padding_end)")
+        .expect("end padding provider should be registered from launch");
+    assert!(
+        base_provider < top_provider
+            && top_provider < bottom_provider
+            && bottom_provider < start_provider
+            && start_provider < end_provider,
+        "padding providers must keep canonical base-before-edge registration order"
+    );
+
+    let explicit = initial.replace(
+        "        text: \"Padding\"\n",
+        "        text: \"Padding\"\n        padding: 2\n        paddingTop: 4\n",
+    );
+    let entry = fs::canonicalize(entry).expect("padding lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit padding should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit padding should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal padding should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "padding".to_string())),
+        Some(&"2".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "padding_top".to_string())),
+        Some(&"4".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit padding should lower for Linux");
+    assert!(!explicit_generated.contains("GtkCssProvider *flux__style_action ="));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding, \"#flux-ui-action { padding: 2px; }\", -1)"
+    ));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding_top, \"#flux-ui-action { padding-top: 4px; }\", -1)"
+    ));
+
+    let base_only = explicit.replace("        paddingTop: 4\n", "");
+    fs::write(&entry, &base_only).expect("removed edge padding should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed edge padding should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing edge padding should reveal the live base padding"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "padding_top".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed base padding should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed base padding should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing base padding should clear its retained provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "padding".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        text: \"Padding\"\n",
+        "        text: \"Padding\"\n        padding: spacing\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic padding source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic padding source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven padding must retain controlled restart"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -54111,10 +54279,12 @@ app Styled
     assert!(generated.contains("border-radius: 12px;"));
     assert!(generated.contains("border-top-left-radius: 24px;"));
     assert!(generated.contains("border-bottom-right-radius: 4px;"));
-    assert!(generated.contains("padding-top: 8px;"));
-    assert!(generated.contains("padding-bottom: 8px;"));
-    assert!(generated.contains("padding-left: 20px;"));
-    assert!(generated.contains("padding-right: 8px;"));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding, \"#flux-ui-action { padding: 8px; }\", -1)"
+    ));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding_start, \"#flux-ui-action { padding-left: 20px; }\", -1)"
+    ));
     assert!(generated.contains("GTK_STYLE_PROVIDER_PRIORITY_APPLICATION"));
 
     let invalid = r#"
@@ -54602,7 +54772,9 @@ app Tokens
 
     let linux = compile_to_c(source).expect("semantic UI dimension tokens should lower on Linux");
     assert!(linux.contains("gtk_widget_set_margin_top(flux__ui_action, 8)"));
-    assert!(linux.contains("padding-top: 12px;"));
+    assert!(linux.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding, \"#flux-ui-action { padding: 12px; }\", -1)"
+    ));
     assert!(linux.contains("border-radius: 10px;"));
     assert!(linux.contains("box-shadow: 0px 0px 8px @flux_shadow;"));
     assert!(linux.contains("transition-duration: 200ms;"));
@@ -54667,7 +54839,9 @@ app Tokens
 
     let linux = compile_to_c(source).expect("user design constants should lower on Linux");
     assert!(linux.contains("gtk_widget_set_margin_top(flux__ui_action, 18)"));
-    assert!(linux.contains("padding-top: 8px;"));
+    assert!(linux.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_padding, \"#flux-ui-action { padding: 8px; }\", -1)"
+    ));
     assert!(linux.contains("border-radius: 14px;"));
     assert!(linux.contains("background-color: #16324F;"));
     assert!(linux.contains("border-color: #5B8DB8;"));
