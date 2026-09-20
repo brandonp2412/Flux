@@ -14337,6 +14337,43 @@ fn emit_windows_native_application(
     }
     for element in &view.elements {
         for (property_name, source_name) in [
+            ("clip", "clip"),
+            ("align_x", "alignX"),
+            ("align_y", "alignY"),
+            ("padding", "padding"),
+            ("padding_top", "paddingTop"),
+            ("padding_bottom", "paddingBottom"),
+            ("padding_start", "paddingStart"),
+            ("padding_end", "paddingEnd"),
+            ("shadow_color", "shadowColor"),
+            ("shadow_blur", "shadowBlur"),
+            ("shadow_offset_x", "shadowOffsetX"),
+            ("shadow_offset_y", "shadowOffsetY"),
+            ("rotate_degrees", "rotateDegrees"),
+            ("scale_percent", "scalePercent"),
+            ("scale_x_percent", "scaleXPercent"),
+            ("scale_y_percent", "scaleYPercent"),
+            ("skew_x_degrees", "skewXDegrees"),
+            ("skew_y_degrees", "skewYDegrees"),
+            ("transform_origin_x_percent", "transformOriginXPercent"),
+            ("transform_origin_y_percent", "transformOriginYPercent"),
+            ("transition_ms", "transitionMs"),
+            ("transition_delay_ms", "transitionDelayMs"),
+            ("transition_easing", "transitionEasing"),
+            ("layout_transition_ms", "layoutTransitionMs"),
+            ("drag_translate", "dragTranslate"),
+            ("pinch_scale", "pinchScale"),
+        ] {
+            if let Some(property) = view_property(element, property_name) {
+                return Err(diag(
+                    property.value.span,
+                    &format!(
+                        "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
+                    ),
+                ));
+            }
+        }
+        for (property_name, source_name) in [
             ("border_width", "borderWidth"),
             ("border_top_width", "borderTopWidth"),
             ("border_end_width", "borderEndWidth"),

@@ -1959,6 +1959,61 @@ app Screen
             .contains("borderStyle currently supports only 'none' and 'solid'")
     );
 }
+
+#[test]
+fn windows_rejects_unimplemented_portable_styles_instead_of_silently_dropping_them() {
+    for (property, source_name) in [
+        ("clip: true", "clip"),
+        ("alignX: \"center\"", "alignX"),
+        ("alignY: \"center\"", "alignY"),
+        ("padding: 4", "padding"),
+        ("paddingTop: 4", "paddingTop"),
+        ("paddingBottom: 4", "paddingBottom"),
+        ("paddingStart: 4", "paddingStart"),
+        ("paddingEnd: 4", "paddingEnd"),
+        ("shadowColor: \"shadow\"", "shadowColor"),
+        ("shadowBlur: 8", "shadowBlur"),
+        ("shadowOffsetX: 2", "shadowOffsetX"),
+        ("shadowOffsetY: 2", "shadowOffsetY"),
+        ("rotateDegrees: 5", "rotateDegrees"),
+        ("scalePercent: 110", "scalePercent"),
+        ("scaleXPercent: 110", "scaleXPercent"),
+        ("scaleYPercent: 110", "scaleYPercent"),
+        ("skewXDegrees: 5", "skewXDegrees"),
+        ("skewYDegrees: 5", "skewYDegrees"),
+        ("transformOriginXPercent: 50", "transformOriginXPercent"),
+        ("transformOriginYPercent: 50", "transformOriginYPercent"),
+        ("transitionMs: 120", "transitionMs"),
+        ("transitionDelayMs: 20", "transitionDelayMs"),
+        ("transitionEasing: \"ease\"", "transitionEasing"),
+        ("layoutTransitionMs: 120", "layoutTransitionMs"),
+        ("dragTranslate: true", "dragTranslate"),
+        ("pinchScale: true", "pinchScale"),
+    ] {
+        let source = format!(
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"Styled\"\n        {property}\n}}\napp Screen\n"
+        );
+        let program =
+            fluxc::parser::parse(&source).expect("unsupported Windows style source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("unsupported Windows style source should remain portable and typecheck");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("unsupported Windows style must fail target lowering");
+        assert!(
+            error.message.contains(&format!(
+                "bootstrap Windows {source_name} is not yet supported by the native Win32 backend"
+            )),
+            "{source_name} should fail explicitly, got: {}",
+            error.message
+        );
+    }
+}
+
 #[test]
 fn windows_translate_offsets_are_dpi_aware_and_refresh_with_state() {
     let source = r#"
