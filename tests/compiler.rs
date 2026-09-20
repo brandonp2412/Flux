@@ -36206,6 +36206,114 @@ fn native_module_object_cache_isolates_sqlite_registry_state() {
 }
 
 #[test]
+fn native_module_object_cache_reuses_url_encoding_runtime() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-url-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native URL module cache fixture should be writable");
+    let hooks = root.join("hooks.flux");
+    let main = root.join("main.flux");
+    let initial_hooks = r#"fn encoded(value: str) -> void {
+    print(value)
+}
+pub fn encodeValue() -> void {
+    print(url.encode("a b", encoded))
+}
+"#;
+    fs::write(&hooks, initial_hooks).expect("URL hook module should be writable");
+    fs::write(
+        &main,
+        "import \"hooks.flux\"\nfn main() -> i64 {\n    encodeValue()\n    return 0\n}\n",
+    )
+    .expect("URL entry module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first URL module-object build should run");
+    assert!(
+        built.status.success(),
+        "first URL module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let first_run = Command::new(&first)
+        .output()
+        .expect("first URL module-object binary should run");
+    assert!(first_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&first_run.stdout), "a%20b\nnil\n");
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native URL module object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert_eq!(
+        first_objects.len(),
+        3,
+        "the URL callback, producer, and entry runtime should compile independently"
+    );
+
+    let updated_hooks = initial_hooks.replace("\"a b\"", "\"x/y\"");
+    fs::write(&hooks, updated_hooks).expect("changed URL hook module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed URL module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed URL module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let second_run = Command::new(&second)
+        .output()
+        .expect("changed URL module-object binary should run");
+    assert!(second_run.status.success());
+    assert_eq!(String::from_utf8_lossy(&second_run.stdout), "x%2Fy\nnil\n");
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        4,
+        "a body-only URL producer edit should add one object and reuse the callback and entry runtime"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged URL callback and entry runtime objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_module_object_cache_isolates_network_socket_registry() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-network-module-cache-{}-{}",

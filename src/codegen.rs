@@ -5814,7 +5814,7 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     }
     if runtime_usage.contains("flux__url_encode_component(") {
         out.push_str(r#"static inline const char *flux__url_encode_component(const char *value, void (*callback)(const char *)) {
-    static const char hex[] = "0123456789ABCDEF";
+    const char *hex = "0123456789ABCDEF";
     size_t length = 0;
     if (callback == NULL) return "invalid URL encode callback";
     if (!flux__bounded_url_length(value, &length)) return "URL component exceeds 65536 bytes";
@@ -5882,7 +5882,7 @@ static inline const char *flux__json_encode_optional_str(struct flux__optional_s
     }
     if runtime_usage.contains("flux__url_encode_form_component(") {
         out.push_str(r#"static inline const char *flux__url_encode_form_component(const char *value, void (*callback)(const char *)) {
-    static const char hex[] = "0123456789ABCDEF";
+    const char *hex = "0123456789ABCDEF";
     size_t length = 0;
     if (callback == NULL) return "invalid form URL encode callback";
     if (!flux__bounded_url_length(value, &length)) return "Form URL component exceeds 65536 bytes";
