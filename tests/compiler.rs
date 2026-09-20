@@ -47626,6 +47626,143 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_border_color_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-border-color-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary border color lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state tone: str = "accent"
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+        borderWidth: 1
+        borderStyle: "solid"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial border color source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial border color source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("border color lifecycle fixture should lower for Linux");
+    for property in [
+        "border_color",
+        "border_top_color",
+        "border_bottom_color",
+        "border_start_color",
+        "border_end_color",
+    ] {
+        assert!(generated.contains(&format!(
+            "static GtkCssProvider *flux__ui_hot_style_action_{property} = NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"{property}\") == 0 && flux__ui_action != NULL"
+        )));
+    }
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_color, \"\", -1)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("border color lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "        borderWidth: 1\n",
+        "        borderWidth: 1\n        borderColor: \"outline\"\n        borderTopColor: \"danger\"\n",
+    );
+    fs::write(&entry, &explicit).expect("explicit border colors should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit border colors should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit border colors should lower for Linux");
+    let base_load = "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_color, \"#flux-ui-action { border-color: @flux_outline; }\", -1)";
+    let top_load = "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_top_color, \"#flux-ui-action { border-top-color: @flux_danger; }\", -1)";
+    assert!(explicit_generated.contains(base_load));
+    assert!(explicit_generated.contains(top_load));
+    assert!(
+        explicit_generated.find(base_load) < explicit_generated.find(top_load),
+        "edge provider must be installed after the base provider so it retains CSS precedence"
+    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding border colors should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_color".to_string())),
+        Some(&"outline".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_top_color".to_string())),
+        Some(&"danger".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let base_only = explicit.replace("        borderTopColor: \"danger\"\n", "");
+    fs::write(&entry, &base_only).expect("removed edge border color should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("base-only border color source should analyze");
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing edge border color should reveal the base provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_top_color".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed base border color should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed base border color source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing base border color should clear its provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_color".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        borderWidth: 1\n",
+        "        borderWidth: 1\n        borderColor: tone\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic border color source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic border color source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven borderColor must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_common_css_colors() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-style-color-patch-{}",
@@ -47781,9 +47918,7 @@ app Screen
     let overridden_generated = overridden_second
         .emit_c()
         .expect("overridden border color patch fixture should lower for Linux");
-    assert!(overridden_generated.contains(
-        "#flux-ui-base { border-bottom-color: %s; border-left-color: %s; border-right-color: %s; }"
-    ));
+    assert!(overridden_generated.contains("#flux-ui-base { border-color: %s; }"));
 
     let _ = fs::remove_dir_all(root);
 }

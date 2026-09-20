@@ -2443,7 +2443,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
-    if property_name == "background_color" {
+    if matches!(
+        property_name.as_str(),
+        "background_color"
+            | "border_color"
+            | "border_top_color"
+            | "border_bottom_color"
+            | "border_start_color"
+            | "border_end_color"
+    ) {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
         };
@@ -2922,7 +2930,15 @@ fn development_ui_property_lifecycle_default(
     {
         return Some(element.name.clone());
     }
-    if property == "background_color" {
+    if matches!(
+        property,
+        "background_color"
+            | "border_color"
+            | "border_top_color"
+            | "border_bottom_color"
+            | "border_start_color"
+            | "border_end_color"
+    ) {
         return Some(String::new());
     }
     if matches!(
@@ -3684,6 +3700,11 @@ fn development_ui_string_literals(
             "submit_on_enter",
             "max_length",
             "background_color",
+            "border_color",
+            "border_top_color",
+            "border_bottom_color",
+            "border_start_color",
+            "border_end_color",
             "shadow_color",
             "shadow_blur",
             "shadow_offset_x",

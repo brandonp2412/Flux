@@ -17375,7 +17375,15 @@ fn emit_linux_gtk_application(
             "color",
         ] {
             if (view_property(element, property_name).is_some()
-                || property_name == "background_color"
+                || matches!(
+                    property_name,
+                    "background_color"
+                        | "border_color"
+                        | "border_top_color"
+                        | "border_bottom_color"
+                        | "border_start_color"
+                        | "border_end_color"
+                )
                 || (element.kind == "Text" && property_name == "color"))
                 && !linux_hot_css_color_properties(element, property_name).is_empty()
             {
@@ -18081,7 +18089,15 @@ fn emit_linux_gtk_application(
             let css_names = linux_hot_css_color_properties(element, property_name);
             if css_names.is_empty()
                 || (view_property(element, property_name).is_none()
-                    && property_name != "background_color"
+                    && !matches!(
+                        property_name,
+                        "background_color"
+                            | "border_color"
+                            | "border_top_color"
+                            | "border_bottom_color"
+                            | "border_start_color"
+                            | "border_end_color"
+                    )
                     && !(element.kind == "Text" && property_name == "color"))
             {
                 continue;
@@ -18101,8 +18117,15 @@ fn emit_linux_gtk_application(
             } else {
                 String::new()
             };
-            if property_name == "background_color"
-                || (property_name == "color" && element.kind == "Text")
+            if matches!(
+                property_name,
+                "background_color"
+                    | "border_color"
+                    | "border_top_color"
+                    | "border_bottom_color"
+                    | "border_start_color"
+                    | "border_end_color"
+            ) || (property_name == "color" && element.kind == "Text")
             {
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{{text_color_cleanup} if (value_length == 0) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
@@ -22280,16 +22303,7 @@ fn linux_hot_css_color_properties(
     match property_name {
         "background_color" => vec!["background-color"],
         "color" if element.kind == "Text" => vec!["color"],
-        "border_color" => linux_hot_css_unshadowed_properties(
-            element,
-            "border-color",
-            &[
-                ("border_top_color", "border-top-color"),
-                ("border_bottom_color", "border-bottom-color"),
-                ("border_start_color", "border-left-color"),
-                ("border_end_color", "border-right-color"),
-            ],
-        ),
+        "border_color" => vec!["border-color"],
         "border_top_color" => vec!["border-top-color"],
         "border_bottom_color" => vec!["border-bottom-color"],
         "border_start_color" => vec!["border-left-color"],
@@ -23392,7 +23406,15 @@ fn emit_lifecycle_color_style_setup(
     variable: &str,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    for property_name in ["background_color", "color"] {
+    for property_name in [
+        "background_color",
+        "border_color",
+        "border_top_color",
+        "border_bottom_color",
+        "border_start_color",
+        "border_end_color",
+        "color",
+    ] {
         if property_name == "color" && element.kind != "Text" {
             continue;
         }
@@ -23445,34 +23467,6 @@ fn emit_element_style(
         c_string(&widget_name)
     ));
     let mut declarations = Vec::new();
-    let color_properties = vec![
-        ("border_color", "border-color"),
-        ("border_top_color", "border-top-color"),
-        ("border_bottom_color", "border-bottom-color"),
-        ("border_start_color", "border-left-color"),
-        ("border_end_color", "border-right-color"),
-    ];
-    for (property_name, css_name) in color_properties {
-        let Some(property) = view_property(element, property_name) else {
-            continue;
-        };
-        let Some(value) = static_expr_str(&property.value, signatures) else {
-            return Err(diag(
-                property.value.span,
-                &format!("{property_name} must be a compile-time string"),
-            ));
-        };
-        if !valid_ui_color(&value) {
-            return Err(diag(
-                property.value.span,
-                &format!(
-                    "{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
-                ),
-            ));
-        }
-        let css_value = gtk_ui_color_css(&value).unwrap_or(value.as_str());
-        declarations.push(format!("{css_name}: {css_value};"));
-    }
     let padding = static_non_negative_style_i64(element, "padding", signatures)?;
     for (property_name, css_name) in [
         ("padding_top", "padding-top"),
