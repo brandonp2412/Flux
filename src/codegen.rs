@@ -17369,6 +17369,11 @@ fn emit_linux_gtk_application(
                         | "padding_bottom"
                         | "padding_start"
                         | "padding_end"
+                        | "radius"
+                        | "radius_top_left"
+                        | "radius_top_right"
+                        | "radius_bottom_left"
+                        | "radius_bottom_right"
                 ))
                 && !linux_hot_css_i64_properties(element, property_name).is_empty()
             {
@@ -18086,10 +18091,19 @@ fn emit_linux_gtk_application(
                 property_name,
                 "padding" | "padding_top" | "padding_bottom" | "padding_start" | "padding_end"
             );
+            let radius_property = matches!(
+                property_name,
+                "radius"
+                    | "radius_top_left"
+                    | "radius_top_right"
+                    | "radius_bottom_left"
+                    | "radius_bottom_right"
+            );
             if css_names.is_empty()
                 || (view_property(element, property_name).is_none()
                     && !border_width_property
-                    && !padding_property)
+                    && !padding_property
+                    && !radius_property)
             {
                 continue;
             }
@@ -18111,7 +18125,7 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (integer_value < 0) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ const char *patch_format = integer_value > 0 ? {solid_css_format} : {css_format}; char *patch_css = g_strdup_printf(patch_format, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
                     c_string(&element.name)
                 ));
-            } else if padding_property {
+            } else if padding_property || radius_property {
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (integer_value < 0) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
                     c_string(&element.name)
@@ -19978,6 +19992,7 @@ fn emit_linux_gtk_application(
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
         emit_lifecycle_padding_style_setup(out, element, &variable, signatures)?;
+        emit_lifecycle_radius_style_setup(out, element, &variable, signatures)?;
         emit_lifecycle_border_style_setup(out, element, &variable, signatures)?;
         emit_lifecycle_color_style_setup(out, element, &variable, signatures)?;
         emit_dynamic_transform_setup(out, element, &variable, signatures)?;
@@ -22268,25 +22283,8 @@ fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
     }
 }
 
-fn linux_hot_css_unshadowed_properties(
-    element: &crate::ast::ViewElement,
-    shorthand: &'static str,
-    overrides: &[(&str, &'static str)],
-) -> Vec<&'static str> {
-    if overrides
-        .iter()
-        .all(|(property, _)| view_property(element, property).is_none())
-    {
-        return vec![shorthand];
-    }
-    overrides
-        .iter()
-        .filter_map(|(property, css)| view_property(element, property).is_none().then_some(*css))
-        .collect()
-}
-
 fn linux_hot_css_i64_properties(
-    element: &crate::ast::ViewElement,
+    _element: &crate::ast::ViewElement,
     property_name: &str,
 ) -> Vec<&'static str> {
     match property_name {
@@ -22300,16 +22298,7 @@ fn linux_hot_css_i64_properties(
         "padding_bottom" => vec!["padding-bottom"],
         "padding_start" => vec!["padding-left"],
         "padding_end" => vec!["padding-right"],
-        "radius" => linux_hot_css_unshadowed_properties(
-            element,
-            "border-radius",
-            &[
-                ("radius_top_left", "border-top-left-radius"),
-                ("radius_top_right", "border-top-right-radius"),
-                ("radius_bottom_left", "border-bottom-left-radius"),
-                ("radius_bottom_right", "border-bottom-right-radius"),
-            ],
-        ),
+        "radius" => vec!["border-radius"],
         "radius_top_left" => vec!["border-top-left-radius"],
         "radius_top_right" => vec!["border-top-right-radius"],
         "radius_bottom_left" => vec!["border-bottom-left-radius"],
@@ -23468,6 +23457,44 @@ fn emit_lifecycle_padding_style_setup(
     Ok(())
 }
 
+fn emit_lifecycle_radius_style_setup(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    for property_name in [
+        "radius",
+        "radius_top_left",
+        "radius_top_right",
+        "radius_bottom_left",
+        "radius_bottom_right",
+    ] {
+        let css_names = linux_hot_css_i64_properties(element, property_name);
+        if css_names.is_empty() {
+            continue;
+        }
+        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+        out.push_str(&format!(
+            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n"
+        ));
+        let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? else {
+            continue;
+        };
+        let declarations = css_names
+            .iter()
+            .map(|css_name| format!("{css_name}: {value}px;"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let css = format!("#flux-ui-{} {{ {declarations} }}", element.name);
+        out.push_str(&format!(
+            "    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            c_string(&css)
+        ));
+    }
+    Ok(())
+}
+
 fn emit_lifecycle_border_style_setup(
     out: &mut String,
     element: &crate::ast::ViewElement,
@@ -23605,20 +23632,6 @@ fn emit_element_style(
         c_string(&widget_name)
     ));
     let mut declarations = Vec::new();
-    let radius = static_non_negative_style_i64(element, "radius", signatures)?;
-    if let Some(value) = radius {
-        declarations.push(format!("border-radius: {value}px;"));
-    }
-    for (property_name, css_name) in [
-        ("radius_top_left", "border-top-left-radius"),
-        ("radius_top_right", "border-top-right-radius"),
-        ("radius_bottom_left", "border-bottom-left-radius"),
-        ("radius_bottom_right", "border-bottom-right-radius"),
-    ] {
-        if let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? {
-            declarations.push(format!("{css_name}: {value}px;"));
-        }
-    }
     let shadow_color = view_property(element, "shadow_color")
         .map(|property| {
             let Some(value) = static_expr_str(&property.value, signatures) else {

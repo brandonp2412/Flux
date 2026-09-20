@@ -2419,6 +2419,20 @@ fn development_ui_padding_group_is_static_literal(element: &ViewElement) -> bool
     })
 }
 
+fn development_ui_radius_group_is_static_literal(element: &ViewElement) -> bool {
+    element.properties.iter().all(|property| {
+        match typecheck::source_name_to_internal(&property.name).as_str() {
+            "radius"
+            | "radius_top_left"
+            | "radius_top_right"
+            | "radius_bottom_left"
+            | "radius_bottom_right" => development_ui_i64_literal_value(&property.value)
+                .is_some_and(|value| (0..=i64::from(i32::MAX)).contains(&value)),
+            _ => true,
+        }
+    })
+}
+
 fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
@@ -2533,6 +2547,21 @@ fn development_ui_property_lifecycle_patch_value(
         property_name.as_str(),
         "padding" | "padding_top" | "padding_bottom" | "padding_start" | "padding_end"
     ) && development_ui_padding_group_is_static_literal(element)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    if matches!(
+        property_name.as_str(),
+        "radius"
+            | "radius_top_left"
+            | "radius_top_right"
+            | "radius_bottom_left"
+            | "radius_bottom_right"
+    ) && development_ui_radius_group_is_static_literal(element)
     {
         let value = development_ui_i64_literal_value(&property.value)?;
         if !(0..=i64::from(i32::MAX)).contains(&value) {
@@ -3015,6 +3044,17 @@ fn development_ui_property_lifecycle_default(
         property,
         "padding" | "padding_top" | "padding_bottom" | "padding_start" | "padding_end"
     ) && development_ui_padding_group_is_static_literal(element)
+    {
+        return Some("-1".to_string());
+    }
+    if matches!(
+        property,
+        "radius"
+            | "radius_top_left"
+            | "radius_top_right"
+            | "radius_bottom_left"
+            | "radius_bottom_right"
+    ) && development_ui_radius_group_is_static_literal(element)
     {
         return Some("-1".to_string());
     }
@@ -3781,6 +3821,11 @@ fn development_ui_string_literals(
             "padding_bottom",
             "padding_start",
             "padding_end",
+            "radius",
+            "radius_top_left",
+            "radius_top_right",
+            "radius_bottom_left",
+            "radius_bottom_right",
             "border_color",
             "border_top_color",
             "border_bottom_color",

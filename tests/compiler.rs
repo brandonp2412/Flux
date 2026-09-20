@@ -47378,9 +47378,17 @@ app Screen
         base_padding_provider < top_padding_provider,
         "edge padding providers must retain precedence over the base provider"
     );
-    assert!(overridden_generated.contains(
-        "#flux-ui-base { border-top-right-radius: %lldpx; border-bottom-left-radius: %lldpx; border-bottom-right-radius: %lldpx; }"
-    ));
+    assert!(overridden_generated.contains("#flux-ui-base { border-radius: %lldpx; }"));
+    let base_radius_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_radius)")
+        .expect("base radius provider should be registered from launch");
+    let top_left_radius_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_radius_top_left)")
+        .expect("top-left radius provider should be registered from launch");
+    assert!(
+        base_radius_provider < top_left_radius_provider,
+        "corner radius providers must retain precedence over the base provider"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -47536,6 +47544,161 @@ app Screen
     assert!(
         dynamic.development_ui_string_patch_from(&fourth).is_none(),
         "state-driven padding must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_radius_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-radius-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary radius lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state corner: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    Text action at 1,1
+        text: "Radius"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial radius lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial radius lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial radius lifecycle fixture should lower for Linux");
+    for property in [
+        "radius",
+        "radius_top_left",
+        "radius_top_right",
+        "radius_bottom_left",
+        "radius_bottom_right",
+    ] {
+        assert!(generated.contains(&format!(
+            "static GtkCssProvider *flux__ui_hot_style_action_{property} = NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"{property}\") == 0 && flux__ui_action != NULL"
+        )));
+    }
+    let setup = generated
+        .find("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")")
+        .expect("radius lifecycle setup should name the live widget");
+    let setup = &generated[setup..];
+    let base_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_radius)")
+        .expect("base radius provider should be registered from launch");
+    let top_left_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_radius_top_left)")
+        .expect("top-left radius provider should be registered from launch");
+    let top_right_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_radius_top_right)")
+        .expect("top-right radius provider should be registered from launch");
+    let bottom_left_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_radius_bottom_left)")
+        .expect("bottom-left radius provider should be registered from launch");
+    let bottom_right_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_radius_bottom_right)")
+        .expect("bottom-right radius provider should be registered from launch");
+    assert!(
+        base_provider < top_left_provider
+            && top_left_provider < top_right_provider
+            && top_right_provider < bottom_left_provider
+            && bottom_left_provider < bottom_right_provider,
+        "radius providers must keep canonical base-before-corner registration order"
+    );
+
+    let explicit = initial.replace(
+        "        text: \"Radius\"\n",
+        "        text: \"Radius\"\n        radius: 2\n        radiusTopLeft: 4\n",
+    );
+    let entry = fs::canonicalize(entry).expect("radius lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit radius should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit radius should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal radius should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "radius".to_string())),
+        Some(&"2".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "radius_top_left".to_string())),
+        Some(&"4".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit radius should lower for Linux");
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_radius, \"#flux-ui-action { border-radius: 2px; }\", -1)"
+    ));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_radius_top_left, \"#flux-ui-action { border-top-left-radius: 4px; }\", -1)"
+    ));
+
+    let base_only = explicit.replace("        radiusTopLeft: 4\n", "");
+    fs::write(&entry, &base_only).expect("removed corner radius should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed corner radius should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing corner radius should reveal the live base radius"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "radius_top_left".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed base radius should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed base radius should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing base radius should clear its retained provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "radius".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        text: \"Radius\"\n",
+        "        text: \"Radius\"\n        radius: corner\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic radius source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic radius source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven radius must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
