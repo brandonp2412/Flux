@@ -13636,6 +13636,13 @@ fn emit_windows_native_application(
         .unwrap_or(i64::from(bootstrap_height));
     let title = application_metadata_string(application, "title", signatures)
         .unwrap_or_else(|| view.name.clone());
+    let layout_direction = application_metadata_string(application, "layout_direction", signatures)
+        .unwrap_or_else(|| "system".to_string());
+    let window_ex_style = match layout_direction.as_str() {
+        "rtl" => "WS_EX_LAYOUTRTL",
+        "ltr" | "system" => "0",
+        _ => unreachable!("application layout direction validated before Windows lowering"),
+    };
     let application_id = application_metadata_string(application, "id", signatures)
         .unwrap_or_else(|| "app.flux.bootstrap".to_string());
     let on_save_state = application_metadata_function(application, "on_save_state");
@@ -14695,7 +14702,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         ""
     };
     out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness();{accessibility_init}{tooltip_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n"));
-    out.push_str(&format!("flux__windows_active_window = CreateWindowExA(0, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
+    out.push_str(&format!("flux__windows_active_window = CreateWindowExA({window_ex_style}, wc.lpszClassName, {}, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
     }

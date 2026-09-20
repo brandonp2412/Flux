@@ -54589,6 +54589,15 @@ app Screen(layoutDirection: "rtl")
     assert!(android.contains("setLayoutDirection"));
     assert!(android.contains("set_layout_direction, (jint)1"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("RTL direction should lower to Windows");
+    assert!(windows.contains("CreateWindowExA(WS_EX_LAYOUTRTL, wc.lpszClassName"));
+
     let system = r#"
 view Screen {
     grid columns: 1fr
@@ -54609,6 +54618,14 @@ app Screen(layoutDirection: "system")
     )
     .expect("system direction should preserve Android locale choice");
     assert!(!android.contains("setLayoutDirection"));
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("system direction should preserve Windows default layout");
+    assert!(windows.contains("CreateWindowExA(0, wc.lpszClassName"));
 
     let invalid = r#"
 view Screen {
