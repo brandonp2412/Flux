@@ -2520,7 +2520,7 @@ fn emit_runtime_prelude(
         out.push_str("#include <libsecret/secret.h>\n");
     }
     if uses_windows {
-        out.push_str("#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
+        out.push_str("#ifndef WINVER\n#define WINVER 0x0601\n#endif\n#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0601\n#endif\n#define WIN32_LEAN_AND_MEAN\n#include <windows.h>\n#include <commctrl.h>\n#include <commdlg.h>\n#include <shellapi.h>\n#include <shlobj.h>\n#include <wchar.h>\n");
         if runtime_usage.contains("flux__windows_secure_") {
             out.push_str("#include <wincred.h>\n");
         }
@@ -14617,6 +14617,19 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         let callback = function_c_name(function);
         out.push_str(&format!("static WNDPROC flux__win_swipe_orig_{index} = NULL;\nstatic bool flux__win_swipe_tracking_{index} = false;\nstatic bool flux__win_swipe_moved_{index} = false;\nstatic bool flux__win_swipe_consumed_{index} = false;\nstatic int flux__win_swipe_start_x_{index} = 0;\nstatic int flux__win_swipe_start_y_{index} = 0;\nstatic DWORD flux__win_swipe_start_time_{index} = 0;\nstatic LRESULT CALLBACK flux__win_swipe_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); flux__win_swipe_tracking_{index} = true; flux__win_swipe_moved_{index} = false; flux__win_swipe_consumed_{index} = false; flux__win_swipe_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_swipe_start_y_{index} = (int)(short)HIWORD(lparam); flux__win_swipe_start_time_{index} = (DWORD)GetMessageTime(); SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_swipe_tracking_{index}) {{ if ((wparam & MK_LBUTTON) == 0) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ int dx = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int dy = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; }} }} if (message == WM_LBUTTONUP && flux__win_swipe_tracking_{index}) {{ int delta_x = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int delta_y = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; DWORD elapsed = (DWORD)((DWORD)GetMessageTime() - flux__win_swipe_start_time_{index}); int abs_x = delta_x < 0 ? -delta_x : delta_x; int abs_y = delta_y < 0 ? -delta_y : delta_y; if (abs_x > GetSystemMetrics(SM_CXDRAG) || abs_y > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; flux__win_swipe_consumed_{index} = flux__win_swipe_moved_{index}; if (flux__win_swipe_moved_{index} && elapsed > 0) {{ int64_t logical_x = flux__win_unscale(delta_x); int64_t logical_y = flux__win_unscale(delta_y); int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed; int64_t velocity_y = logical_y * INT64_C(1000) / (int64_t)elapsed; UINT interval = GetDoubleClickTime(); if (interval == 0) interval = 1; int64_t minimum_x = (flux__win_unscale(GetSystemMetrics(SM_CXDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t minimum_y = (flux__win_unscale(GetSystemMetrics(SM_CYDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t speed_x = velocity_x < 0 ? -velocity_x : velocity_x; int64_t speed_y = velocity_y < 0 ? -velocity_y : velocity_y; if (speed_x >= minimum_x || speed_y >= minimum_y) {{ {callback}(velocity_x, velocity_y); flux__win_refresh(); }} }} flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; LRESULT result = CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); if (GetCapture() == hwnd) ReleaseCapture(); return result; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; }} return CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
+    for (index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_scale") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows onScale requires a named fn(i64) -> void callback",
+            ));
+        };
+        let callback = function_c_name(function);
+        out.push_str(&format!("static WNDPROC flux__win_pinch_orig_{index} = NULL;\nstatic ULONGLONG flux__win_pinch_start_{index} = 0;\nstatic LRESULT CALLBACK flux__win_pinch_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_GESTURE) {{ GESTUREINFO info = {{0}}; info.cbSize = sizeof(info); HGESTUREINFO handle = (HGESTUREINFO)lparam; if (GetGestureInfo(handle, &info) && info.dwID == GID_ZOOM) {{ if ((info.dwFlags & GF_BEGIN) != 0 || flux__win_pinch_start_{index} == 0) flux__win_pinch_start_{index} = info.ullArguments; else if (flux__win_pinch_start_{index} > 0) {{ double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_{index}; int64_t scale_percent = (int64_t)(ratio * 100.0 + 0.5); {callback}(scale_percent); flux__win_refresh(); }} if ((info.dwFlags & GF_END) != 0) flux__win_pinch_start_{index} = 0; CloseGestureInfoHandle(handle); return 0; }} }} return CallWindowProcA(flux__win_pinch_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
         for (index, element) in view.elements.iter().enumerate() {
@@ -15484,6 +15497,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
         if view_property(element, "on_swipe").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_swipe_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_swipe_proc_{index}); if (flux__win_swipe_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "on_scale").is_some() {
+            out.push_str(&format!(r#"SetLastError(0); flux__win_pinch_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_pinch_proc_{index}); if (flux__win_pinch_orig_{index} == NULL && GetLastError() != 0) return 1; GESTURECONFIG flux__win_zoom_config_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig({variable}, 0, 1, &flux__win_zoom_config_{index}, sizeof(flux__win_zoom_config_{index}))) {{ fputs("Flux runtime error: native Windows zoom gestures are unavailable\n", stderr); return 1; }} "#));
         }
     }
     if let Some(first) = accessibility_order.first() {

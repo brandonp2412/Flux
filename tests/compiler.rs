@@ -1934,6 +1934,14 @@ fn secureValue(value: str) -> void {
     print(value)
 }
 
+fn swiped(velocityX: i64, velocityY: i64) -> void {
+    print(velocityX + velocityY)
+}
+
+fn scaled(scalePercent: i64) -> void {
+    print(scalePercent)
+}
+
 fn stopAfterStart() -> void {
     print(windows.secureStore("session", "secret"))
     print(windows.secureRead("session", secureValue))
@@ -1966,6 +1974,8 @@ view Screen {
         shortcut: "Ctrl+Shift+Enter"
         onPress: count => count + 1
         onLongPress: count => count + 1
+        onSwipe: swiped
+        onScale: scaled
     Image logo at 4,1
         source: "logo.bmp"
         fit: "cover"
@@ -53906,6 +53916,19 @@ app HoverCard
     assert!(windows.contains("int64_t logical_x = flux__win_unscale(delta_x)"));
     assert!(windows.contains("int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed"));
     assert!(windows.contains("flux__fn_swiped(velocity_x, velocity_y); flux__win_refresh();"));
+    assert!(windows.contains("flux__win_pinch_proc_0"));
+    assert!(windows.contains("message == WM_GESTURE"));
+    assert!(windows.contains("GetGestureInfo(handle, &info)"));
+    assert!(windows.contains("info.dwID == GID_ZOOM"));
+    assert!(windows.contains("info.dwFlags & GF_BEGIN"));
+    assert!(
+        windows
+            .contains("double ratio = (double)info.ullArguments / (double)flux__win_pinch_start_0")
+    );
+    assert!(windows.contains("flux__fn_scaled(scale_percent); flux__win_refresh();"));
+    assert!(windows.contains("CloseGestureInfoHandle(handle)"));
+    assert!(windows.contains("GESTURECONFIG flux__win_zoom_config_0 = { GID_ZOOM, GC_ZOOM, 0 }"));
+    assert!(windows.contains("SetGestureConfig("));
     assert!(windows.contains("SetCapture(hwnd)"));
     assert!(windows.contains("WM_CAPTURECHANGED"));
     assert!(windows.contains("GetCapture() == hwnd"));
