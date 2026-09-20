@@ -2738,7 +2738,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
-    if property_name == "placeholder" && development_ui_text_input_is_single_line(element) {
+    if property_name == "placeholder" && element.kind == "TextInput" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
         };
@@ -3203,7 +3203,7 @@ fn development_ui_property_lifecycle_default(
     if matches!(property, "tooltip" | "drag_text") {
         return Some(String::new());
     }
-    if property == "placeholder" && development_ui_text_input_is_single_line(element) {
+    if property == "placeholder" && element.kind == "TextInput" {
         return Some(String::new());
     }
     if property == "keyboard_type" && element.kind == "TextInput" {

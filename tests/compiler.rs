@@ -46234,7 +46234,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_single_line_placeholder_declaration_lifecycle() {
+fn development_ui_string_patch_hot_applies_text_input_placeholder_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-placeholder-lifecycle-{}",
         std::process::id()
@@ -46264,8 +46264,14 @@ app Screen
         .emit_c()
         .expect("placeholder lifecycle fixture should lower for Linux");
     assert!(generated.contains("strcmp(property, \"placeholder\") == 0 && flux__ui_input != NULL"));
-    assert!(!generated.contains(
+    assert!(generated.contains(
         "strcmp(property, \"placeholder\") == 0 && flux__ui_notes != NULL && flux__ui_placeholder_notes != NULL"
+    ));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkWidget *flux__ui_placeholder_notes = NULL;"
+    ));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_placeholder_notes = gtk_label_new(\"\");"
     ));
 
     let entry = fs::canonicalize(entry).expect("placeholder lifecycle entry should canonicalize");
@@ -46353,11 +46359,55 @@ app Screen
     let multiline = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("multiline placeholder source should analyze");
-    assert!(
+    assert_eq!(
+        multiline.development_abi(),
+        fourth.development_abi(),
+        "adding a literal multiline placeholder must not change the development ABI"
+    );
+    assert_eq!(
         multiline
             .development_ui_string_patch_from(&fourth)
+            .expect("adding a multiline placeholder should reuse the development overlay"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "notes".to_string(),
+            property: "placeholder".to_string(),
+            value: "Notes hint".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed multiline placeholder should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed multiline placeholder source should analyze");
+    assert_eq!(
+        fifth
+            .development_ui_string_patch_from(&multiline)
+            .expect("removing a multiline placeholder should clear the retained overlay"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "notes".to_string(),
+            property: "placeholder".to_string(),
+            value: String::new(),
+        }]
+    );
+
+    let dynamic_multiline = initial.replace(
+        "    TextInput notes at 2,1\n",
+        r#"    TextInput notes at 2,1
+        placeholder: hint
+"#,
+    );
+    fs::write(&entry, dynamic_multiline)
+        .expect("dynamic multiline placeholder source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic multiline placeholder source should analyze");
+    assert!(
+        dynamic_multiline
+            .development_ui_string_patch_from(&fifth)
             .is_none(),
-        "adding a multiline placeholder must restart so the native overlay can be constructed"
+        "state-driven multiline placeholders must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
