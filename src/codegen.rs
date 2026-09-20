@@ -17666,9 +17666,7 @@ fn emit_linux_gtk_application(
                 ));
             }
             "TextInput" => {
-                if view_property(element, "text").is_some()
-                    && view_property(element, "on_change").is_none()
-                {
+                if view_property(element, "on_change").is_none() {
                     let multiline = view_property(element, "multiline")
                         .and_then(|property| static_expr_bool(&property.value, signatures))
                         .unwrap_or(false);

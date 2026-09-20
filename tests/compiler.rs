@@ -48159,6 +48159,93 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_text_input_text_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-text-input-text-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary TextInput text lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput query at 1,1
+    TextInput notes at 2,1
+        multiline: true
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial TextInput text lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial TextInput text lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("TextInput text lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"text\") == 0 && flux__ui_query != NULL"));
+    assert!(generated.contains("gtk_editable_set_text(GTK_EDITABLE(flux__ui_query), value)"));
+    assert!(generated.contains("strcmp(property, \"text\") == 0 && flux__ui_notes != NULL"));
+    assert!(generated.contains("gtk_text_buffer_set_text(buffer, value, -1)"));
+
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput query at 1,1
+        text: "Search"
+    TextInput notes at 2,1
+        text: "Notes"
+        multiline: true
+}
+app Screen
+"#;
+    fs::write(&entry, updated).expect("explicit TextInput text should be writable");
+    let entry =
+        fs::canonicalize(entry).expect("TextInput text lifecycle entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit TextInput text analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding callback-free TextInput text should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("query".to_string(), "text".to_string())),
+        Some(&"Search".to_string())
+    );
+    assert_eq!(
+        patch.get(&("notes".to_string(), "text".to_string())),
+        Some(&"Notes".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed TextInput text should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed TextInput text analysis should succeed");
+    assert_eq!(third.development_abi(), second.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing callback-free TextInput text should restore empty native values");
+    assert_eq!(patch.len(), 2);
+    assert!(
+        patch
+            .iter()
+            .all(|record| record.property == "text" && record.value.is_empty())
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_restarts_for_text_input_text_with_change_handler() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-input-change-handler-patch-{}",

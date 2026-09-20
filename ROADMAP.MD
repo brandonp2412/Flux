@@ -1536,6 +1536,8 @@ Verified Milestone 29 TextInput validation-message lifecycle follow-up: literal 
 
 Verified Milestone 29 native-label lifecycle follow-up: literal display text declarations for Text/Button/Header `text`, Toggle/Radio/Nav/Chart/Content `label`, and Card `title` now hot-add, hot-edit, and hot-remove without changing the development ABI. These elements already use their compiler-owned element name as the omitted native label, so declaration removal patches that exact default back into the existing GTK control; Text with rich markup remains outside this lifecycle path so plain-text/markup precedence cannot drift.
 
+Verified Milestone 29 callback-free TextInput text lifecycle follow-up: literal `TextInput.text` declarations now hot-add, hot-edit, and hot-remove for both single-line entries and multiline text views when no `onChange` callback is wired. Linux runners keep the native entry/buffer text patch path available even when the declaration was omitted at launch, and removal restores the compiler-owned empty initial value in place. Inputs with `onChange` remain controlled-restart boundaries so hot reload does not bypass callback/state ownership.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.
