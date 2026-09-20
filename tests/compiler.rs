@@ -1606,7 +1606,7 @@ app Screen
 }
 
 #[test]
-fn windows_uniform_radius_uses_native_window_regions_and_refreshes() {
+fn windows_radius_regions_support_uniform_and_asymmetric_refresh() {
     let source = r#"
 view Screen {
     state corner: i64 = 8
@@ -1632,8 +1632,7 @@ app Screen
     )
     .expect("uniform Windows radius should lower through native regions");
     assert!(
-        windows
-            .contains("HRGN region = CreateRoundRectRgn(0, 0, right, bottom, diameter, diameter)")
+        windows.contains("region = CreateRoundRectRgn(0, 0, right, bottom, diameter, diameter)")
     );
     assert!(windows.contains("SetWindowRgn(control, region, TRUE)"));
     assert!(windows.contains("int64_t requested_radius = flux__ui_state_corner;"));
@@ -1675,28 +1674,72 @@ app Screen
 
     let per_corner = r#"
 view Screen {
+    state corner: i64 = 4
     grid columns: 1fr
-    grid rows: auto
+    grid rows: auto auto
     Text label at 1,1
         text: "Detailed"
-        radiusTopLeft: 4
+        radius: 8
+        radiusTopLeft: corner
+        radiusBottomRight: 12
+    Button action at 2,1
+        text: "Round corner"
+        onPress: corner => corner + 1
 }
 app Screen
 "#;
     let program = fluxc::parser::parse(per_corner).expect("per-corner radius source should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("per-corner radius source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("per-corner Windows radii should lower through native regions");
+    assert!(windows.contains("static bool flux__win_subtract_corner("));
+    assert!(windows.contains("int64_t requested_radius_top_left = flux__ui_state_corner;"));
+    assert!(windows.contains("int64_t requested_radius_top_right = requested_radius;"));
+    assert!(windows.contains("int64_t requested_radius_bottom_right = INT64_C(12);"));
+    assert!(windows.contains("int64_t requested_radius_bottom_left = requested_radius;"));
+    assert!(windows.contains(
+        "flux__win_set_radii(flux__ui_label, control_width, control_height, requested_radius_top_left, requested_radius_top_right, requested_radius_bottom_right, requested_radius_bottom_left)"
+    ));
+    assert!(windows.contains("CreateEllipticRgn("));
+    assert!(windows.contains("CombineRgn(cutout, square, ellipse, RGN_DIFF)"));
+    assert!(windows.contains(
+        "Flux runtime error: radii must be non-negative and fit within a 32-bit signed integer"
+    ));
+    assert!(windows.contains(
+        "if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client))"
+    ));
+
+    let invalid_corner = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Bad corner"
+        radiusBottomLeft: -1
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(invalid_corner)
+        .expect("negative per-corner radius source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("negative per-corner radius source should typecheck");
     let error = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("per-corner Windows radius must not be silently ignored");
+    .expect_err("negative Windows per-corner radius must fail target lowering");
     assert!(
-        error
-            .message
-            .contains("radiusTopLeft is not yet supported; use uniform radius")
+        error.message.contains(
+            "radiusBottomLeft must be non-negative and fit within a 32-bit signed integer"
+        )
     );
 }
 
@@ -2408,6 +2451,8 @@ view Screen {
         status: "loading"
         selectable: true
         radius: 6
+        radiusTopLeft: 3
+        radiusBottomRight: 9
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
