@@ -43581,6 +43581,146 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_margin_side_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-margin-side-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary margin-side lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text based at 1,1
+        text: "Based"
+        margin: 4
+    Text zero at 2,1
+        text: "Zero"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial margin-side lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial margin-side lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("margin-side lifecycle fixture should lower for Linux");
+    for (element, property) in [
+        ("based", "margin_top"),
+        ("based", "margin_bottom"),
+        ("zero", "margin_start"),
+        ("zero", "margin_end"),
+    ] {
+        assert!(generated.contains(&format!(
+            "strcmp(name, \"{element}\") == 0 && strcmp(property, \"{property}\") == 0"
+        )));
+    }
+    assert!(generated.contains("static int flux__ui_margin_base_based = 4;"));
+    assert!(generated.contains("static int flux__ui_margin_base_zero = 0;"));
+    assert!(generated.contains("static bool flux__ui_margin_top_explicit_based = false;"));
+    assert!(generated.contains(
+        "if (!flux__ui_margin_top_explicit_based) gtk_widget_set_margin_top(flux__ui_based, (int)integer_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_margin_top(flux__ui_based, restore_default ? flux__ui_margin_base_based : (int)integer_value)"
+    ));
+
+    let explicit = initial
+        .replace(
+            "        margin: 4\n",
+            "        margin: 4\n        marginTop: 8\n",
+        )
+        .replace(
+            "    Text zero at 2,1\n",
+            "    Text zero at 2,1\n        marginEnd: 6\n",
+        );
+    let entry = fs::canonicalize(entry).expect("margin-side lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit margin-side source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit margin-side source should analyze");
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding static margin-side overrides should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("based".to_string(), "margin_top".to_string())),
+        Some(&"8".to_string())
+    );
+    assert_eq!(
+        patch.get(&("zero".to_string(), "margin_end".to_string())),
+        Some(&"6".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let rebased = explicit.replace("        margin: 4\n", "        margin: 9\n");
+    fs::write(&entry, &rebased).expect("rebased margin-side source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("rebased margin-side source should analyze");
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("base margin should keep hot-applying after side overrides are added")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("based".to_string(), "margin".to_string())),
+        Some(&"9".to_string())
+    );
+    assert_eq!(patch.len(), 1);
+
+    let without_sides = initial.replace("        margin: 4\n", "        margin: 9\n");
+    fs::write(&entry, &without_sides).expect("side-restored source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("side-restored source should analyze");
+    let patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing margin-side overrides should restore the live base margin")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("based".to_string(), "margin_top".to_string())),
+        Some(&"-1".to_string())
+    );
+    assert_eq!(
+        patch.get(&("zero".to_string(), "margin_end".to_string())),
+        Some(&"-1".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("restored base margin source should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored base margin source should analyze");
+    let patch = fifth
+        .development_ui_string_patch_from(&fourth)
+        .expect("base margin should keep hot-applying after side overrides are removed")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("based".to_string(), "margin".to_string())),
+        Some(&"4".to_string())
+    );
+    assert_eq!(patch.len(), 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_enabled_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-enabled-lifecycle-{}",
@@ -46480,15 +46620,24 @@ app Screen
             .matches("gtk_widget_set_margin_top(flux__ui_label, (int)integer_value)")
             .count(),
         1,
-        "base margin patch must preserve the explicit marginTop override"
+        "base margin should retain one conditional top setter"
     );
     assert_eq!(
         generated
             .matches("gtk_widget_set_margin_bottom(flux__ui_label, (int)integer_value)")
             .count(),
         1,
-        "base margin patch should update an unoverridden side"
+        "base margin should retain one conditional bottom setter"
     );
+    assert!(generated.contains(
+        "if (!flux__ui_margin_top_explicit_label) gtk_widget_set_margin_top(flux__ui_label, (int)integer_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_margin_top(flux__ui_label, restore_default ? flux__ui_margin_base_label : (int)integer_value)"
+    ));
+    assert!(generated.contains(
+        "gtk_widget_set_margin_bottom(flux__ui_label, restore_default ? flux__ui_margin_base_label : (int)integer_value)"
+    ));
     assert!(
         generated.contains(
             "gtk_label_set_text(GTK_LABEL(button_label), value); else gtk_button_set_label"

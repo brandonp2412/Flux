@@ -17455,6 +17455,25 @@ fn emit_linux_gtk_application(
                 ui_transform_provider_c_name(&element.name)
             ));
         }
+        let margin = view_property(element, "margin")
+            .and_then(|property| static_expr_i64(&property.value, signatures))
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "static int flux__ui_margin_base_{} = {margin};\n",
+            element.name
+        ));
+        for property_name in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+            out.push_str(&format!(
+                "static bool flux__ui_{}_explicit_{} = {};\n",
+                property_name,
+                element.name,
+                if view_property(element, property_name).is_some() {
+                    "true"
+                } else {
+                    "false"
+                }
+            ));
+        }
         if element.kind == "TextInput" {
             out.push_str(&format!(
                 "static bool flux__ui_keyboard_type_explicit_{} = {};\n",
@@ -17997,15 +18016,15 @@ fn emit_linux_gtk_application(
             ("margin_start", "start"),
             ("margin_end", "end"),
         ] {
-            if view_property(element, property_name).is_none() {
-                margin_setters.push_str(&format!(
-                    " gtk_widget_set_margin_{setter}({widget}, (int)integer_value);"
-                ));
-            }
+            margin_setters.push_str(&format!(
+                " if (!flux__ui_{property_name}_explicit_{}) gtk_widget_set_margin_{setter}({widget}, (int)integer_value);",
+                element.name
+            ));
         }
         out.push_str(&format!(
-            " if (strcmp(name, {}) == 0 && strcmp(property, \"margin\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{{margin_setters} }} }}",
-            c_string(&element.name)
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"margin\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ flux__ui_margin_base_{} = (int)integer_value;{margin_setters} }} }}",
+            c_string(&element.name),
+            element.name
         ));
         for (property_name, setter) in [
             ("margin_top", "top"),
@@ -18013,12 +18032,12 @@ fn emit_linux_gtk_application(
             ("margin_start", "start"),
             ("margin_end", "end"),
         ] {
-            if view_property(element, property_name).is_some() {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_widget_set_margin_{setter}({widget}, (int)integer_value); }}",
-                    c_string(&element.name)
-                ));
-            }
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ bool restore_default = integer_value < 0; flux__ui_{property_name}_explicit_{} = !restore_default; gtk_widget_set_margin_{setter}({widget}, restore_default ? flux__ui_margin_base_{} : (int)integer_value); }} }}",
+                c_string(&element.name),
+                element.name,
+                element.name
+            ));
         }
         for property_name in [
             "border_width",

@@ -87,6 +87,12 @@ impl ProjectAnalysis {
             &mut current,
             &mut previous_literals,
         )?;
+        development_ui_margin_side_lifecycle_defaults(
+            self,
+            previous,
+            &mut current,
+            &mut previous_literals,
+        )?;
         development_ui_text_variant_lifecycle_defaults(
             self,
             previous,
@@ -2104,6 +2110,55 @@ fn development_application_geometry_lifecycle_defaults(
     Some(())
 }
 
+fn development_ui_margin_side_lifecycle_defaults(
+    current_analysis: &ProjectAnalysis,
+    previous_analysis: &ProjectAnalysis,
+    current: &mut BTreeMap<(String, String), String>,
+    previous: &mut BTreeMap<(String, String), String>,
+) -> Option<()> {
+    let current_application = current_analysis.program.application.as_ref()?;
+    let previous_application = previous_analysis.program.application.as_ref()?;
+    let current_view = current_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == current_application.view_name)?;
+    let previous_view = previous_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == previous_application.view_name)?;
+
+    for current_element in &current_view.elements {
+        let Some(previous_element) = previous_view.elements.iter().find(|element| {
+            element.name == current_element.name && element.kind == current_element.kind
+        }) else {
+            continue;
+        };
+        for property in ["margin_top", "margin_bottom", "margin_start", "margin_end"] {
+            let current_has = development_ui_element_has_property(current_element, property);
+            let previous_has = development_ui_element_has_property(previous_element, property);
+            if current_has == previous_has {
+                continue;
+            }
+            let key = (current_element.name.clone(), property.to_string());
+            if !current.contains_key(&key) {
+                current.insert(
+                    key.clone(),
+                    development_ui_property_lifecycle_default(current_element, property)?,
+                );
+            }
+            if !previous.contains_key(&key) {
+                previous.insert(
+                    key,
+                    development_ui_property_lifecycle_default(previous_element, property)?,
+                );
+            }
+        }
+    }
+    Some(())
+}
+
 fn development_ui_text_variant_lifecycle_defaults(
     current_analysis: &ProjectAnalysis,
     previous_analysis: &ProjectAnalysis,
@@ -2606,7 +2661,10 @@ fn development_ui_property_lifecycle_patch_value(
         };
         return Some(if value { "1" } else { "0" }.to_string());
     }
-    if property_name == "margin" {
+    if matches!(
+        property_name.as_str(),
+        "margin" | "margin_top" | "margin_bottom" | "margin_start" | "margin_end"
+    ) {
         if !development_ui_i64_property_is_patchable(element, &property_name) {
             return None;
         }
@@ -2790,6 +2848,23 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "margin" && development_ui_i64_property_is_patchable(element, property) {
         return Some("0".to_string());
+    }
+    if matches!(
+        property,
+        "margin_top" | "margin_bottom" | "margin_start" | "margin_end"
+    ) && development_ui_i64_property_is_patchable(element, property)
+    {
+        if let Some(base_margin) = element
+            .properties
+            .iter()
+            .find(|candidate| typecheck::source_name_to_internal(&candidate.name) == "margin")
+        {
+            let value = development_ui_i64_literal_value(&base_margin.value)?;
+            if !(0..=i64::from(i32::MAX)).contains(&value) {
+                return None;
+            }
+        }
+        return Some("-1".to_string());
     }
     None
 }
