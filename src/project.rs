@@ -2347,15 +2347,6 @@ fn development_ui_string_list_property_is_patchable(element: &ViewElement, prope
     }
 }
 
-fn development_ui_text_input_is_single_line(element: &ViewElement) -> bool {
-    element.kind == "TextInput"
-        && element
-            .properties
-            .iter()
-            .find(|property| typecheck::source_name_to_internal(&property.name) == "multiline")
-            .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
-}
-
 fn development_ui_rich_text_lifecycle_is_safe(
     current: &ProjectAnalysis,
     previous: &ProjectAnalysis,
@@ -2759,7 +2750,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
-    if property_name == "max_length" && development_ui_text_input_is_single_line(element) {
+    if property_name == "max_length" && element.kind == "TextInput" {
         if !development_ui_i64_property_is_patchable(element, &property_name) {
             return None;
         }
@@ -3209,7 +3200,7 @@ fn development_ui_property_lifecycle_default(
     if property == "keyboard_type" && element.kind == "TextInput" {
         return Some(DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL.to_string());
     }
-    if property == "max_length" && development_ui_text_input_is_single_line(element) {
+    if property == "max_length" && element.kind == "TextInput" {
         return Some("0".to_string());
     }
     if property == "size"

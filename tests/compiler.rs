@@ -46108,7 +46108,7 @@ app Screen
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_single_line_max_length_declaration_lifecycle() {
+fn development_ui_string_patch_hot_applies_text_input_max_length_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-max-length-lifecycle-{}",
         std::process::id()
@@ -46142,7 +46142,14 @@ app Screen
         generated
             .contains("gtk_entry_set_max_length(GTK_ENTRY(flux__ui_input), (int)integer_value)")
     );
-    assert!(!generated.contains("flux__ui_max_length_notes"));
+    assert!(
+        generated
+            .contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic gint flux__ui_max_length_notes = 0;")
+    );
+    assert!(generated.contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void flux__ui_limit_notes"));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    g_signal_connect(flux__ui_buffer_notes, \"insert-text\", G_CALLBACK(flux__ui_limit_notes), NULL);"
+    ));
 
     let entry = fs::canonicalize(entry).expect("max length lifecycle entry should canonicalize");
     let explicit_default = initial.replace(
@@ -46223,11 +46230,53 @@ app Screen
     let multiline = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("multiline max length source should analyze");
-    assert!(
+    assert_eq!(
+        multiline.development_abi(),
+        fourth.development_abi(),
+        "adding literal multiline maxLength must not change the development ABI"
+    );
+    assert_eq!(
         multiline
             .development_ui_string_patch_from(&fourth)
+            .expect("adding multiline maxLength should reuse the retained limiter"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "notes".to_string(),
+            property: "max_length".to_string(),
+            value: "12".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed multiline max length should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed multiline max length source should analyze");
+    assert_eq!(
+        fifth
+            .development_ui_string_patch_from(&multiline)
+            .expect("removing multiline maxLength should restore unlimited input"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "notes".to_string(),
+            property: "max_length".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let dynamic_multiline = initial.replace(
+        "    TextInput notes at 2,1\n",
+        "    TextInput notes at 2,1\n        maxLength: limit\n",
+    );
+    fs::write(&entry, dynamic_multiline)
+        .expect("dynamic multiline max length source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_multiline = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic multiline max length source should analyze");
+    assert!(
+        dynamic_multiline
+            .development_ui_string_patch_from(&fifth)
             .is_none(),
-        "adding multiline maxLength must restart so the insert callback can be constructed"
+        "state-driven multiline maxLength must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -57962,8 +58011,12 @@ app Form
         "#ifdef FLUX_DEVELOPMENT_RELOAD\n    GtkEventController *flux__submit_controller_query = gtk_event_controller_key_new()"
     ));
     assert!(
-        !generated.contains("flux__ui_limit_query"),
-        "multiline max-length support must disappear when maxLength is omitted"
+        generated
+            .contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic gint flux__ui_max_length_query = 0;")
+    );
+    assert!(generated.contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void flux__ui_limit_query"));
+    assert!(
+        generated.contains("const gint limit = flux__ui_max_length_query; if (limit == 0) return;")
     );
 
     let multiline_placeholder = r#"

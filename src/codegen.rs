@@ -17554,24 +17554,34 @@ fn emit_linux_gtk_application(
             && view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
                 .unwrap_or(false)
-            && let Some(property) = view_property(element, "max_length")
         {
-            let Some(max_length) = static_expr_i64(&property.value, signatures) else {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
-                ));
+            let declaration = if let Some(property) = view_property(element, "max_length") {
+                let Some(max_length) = static_expr_i64(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
+                    ));
+                };
+                if !(0..=i64::from(i32::MAX)).contains(&max_length) {
+                    return Err(diag(
+                        property.value.span,
+                        "TextInput.maxLength must be between 0 and 2147483647",
+                    ));
+                }
+                format!(
+                    "static gint flux__ui_max_length_{} = {max_length};\n",
+                    element.name
+                )
+            } else {
+                format!("static gint flux__ui_max_length_{} = 0;\n", element.name)
             };
-            if !(0..=i64::from(i32::MAX)).contains(&max_length) {
-                return Err(diag(
-                    property.value.span,
-                    "TextInput.maxLength must be between 0 and 2147483647",
-                ));
+            if view_property(element, "max_length").is_some() {
+                out.push_str(&declaration);
+            } else {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&declaration);
+                out.push_str("#endif\n");
             }
-            out.push_str(&format!(
-                "static gint flux__ui_max_length_{} = {max_length};\n",
-                element.name
-            ));
         }
         if element.kind == "TextInput" && view_property(element, "on_submit").is_some() {
             let multiline = match view_property(element, "multiline") {
@@ -17838,13 +17848,11 @@ fn emit_linux_gtk_application(
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     .unwrap_or(false);
                 if multiline {
-                    if view_property(element, "max_length").is_some() {
-                        out.push_str(&format!(
-                            " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) flux__ui_max_length_{} = (gint)integer_value; }}",
-                            c_string(&element.name),
-                            element.name
-                        ));
-                    }
+                    out.push_str(&format!(
+                        " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) flux__ui_max_length_{} = (gint)integer_value; }}",
+                        c_string(&element.name),
+                        element.name
+                    ));
                 } else {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"max_length\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_entry_set_max_length(GTK_ENTRY({widget}), (int)integer_value); }}",
@@ -18571,24 +18579,18 @@ fn emit_linux_gtk_application(
                     out.push_str("#endif\n");
                 }
             }
-            if multiline && let Some(property) = view_property(element, "max_length") {
-                let Some(max_length) = static_expr_i64(&property.value, signatures) else {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Linux TextInput.maxLength must be a compile-time i64 value",
-                    ));
-                };
-                if !(0..=i64::from(i32::MAX)).contains(&max_length) {
-                    return Err(diag(
-                        property.value.span,
-                        "TextInput.maxLength must be between 0 and 2147483647",
-                    ));
+            if multiline {
+                let callback = format!(
+                    "static void flux__ui_limit_{}(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {{ (void)data; const gint limit = flux__ui_max_length_{}; if (limit == 0) return; gint current = gtk_text_buffer_get_char_count(buffer); glong incoming = g_utf8_strlen(text, length); gint available = limit - current; if (incoming <= available) return; g_signal_stop_emission_by_name(buffer, \"insert-text\"); if (available <= 0) return; const gchar *end = g_utf8_offset_to_pointer(text, available); gtk_text_buffer_insert(buffer, location, text, (gint)(end - text)); }}\n",
+                    element.name, element.name,
+                );
+                if view_property(element, "max_length").is_some() {
+                    out.push_str(&callback);
+                } else {
+                    out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                    out.push_str(&callback);
+                    out.push_str("#endif\n");
                 }
-                out.push_str(&format!(
-                    "static void flux__ui_limit_{}(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {{ (void)data; const gint limit = flux__ui_max_length_{}; gint current = gtk_text_buffer_get_char_count(buffer); glong incoming = g_utf8_strlen(text, length); gint available = limit - current; if (incoming <= available) return; g_signal_stop_emission_by_name(buffer, \"insert-text\"); if (available <= 0) return; const gchar *end = g_utf8_offset_to_pointer(text, available); gtk_text_buffer_insert(buffer, location, text, (gint)(end - text)); }}\n",
-                    element.name,
-                    element.name,
-                ));
             }
             for (property_name, callback_name) in [("on_change", "change"), ("on_submit", "submit")]
             {
@@ -19631,6 +19633,13 @@ fn emit_linux_gtk_application(
                             "    gtk_entry_set_max_length(GTK_ENTRY({variable}), {max_length});\n"
                         ));
                     }
+                } else if multiline {
+                    out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                    out.push_str(&format!(
+                        "    g_signal_connect({multiline_buffer}, \"insert-text\", G_CALLBACK(flux__ui_limit_{}), NULL);\n",
+                        element.name
+                    ));
+                    out.push_str("#endif\n");
                 }
                 if view_property(element, "on_change").is_some() {
                     if multiline {
