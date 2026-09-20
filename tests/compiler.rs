@@ -54522,6 +54522,11 @@ app Screen(id: "app.example.screen", resizable: false)
     )
     .expect("application resizable metadata should lower to Windows");
     assert!(windows.contains("(WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX))"));
+    assert!(windows.contains("flux__win_set_application_id(\"app.example.screen\")"));
+    assert!(windows.contains("LoadLibraryA(\"shell32.dll\")"));
+    assert!(
+        windows.contains("GetProcAddress(shell32, \"SetCurrentProcessExplicitAppUserModelID\")")
+    );
 
     let resizable = source.replace("resizable: false", "resizable: true");
     let program = fluxc::parser::parse(&resizable).expect("resizable application should parse");
