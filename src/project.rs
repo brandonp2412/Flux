@@ -15,6 +15,7 @@ const COMPILER_SOURCE_FINGERPRINT: &str = env!("FLUX_COMPILER_SOURCE_FINGERPRINT
 const PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
+const PROJECT_TYPED_IR_SOURCE_INDEX_VERSION: &str = "flux-project-typed-ir-source-v1";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
 
@@ -343,8 +344,43 @@ fn persist_typed_ir_manifest(
     manifest.push('\n');
     manifest.push_str(native_target_cache_tag(native_target));
     manifest.push('\n');
+    let source_paths = analysis
+        .sources
+        .iter()
+        .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
+        .collect::<HashMap<_, _>>();
+    let source_context = function_codegen_cache_context_fingerprint(analysis, native_target);
     let mut function_artifacts = Vec::new();
     for function in &analysis.program.functions {
+        let module_name = analysis
+            .sources
+            .iter()
+            .find(|source| source.source_id == function.span.source_id)
+            .map(|source| source.module_name.as_str())
+            .unwrap_or("<unknown>");
+        let source_identity = stable_bytes_hash(
+            codegen::function_codegen_cache_identity(function, &source_paths).as_bytes(),
+        );
+        if let Some(record) = read_typed_ir_function_source_artifact(
+            &directory,
+            native_target,
+            source_context,
+            module_name,
+            &function.name,
+            source_identity,
+        ) {
+            manifest.push_str(&record.manifest_line);
+            manifest.push('\n');
+            function_artifacts.push((
+                record.module_name,
+                record.function_name,
+                record.shape_hash,
+                record.manifest_line,
+                source_identity,
+            ));
+            continue;
+        }
+
         let cfg = project_typed_ir_cfg(function, &analysis.signatures);
         let definitions = cfg
             .nodes()
@@ -378,18 +414,7 @@ fn persist_typed_ir_manifest(
             .iter()
             .filter(|value| cfg.is_value_reachable(value.id))
             .count();
-        // Keep each function's normalized shape independently addressable in
-        // the durable artifact.  Future per-module codegen can reuse an
-        // unchanged function without treating a changed sibling as a cache
-        // miss; the current monolithic backend still consumes the source
-        // analysis normally after validating this manifest.
         let shape_hash = normalized_cfg_shape_hash(&cfg);
-        let module_name = analysis
-            .sources
-            .iter()
-            .find(|source| source.source_id == function.span.source_id)
-            .map(|source| source.module_name.as_str())
-            .unwrap_or("<unknown>");
         let function_manifest_line = format!(
             "function\t{}\tmodule={}\tshape={shape_hash:016x}\tnodes={}\tedges={}\tvalues={}\treachable={}\tdefinitions={}\tborrows={}\tmoves={}\tcalls={}\treturns={}\tdrops={}",
             function.name,
@@ -412,6 +437,7 @@ fn persist_typed_ir_manifest(
             function.name.clone(),
             shape_hash,
             function_manifest_line,
+            source_identity,
         ));
     }
     let manifest_is_current = cached_manifest.as_deref() == Some(manifest.as_str());
@@ -446,17 +472,31 @@ fn persist_typed_ir_manifest(
     // cache family self-healing after partial cleanup or interrupted writes.
     if manifest_is_current || path.exists() {
         let mut current_function_artifacts = BTreeSet::new();
-        for (module_name, function_name, shape_hash, function_manifest_line) in function_artifacts {
+        let mut current_source_artifacts = BTreeSet::new();
+        for (module_name, function_name, shape_hash, function_manifest_line, source_identity) in
+            function_artifacts
+        {
             current_function_artifacts.insert(persist_typed_ir_function_artifact(
                 &directory,
                 native_target,
+                module_name.clone(),
+                function_name.clone(),
+                shape_hash,
+                &function_manifest_line,
+            ));
+            current_source_artifacts.insert(persist_typed_ir_function_source_artifact(
+                &directory,
+                native_target,
+                source_context,
                 module_name,
                 function_name,
+                source_identity,
                 shape_hash,
                 &function_manifest_line,
             ));
         }
         prune_typed_ir_function_cache(&directory, &current_function_artifacts);
+        prune_typed_ir_source_cache(&directory, &current_source_artifacts);
     }
 }
 
@@ -618,6 +658,163 @@ fn typed_ir_function_artifact_key(
         module_name,
         function_name,
     )
+}
+
+fn typed_ir_function_source_artifact_key(
+    native_target: codegen::NativeTarget,
+    context_fingerprint: u64,
+    module_name: &str,
+    function_name: &str,
+    source_identity: u64,
+) -> String {
+    format!(
+        "{}\n{}\n{context_fingerprint:016x}\n{}\n{}\n{source_identity:016x}",
+        PROJECT_TYPED_IR_SOURCE_INDEX_VERSION,
+        native_target_cache_tag(native_target),
+        module_name,
+        function_name,
+    )
+}
+
+fn typed_ir_function_source_artifact_path(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    context_fingerprint: u64,
+    module_name: &str,
+    function_name: &str,
+    source_identity: u64,
+) -> PathBuf {
+    let key = typed_ir_function_source_artifact_key(
+        native_target,
+        context_fingerprint,
+        module_name,
+        function_name,
+        source_identity,
+    );
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    directory.join(format!("source-{artifact_id:016x}.manifest"))
+}
+
+fn read_typed_ir_function_source_artifact(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    context_fingerprint: u64,
+    module_name: &str,
+    function_name: &str,
+    source_identity: u64,
+) -> Option<TypedIrFunctionManifestRecord> {
+    let key = typed_ir_function_source_artifact_key(
+        native_target,
+        context_fingerprint,
+        module_name,
+        function_name,
+        source_identity,
+    );
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    let path = typed_ir_function_source_artifact_path(
+        directory,
+        native_target,
+        context_fingerprint,
+        module_name,
+        function_name,
+        source_identity,
+    );
+    let cached = fs::read_to_string(path).ok()?;
+    let (header, payload) = cached.split_once('\n')?;
+    let prefix = format!("{PROJECT_TYPED_IR_SOURCE_INDEX_VERSION}:{artifact_id:016x}:");
+    let checksum = header.strip_prefix(&prefix)?;
+    if checksum != format!("{:016x}", stable_bytes_hash(payload.as_bytes())) {
+        return None;
+    }
+    let manifest_line = payload.strip_prefix(&format!("{key}\n"))?;
+    let mut fields = manifest_line.split('\t');
+    if fields.next() != Some("function")
+        || fields.next() != Some(function_name)
+        || fields.next() != Some(&format!("module={module_name}"))
+    {
+        return None;
+    }
+    let shape = fields.next()?.strip_prefix("shape=")?;
+    if shape.len() != 16 || !shape.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let shape_hash = u64::from_str_radix(shape, 16).ok()?;
+    Some(TypedIrFunctionManifestRecord {
+        module_name: module_name.to_string(),
+        function_name: function_name.to_string(),
+        shape_hash,
+        manifest_line: manifest_line.to_string(),
+    })
+}
+
+fn persist_typed_ir_function_source_artifact(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    context_fingerprint: u64,
+    module_name: String,
+    function_name: String,
+    source_identity: u64,
+    shape_hash: u64,
+    function_manifest_line: &str,
+) -> PathBuf {
+    let key = typed_ir_function_source_artifact_key(
+        native_target,
+        context_fingerprint,
+        &module_name,
+        &function_name,
+        source_identity,
+    );
+    let path = typed_ir_function_source_artifact_path(
+        directory,
+        native_target,
+        context_fingerprint,
+        &module_name,
+        &function_name,
+        source_identity,
+    );
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    let payload = format!("{key}\n{function_manifest_line}");
+    if read_typed_ir_function_source_artifact(
+        directory,
+        native_target,
+        context_fingerprint,
+        &module_name,
+        &function_name,
+        source_identity,
+    )
+    .is_some_and(|record| {
+        record.shape_hash == shape_hash && record.manifest_line == function_manifest_line
+    }) {
+        return path;
+    }
+    let previous = fs::read_to_string(&path).ok();
+    let header = format!(
+        "{PROJECT_TYPED_IR_SOURCE_INDEX_VERSION}:{artifact_id:016x}:{:016x}\n",
+        stable_bytes_hash(payload.as_bytes())
+    );
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let persisted = File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(header.as_bytes())?;
+            file.write_all(payload.as_bytes())?;
+            file.sync_all()
+        })
+        .is_ok();
+    if persisted && fs::rename(&temporary, &path).is_err() {
+        let current = fs::read_to_string(&path).ok();
+        if current == previous && previous.is_some() {
+            let _ = fs::remove_file(&path);
+            if fs::rename(&temporary, &path).is_ok() {
+                return path;
+            }
+        }
+        let _ = fs::remove_file(&temporary);
+    }
+    path
 }
 
 fn typed_ir_function_artifact_path(
@@ -1171,6 +1368,14 @@ fn prune_typed_ir_cache(directory: &Path, current: &Path) {
 }
 
 fn prune_typed_ir_function_cache(directory: &Path, current: &BTreeSet<PathBuf>) {
+    prune_typed_ir_function_family(directory, current, "function-");
+}
+
+fn prune_typed_ir_source_cache(directory: &Path, current: &BTreeSet<PathBuf>) {
+    prune_typed_ir_function_family(directory, current, "source-");
+}
+
+fn prune_typed_ir_function_family(directory: &Path, current: &BTreeSet<PathBuf>, prefix: &str) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -1178,9 +1383,10 @@ fn prune_typed_ir_function_cache(directory: &Path, current: &BTreeSet<PathBuf>) 
         .filter_map(Result::ok)
         .filter(|entry| {
             !current.contains(&entry.path())
-                && entry.file_name().to_str().is_some_and(|name| {
-                    name.starts_with("function-") && name.ends_with(".manifest")
-                })
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with(".manifest"))
         })
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -8867,8 +9073,8 @@ mod tests {
             .expect("whole-C hit should repair malformed typed IR metadata");
         assert_eq!(
             super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
-            analysis.program.functions.len(),
-            "repairing malformed typed IR metadata should rebuild each normalized function once"
+            0,
+            "repairing malformed aggregate metadata should reuse valid context-qualified function summaries without renormalizing CFGs"
         );
         assert!(
             super::typed_ir_manifest_is_current(
@@ -9424,6 +9630,57 @@ mod tests {
             )
             .is_none(),
             "checksum failures must be treated as cache misses"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_ir_manifest_reuses_source_index_for_unchanged_sibling() {
+        let root = test_path("typed-ir-source-index");
+        fs::create_dir_all(&root).expect("typed IR source-index fixture should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn helper() -> i64 { 1 }\nfn main() -> i64 { helper() }\n",
+        )
+        .expect("initial source-index source should be writable");
+
+        let first = super::analyze(&entry).expect("initial source-index fixture should analyze");
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        first
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("initial source-index codegen should succeed");
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            2,
+            "initial typed IR publication should normalize both functions"
+        );
+
+        fs::write(
+            &entry,
+            "fn helper() -> i64 { 2 }\nfn main() -> i64 { helper() }\n",
+        )
+        .expect("updated source-index source should be writable");
+        let second = super::analyze(&entry).expect("updated source-index fixture should analyze");
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        second
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("updated source-index codegen should succeed");
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            1,
+            "an unchanged sibling should reuse its context-qualified durable typed IR summary instead of rebuilding its CFG"
+        );
+
+        let source_indexes = fs::read_dir(root.join(".flux/ir-cache"))
+            .expect("typed IR source-index cache should be readable")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("source-"))
+            .count();
+        assert!(
+            source_indexes >= 3,
+            "the current helper/main indexes plus the helper's historical source identity should remain available"
         );
 
         let _ = fs::remove_dir_all(root);

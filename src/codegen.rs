@@ -2055,7 +2055,7 @@ fn emit_c_for_target_with_source_metadata_impl(
     Ok((out, codegen_stats))
 }
 
-fn function_codegen_cache_identity(
+pub(crate) fn function_codegen_cache_identity(
     function: &Function,
     source_paths: &HashMap<SourceId, String>,
 ) -> String {
