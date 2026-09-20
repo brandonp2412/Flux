@@ -2051,6 +2051,73 @@ app Screen(title: "Windows syntax", onStart: stopAfterStart)
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_native_gui_runtime_smoke_uses_host_target_by_default() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-windows-runtime-smoke-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("Windows runtime smoke directory should be writable");
+    let source = root.join("main.flux");
+    fs::write(
+        &source,
+        r#"
+fn stopAfterStart() -> void {
+    process.exit(23)
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text title at 1,1
+        text: "Windows runtime smoke"
+}
+
+app Screen(title: "Flux Windows runtime smoke", onStart: stopAfterStart)
+"#,
+    )
+    .expect("Windows runtime smoke source should be writable");
+
+    let binary = root.join("runtime-smoke.exe");
+    let build = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .args(["--mode", "debug"])
+        .output()
+        .expect("fluxc should launch for native Windows runtime smoke");
+    assert!(
+        build.status.success(),
+        "native Windows smoke build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(
+        binary.is_file(),
+        "native Windows smoke build should publish an executable"
+    );
+
+    let run = Command::new(&binary)
+        .output()
+        .expect("native Windows smoke executable should launch");
+    let exit_code = run.status.code();
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        exit_code,
+        Some(23),
+        "Windows onStart callback should execute before the message loop; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 #[test]
 fn windows_backend_refreshes_dynamic_color_properties_in_place() {
     let source = r##"

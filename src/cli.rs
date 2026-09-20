@@ -104,7 +104,9 @@ impl NativeTargetOptions {
     fn codegen_target(&self) -> fluxc::codegen::NativeTarget {
         match self.triple.as_deref() {
             Some(triple) if triple.contains("windows") => fluxc::codegen::NativeTarget::Windows,
-            _ => fluxc::codegen::NativeTarget::Linux,
+            Some(_) => fluxc::codegen::NativeTarget::Linux,
+            None if cfg!(target_os = "windows") => fluxc::codegen::NativeTarget::Windows,
+            None => fluxc::codegen::NativeTarget::Linux,
         }
     }
 }
@@ -14448,7 +14450,11 @@ app OverlayDemo(title: "Overlay")
         assert!(!default.locked);
         assert_eq!(
             default.native_target.codegen_target(),
-            crate::codegen::NativeTarget::Linux
+            if cfg!(target_os = "windows") {
+                crate::codegen::NativeTarget::Windows
+            } else {
+                crate::codegen::NativeTarget::Linux
+            }
         );
         let windows = build_options(
             &["--target".to_string(), "x86_64-pc-windows-gnu".to_string()],
