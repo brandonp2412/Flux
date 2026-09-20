@@ -53885,6 +53885,11 @@ app HoverCard
     assert!(windows.contains("SM_CYDOUBLECLK"));
     assert!(windows.contains("message == WM_LBUTTONUP"));
     assert!(windows.contains("flux__fn_tapped(); flux__win_refresh();"));
+    assert!(windows.contains("flux__win_drag_proc_0"));
+    assert!(windows.contains("SetCapture(hwnd)"));
+    assert!(windows.contains("WM_CAPTURECHANGED"));
+    assert!(windows.contains("GetCapture() == hwnd"));
+    assert!(windows.contains("flux__fn_dragged(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh();"));
 }
 
 #[test]
