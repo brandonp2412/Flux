@@ -17103,11 +17103,7 @@ fn emit_linux_gtk_application(
         helper.push_str(" return false; }\n");
         out.push_str(&helper);
     }
-    if view
-        .elements
-        .iter()
-        .any(|element| view_property(element, "transition_easing").is_some())
-    {
+    if !view.elements.is_empty() {
         out.push_str("static const char *flux__ui_hot_css_transition_easing(const char *value) { if (value == NULL) return NULL; if (strcmp(value, \"linear\") == 0) return \"linear\"; if (strcmp(value, \"ease\") == 0) return \"ease\"; if (strcmp(value, \"easeIn\") == 0 || strcmp(value, \"ease_in\") == 0) return \"ease-in\"; if (strcmp(value, \"easeOut\") == 0 || strcmp(value, \"ease_out\") == 0) return \"ease-out\"; if (strcmp(value, \"easeInOut\") == 0 || strcmp(value, \"ease_in_out\") == 0) return \"ease-in-out\"; if (strcmp(value, \"spring\") == 0) return \"cubic-bezier(0.22, 1.20, 0.36, 1)\"; if (strcmp(value, \"springGentle\") == 0 || strcmp(value, \"spring_gentle\") == 0) return \"cubic-bezier(0.34, 1.36, 0.64, 1)\"; if (strcmp(value, \"springSnappy\") == 0 || strcmp(value, \"spring_snappy\") == 0) return \"cubic-bezier(0.16, 1.30, 0.30, 1)\"; return NULL; }\n");
     }
     out.push_str("static gchar *flux__ui_image_source_path(const char *source);\nstatic gchar *flux__ui_bounded_image_source_path(const char *source) { if (source == NULL) return flux__ui_image_source_path(source); size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\\0') source_length += 1; if (source_length > 65536) return g_strdup(\"\"); return flux__ui_image_source_path(source); }\n");
@@ -17401,18 +17397,21 @@ fn emit_linux_gtk_application(
                 c_string(&shadow_color)
             ));
         }
-        for property_name in [
-            "transition_ms",
-            "transition_delay_ms",
-            "border_style",
-            "transition_easing",
-        ] {
-            if view_property(element, property_name).is_some() {
-                out.push_str(&format!(
-                    "static GtkCssProvider *{} = NULL;\n",
-                    linux_ui_hot_style_provider_c_name(element, property_name)
-                ));
-            }
+        for property_name in ["transition_ms", "transition_delay_ms"] {
+            out.push_str(&format!(
+                "static GtkCssProvider *{} = NULL;\n",
+                linux_ui_hot_style_provider_c_name(element, property_name)
+            ));
+        }
+        out.push_str(&format!(
+            "static GtkCssProvider *{} = NULL;\n",
+            linux_ui_hot_style_provider_c_name(element, "transition_easing")
+        ));
+        if view_property(element, "border_style").is_some() {
+            out.push_str(&format!(
+                "static GtkCssProvider *{} = NULL;\n",
+                linux_ui_hot_style_provider_c_name(element, "border_style")
+            ));
         }
         if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
             let translate_x = static_style_i64(element, "translate_x", signatures)?.unwrap_or(0);
@@ -18212,9 +18211,6 @@ fn emit_linux_gtk_application(
             let Some(css_name) = linux_hot_css_time_i64_property(property_name) else {
                 continue;
             };
-            if view_property(element, property_name).is_none() {
-                continue;
-            }
             let provider = linux_ui_hot_style_provider_c_name(element, property_name);
             let css_format = c_string(&format!(
                 "#flux-ui-{} {{ {css_name}: %lldms; }} @media (prefers-reduced-motion: reduce) {{ #flux-ui-{} {{ {css_name}: 0ms; }} }}",
@@ -18236,7 +18232,7 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "transition_easing").is_some() {
+        {
             let provider = linux_ui_hot_style_provider_c_name(element, "transition_easing");
             let css_format = c_string(&format!(
                 "#flux-ui-{} {{ transition-timing-function: %s; }}",

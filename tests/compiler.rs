@@ -47879,6 +47879,171 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_transition_timing_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-transition-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary transition lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Animate"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial transition lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial transition lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("transition lifecycle fixture should lower for Linux");
+    for property in ["transition_ms", "transition_delay_ms", "transition_easing"] {
+        let provider = format!("flux__ui_hot_style_action_{property}");
+        assert!(generated.contains(&format!("static GtkCssProvider *{provider} = NULL")));
+        assert!(generated.contains(&format!("strcmp(property, \"{property}\") == 0")));
+    }
+    assert!(generated.contains("flux__ui_hot_css_transition_easing"));
+
+    let explicit = initial.replace(
+        "        text: \"Animate\"\n",
+        "        text: \"Animate\"\n        transitionMs: 180\n        transitionDelayMs: 20\n        transitionEasing: \"springGentle\"\n",
+    );
+    let entry = fs::canonicalize(entry).expect("transition lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit transition lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit transition lifecycle source should analyze");
+    assert_eq!(
+        first.development_abi(),
+        second.development_abi(),
+        "adding transition timing declarations should preserve the development ABI"
+    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding transition timing declarations should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_ms".to_string())),
+        Some(&"180".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_delay_ms".to_string())),
+        Some(&"20".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_easing".to_string())),
+        Some(&"springGentle".to_string())
+    );
+    assert_eq!(patch.len(), 3);
+
+    let duration_only = explicit
+        .replace("        transitionDelayMs: 20\n", "")
+        .replace("        transitionEasing: \"springGentle\"\n", "");
+    fs::write(&entry, &duration_only)
+        .expect("duration-only transition lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("duration-only transition lifecycle source should analyze");
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing transition delay should restore zero delay in process")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_delay_ms".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_easing".to_string())),
+        Some(&"ease".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("restored transition lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored transition lifecycle source should analyze");
+    let patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing transition duration should restore zero duration in process")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_ms".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(patch.len(), 1);
+
+    let readded = initial.replace(
+        "        text: \"Animate\"\n",
+        "        text: \"Animate\"\n        transitionMs: 300\n        transitionDelayMs: 30\n        transitionEasing: \"linear\"\n",
+    );
+    fs::write(&entry, readded).expect("readded transition lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("readded transition lifecycle source should analyze");
+    let patch = fifth
+        .development_ui_string_patch_from(&fourth)
+        .expect("readding transition timing declarations should remain in process")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_ms".to_string())),
+        Some(&"300".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_delay_ms".to_string())),
+        Some(&"30".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "transition_easing".to_string())),
+        Some(&"linear".to_string())
+    );
+    assert_eq!(patch.len(), 3);
+
+    for orphan in [
+        "        transitionDelayMs: 30\n",
+        "        transitionEasing: \"linear\"\n",
+    ] {
+        let invalid = initial.replace(
+            "        text: \"Animate\"\n",
+            &format!("        text: \"Animate\"\n{orphan}"),
+        );
+        fs::write(&entry, invalid).expect("orphan transition source should be writable");
+        cache.invalidate_path(&entry);
+        let invalid = cache
+            .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+            .expect("orphan transition source should remain analyzable for backend validation");
+        assert!(
+            invalid.development_ui_string_patch_from(&fourth).is_none(),
+            "hot reload must not bypass the transition duration dependency"
+        );
+        assert!(
+            invalid.emit_c().is_err(),
+            "orphan transition timing must remain rejected by normal backend validation"
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_css_transition_timing_and_border_style() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-css-transition-patch-{}",

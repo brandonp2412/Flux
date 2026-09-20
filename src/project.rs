@@ -76,7 +76,10 @@ impl ProjectAnalysis {
         &self,
         previous: &ProjectAnalysis,
     ) -> Option<Vec<DevelopmentUiStringPatch>> {
-        if self.development_abi() != previous.development_abi() {
+        if self.development_abi() != previous.development_abi()
+            || !development_ui_transition_contract_is_valid(self)
+            || !development_ui_transition_contract_is_valid(previous)
+        {
             return None;
         }
         let mut current = development_ui_string_literals(self)?;
@@ -2323,6 +2326,26 @@ fn development_ui_text_input_is_single_line(element: &ViewElement) -> bool {
             .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
 }
 
+fn development_ui_transition_contract_is_valid(analysis: &ProjectAnalysis) -> bool {
+    let Some(application) = analysis.program.application.as_ref() else {
+        return false;
+    };
+    let Some(view) = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+    else {
+        return false;
+    };
+    view.elements.iter().all(|element| {
+        let has_duration = development_ui_element_has_property(element, "transition_ms");
+        has_duration
+            || (!development_ui_element_has_property(element, "transition_delay_ms")
+                && !development_ui_element_has_property(element, "transition_easing"))
+    })
+}
+
 fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
@@ -2594,6 +2617,13 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if property_name == "transition_easing" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        typecheck::transition_easing_css_value(value)?;
+        return Some(value.clone());
+    }
     if property_name == "source" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2660,6 +2690,19 @@ fn development_ui_property_lifecycle_patch_value(
             return None;
         };
         return Some(if value { "1" } else { "0" }.to_string());
+    }
+    if matches!(
+        property_name.as_str(),
+        "transition_ms" | "transition_delay_ms"
+    ) {
+        if !development_ui_i64_property_is_patchable(element, &property_name) {
+            return None;
+        }
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
     }
     if matches!(
         property_name.as_str(),
@@ -2803,6 +2846,9 @@ fn development_ui_property_lifecycle_default(
     if property == "focus_scope" {
         return Some("-1".to_string());
     }
+    if property == "transition_easing" {
+        return Some("ease".to_string());
+    }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
         return Some(String::new());
     }
@@ -2845,6 +2891,11 @@ fn development_ui_property_lifecycle_default(
             }
             .to_string(),
         );
+    }
+    if matches!(property, "transition_ms" | "transition_delay_ms")
+        && development_ui_i64_property_is_patchable(element, property)
+    {
+        return Some("0".to_string());
     }
     if property == "margin" && development_ui_i64_property_is_patchable(element, property) {
         return Some("0".to_string());
@@ -3397,6 +3448,9 @@ fn development_ui_string_literals(
             "checked",
             "selected",
             "margin",
+            "transition_ms",
+            "transition_delay_ms",
+            "transition_easing",
             "fit",
             "alt",
             "source",
