@@ -41042,7 +41042,7 @@ fn project_function_codegen_cache_ignores_corrupt_durable_fragments() {
         "the corrupt bytes must not survive fallback codegen"
     );
     assert!(
-        repaired.starts_with(b"flux-project-function-codegen-v2:"),
+        repaired.starts_with(b"flux-project-function-codegen-v3:"),
         "fallback codegen should replace corruption with a versioned durable artifact"
     );
 

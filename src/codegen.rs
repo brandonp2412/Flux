@@ -44,11 +44,11 @@ impl FunctionCodegenCache {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.ir_entries.is_empty()
     }
 
     pub(crate) fn encode_persisted(&self) -> Vec<u8> {
-        const MAGIC: &[u8] = b"FLUXFC1\0";
+        const MAGIC: &[u8] = b"FLUXFC2\0";
 
         fn push_u64(bytes: &mut Vec<u8>, value: usize) {
             bytes.extend_from_slice(&(value as u64).to_le_bytes());
@@ -74,12 +74,24 @@ impl FunctionCodegenCache {
             push_u64(&mut bytes, entry.generated.len());
             bytes.extend_from_slice(entry.generated.as_bytes());
         }
+
+        let mut ir_entries = self.ir_entries.iter().collect::<Vec<_>>();
+        ir_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        push_u64(&mut bytes, ir_entries.len());
+        for (identity, graph) in ir_entries {
+            push_u64(&mut bytes, identity.len());
+            bytes.extend_from_slice(identity.as_bytes());
+            let graph = graph.encode_persisted();
+            push_u64(&mut bytes, graph.len());
+            bytes.extend_from_slice(&graph);
+        }
         bytes
     }
 
     pub(crate) fn decode_persisted(bytes: &[u8]) -> Option<Self> {
-        const MAGIC: &[u8] = b"FLUXFC1\0";
+        const MAGIC: &[u8] = b"FLUXFC2\0";
         const MAX_ENTRIES: usize = 100_000;
+        const MAX_GRAPH_BYTES: usize = 64 * 1024 * 1024;
 
         fn read_u64(bytes: &[u8], offset: &mut usize) -> Option<usize> {
             let end = offset.checked_add(8)?;
@@ -134,9 +146,33 @@ impl FunctionCodegenCache {
             }
         }
 
+        let ir_count = read_u64(bytes, &mut offset)?;
+        if ir_count > MAX_ENTRIES {
+            return None;
+        }
+        let mut ir_entries = HashMap::with_capacity(ir_count);
+        for _ in 0..ir_count {
+            let identity_length = read_u64(bytes, &mut offset)?;
+            let identity =
+                String::from_utf8(read_bytes(bytes, &mut offset, identity_length)?.to_vec())
+                    .ok()?;
+            let graph_length = read_u64(bytes, &mut offset)?;
+            if graph_length > MAX_GRAPH_BYTES {
+                return None;
+            }
+            let graph = crate::ir::ControlFlowGraph::decode_persisted(read_bytes(
+                bytes,
+                &mut offset,
+                graph_length,
+            )?)?;
+            if ir_entries.insert(identity, graph).is_some() {
+                return None;
+            }
+        }
+
         (offset == bytes.len()).then_some(Self {
             entries,
-            ir_entries: HashMap::new(),
+            ir_entries,
         })
     }
 }

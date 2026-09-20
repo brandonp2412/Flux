@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
-use crate::ast::{BinOp, Expr, ExprKind, Function, Stmt, StmtKind, Type, UnaryOp};
-use crate::diagnostic::SourceSpan;
+use crate::ast::{BinOp, Expr, ExprKind, Function, RecordTypeField, Stmt, StmtKind, Type, UnaryOp};
+use crate::diagnostic::{SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signatures};
 
 fn is_non_copy_collection_type(ty: &Type) -> bool {
@@ -844,7 +844,7 @@ pub struct ControlFlowEdge {
     pub kind: ControlFlowEdgeKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFlowGraph {
     function: String,
     parameters: Vec<ControlFlowParameter>,
@@ -874,7 +874,1884 @@ pub struct ControlFlowGraph {
     drops: Vec<(ControlFlowNodeId, OwnershipDrop)>,
 }
 
+const PERSISTED_IR_MAGIC: &[u8] = b"FLUXIR1\0";
+const PERSISTED_IR_MAX_ITEMS: usize = 1_000_000;
+const PERSISTED_IR_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
+
+struct PersistedIrReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PersistedIrReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_exact(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(length)?;
+        let value = self.bytes.get(self.offset..end)?;
+        self.offset = end;
+        Some(value)
+    }
+
+    fn is_finished(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
+trait PersistedIrCodec: Sized {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>);
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self>;
+}
+
+impl PersistedIrCodec for u8 {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        bytes.push(*self);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        reader
+            .read_exact(1)
+            .and_then(|bytes| bytes.first().copied())
+    }
+}
+
+impl PersistedIrCodec for bool {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        u8::from(*self).encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for usize {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&(*self as u64).to_le_bytes());
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let raw: [u8; 8] = reader.read_exact(8)?.try_into().ok()?;
+        usize::try_from(u64::from_le_bytes(raw)).ok()
+    }
+}
+
+impl PersistedIrCodec for u32 {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.to_le_bytes());
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let raw: [u8; 4] = reader.read_exact(4)?.try_into().ok()?;
+        Some(u32::from_le_bytes(raw))
+    }
+}
+
+impl PersistedIrCodec for i64 {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&self.to_le_bytes());
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let raw: [u8; 8] = reader.read_exact(8)?.try_into().ok()?;
+        Some(i64::from_le_bytes(raw))
+    }
+}
+
+impl PersistedIrCodec for String {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.len().encode_cache_value(bytes);
+        bytes.extend_from_slice(self.as_bytes());
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let length = usize::decode_cache_value(reader)?;
+        if length > PERSISTED_IR_MAX_STRING_BYTES {
+            return None;
+        }
+        String::from_utf8(reader.read_exact(length)?.to_vec()).ok()
+    }
+}
+
+impl<T: PersistedIrCodec> PersistedIrCodec for Option<T> {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Some(value) => {
+                1u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            None => 0u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(None),
+            1 => Some(Some(T::decode_cache_value(reader)?)),
+            _ => None,
+        }
+    }
+}
+
+impl<T: PersistedIrCodec> PersistedIrCodec for Vec<T> {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.len().encode_cache_value(bytes);
+        for value in self {
+            value.encode_cache_value(bytes);
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let length = usize::decode_cache_value(reader)?;
+        if length > PERSISTED_IR_MAX_ITEMS {
+            return None;
+        }
+        let mut values = Vec::with_capacity(length);
+        for _ in 0..length {
+            values.push(T::decode_cache_value(reader)?);
+        }
+        Some(values)
+    }
+}
+
+impl<T: PersistedIrCodec> PersistedIrCodec for Box<T> {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.as_ref().encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Box::new(T::decode_cache_value(reader)?))
+    }
+}
+
+impl<T> PersistedIrCodec for BTreeSet<T>
+where
+    T: PersistedIrCodec + Ord,
+{
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.len().encode_cache_value(bytes);
+        for value in self {
+            value.encode_cache_value(bytes);
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let length = usize::decode_cache_value(reader)?;
+        if length > PERSISTED_IR_MAX_ITEMS {
+            return None;
+        }
+        let mut values = BTreeSet::new();
+        for _ in 0..length {
+            if !values.insert(T::decode_cache_value(reader)?) {
+                return None;
+            }
+        }
+        Some(values)
+    }
+}
+
+impl<K, V> PersistedIrCodec for BTreeMap<K, V>
+where
+    K: PersistedIrCodec + Ord,
+    V: PersistedIrCodec,
+{
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.len().encode_cache_value(bytes);
+        for (key, value) in self {
+            key.encode_cache_value(bytes);
+            value.encode_cache_value(bytes);
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let length = usize::decode_cache_value(reader)?;
+        if length > PERSISTED_IR_MAX_ITEMS {
+            return None;
+        }
+        let mut values = BTreeMap::new();
+        for _ in 0..length {
+            let key = K::decode_cache_value(reader)?;
+            let value = V::decode_cache_value(reader)?;
+            if values.insert(key, value).is_some() {
+                return None;
+            }
+        }
+        Some(values)
+    }
+}
+
+impl<A: PersistedIrCodec, B: PersistedIrCodec> PersistedIrCodec for (A, B) {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.0.encode_cache_value(bytes);
+        self.1.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some((
+            A::decode_cache_value(reader)?,
+            B::decode_cache_value(reader)?,
+        ))
+    }
+}
+
+impl PersistedIrCodec for RecordTypeField {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.name.encode_cache_value(bytes);
+        self.ty.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            name: Option::<String>::decode_cache_value(reader)?,
+            ty: Type::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for Type {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Type::I64 => 0u8.encode_cache_value(bytes),
+            Type::Bool => 1u8.encode_cache_value(bytes),
+            Type::Str => 2u8.encode_cache_value(bytes),
+            Type::Error => 3u8.encode_cache_value(bytes),
+            Type::Void => 4u8.encode_cache_value(bytes),
+            Type::Named(name) => {
+                5u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+            }
+            Type::List(inner) => {
+                6u8.encode_cache_value(bytes);
+                inner.encode_cache_value(bytes);
+            }
+            Type::Set(inner) => {
+                7u8.encode_cache_value(bytes);
+                inner.encode_cache_value(bytes);
+            }
+            Type::Map(key, value) => {
+                8u8.encode_cache_value(bytes);
+                key.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Type::Optional(inner) => {
+                9u8.encode_cache_value(bytes);
+                inner.encode_cache_value(bytes);
+            }
+            Type::Record(fields) => {
+                10u8.encode_cache_value(bytes);
+                fields.encode_cache_value(bytes);
+            }
+            Type::Function { params, returns } => {
+                11u8.encode_cache_value(bytes);
+                params.encode_cache_value(bytes);
+                returns.encode_cache_value(bytes);
+            }
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Type::I64),
+            1 => Some(Type::Bool),
+            2 => Some(Type::Str),
+            3 => Some(Type::Error),
+            4 => Some(Type::Void),
+            5 => Some(Type::Named(String::decode_cache_value(reader)?)),
+            6 => Some(Type::List(Box::<Type>::decode_cache_value(reader)?)),
+            7 => Some(Type::Set(Box::<Type>::decode_cache_value(reader)?)),
+            8 => Some(Type::Map(
+                Box::<Type>::decode_cache_value(reader)?,
+                Box::<Type>::decode_cache_value(reader)?,
+            )),
+            9 => Some(Type::Optional(Box::<Type>::decode_cache_value(reader)?)),
+            10 => Some(Type::Record(Vec::<RecordTypeField>::decode_cache_value(
+                reader,
+            )?)),
+            11 => Some(Type::Function {
+                params: Vec::<Type>::decode_cache_value(reader)?,
+                returns: Vec::<Type>::decode_cache_value(reader)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for SourceSpan {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.source_id.value().encode_cache_value(bytes);
+        self.line.encode_cache_value(bytes);
+        self.column.encode_cache_value(bytes);
+        self.length.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            source_id: SourceId::new(u32::decode_cache_value(reader)?),
+            line: usize::decode_cache_value(reader)?,
+            column: usize::decode_cache_value(reader)?,
+            length: usize::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ConstantValue {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            ConstantValue::I64(value) => {
+                0u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            ConstantValue::Bool(value) => {
+                1u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            ConstantValue::Str(value) => {
+                2u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(ConstantValue::I64(i64::decode_cache_value(reader)?)),
+            1 => Some(ConstantValue::Bool(bool::decode_cache_value(reader)?)),
+            2 => Some(ConstantValue::Str(String::decode_cache_value(reader)?)),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for UnaryOp {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        let tag: u8 = match self {
+            UnaryOp::Neg => 0,
+            UnaryOp::Not => 1,
+            UnaryOp::Borrow => 2,
+        };
+        tag.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(UnaryOp::Neg),
+            1 => Some(UnaryOp::Not),
+            2 => Some(UnaryOp::Borrow),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for BinOp {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        let tag: u8 = match self {
+            BinOp::Add => 0,
+            BinOp::Sub => 1,
+            BinOp::Mul => 2,
+            BinOp::Div => 3,
+            BinOp::Eq => 4,
+            BinOp::Ne => 5,
+            BinOp::Lt => 6,
+            BinOp::Le => 7,
+            BinOp::Gt => 8,
+            BinOp::Ge => 9,
+            BinOp::And => 10,
+            BinOp::Or => 11,
+            BinOp::Coalesce => 12,
+        };
+        tag.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(BinOp::Add),
+            1 => Some(BinOp::Sub),
+            2 => Some(BinOp::Mul),
+            3 => Some(BinOp::Div),
+            4 => Some(BinOp::Eq),
+            5 => Some(BinOp::Ne),
+            6 => Some(BinOp::Lt),
+            7 => Some(BinOp::Le),
+            8 => Some(BinOp::Gt),
+            9 => Some(BinOp::Ge),
+            10 => Some(BinOp::And),
+            11 => Some(BinOp::Or),
+            12 => Some(BinOp::Coalesce),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowNodeId {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.0.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self(usize::decode_cache_value(reader)?))
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueId {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.0.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self(usize::decode_cache_value(reader)?))
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueRegionId {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.0.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self(usize::decode_cache_value(reader)?))
+    }
+}
+
+impl PersistedIrCodec for ControlFlowDefinitionId {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Parameter(index) => {
+                0u8.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+            Self::Node { node, index } => {
+                1u8.encode_cache_value(bytes);
+                node.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+            Self::Scoped { node, index } => {
+                2u8.encode_cache_value(bytes);
+                node.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Parameter(usize::decode_cache_value(reader)?)),
+            1 => Some(Self::Node {
+                node: ControlFlowNodeId::decode_cache_value(reader)?,
+                index: usize::decode_cache_value(reader)?,
+            }),
+            2 => Some(Self::Scoped {
+                node: ControlFlowNodeId::decode_cache_value(reader)?,
+                index: usize::decode_cache_value(reader)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Literal => 0u8.encode_cache_value(bytes),
+            Self::NameRead { name, definitions } => {
+                1u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+                definitions.encode_cache_value(bytes);
+            }
+            Self::AnonymousFunction { body } => {
+                2u8.encode_cache_value(bytes);
+                body.encode_cache_value(bytes);
+            }
+            Self::Await { value } => {
+                3u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Self::Call { callee, arguments } => {
+                4u8.encode_cache_value(bytes);
+                callee.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+            }
+            Self::OptionalCascadeCall {
+                optional,
+                callee,
+                arguments,
+            } => {
+                5u8.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
+                callee.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+            }
+            Self::InterfacePack {
+                interface,
+                target,
+                value,
+            } => {
+                6u8.encode_cache_value(bytes);
+                interface.encode_cache_value(bytes);
+                target.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Self::List { items } => {
+                7u8.encode_cache_value(bytes);
+                items.encode_cache_value(bytes);
+            }
+            Self::Set { items } => {
+                8u8.encode_cache_value(bytes);
+                items.encode_cache_value(bytes);
+            }
+            Self::Map { entries } => {
+                9u8.encode_cache_value(bytes);
+                entries.encode_cache_value(bytes);
+            }
+            Self::ListSpread { value } => {
+                10u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Self::ListOptional { value } => {
+                11u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Self::ListIf {
+                condition,
+                value,
+                else_value,
+            } => {
+                12u8.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+                else_value.encode_cache_value(bytes);
+            }
+            Self::Index {
+                base,
+                index,
+                optional,
+            } => {
+                13u8.encode_cache_value(bytes);
+                base.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
+            }
+            Self::Slice {
+                base,
+                start,
+                end,
+                step,
+            } => {
+                14u8.encode_cache_value(bytes);
+                base.encode_cache_value(bytes);
+                start.encode_cache_value(bytes);
+                end.encode_cache_value(bytes);
+                step.encode_cache_value(bytes);
+            }
+            Self::ListComprehension {
+                iterable,
+                value,
+                condition,
+            } => {
+                15u8.encode_cache_value(bytes);
+                iterable.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+            }
+            Self::StructLiteral { name, base, fields } => {
+                16u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+                base.encode_cache_value(bytes);
+                fields.encode_cache_value(bytes);
+            }
+            Self::RecordLiteral { fields } => {
+                17u8.encode_cache_value(bytes);
+                fields.encode_cache_value(bytes);
+            }
+            Self::QualifiedCall {
+                namespace,
+                name,
+                arguments,
+            } => {
+                18u8.encode_cache_value(bytes);
+                namespace.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+            }
+            Self::InterfaceDispatch {
+                interface,
+                capability,
+                target,
+                mapped_function,
+                arguments,
+            } => {
+                19u8.encode_cache_value(bytes);
+                interface.encode_cache_value(bytes);
+                capability.encode_cache_value(bytes);
+                target.encode_cache_value(bytes);
+                mapped_function.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+            }
+            Self::Field { base, name } => {
+                20u8.encode_cache_value(bytes);
+                base.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+            }
+            Self::Match {
+                value,
+                guards,
+                arms,
+            } => {
+                21u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+                guards.encode_cache_value(bytes);
+                arms.encode_cache_value(bytes);
+            }
+            Self::ListMatch {
+                value,
+                guards,
+                arms,
+            } => {
+                22u8.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+                guards.encode_cache_value(bytes);
+                arms.encode_cache_value(bytes);
+            }
+            Self::Conditional {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                23u8.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+                then_value.encode_cache_value(bytes);
+                else_value.encode_cache_value(bytes);
+            }
+            Self::Unary { op, operand } => {
+                24u8.encode_cache_value(bytes);
+                op.encode_cache_value(bytes);
+                operand.encode_cache_value(bytes);
+            }
+            Self::Binary { op, left, right } => {
+                25u8.encode_cache_value(bytes);
+                op.encode_cache_value(bytes);
+                left.encode_cache_value(bytes);
+                right.encode_cache_value(bytes);
+            }
+            Self::Opaque => 26u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Literal),
+            1 => Some(Self::NameRead {
+                name: String::decode_cache_value(reader)?,
+                definitions: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+            }),
+            2 => Some(Self::AnonymousFunction {
+                body: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            3 => Some(Self::Await {
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            4 => Some(Self::Call {
+                callee: String::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            5 => Some(Self::OptionalCascadeCall {
+                optional: ControlFlowValueId::decode_cache_value(reader)?,
+                callee: String::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            6 => Some(Self::InterfacePack {
+                interface: String::decode_cache_value(reader)?,
+                target: String::decode_cache_value(reader)?,
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            7 => Some(Self::List {
+                items: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            8 => Some(Self::Set {
+                items: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            9 => Some(Self::Map {
+                entries: Vec::<(ControlFlowValueId, ControlFlowValueId)>::decode_cache_value(
+                    reader,
+                )?,
+            }),
+            10 => Some(Self::ListSpread {
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            11 => Some(Self::ListOptional {
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            12 => Some(Self::ListIf {
+                condition: ControlFlowValueId::decode_cache_value(reader)?,
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+                else_value: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            13 => Some(Self::Index {
+                base: ControlFlowValueId::decode_cache_value(reader)?,
+                index: ControlFlowValueId::decode_cache_value(reader)?,
+                optional: bool::decode_cache_value(reader)?,
+            }),
+            14 => Some(Self::Slice {
+                base: ControlFlowValueId::decode_cache_value(reader)?,
+                start: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+                end: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+                step: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            15 => Some(Self::ListComprehension {
+                iterable: ControlFlowValueId::decode_cache_value(reader)?,
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+                condition: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            16 => Some(Self::StructLiteral {
+                name: String::decode_cache_value(reader)?,
+                base: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+                fields: Vec::<(String, ControlFlowValueId)>::decode_cache_value(reader)?,
+            }),
+            17 => Some(Self::RecordLiteral {
+                fields: Vec::<(Option<String>, ControlFlowValueId)>::decode_cache_value(reader)?,
+            }),
+            18 => Some(Self::QualifiedCall {
+                namespace: String::decode_cache_value(reader)?,
+                name: String::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            19 => Some(Self::InterfaceDispatch {
+                interface: String::decode_cache_value(reader)?,
+                capability: String::decode_cache_value(reader)?,
+                target: Option::<String>::decode_cache_value(reader)?,
+                mapped_function: Option::<String>::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            20 => Some(Self::Field {
+                base: ControlFlowValueId::decode_cache_value(reader)?,
+                name: String::decode_cache_value(reader)?,
+            }),
+            21 => Some(Self::Match {
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+                guards: Vec::<Option<ControlFlowValueId>>::decode_cache_value(reader)?,
+                arms: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            22 => Some(Self::ListMatch {
+                value: ControlFlowValueId::decode_cache_value(reader)?,
+                guards: Vec::<Option<ControlFlowValueId>>::decode_cache_value(reader)?,
+                arms: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            23 => Some(Self::Conditional {
+                condition: ControlFlowValueId::decode_cache_value(reader)?,
+                then_value: ControlFlowValueId::decode_cache_value(reader)?,
+                else_value: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            24 => Some(Self::Unary {
+                op: UnaryOp::decode_cache_value(reader)?,
+                operand: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            25 => Some(Self::Binary {
+                op: BinOp::decode_cache_value(reader)?,
+                left: ControlFlowValueId::decode_cache_value(reader)?,
+                right: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            26 => Some(Self::Opaque),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueOwnership {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Copy => 0u8.encode_cache_value(bytes),
+            Self::ImmutableBorrow => 1u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Copy),
+            1 => Some(Self::ImmutableBorrow),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValue {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.id.encode_cache_value(bytes);
+        self.producer.encode_cache_value(bytes);
+        self.result_index.encode_cache_value(bytes);
+        self.ty.encode_cache_value(bytes);
+        self.ownership.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+        self.source_constant.encode_cache_value(bytes);
+        self.constant.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            id: ControlFlowValueId::decode_cache_value(reader)?,
+            producer: ControlFlowNodeId::decode_cache_value(reader)?,
+            result_index: Option::<usize>::decode_cache_value(reader)?,
+            ty: Type::decode_cache_value(reader)?,
+            ownership: ControlFlowValueOwnership::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+            kind: ControlFlowValueKind::decode_cache_value(reader)?,
+            source_constant: Option::<ConstantValue>::decode_cache_value(reader)?,
+            constant: Option::<ConstantValue>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueUseKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Eager => 0u8.encode_cache_value(bytes),
+            Self::ShortCircuitRight => 1u8.encode_cache_value(bytes),
+            Self::OptionalPresent => 2u8.encode_cache_value(bytes),
+            Self::BranchCondition => 3u8.encode_cache_value(bytes),
+            Self::BranchThen => 4u8.encode_cache_value(bytes),
+            Self::BranchElse => 5u8.encode_cache_value(bytes),
+            Self::MatchValue => 6u8.encode_cache_value(bytes),
+            Self::MatchGuard(arm) => {
+                7u8.encode_cache_value(bytes);
+                arm.encode_cache_value(bytes);
+            }
+            Self::MatchArm(arm) => {
+                8u8.encode_cache_value(bytes);
+                arm.encode_cache_value(bytes);
+            }
+            Self::LoopIterable => 9u8.encode_cache_value(bytes),
+            Self::LoopCondition => 10u8.encode_cache_value(bytes),
+            Self::LoopBody => 11u8.encode_cache_value(bytes),
+            Self::DeferredBody => 12u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Eager),
+            1 => Some(Self::ShortCircuitRight),
+            2 => Some(Self::OptionalPresent),
+            3 => Some(Self::BranchCondition),
+            4 => Some(Self::BranchThen),
+            5 => Some(Self::BranchElse),
+            6 => Some(Self::MatchValue),
+            7 => Some(Self::MatchGuard(usize::decode_cache_value(reader)?)),
+            8 => Some(Self::MatchArm(usize::decode_cache_value(reader)?)),
+            9 => Some(Self::LoopIterable),
+            10 => Some(Self::LoopCondition),
+            11 => Some(Self::LoopBody),
+            12 => Some(Self::DeferredBody),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueUse {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.user.encode_cache_value(bytes);
+        self.value.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+        self.region.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            user: ControlFlowValueId::decode_cache_value(reader)?,
+            value: ControlFlowValueId::decode_cache_value(reader)?,
+            kind: ControlFlowValueUseKind::decode_cache_value(reader)?,
+            region: Option::<ControlFlowValueRegionId>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueRegionKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::ShortCircuitRight {
+                condition,
+                execute_when,
+            } => {
+                0u8.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+                execute_when.encode_cache_value(bytes);
+            }
+            Self::OptionalFallback { optional } => {
+                1u8.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
+            }
+            Self::OptionalPresent { optional } => {
+                2u8.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
+            }
+            Self::Branch {
+                condition,
+                selected_when,
+            } => {
+                3u8.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+                selected_when.encode_cache_value(bytes);
+            }
+            Self::MatchGuard { matched, arm } => {
+                4u8.encode_cache_value(bytes);
+                matched.encode_cache_value(bytes);
+                arm.encode_cache_value(bytes);
+            }
+            Self::MatchArm {
+                matched,
+                guard,
+                arm,
+            } => {
+                5u8.encode_cache_value(bytes);
+                matched.encode_cache_value(bytes);
+                guard.encode_cache_value(bytes);
+                arm.encode_cache_value(bytes);
+            }
+            Self::LoopCondition { iterable } => {
+                6u8.encode_cache_value(bytes);
+                iterable.encode_cache_value(bytes);
+            }
+            Self::LoopBody {
+                iterable,
+                condition,
+            } => {
+                7u8.encode_cache_value(bytes);
+                iterable.encode_cache_value(bytes);
+                condition.encode_cache_value(bytes);
+            }
+            Self::DeferredBody => 8u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::ShortCircuitRight {
+                condition: ControlFlowValueId::decode_cache_value(reader)?,
+                execute_when: bool::decode_cache_value(reader)?,
+            }),
+            1 => Some(Self::OptionalFallback {
+                optional: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            2 => Some(Self::OptionalPresent {
+                optional: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            3 => Some(Self::Branch {
+                condition: ControlFlowValueId::decode_cache_value(reader)?,
+                selected_when: bool::decode_cache_value(reader)?,
+            }),
+            4 => Some(Self::MatchGuard {
+                matched: ControlFlowValueId::decode_cache_value(reader)?,
+                arm: usize::decode_cache_value(reader)?,
+            }),
+            5 => Some(Self::MatchArm {
+                matched: ControlFlowValueId::decode_cache_value(reader)?,
+                guard: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+                arm: usize::decode_cache_value(reader)?,
+            }),
+            6 => Some(Self::LoopCondition {
+                iterable: ControlFlowValueId::decode_cache_value(reader)?,
+            }),
+            7 => Some(Self::LoopBody {
+                iterable: ControlFlowValueId::decode_cache_value(reader)?,
+                condition: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            }),
+            8 => Some(Self::DeferredBody),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowValueRegion {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.id.encode_cache_value(bytes);
+        self.owner.encode_cache_value(bytes);
+        self.root.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            id: ControlFlowValueRegionId::decode_cache_value(reader)?,
+            owner: ControlFlowValueId::decode_cache_value(reader)?,
+            root: ControlFlowValueId::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+            kind: ControlFlowValueRegionKind::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowParameter {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.name.encode_cache_value(bytes);
+        self.ty.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            name: String::decode_cache_value(reader)?,
+            ty: Type::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowDefinition {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.name.encode_cache_value(bytes);
+        self.ty.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            name: String::decode_cache_value(reader)?,
+            ty: Type::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowEvaluationKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::BindingInitializer => 0u8.encode_cache_value(bytes),
+            Self::AssignmentValue => 1u8.encode_cache_value(bytes),
+            Self::DestructureValue => 2u8.encode_cache_value(bytes),
+            Self::ReturnValue(index) => {
+                3u8.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+            Self::ExpressionStatement => 4u8.encode_cache_value(bytes),
+            Self::ShellValue => 5u8.encode_cache_value(bytes),
+            Self::RedirectPath => 6u8.encode_cache_value(bytes),
+            Self::Condition => 7u8.encode_cache_value(bytes),
+            Self::RangeStart => 8u8.encode_cache_value(bytes),
+            Self::RangeEnd => 9u8.encode_cache_value(bytes),
+            Self::Iterable => 10u8.encode_cache_value(bytes),
+            Self::MatchValue => 11u8.encode_cache_value(bytes),
+            Self::MatchGuard(index) => {
+                12u8.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::BindingInitializer),
+            1 => Some(Self::AssignmentValue),
+            2 => Some(Self::DestructureValue),
+            3 => Some(Self::ReturnValue(usize::decode_cache_value(reader)?)),
+            4 => Some(Self::ExpressionStatement),
+            5 => Some(Self::ShellValue),
+            6 => Some(Self::RedirectPath),
+            7 => Some(Self::Condition),
+            8 => Some(Self::RangeStart),
+            9 => Some(Self::RangeEnd),
+            10 => Some(Self::Iterable),
+            11 => Some(Self::MatchValue),
+            12 => Some(Self::MatchGuard(usize::decode_cache_value(reader)?)),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowNodeKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Entry => 0u8.encode_cache_value(bytes),
+            Self::Exit => 1u8.encode_cache_value(bytes),
+            Self::Evaluation(kind) => {
+                2u8.encode_cache_value(bytes);
+                kind.encode_cache_value(bytes);
+            }
+            Self::Binding { name, ty, mutable } => {
+                3u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+                ty.encode_cache_value(bytes);
+                mutable.encode_cache_value(bytes);
+            }
+            Self::Assignment { name } => {
+                4u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+            }
+            Self::Destructure { propagates_error } => {
+                5u8.encode_cache_value(bytes);
+                propagates_error.encode_cache_value(bytes);
+            }
+            Self::PatternBindings => 6u8.encode_cache_value(bytes),
+            Self::Statement => 7u8.encode_cache_value(bytes),
+            Self::Conditional => 8u8.encode_cache_value(bytes),
+            Self::Loop => 9u8.encode_cache_value(bytes),
+            Self::Match => 10u8.encode_cache_value(bytes),
+            Self::Return => 11u8.encode_cache_value(bytes),
+            Self::Break => 12u8.encode_cache_value(bytes),
+            Self::Continue => 13u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Entry),
+            1 => Some(Self::Exit),
+            2 => Some(Self::Evaluation(
+                ControlFlowEvaluationKind::decode_cache_value(reader)?,
+            )),
+            3 => Some(Self::Binding {
+                name: String::decode_cache_value(reader)?,
+                ty: Type::decode_cache_value(reader)?,
+                mutable: bool::decode_cache_value(reader)?,
+            }),
+            4 => Some(Self::Assignment {
+                name: String::decode_cache_value(reader)?,
+            }),
+            5 => Some(Self::Destructure {
+                propagates_error: bool::decode_cache_value(reader)?,
+            }),
+            6 => Some(Self::PatternBindings),
+            7 => Some(Self::Statement),
+            8 => Some(Self::Conditional),
+            9 => Some(Self::Loop),
+            10 => Some(Self::Match),
+            11 => Some(Self::Return),
+            12 => Some(Self::Break),
+            13 => Some(Self::Continue),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for OwnershipMove {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.source.encode_cache_value(bytes);
+        self.destination.encode_cache_value(bytes);
+        self.projection.encode_cache_value(bytes);
+        self.value.encode_cache_value(bytes);
+        self.source_definitions.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            source: String::decode_cache_value(reader)?,
+            destination: String::decode_cache_value(reader)?,
+            projection: Vec::<String>::decode_cache_value(reader)?,
+            value: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            source_definitions: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrowKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        0u8.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        (u8::decode_cache_value(reader)? == 0).then_some(Self::Immutable)
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrow {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.source.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+        self.value.encode_cache_value(bytes);
+        self.source_definitions.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            source: String::decode_cache_value(reader)?,
+            kind: OwnershipBorrowKind::decode_cache_value(reader)?,
+            value: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            source_definitions: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipCallArgumentKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        let tag: u8 = match self {
+            Self::Copy => 0,
+            Self::ImmutableBorrow => 1,
+            Self::Consuming => 2,
+        };
+        tag.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Copy),
+            1 => Some(Self::ImmutableBorrow),
+            2 => Some(Self::Consuming),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for OwnershipCall {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.callee.encode_cache_value(bytes);
+        self.arguments.encode_cache_value(bytes);
+        self.argument_projections.encode_cache_value(bytes);
+        self.argument_kinds.encode_cache_value(bytes);
+        self.argument_definitions.encode_cache_value(bytes);
+        self.borrowed_argument_definitions.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            callee: String::decode_cache_value(reader)?,
+            arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            argument_projections: Vec::<Vec<String>>::decode_cache_value(reader)?,
+            argument_kinds: Vec::<OwnershipCallArgumentKind>::decode_cache_value(reader)?,
+            argument_definitions: Vec::<Vec<ControlFlowDefinitionId>>::decode_cache_value(reader)?,
+            borrowed_argument_definitions: Vec::<Vec<ControlFlowDefinitionId>>::decode_cache_value(
+                reader,
+            )?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipReturn {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.value.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+        self.definitions.encode_cache_value(bytes);
+        self.borrowed_definitions.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            value: ControlFlowValueId::decode_cache_value(reader)?,
+            kind: OwnershipCallArgumentKind::decode_cache_value(reader)?,
+            definitions: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+            borrowed_definitions: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipDrop {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.definition.encode_cache_value(bytes);
+        self.value.encode_cache_value(bytes);
+        self.name.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            value: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
+            name: String::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowOwnership {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.reads.encode_cache_value(bytes);
+        self.borrows.encode_cache_value(bytes);
+        self.moves.encode_cache_value(bytes);
+        self.calls.encode_cache_value(bytes);
+        self.returns.encode_cache_value(bytes);
+        self.drops.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            reads: Vec::<String>::decode_cache_value(reader)?,
+            borrows: Vec::<OwnershipBorrow>::decode_cache_value(reader)?,
+            moves: Vec::<OwnershipMove>::decode_cache_value(reader)?,
+            calls: Vec::<OwnershipCall>::decode_cache_value(reader)?,
+            returns: Vec::<OwnershipReturn>::decode_cache_value(reader)?,
+            drops: Vec::<OwnershipDrop>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipMovedBinding {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.definition.encode_cache_value(bytes);
+        self.name.encode_cache_value(bytes);
+        self.projection.encode_cache_value(bytes);
+        self.origin.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            name: String::decode_cache_value(reader)?,
+            projection: Vec::<String>::decode_cache_value(reader)?,
+            origin: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowMoveState {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.reachable.encode_cache_value(bytes);
+        self.moved.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            reachable: bool::decode_cache_value(reader)?,
+            moved: Vec::<OwnershipMovedBinding>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowLiveState {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.live.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            live: Vec::<String>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowDefinitionLiveState {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.live.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            live: Vec::<ControlFlowDefinitionId>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrowedBinding {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.definition.encode_cache_value(bytes);
+        self.borrower.encode_cache_value(bytes);
+        self.source_definition.encode_cache_value(bytes);
+        self.source.encode_cache_value(bytes);
+        self.origin.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            borrower: String::decode_cache_value(reader)?,
+            source_definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            source: String::decode_cache_value(reader)?,
+            origin: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowBorrowState {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.borrows.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            borrows: Vec::<OwnershipBorrowedBinding>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrowStart {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.from.encode_cache_value(bytes);
+        self.to.encode_cache_value(bytes);
+        self.definition.encode_cache_value(bytes);
+        self.borrower.encode_cache_value(bytes);
+        self.source_definition.encode_cache_value(bytes);
+        self.source.encode_cache_value(bytes);
+        self.origin.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            from: ControlFlowNodeId::decode_cache_value(reader)?,
+            to: ControlFlowNodeId::decode_cache_value(reader)?,
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            borrower: String::decode_cache_value(reader)?,
+            source_definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            source: String::decode_cache_value(reader)?,
+            origin: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrowEnd {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.from.encode_cache_value(bytes);
+        self.to.encode_cache_value(bytes);
+        self.definition.encode_cache_value(bytes);
+        self.borrower.encode_cache_value(bytes);
+        self.source_definition.encode_cache_value(bytes);
+        self.source.encode_cache_value(bytes);
+        self.origin.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            from: ControlFlowNodeId::decode_cache_value(reader)?,
+            to: ControlFlowNodeId::decode_cache_value(reader)?,
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            borrower: String::decode_cache_value(reader)?,
+            source_definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            source: String::decode_cache_value(reader)?,
+            origin: SourceSpan::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for OwnershipBorrowLifetime {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.definition.encode_cache_value(bytes);
+        self.borrower.encode_cache_value(bytes);
+        self.source_definition.encode_cache_value(bytes);
+        self.source.encode_cache_value(bytes);
+        self.origin.encode_cache_value(bytes);
+        self.active_before.encode_cache_value(bytes);
+        self.starts.encode_cache_value(bytes);
+        self.ends.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            borrower: String::decode_cache_value(reader)?,
+            source_definition: ControlFlowDefinitionId::decode_cache_value(reader)?,
+            source: String::decode_cache_value(reader)?,
+            origin: SourceSpan::decode_cache_value(reader)?,
+            active_before: Vec::<ControlFlowNodeId>::decode_cache_value(reader)?,
+            starts: Vec::<OwnershipBorrowStart>::decode_cache_value(reader)?,
+            ends: Vec::<OwnershipBorrowEnd>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowNode {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.id.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+        self.span.encode_cache_value(bytes);
+        self.value_types.encode_cache_value(bytes);
+        self.values.encode_cache_value(bytes);
+        self.definitions.encode_cache_value(bytes);
+        self.ownership.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            id: ControlFlowNodeId::decode_cache_value(reader)?,
+            kind: ControlFlowNodeKind::decode_cache_value(reader)?,
+            span: SourceSpan::decode_cache_value(reader)?,
+            value_types: Vec::<Type>::decode_cache_value(reader)?,
+            values: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+            definitions: Vec::<ControlFlowDefinition>::decode_cache_value(reader)?,
+            ownership: ControlFlowOwnership::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowEdgeKind {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Next => 0u8.encode_cache_value(bytes),
+            Self::True => 1u8.encode_cache_value(bytes),
+            Self::False => 2u8.encode_cache_value(bytes),
+            Self::GuardTrue => 3u8.encode_cache_value(bytes),
+            Self::GuardFalse => 4u8.encode_cache_value(bytes),
+            Self::MatchArm(index) => {
+                5u8.encode_cache_value(bytes);
+                index.encode_cache_value(bytes);
+            }
+            Self::Success => 6u8.encode_cache_value(bytes),
+            Self::Error => 7u8.encode_cache_value(bytes),
+            Self::Return => 8u8.encode_cache_value(bytes),
+            Self::Break => 9u8.encode_cache_value(bytes),
+            Self::Continue => 10u8.encode_cache_value(bytes),
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Next),
+            1 => Some(Self::True),
+            2 => Some(Self::False),
+            3 => Some(Self::GuardTrue),
+            4 => Some(Self::GuardFalse),
+            5 => Some(Self::MatchArm(usize::decode_cache_value(reader)?)),
+            6 => Some(Self::Success),
+            7 => Some(Self::Error),
+            8 => Some(Self::Return),
+            9 => Some(Self::Break),
+            10 => Some(Self::Continue),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowEdge {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.from.encode_cache_value(bytes);
+        self.to.encode_cache_value(bytes);
+        self.kind.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            from: ControlFlowNodeId::decode_cache_value(reader)?,
+            to: ControlFlowNodeId::decode_cache_value(reader)?,
+            kind: ControlFlowEdgeKind::decode_cache_value(reader)?,
+        })
+    }
+}
+
+fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize) -> bool {
+    let valid = |value: ControlFlowValueId| value.0 < value_count;
+    let valid_option = |value: &Option<ControlFlowValueId>| value.is_none_or(|value| valid(value));
+    let valid_values = |values: &[ControlFlowValueId]| values.iter().copied().all(valid);
+    match kind {
+        ControlFlowValueKind::Literal | ControlFlowValueKind::Opaque => true,
+        ControlFlowValueKind::NameRead { .. } => true,
+        ControlFlowValueKind::AnonymousFunction { body }
+        | ControlFlowValueKind::Await { value: body }
+        | ControlFlowValueKind::ListSpread { value: body }
+        | ControlFlowValueKind::ListOptional { value: body } => valid(*body),
+        ControlFlowValueKind::Call { arguments, .. }
+        | ControlFlowValueKind::QualifiedCall { arguments, .. } => valid_values(arguments),
+        ControlFlowValueKind::OptionalCascadeCall {
+            optional,
+            arguments,
+            ..
+        } => valid(*optional) && valid_values(arguments),
+        ControlFlowValueKind::InterfacePack { value, .. } => valid(*value),
+        ControlFlowValueKind::List { items } | ControlFlowValueKind::Set { items } => {
+            valid_values(items)
+        }
+        ControlFlowValueKind::Map { entries } => entries
+            .iter()
+            .all(|(key, value)| valid(*key) && valid(*value)),
+        ControlFlowValueKind::ListIf {
+            condition,
+            value,
+            else_value,
+        } => valid(*condition) && valid(*value) && valid_option(else_value),
+        ControlFlowValueKind::Index { base, index, .. } => valid(*base) && valid(*index),
+        ControlFlowValueKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => valid(*base) && valid_option(start) && valid_option(end) && valid_option(step),
+        ControlFlowValueKind::ListComprehension {
+            iterable,
+            value,
+            condition,
+        } => valid(*iterable) && valid(*value) && valid_option(condition),
+        ControlFlowValueKind::StructLiteral { base, fields, .. } => {
+            valid_option(base) && fields.iter().all(|(_, value)| valid(*value))
+        }
+        ControlFlowValueKind::RecordLiteral { fields } => {
+            fields.iter().all(|(_, value)| valid(*value))
+        }
+        ControlFlowValueKind::InterfaceDispatch { arguments, .. } => valid_values(arguments),
+        ControlFlowValueKind::Field { base, .. } => valid(*base),
+        ControlFlowValueKind::Match {
+            value,
+            guards,
+            arms,
+        }
+        | ControlFlowValueKind::ListMatch {
+            value,
+            guards,
+            arms,
+        } => valid(*value) && guards.iter().all(valid_option) && valid_values(arms),
+        ControlFlowValueKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => valid(*condition) && valid(*then_value) && valid(*else_value),
+        ControlFlowValueKind::Unary { operand, .. } => valid(*operand),
+        ControlFlowValueKind::Binary { left, right, .. } => valid(*left) && valid(*right),
+    }
+}
+
+fn persisted_value_region_kind_is_valid(
+    kind: &ControlFlowValueRegionKind,
+    value_count: usize,
+) -> bool {
+    let valid = |value: ControlFlowValueId| value.0 < value_count;
+    match kind {
+        ControlFlowValueRegionKind::ShortCircuitRight { condition, .. }
+        | ControlFlowValueRegionKind::Branch { condition, .. } => valid(*condition),
+        ControlFlowValueRegionKind::OptionalFallback { optional }
+        | ControlFlowValueRegionKind::OptionalPresent { optional } => valid(*optional),
+        ControlFlowValueRegionKind::MatchGuard { matched, .. } => valid(*matched),
+        ControlFlowValueRegionKind::MatchArm { matched, guard, .. } => {
+            valid(*matched) && guard.is_none_or(|guard| valid(guard))
+        }
+        ControlFlowValueRegionKind::LoopCondition { iterable } => valid(*iterable),
+        ControlFlowValueRegionKind::LoopBody {
+            iterable,
+            condition,
+        } => valid(*iterable) && condition.is_none_or(|condition| valid(condition)),
+        ControlFlowValueRegionKind::DeferredBody => true,
+    }
+}
+
+impl PersistedIrCodec for ControlFlowGraph {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.function.encode_cache_value(bytes);
+        self.parameters.encode_cache_value(bytes);
+        self.returns.encode_cache_value(bytes);
+        self.entry.encode_cache_value(bytes);
+        self.exit.encode_cache_value(bytes);
+        self.nodes.encode_cache_value(bytes);
+        self.edges.encode_cache_value(bytes);
+        self.values.encode_cache_value(bytes);
+        self.value_uses.encode_cache_value(bytes);
+        self.value_regions.encode_cache_value(bytes);
+        self.reachable_values.encode_cache_value(bytes);
+        self.escaping_values.encode_cache_value(bytes);
+        self.scoped_definitions.encode_cache_value(bytes);
+        self.definition_values.encode_cache_value(bytes);
+        self.scoped_borrow_sources.encode_cache_value(bytes);
+        self.reaching_definitions_before.encode_cache_value(bytes);
+        self.move_states_before.encode_cache_value(bytes);
+        self.live_before.encode_cache_value(bytes);
+        self.live_after.encode_cache_value(bytes);
+        self.definition_live_before.encode_cache_value(bytes);
+        self.definition_live_after.encode_cache_value(bytes);
+        self.borrow_states_before.encode_cache_value(bytes);
+        self.borrow_starts.encode_cache_value(bytes);
+        self.borrow_ends.encode_cache_value(bytes);
+        self.borrow_lifetimes.encode_cache_value(bytes);
+        self.drops.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        let graph = Self {
+            function: String::decode_cache_value(reader)?,
+            parameters: Vec::<ControlFlowParameter>::decode_cache_value(reader)?,
+            returns: Vec::<Type>::decode_cache_value(reader)?,
+            entry: ControlFlowNodeId::decode_cache_value(reader)?,
+            exit: ControlFlowNodeId::decode_cache_value(reader)?,
+            nodes: Vec::<ControlFlowNode>::decode_cache_value(reader)?,
+            edges: Vec::<ControlFlowEdge>::decode_cache_value(reader)?,
+            values: Vec::<ControlFlowValue>::decode_cache_value(reader)?,
+            value_uses: Vec::<ControlFlowValueUse>::decode_cache_value(reader)?,
+            value_regions: Vec::<ControlFlowValueRegion>::decode_cache_value(reader)?,
+            reachable_values: BTreeSet::<ControlFlowValueId>::decode_cache_value(reader)?,
+            escaping_values: BTreeSet::<ControlFlowValueId>::decode_cache_value(reader)?,
+            scoped_definitions: Vec::<Vec<ControlFlowDefinition>>::decode_cache_value(reader)?,
+            definition_values:
+                BTreeMap::<ControlFlowDefinitionId, ControlFlowValueId>::decode_cache_value(reader)?,
+            scoped_borrow_sources:
+                BTreeMap::<ControlFlowDefinitionId, ControlFlowValueId>::decode_cache_value(reader)?,
+            reaching_definitions_before: Vec::<Option<ReachingDefinitionMap>>::decode_cache_value(
+                reader,
+            )?,
+            move_states_before: Vec::<ControlFlowMoveState>::decode_cache_value(reader)?,
+            live_before: Vec::<ControlFlowLiveState>::decode_cache_value(reader)?,
+            live_after: Vec::<ControlFlowLiveState>::decode_cache_value(reader)?,
+            definition_live_before: Vec::<ControlFlowDefinitionLiveState>::decode_cache_value(
+                reader,
+            )?,
+            definition_live_after: Vec::<ControlFlowDefinitionLiveState>::decode_cache_value(
+                reader,
+            )?,
+            borrow_states_before: Vec::<ControlFlowBorrowState>::decode_cache_value(reader)?,
+            borrow_starts: Vec::<OwnershipBorrowStart>::decode_cache_value(reader)?,
+            borrow_ends: Vec::<OwnershipBorrowEnd>::decode_cache_value(reader)?,
+            borrow_lifetimes: Vec::<OwnershipBorrowLifetime>::decode_cache_value(reader)?,
+            drops: Vec::<(ControlFlowNodeId, OwnershipDrop)>::decode_cache_value(reader)?,
+        };
+        graph.persisted_cache_is_valid().then_some(graph)
+    }
+}
+
 impl ControlFlowGraph {
+    pub(crate) fn encode_persisted(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PERSISTED_IR_MAGIC);
+        self.encode_cache_value(&mut bytes);
+        bytes
+    }
+
+    pub(crate) fn decode_persisted(bytes: &[u8]) -> Option<Self> {
+        if !bytes.starts_with(PERSISTED_IR_MAGIC) {
+            return None;
+        }
+        let mut reader = PersistedIrReader::new(&bytes[PERSISTED_IR_MAGIC.len()..]);
+        let graph = Self::decode_cache_value(&mut reader)?;
+        reader.is_finished().then_some(graph)
+    }
+
+    fn persisted_cache_is_valid(&self) -> bool {
+        let node_count = self.nodes.len();
+        let value_count = self.values.len();
+        let region_count = self.value_regions.len();
+        if self.entry.0 >= node_count || self.exit.0 >= node_count {
+            return false;
+        }
+        if self.nodes.iter().enumerate().any(|(index, node)| {
+            node.id.0 != index || node.values.iter().any(|value| value.0 >= value_count)
+        }) {
+            return false;
+        }
+        if self
+            .edges
+            .iter()
+            .any(|edge| edge.from.0 >= node_count || edge.to.0 >= node_count)
+        {
+            return false;
+        }
+        if self.values.iter().enumerate().any(|(index, value)| {
+            value.id.0 != index
+                || value.producer.0 >= node_count
+                || !persisted_value_kind_is_valid(&value.kind, value_count)
+        }) {
+            return false;
+        }
+        if self.value_uses.iter().any(|value_use| {
+            value_use.user.0 >= value_count
+                || value_use.value.0 >= value_count
+                || value_use
+                    .region
+                    .is_some_and(|region| region.0 >= region_count)
+        }) {
+            return false;
+        }
+        if self
+            .value_regions
+            .iter()
+            .enumerate()
+            .any(|(index, region)| {
+                region.id.0 != index
+                    || region.owner.0 >= value_count
+                    || region.root.0 >= value_count
+                    || !persisted_value_region_kind_is_valid(&region.kind, value_count)
+            })
+        {
+            return false;
+        }
+        if self
+            .reachable_values
+            .iter()
+            .chain(self.escaping_values.iter())
+            .any(|value| value.0 >= value_count)
+        {
+            return false;
+        }
+        if self.scoped_definitions.len() > node_count
+            || self.reaching_definitions_before.len() != node_count
+            || self.move_states_before.len() != node_count
+            || self.live_before.len() != node_count
+            || self.live_after.len() != node_count
+            || self.definition_live_before.len() != node_count
+            || self.definition_live_after.len() != node_count
+            || self.borrow_states_before.len() != node_count
+        {
+            return false;
+        }
+        let valid_definition = |definition: ControlFlowDefinitionId| match definition {
+            ControlFlowDefinitionId::Parameter(index) => index < self.parameters.len(),
+            ControlFlowDefinitionId::Node { node, index } => self
+                .nodes
+                .get(node.0)
+                .is_some_and(|node| index < node.definitions.len()),
+            ControlFlowDefinitionId::Scoped { node, index } => self
+                .scoped_definitions
+                .get(node.0)
+                .is_some_and(|definitions| index < definitions.len()),
+        };
+        if self
+            .definition_values
+            .iter()
+            .any(|(definition, value)| !valid_definition(*definition) || value.0 >= value_count)
+            || self
+                .scoped_borrow_sources
+                .iter()
+                .any(|(definition, value)| !valid_definition(*definition) || value.0 >= value_count)
+        {
+            return false;
+        }
+        if self
+            .reaching_definitions_before
+            .iter()
+            .flatten()
+            .flat_map(BTreeMap::values)
+            .flatten()
+            .any(|definition| !valid_definition(*definition))
+        {
+            return false;
+        }
+        if self
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node.ownership
+                    .borrows
+                    .iter()
+                    .flat_map(|borrow| borrow.source_definitions.iter())
+                    .chain(
+                        node.ownership
+                            .moves
+                            .iter()
+                            .flat_map(|moved| moved.source_definitions.iter()),
+                    )
+                    .chain(
+                        node.ownership
+                            .calls
+                            .iter()
+                            .flat_map(|call| call.argument_definitions.iter().flatten()),
+                    )
+                    .chain(
+                        node.ownership
+                            .calls
+                            .iter()
+                            .flat_map(|call| call.borrowed_argument_definitions.iter().flatten()),
+                    )
+                    .chain(
+                        node.ownership
+                            .returns
+                            .iter()
+                            .flat_map(|returned| returned.definitions.iter()),
+                    )
+                    .chain(
+                        node.ownership
+                            .returns
+                            .iter()
+                            .flat_map(|returned| returned.borrowed_definitions.iter()),
+                    )
+                    .chain(node.ownership.drops.iter().map(|drop| &drop.definition))
+            })
+            .any(|definition| !valid_definition(*definition))
+        {
+            return false;
+        }
+        true
+    }
+
     pub fn from_function(function: &Function, signatures: &Signatures) -> Self {
         let mut builder = ControlFlowBuilder::new(function, signatures);
         let body_entry = builder.build_block(&function.body, builder.exit, None);
@@ -6641,6 +8518,43 @@ mod tests {
 
     fn path(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    #[test]
+    fn normalized_cfg_persisted_cache_round_trips() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            "fn helper() -> i64 { 1 }\nfn main() -> i64 { helper() }\n",
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("persisted CFG fixture should analyze");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist");
+
+        assert!(
+            graph.persisted_cache_is_valid(),
+            "a freshly normalized CFG must satisfy persisted-cache invariants: nodes={} scoped={} reaching={} moves={} live_before={} live_after={} definition_before={} definition_after={} borrows={}",
+            graph.nodes.len(),
+            graph.scoped_definitions.len(),
+            graph.reaching_definitions_before.len(),
+            graph.move_states_before.len(),
+            graph.live_before.len(),
+            graph.live_after.len(),
+            graph.definition_live_before.len(),
+            graph.definition_live_after.len(),
+            graph.borrow_states_before.len(),
+        );
+        let encoded = graph.encode_persisted();
+        let decoded =
+            super::ControlFlowGraph::decode_persisted(&encoded).expect("encoded CFG should decode");
+        assert_eq!(&decoded, graph, "persisted CFG must round-trip exactly");
+
+        let mut truncated = encoded;
+        truncated.pop();
+        assert!(
+            super::ControlFlowGraph::decode_persisted(&truncated).is_none(),
+            "truncated CFG payloads must be rejected"
+        );
     }
 
     #[test]

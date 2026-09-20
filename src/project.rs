@@ -10,7 +10,7 @@ use crate::{codegen, formatter, parser, typecheck};
 
 const PROJECT_CODEGEN_CACHE_VERSION: &str = "flux-project-codegen-v2";
 const PROJECT_CODEGEN_CACHE_LIMIT: usize = 8;
-const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-codegen-v2";
+const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-codegen-v3";
 const COMPILER_SOURCE_FINGERPRINT: &str = env!("FLUX_COMPILER_SOURCE_FINGERPRINT");
 const PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -9681,6 +9681,71 @@ mod tests {
         assert!(
             source_indexes >= 3,
             "the current helper/main indexes plus the helper's historical source identity should remain available"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_function_cache_restores_unchanged_normalized_cfg() {
+        let root = test_path("durable-function-ir");
+        fs::create_dir_all(&root).expect("durable function IR fixture should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn helper() -> i64 { 1 }\nfn main() -> i64 { helper() }\n",
+        )
+        .expect("initial durable function IR source should be writable");
+
+        let first =
+            super::analyze(&entry).expect("initial durable function IR fixture should analyze");
+        let mut first_cache = crate::codegen::FunctionCodegenCache::default();
+        let (_, first_stats) = first
+            .emit_c_for_target_with_function_cache(
+                crate::codegen::NativeTarget::Linux,
+                &mut first_cache,
+            )
+            .expect("initial durable function IR codegen should succeed");
+        assert_eq!(first_stats.reused_ir_functions, 0);
+        assert_eq!(first_stats.regenerated_ir_functions, 2);
+        super::store_function_codegen_cache(
+            &first,
+            &root,
+            crate::codegen::NativeTarget::Linux,
+            &first_cache,
+        );
+
+        fs::write(
+            &entry,
+            "fn helper() -> i64 { 2 }\nfn main() -> i64 { helper() }\n",
+        )
+        .expect("updated durable function IR source should be writable");
+        let second =
+            super::analyze(&entry).expect("updated durable function IR fixture should analyze");
+        let mut resumed =
+            super::read_function_codegen_cache(&second, &root, crate::codegen::NativeTarget::Linux)
+                .expect("body-only edit should hydrate the durable function cache");
+        let (incremental, second_stats) = second
+            .emit_c_for_target_with_function_cache(
+                crate::codegen::NativeTarget::Linux,
+                &mut resumed,
+            )
+            .expect("resumed durable function IR codegen should succeed");
+
+        assert_eq!(
+            second_stats.reused_ir_functions, 1,
+            "the unchanged main function should restore its normalized CFG from disk"
+        );
+        assert_eq!(
+            second_stats.regenerated_ir_functions, 1,
+            "only the edited helper should rebuild normalized CFG/typed IR after restart"
+        );
+        assert_eq!(
+            incremental,
+            second
+                .emit_c_for_target(crate::codegen::NativeTarget::Linux)
+                .expect("fresh codegen should succeed"),
+            "restored normalized CFGs must preserve fresh-codegen parity"
         );
 
         let _ = fs::remove_dir_all(root);
