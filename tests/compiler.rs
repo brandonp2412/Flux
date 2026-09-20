@@ -57957,7 +57957,10 @@ app Form
 "#;
     let generated = compile_to_c(multiline_default_enter)
         .expect("multiline input should keep Enter as text unless submission is explicit");
-    assert!(!generated.contains("flux__submit_controller_query"));
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_query = false"));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    GtkEventController *flux__submit_controller_query = gtk_event_controller_key_new()"
+    ));
     assert!(
         !generated.contains("flux__ui_limit_query"),
         "multiline max-length support must disappear when maxLength is omitted"
