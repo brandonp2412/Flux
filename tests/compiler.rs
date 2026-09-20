@@ -1606,6 +1606,86 @@ app Screen
 }
 
 #[test]
+fn windows_translate_offsets_are_dpi_aware_and_refresh_with_state() {
+    let source = r#"
+view Screen {
+    state offset: i64 = 0
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Move"
+        translateX: offset
+        translateY: 0 - offset
+    Button action at 2,1
+        text: "Shift"
+        onPress: offset => offset + 4
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows translate source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows translate source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows translate offsets should lower into native layout");
+    assert!(windows.contains("int64_t requested_translate_x = flux__ui_state_offset;"));
+    let translate_y = windows
+        .split("int64_t requested_translate_y = ")
+        .nth(1)
+        .and_then(|tail| tail.split(';').next())
+        .expect("generated Windows layout should bind translateY");
+    assert!(translate_y.contains("flux__ui_state_offset"));
+    assert!(windows.contains("int physical_translate_x = flux__win_scale(requested_translate_x);"));
+    assert!(windows.contains("int physical_translate_y = flux__win_scale(requested_translate_y);"));
+    assert!(
+        windows.contains("adjusted_x = (int64_t)x + physical_margin_start + physical_translate_x")
+    );
+    assert!(
+        windows.contains("adjusted_y = (int64_t)y + physical_margin_top + physical_translate_y")
+    );
+    assert!(windows.contains(
+        "if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client))"
+    ));
+    assert!(
+        windows.contains("Flux runtime error: translateX must fit within a 32-bit signed integer")
+    );
+    assert!(
+        windows.contains("Flux runtime error: translateY must fit within a 32-bit signed integer")
+    );
+
+    let too_large = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Too far"
+        translateX: 2147483648
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(too_large).expect("large Windows translate source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("large Windows translate source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("static Windows translate overflow must fail during lowering");
+    assert!(
+        error
+            .message
+            .contains("translateX must fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
 fn windows_text_overflow_support_is_native_and_never_silently_dropped() {
     let source = r#"
 view Screen {
