@@ -1744,7 +1744,7 @@ app Screen
 }
 
 #[test]
-fn windows_uniform_borders_lower_natively_and_refresh_dynamic_state() {
+fn windows_borders_lower_natively_and_refresh_dynamic_state() {
     let source = r#"
 view Screen {
     state strokeWidth: i64 = 2
@@ -1777,10 +1777,18 @@ app Screen
     .expect("uniform Windows borders should lower natively");
     assert!(windows.contains("static void flux__win_draw_border("));
     assert!(windows.contains("GetWindowRgn(control, region)"));
-    assert!(windows.contains("FrameRgn(dc, region, brush, border_width, border_width)"));
+    assert!(windows.contains("FrameRgn(dc, region, brush, top_width, top_width)"));
     assert!(windows.contains("static WNDPROC flux__win_border_orig_0 = NULL;"));
     assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_color_label, flux__ui_state_strokeColor);"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_top_color_label, flux__ui_state_strokeColor);"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_end_color_label, flux__ui_state_strokeColor);"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_bottom_color_label, flux__ui_state_strokeColor);"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_start_color_label, flux__ui_state_strokeColor);"));
     assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_width_label, flux__ui_state_strokeWidth);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_top_width_label, flux__ui_state_strokeWidth);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_end_width_label, flux__ui_state_strokeWidth);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_bottom_width_label, flux__ui_state_strokeWidth);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_start_width_label, flux__ui_state_strokeWidth);"));
     assert!(windows.contains("flux__win_set_border_style(flux__ui_label, &flux__win_border_solid_label, flux__ui_state_strokeStyle);"));
     assert!(windows.contains(
         "SetWindowLongPtrW(flux__ui_label, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_0)"
@@ -1815,29 +1823,114 @@ app Screen
 
     let per_edge = r#"
 view Screen {
+    state topWidth: i64 = 3
+    state endColor: str = "danger"
     grid columns: 1fr
     grid rows: auto
     Text label at 1,1
         text: "Edge"
-        borderTopWidth: 2
+        borderWidth: 1
+        borderColor: "outline"
+        borderTopWidth: topWidth
+        borderEndWidth: 4
+        borderBottomWidth: 2
+        borderStartWidth: 5
+        borderTopColor: "accent"
+        borderEndColor: endColor
+        borderBottomColor: "success"
+        borderStartColor: "warning"
+        borderStyle: "solid"
+        radius: 8
 }
 app Screen
 "#;
     let program = fluxc::parser::parse(per_edge).expect("per-edge border source should parse");
     let signatures =
         fluxc::typecheck::check(&program).expect("per-edge border source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("per-edge Windows borders should lower through the native HWND painter");
+    assert!(
+        windows.contains("static COLORREF flux__win_border_top_color_label = RGB(9, 105, 218);")
+    );
+    assert!(
+        windows.contains("static COLORREF flux__win_border_bottom_color_label = RGB(26, 127, 55);")
+    );
+    assert!(
+        windows.contains("static COLORREF flux__win_border_start_color_label = RGB(154, 103, 0);")
+    );
+    assert!(windows.contains("static int64_t flux__win_border_end_width_label = INT64_C(4);"));
+    assert!(windows.contains("static int64_t flux__win_border_bottom_width_label = INT64_C(2);"));
+    assert!(windows.contains("static int64_t flux__win_border_start_width_label = INT64_C(5);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_top_width_label, flux__ui_state_topWidth);"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_end_color_label, flux__ui_state_endColor);"));
+    assert!(windows.contains("SelectClipRgn(dc, region);"));
+    assert!(
+        windows.contains(
+            "bool rtl = (GetWindowLongPtrW(control, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0;"
+        )
+    );
+    assert!(windows.contains("COLORREF left_color = rtl ? end_color : start_color;"));
+    assert!(windows.contains("COLORREF right_color = rtl ? start_color : end_color;"));
+    assert!(windows.contains(
+        "flux__win_draw_border(hwnd, flux__win_border_top_color_label, flux__win_border_end_color_label, flux__win_border_bottom_color_label, flux__win_border_start_color_label, flux__win_border_top_width_label, flux__win_border_end_width_label, flux__win_border_bottom_width_label, flux__win_border_start_width_label, flux__win_border_solid_label)"
+    ));
+
+    let invalid_edge_width = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Bad edge"
+        borderStartWidth: -1
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(invalid_edge_width)
+        .expect("invalid per-edge border width source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("invalid per-edge border width source should typecheck");
     let error = fluxc::codegen::emit_c_for_target_with_source_paths(
         &program,
         &signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("per-edge Windows borders must fail explicitly");
+    .expect_err("negative Windows per-edge border width must fail lowering");
     assert!(
-        error
-            .message
-            .contains("borderTopWidth is not yet supported; use uniform borderColor/borderWidth")
+        error.message.contains(
+            "borderStartWidth must be non-negative and fit within a 32-bit signed integer"
+        )
     );
+
+    let invalid_edge_color = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Bad edge"
+        borderTopColor: "notAColor"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(invalid_edge_color)
+        .expect("invalid per-edge border color source should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("invalid per-edge border color source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("invalid Windows per-edge border color must fail lowering");
+    assert!(error.message.contains(
+        "borderTopColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+    ));
 
     let dashed = r#"
 view Screen {
