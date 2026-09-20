@@ -42069,6 +42069,155 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_accessibility_metadata_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-metadata-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary accessibility metadata lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Run"
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial accessibility metadata lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial accessibility metadata lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("accessibility metadata lifecycle fixture should lower for Linux");
+    for property in [
+        "accessibility_label",
+        "accessibility_value",
+        "accessibility_role",
+    ] {
+        assert!(generated.contains(&format!("strcmp(property, \"{property}\") == 0")));
+    }
+    assert!(generated.contains(
+        "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_LABEL)"
+    ));
+    assert!(generated.contains(
+        "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT)"
+    ));
+    assert!(generated.contains(
+        "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_ROLE_DESCRIPTION)"
+    ));
+
+    let explicit = initial.replace(
+        "        text: \"Run\"\n",
+        "        text: \"Run\"\n        accessibilityLabel: \"Run action\"\n        accessibilityValue: \"idle\"\n        accessibilityRole: \"button\"\n",
+    );
+    let entry = fs::canonicalize(entry)
+        .expect("accessibility metadata lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit)
+        .expect("explicit accessibility metadata lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit accessibility metadata lifecycle source should analyze");
+    assert_eq!(
+        first.development_abi(),
+        second.development_abi(),
+        "adding literal accessibility metadata should preserve the development ABI"
+    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding accessibility metadata should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (property, value) in [
+        ("accessibility_label", "Run action"),
+        ("accessibility_value", "idle"),
+        ("accessibility_role", "button"),
+    ] {
+        assert_eq!(
+            patch.get(&("action".to_string(), property.to_string())),
+            Some(&value.to_string())
+        );
+    }
+    assert_eq!(patch.len(), 3);
+
+    let explicit_empty = explicit
+        .replace(
+            "accessibilityLabel: \"Run action\"",
+            "accessibilityLabel: \"\"",
+        )
+        .replace("accessibilityValue: \"idle\"", "accessibilityValue: \"\"");
+    fs::write(&entry, &explicit_empty)
+        .expect("empty accessibility metadata source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("empty accessibility metadata source should analyze");
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("explicit empty accessibility strings should hot-apply as explicit values")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "accessibility_label".to_string())),
+        Some(&String::new())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "accessibility_value".to_string())),
+        Some(&String::new())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial)
+        .expect("restored accessibility metadata lifecycle source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("restored accessibility metadata lifecycle source should analyze");
+    let patch = fourth
+        .development_ui_string_patch_from(&third)
+        .expect("removing accessibility metadata should reset native properties in process")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for property in [
+        "accessibility_label",
+        "accessibility_value",
+        "accessibility_role",
+    ] {
+        assert_eq!(
+            patch.get(&("action".to_string(), property.to_string())),
+            Some(&"__flux_accessibility_property_default__".to_string())
+        );
+    }
+    assert_eq!(patch.len(), 3);
+
+    let reserved = initial.replace(
+        "        text: \"Run\"\n",
+        "        text: \"Run\"\n        accessibilityLabel: \"__flux_accessibility_property_default__\"\n",
+    );
+    fs::write(&entry, reserved).expect("reserved accessibility sentinel source should be writable");
+    cache.invalidate_path(&entry);
+    let reserved = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("reserved accessibility sentinel source should analyze");
+    assert!(
+        reserved.development_ui_string_patch_from(&fourth).is_none(),
+        "a source value matching the compiler-private reset sentinel must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_native_label_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-native-label-lifecycle-{}",

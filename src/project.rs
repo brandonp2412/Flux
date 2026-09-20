@@ -1995,6 +1995,8 @@ const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
 ];
 const DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL: &str = "__flux_theme_default__";
 const DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL: &str = "__flux_keyboard_type_default__";
+const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
+    "__flux_accessibility_property_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2624,6 +2626,31 @@ fn development_ui_property_lifecycle_patch_value(
         typecheck::transition_easing_css_value(value)?;
         return Some(value.clone());
     }
+    if matches!(
+        property_name.as_str(),
+        "accessibility_label" | "accessibility_value"
+    ) {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0)
+            || value == DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL
+        {
+            return None;
+        }
+        return Some(value.clone());
+    }
+    if property_name == "accessibility_role" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value == DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL
+            || !typecheck::ACCESSIBILITY_ROLES.contains(&value.as_str())
+        {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "source" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2848,6 +2875,12 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "transition_easing" {
         return Some("ease".to_string());
+    }
+    if matches!(
+        property,
+        "accessibility_label" | "accessibility_value" | "accessibility_role"
+    ) {
+        return Some(DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
         return Some(String::new());
@@ -3451,6 +3484,9 @@ fn development_ui_string_literals(
             "transition_ms",
             "transition_delay_ms",
             "transition_easing",
+            "accessibility_label",
+            "accessibility_value",
+            "accessibility_role",
             "fit",
             "alt",
             "source",
