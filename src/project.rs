@@ -204,7 +204,11 @@ impl ProjectAnalysis {
             && let Some(checksum) = header.strip_prefix(&header_prefix)
             && checksum == format!("{:016x}", stable_bytes_hash(generated.as_bytes()))
         {
-            if !typed_ir_manifest_is_current(self, target, native_target, fingerprint) {
+            if let Some((directory, records)) =
+                read_current_typed_ir_manifest_records(self, target, native_target, fingerprint)
+            {
+                ensure_typed_ir_function_artifacts(&directory, native_target, &records);
+            } else {
                 persist_typed_ir_manifest(self, target, native_target, fingerprint);
             }
             return Some(generated.to_string());
@@ -465,39 +469,39 @@ fn project_typed_ir_cfg(
     crate::ir::ControlFlowGraph::from_function(function, signatures)
 }
 
-fn typed_ir_manifest_is_current(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypedIrFunctionManifestRecord {
+    module_name: String,
+    function_name: String,
+    shape_hash: u64,
+    manifest_line: String,
+}
+
+fn read_current_typed_ir_manifest_records(
     analysis: &ProjectAnalysis,
     target: &Path,
     native_target: codegen::NativeTarget,
     fingerprint: u64,
-) -> bool {
+) -> Option<(PathBuf, Vec<TypedIrFunctionManifestRecord>)> {
     let root = if target.is_dir() {
         target
     } else {
         target.parent().unwrap_or_else(|| Path::new("."))
     };
-    let path = root
-        .join(".flux")
-        .join("ir-cache")
-        .join(format!("ir-{fingerprint:016x}.manifest"));
-    let Ok(cached) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Some((header, manifest)) = cached.split_once('\n') else {
-        return false;
-    };
+    let directory = root.join(".flux").join("ir-cache");
+    let path = directory.join(format!("ir-{fingerprint:016x}.manifest"));
+    let cached = fs::read_to_string(path).ok()?;
+    let (header, manifest) = cached.split_once('\n')?;
     let prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{fingerprint:016x}:");
-    let Some(checksum) = header.strip_prefix(&prefix) else {
-        return false;
-    };
+    let checksum = header.strip_prefix(&prefix)?;
     if checksum != format!("{:016x}", stable_bytes_hash(manifest.as_bytes())) {
-        return false;
+        return None;
     }
     let mut lines = manifest.lines();
     if lines.next() != Some(PROJECT_TYPED_IR_CACHE_VERSION)
         || lines.next() != Some(native_target_cache_tag(native_target))
     {
-        return false;
+        return None;
     }
 
     let expected = analysis
@@ -511,30 +515,28 @@ fn typed_ir_manifest_is_current(
                 .find(|source| source.source_id == function.span.source_id)
                 .map(|source| source.module_name.as_str())
                 .unwrap_or("<unknown>");
-            (function.name.as_str(), module_name)
+            (function.name.clone(), module_name.to_string())
         })
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
+    let mut records = Vec::with_capacity(expected.len());
     for line in lines {
         let mut fields = line.split('\t');
         if fields.next() != Some("function") {
-            return false;
+            return None;
         }
-        let Some(function_name) = fields.next() else {
-            return false;
-        };
-        let Some(module_name) = fields
+        let function_name = fields.next()?.to_string();
+        let module_name = fields
             .next()
-            .and_then(|field| field.strip_prefix("module="))
-        else {
-            return false;
-        };
-        let Some(shape) = fields.next().and_then(|field| field.strip_prefix("shape=")) else {
-            return false;
-        };
+            .and_then(|field| field.strip_prefix("module="))?
+            .to_string();
+        let shape = fields
+            .next()
+            .and_then(|field| field.strip_prefix("shape="))?;
         if shape.len() != 16 || !shape.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return false;
+            return None;
         }
+        let shape_hash = u64::from_str_radix(shape, 16).ok()?;
         for prefix in [
             "nodes=",
             "edges=",
@@ -547,18 +549,53 @@ fn typed_ir_manifest_is_current(
             "returns=",
             "drops=",
         ] {
-            let Some(value) = fields.next().and_then(|field| field.strip_prefix(prefix)) else {
-                return false;
-            };
-            if value.parse::<usize>().is_err() {
-                return false;
-            }
+            fields
+                .next()
+                .and_then(|field| field.strip_prefix(prefix))?
+                .parse::<usize>()
+                .ok()?;
         }
-        if fields.next().is_some() || !observed.insert((function_name, module_name)) {
-            return false;
+        if fields.next().is_some() || !observed.insert((function_name.clone(), module_name.clone()))
+        {
+            return None;
         }
+        records.push(TypedIrFunctionManifestRecord {
+            module_name,
+            function_name,
+            shape_hash,
+            manifest_line: line.to_string(),
+        });
     }
-    observed == expected
+    (observed == expected).then_some((directory, records))
+}
+
+#[cfg(test)]
+fn typed_ir_manifest_is_current(
+    analysis: &ProjectAnalysis,
+    target: &Path,
+    native_target: codegen::NativeTarget,
+    fingerprint: u64,
+) -> bool {
+    read_current_typed_ir_manifest_records(analysis, target, native_target, fingerprint).is_some()
+}
+
+fn ensure_typed_ir_function_artifacts(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    records: &[TypedIrFunctionManifestRecord],
+) {
+    let mut current = BTreeSet::new();
+    for record in records {
+        current.insert(persist_typed_ir_function_artifact(
+            directory,
+            native_target,
+            record.module_name.clone(),
+            record.function_name.clone(),
+            record.shape_hash,
+            &record.manifest_line,
+        ));
+    }
+    prune_typed_ir_function_cache(directory, &current);
 }
 
 /// Publish a separately addressable typed-IR artifact for one function.
@@ -9393,7 +9430,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_ir_manifest_rebuild_repairs_missing_function_artifact() {
+    fn typed_ir_whole_c_hit_repairs_function_artifacts_without_cfg_rebuild() {
         let root = test_path("typed-ir-repair");
         fs::create_dir_all(&root).expect("typed IR repair fixture should be writable");
         let entry = root.join("main.flux");
@@ -9408,28 +9445,44 @@ mod tests {
             .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
             .expect("initial codegen should succeed");
         let ir_dir = root.join(".flux/ir-cache");
-        let missing = fs::read_dir(&ir_dir)
+        let artifact = fs::read_dir(&ir_dir)
             .expect("typed IR cache should exist")
             .filter_map(Result::ok)
             .find(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
             .expect("function artifact should be published")
             .path();
-        fs::remove_file(&missing).expect("function artifact should be removable");
-        let codegen = fs::read_dir(root.join(".flux/cache"))
-            .expect("codegen cache should exist")
-            .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("codegen-"))
-            .expect("codegen artifact should be published")
-            .path();
-        fs::remove_file(codegen).expect("codegen artifact should be removable");
+        let original = fs::read_to_string(&artifact).expect("function artifact should be readable");
 
+        fs::remove_file(&artifact).expect("function artifact should be removable");
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
         analysis
             .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
-            .expect("codegen miss should repair typed IR artifacts");
-        assert!(
-            missing.exists(),
-            "missing function artifact should be restored"
+            .expect("whole-C hit should repair a missing typed IR function artifact");
+        assert_eq!(
+            fs::read_to_string(&artifact).expect("missing function artifact should be restored"),
+            original
         );
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            0,
+            "a valid aggregate manifest should repair a missing function artifact without renormalizing any CFG"
+        );
+
+        fs::write(&artifact, "corrupt\npayload").expect("function artifact should be corruptible");
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("whole-C hit should repair a corrupt typed IR function artifact");
+        assert_eq!(
+            fs::read_to_string(&artifact).expect("corrupt function artifact should be repaired"),
+            original
+        );
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            0,
+            "repairing a corrupt function artifact from the aggregate record should not renormalize CFGs"
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 }
