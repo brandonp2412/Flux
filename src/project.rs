@@ -96,6 +96,12 @@ impl ProjectAnalysis {
             &mut current,
             &mut previous_literals,
         )?;
+        development_ui_minimum_size_lifecycle_defaults(
+            self,
+            previous,
+            &mut current,
+            &mut previous_literals,
+        )?;
         development_ui_text_variant_lifecycle_defaults(
             self,
             previous,
@@ -2192,6 +2198,119 @@ fn development_ui_margin_side_lifecycle_defaults(
     Some(())
 }
 
+fn development_ui_minimum_size_lifecycle_defaults(
+    current_analysis: &ProjectAnalysis,
+    previous_analysis: &ProjectAnalysis,
+    current: &mut BTreeMap<(String, String), String>,
+    previous: &mut BTreeMap<(String, String), String>,
+) -> Option<()> {
+    let current_application = current_analysis.program.application.as_ref()?;
+    let previous_application = previous_analysis.program.application.as_ref()?;
+    let current_view = current_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == current_application.view_name)?;
+    let previous_view = previous_analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == previous_application.view_name)?;
+
+    for current_element in &current_view.elements {
+        let Some(previous_element) = previous_view.elements.iter().find(|element| {
+            element.name == current_element.name && element.kind == current_element.kind
+        }) else {
+            continue;
+        };
+        for property in ["min_width", "min_height"] {
+            let current_has = development_ui_element_has_property(current_element, property);
+            let previous_has = development_ui_element_has_property(previous_element, property);
+            if current_has == previous_has {
+                continue;
+            }
+            if !development_ui_minimum_size_lifecycle_supported(current_element, property)
+                || !development_ui_minimum_size_lifecycle_supported(previous_element, property)
+            {
+                return None;
+            }
+            let key = (current_element.name.clone(), property.to_string());
+            if !current.contains_key(&key) {
+                current.insert(
+                    key.clone(),
+                    development_ui_minimum_size_lifecycle_default(
+                        current_view,
+                        current_element,
+                        property,
+                    )?,
+                );
+            }
+            if !previous.contains_key(&key) {
+                previous.insert(
+                    key,
+                    development_ui_minimum_size_lifecycle_default(
+                        previous_view,
+                        previous_element,
+                        property,
+                    )?,
+                );
+            }
+        }
+    }
+    Some(())
+}
+
+fn development_ui_minimum_size_lifecycle_default(
+    view: &crate::ast::ViewDef,
+    element: &ViewElement,
+    property: &str,
+) -> Option<String> {
+    let (tracks, track_index, maximum_property) = match property {
+        "min_width" => (
+            &view.grid.columns,
+            element.column.saturating_sub(1) as usize,
+            "max_width",
+        ),
+        "min_height" => (
+            &view.grid.rows,
+            element.row.saturating_sub(1) as usize,
+            "max_height",
+        ),
+        _ => return None,
+    };
+    if let Some(crate::ast::GridTrack::Units(value)) = tracks.get(track_index) {
+        if *value > i32::MAX as u32 {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    if !development_ui_element_has_property(element, maximum_property)
+        && matches!(
+            element.kind.as_str(),
+            "Button" | "TextInput" | "Toggle" | "Radio"
+        )
+    {
+        return Some("40".to_string());
+    }
+    Some("-1".to_string())
+}
+
+fn development_ui_minimum_size_lifecycle_supported(element: &ViewElement, property: &str) -> bool {
+    if !matches!(property, "min_width" | "min_height")
+        || !development_ui_i64_property_is_patchable(element, property)
+    {
+        return false;
+    }
+    element
+        .properties
+        .iter()
+        .find(|candidate| typecheck::source_name_to_internal(&candidate.name) == property)
+        .is_none_or(|candidate| {
+            development_ui_i64_literal_value(&candidate.value)
+                .is_some_and(|value| (1..=i64::from(i32::MAX)).contains(&value))
+        })
+}
+
 fn development_ui_text_variant_lifecycle_defaults(
     current_analysis: &ProjectAnalysis,
     previous_analysis: &ProjectAnalysis,
@@ -2569,6 +2688,12 @@ fn development_ui_property_lifecycle_patch_value(
         if !(0..=i64::from(i32::MAX)).contains(&value) {
             return None;
         }
+        return Some(value.to_string());
+    }
+    if matches!(property_name.as_str(), "min_width" | "min_height")
+        && development_ui_minimum_size_lifecycle_supported(element, &property_name)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
         return Some(value.to_string());
     }
     if DEVELOPMENT_UI_TRANSFORM_PROPERTIES.contains(&property_name.as_str())

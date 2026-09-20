@@ -50291,6 +50291,133 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_minimum_size_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-minimum-size-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary minimum-size lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 120
+    grid rows: auto
+    Text label at 1,1
+        text: "Sized"
+        maxWidth: 200
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial minimum-size lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial minimum-size lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial minimum-size lifecycle fixture should lower for Linux");
+    assert!(
+        generated
+            .contains("strcmp(property, \"min_width\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(
+        generated
+            .contains("strcmp(property, \"min_height\") == 0 && flux__ui_constraint_label != NULL")
+    );
+    assert!(
+        generated
+            .contains("integer_value == -1 || (integer_value >= 1 && integer_value <= INT32_MAX)")
+    );
+    assert!(generated.contains("if (patched_size < INT64_C(120)) patched_size = INT64_C(120)"));
+
+    let explicit = initial.replace(
+        "        maxWidth: 200\n",
+        "        maxWidth: 200\n        minWidth: 140\n        minHeight: 30\n",
+    );
+    let entry = fs::canonicalize(entry).expect("minimum-size lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit minimum sizes should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit minimum sizes should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal minimum sizes should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_width".to_string())),
+        Some(&"140".to_string())
+    );
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_height".to_string())),
+        Some(&"30".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed minimum sizes should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed minimum sizes should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing literal minimum sizes should restore compiler defaults")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_width".to_string())),
+        Some(&"120".to_string()),
+        "removing minWidth must restore the fixed grid-track floor"
+    );
+    assert_eq!(
+        patch.get(&("label".to_string(), "min_height".to_string())),
+        Some(&"-1".to_string()),
+        "removing minHeight must restore GTK's unconstrained native request"
+    );
+    assert_eq!(patch.len(), 2);
+
+    let dynamic_maximum = r#"view Screen {
+    state limit: i64 = 200
+    grid columns: auto
+    grid rows: auto
+    Text label at 1,1
+        text: "Sized"
+        maxWidth: limit
+}
+app Screen
+"#;
+    fs::write(&entry, dynamic_maximum).expect("dynamic maximum source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic maximum source should analyze");
+    let dynamic_minimum = dynamic_maximum.replace(
+        "        maxWidth: limit\n",
+        "        maxWidth: limit\n        minWidth: 80\n",
+    );
+    fs::write(&entry, dynamic_minimum)
+        .expect("dynamic-maximum minimum-size edit should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic-maximum minimum-size edit should analyze");
+    assert!(
+        dynamic_second
+            .development_ui_string_patch_from(&dynamic_first)
+            .is_none(),
+        "minimum-size declaration lifecycle with a dynamic maximum must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_unconstrained_minimum_sizes() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-minimum-size-patch-{}",
