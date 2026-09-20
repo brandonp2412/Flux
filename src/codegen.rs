@@ -2605,7 +2605,9 @@ fn emit_runtime_prelude(
             || uses_windows_message_box
             || uses_windows_open
             || uses_windows_font_family
-            || runtime_usage.contains("flux__focus_"))
+            || runtime_usage.contains("flux__focus_")
+            || runtime_usage.contains("flux__text_input_selection_")
+            || runtime_usage.contains("flux__text_input_set_"))
     {
         out.push_str("static HWND flux__windows_active_window = NULL;\n");
     }
@@ -3735,6 +3737,24 @@ fn emit_runtime_prelude(
         }
         if uses_text_input_set_caret || uses_text_input_set_selection {
             out.push_str("static bool flux__text_input_set_selection(int64_t start, int64_t end) { if (start < 0 || end < start || start > INT32_MAX || end > INT32_MAX) return false; GtkWidget *widget = flux__text_input_focused_widget(); if (widget == NULL) return false; if (GTK_IS_EDITABLE(widget)) { const char *text = gtk_editable_get_text(GTK_EDITABLE(widget)); if (text == NULL || end > (int64_t)g_utf8_strlen(text, -1)) return false; gtk_editable_select_region(GTK_EDITABLE(widget), (int)start, (int)end); return true; } GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)); if (end > (int64_t)gtk_text_buffer_get_char_count(buffer)) return false; GtkTextIter start_iter; GtkTextIter end_iter; gtk_text_buffer_get_iter_at_offset(buffer, &start_iter, (int)start); gtk_text_buffer_get_iter_at_offset(buffer, &end_iter, (int)end); gtk_text_buffer_select_range(buffer, &end_iter, &start_iter); return true; }\n");
+            if uses_text_input_set_caret {
+                out.push_str("static inline bool flux__text_input_set_caret(int64_t position) { return flux__text_input_set_selection(position, position); }\n");
+            }
+        }
+    }
+    if uses_portable_text_input_selection && uses_windows {
+        out.push_str("static HWND flux__windows_focused_text_input(void) { HWND control = GetFocus(); if (control == NULL) return NULL; char class_name[16] = {0}; if (GetClassNameA(control, class_name, (int)(sizeof(class_name) / sizeof(class_name[0]))) <= 0) return NULL; return lstrcmpiA(class_name, \"Edit\") == 0 ? control : NULL; }\n");
+        if uses_text_input_selection_start || uses_text_input_selection_end {
+            out.push_str("static int64_t flux__windows_text_input_selection_position(bool end) { HWND control = flux__windows_focused_text_input(); if (control == NULL) return INT64_C(-1); DWORD start = 0; DWORD finish = 0; (void)SendMessageA(control, EM_GETSEL, (WPARAM)&start, (LPARAM)&finish); return (int64_t)(end ? finish : start); }\n");
+            if uses_text_input_selection_start {
+                out.push_str("static inline int64_t flux__text_input_selection_start(void) { return flux__windows_text_input_selection_position(false); }\n");
+            }
+            if uses_text_input_selection_end {
+                out.push_str("static inline int64_t flux__text_input_selection_end(void) { return flux__windows_text_input_selection_position(true); }\n");
+            }
+        }
+        if uses_text_input_set_caret || uses_text_input_set_selection {
+            out.push_str("static bool flux__text_input_set_selection(int64_t start, int64_t end) { if (start < 0 || end < start || start > INT32_MAX || end > INT32_MAX) return false; HWND control = flux__windows_focused_text_input(); if (control == NULL) return false; int length = GetWindowTextLengthA(control); if (length < 0 || end > (int64_t)length) return false; (void)SendMessageA(control, EM_SETSEL, (WPARAM)(INT_PTR)start, (LPARAM)(INT_PTR)end); return true; }\n");
             if uses_text_input_set_caret {
                 out.push_str("static inline bool flux__text_input_set_caret(int64_t position) { return flux__text_input_set_selection(position, position); }\n");
             }

@@ -56649,6 +56649,23 @@ app Screen(onStart: started)
     assert!(android.contains("\"getSelectionEnd\""));
     assert!(android.contains("\"setSelection\", \"(II)V\""));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable TextInput selection should lower on Windows");
+    assert!(windows.contains("static HWND flux__windows_focused_text_input(void)"));
+    assert!(windows.contains("GetClassNameA(control, class_name"));
+    assert!(windows.contains("lstrcmpiA(class_name, \"Edit\")"));
+    assert!(windows.contains("SendMessageA(control, EM_GETSEL"));
+    assert!(windows.contains("static inline int64_t flux__text_input_selection_start(void)"));
+    assert!(windows.contains("static inline int64_t flux__text_input_selection_end(void)"));
+    assert!(windows.contains("GetWindowTextLengthA(control)"));
+    assert!(windows.contains("SendMessageA(control, EM_SETSEL"));
+    assert!(windows.contains("static inline bool flux__text_input_set_caret(int64_t position)"));
+
     let unused = r#"
 fn unused() -> void {
     textInput.setCaret(1)
