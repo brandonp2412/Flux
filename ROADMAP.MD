@@ -1524,6 +1524,8 @@ Verified Milestone 29 selectable-text lifecycle follow-up: literal Text `selecta
 
 Verified Milestone 29 text-wrap lifecycle follow-up: literal Text `wrap` declarations are now ABI-stable whether present or omitted. The compiler-owned portable default remains `true`; the GTK wrap patch path is emitted even when the property was absent at launch, explicit `true` is a no-op, `false` updates the existing label in process, and removing the declaration restores wrapping. State-driven wrap behavior remains structural and uses controlled restart.
 
+Verified Milestone 29 shortcut-scope lifecycle follow-up: elements with a compile-time `shortcut` now treat literal `shortcutScope` declarations as ABI-stable whether present or omitted. The compiler-owned omitted scope is `window`; Linux development runners retain the GTK shortcut-controller scope patch path from launch, explicit `window` is an in-process no-op, `focused` hot-applies to the existing controller, and declaration removal restores window scope without replacing the shortcut or restarting the process. Elements without a shortcut remain structural so hot reload cannot synthesize shortcut machinery that was absent at launch.
+
 # Milestone 29 — Flux 1.0 stability
 
 - [x] Stable grammar: the accepted Flux source grammar now has an explicit compatibility version (`GRAMMAR_VERSION = 1`), `flux grammar --version` exposes that version to tooling without human-output scraping, and `docs/grammar.md` defines the version-1 compatibility contract for additive syntax, breaking parse/token/precedence/keyword changes, and separation from formatter/diagnostic/package-format versioning. Regression coverage pins the library constant and user-facing CLI result.

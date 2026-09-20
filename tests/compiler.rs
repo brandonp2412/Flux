@@ -48939,7 +48939,6 @@ fn development_ui_string_patch_hot_applies_shortcut_scope() {
     Button action at 1,1
         text: "Add"
         shortcut: "Ctrl+K"
-        shortcutScope: "focused"
         onPress: count => count + 1
 }
 app Shortcuts
@@ -48950,23 +48949,7 @@ app Shortcuts
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial shortcut-scope patch analysis should succeed");
-
-    let updated = initial.replace("shortcutScope: \"focused\"", "shortcutScope: \"window\"");
-    fs::write(&entry, updated).expect("updated shortcut-scope patch source should be writable");
-    let entry = fs::canonicalize(entry).expect("shortcut-scope patch entry should canonicalize");
-    cache.invalidate_path(&entry);
-    let second = cache
-        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("updated shortcut-scope patch analysis should succeed");
-    let patch = second
-        .development_ui_string_patch_from(&first)
-        .expect("shortcutScope edits should hot-apply to the existing native controller");
-    assert_eq!(patch.len(), 1);
-    assert_eq!(patch[0].element, "action");
-    assert_eq!(patch[0].property, "shortcut_scope");
-    assert_eq!(patch[0].value, "window");
-
-    let generated = second
+    let generated = first
         .emit_c()
         .expect("shortcut-scope patch fixture should lower for Linux");
     assert!(
@@ -48974,17 +48957,65 @@ app Shortcuts
             .contains("static GtkShortcutController *flux__ui_shortcut_controller_action = NULL")
     );
     assert!(generated.contains(
-        "flux__ui_shortcut_controller_action = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new())"
-    ));
-    assert!(generated.contains(
         "strcmp(property, \"shortcut_scope\") == 0 && flux__ui_shortcut_controller_action != NULL"
     ));
     assert!(generated.contains(
         "gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_action, GTK_SHORTCUT_SCOPE_GLOBAL)"
     ));
-    assert!(generated.contains(
-        "gtk_widget_add_controller(flux__ui_action, GTK_EVENT_CONTROLLER(flux__ui_shortcut_controller_action))"
-    ));
+
+    let entry = fs::canonicalize(entry).expect("shortcut-scope patch entry should canonicalize");
+    let explicit_default = initial.replace(
+        "        shortcut: \"Ctrl+K\"\n",
+        "        shortcut: \"Ctrl+K\"\n        shortcutScope: \"window\"\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit default shortcut scope should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit default shortcut-scope analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding explicit window scope should be an in-process no-op"
+    );
+
+    let focused =
+        explicit_default.replace("shortcutScope: \"window\"", "shortcutScope: \"focused\"");
+    fs::write(&entry, &focused).expect("focused shortcut scope should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("focused shortcut-scope analysis should succeed");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("focused shortcut scope should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "shortcut_scope".to_string(),
+            value: "focused".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed shortcut scope should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed shortcut-scope analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing shortcutScope should restore window scope"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "shortcut_scope".to_string(),
+            value: "window".to_string(),
+        }]
+    );
 
     let _ = fs::remove_dir_all(root);
 }

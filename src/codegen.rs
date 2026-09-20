@@ -17815,7 +17815,7 @@ fn emit_linux_gtk_application(
                 element.name,
             ));
         }
-        if view_property(element, "shortcut_scope").is_some() {
+        if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut_scope\") == 0 && flux__ui_shortcut_controller_{} != NULL) {{ if (strcmp(value, \"window\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_GLOBAL); else if (strcmp(value, \"focused\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_LOCAL); }}",
                 c_string(&element.name),
