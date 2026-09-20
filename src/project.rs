@@ -18,6 +18,11 @@ const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
 
+#[cfg(test)]
+thread_local! {
+    static PROJECT_TYPED_IR_CFG_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectSource {
     pub path: PathBuf,
@@ -320,14 +325,14 @@ fn persist_typed_ir_manifest(
     let directory = root.join(".flux").join("ir-cache");
     let path = directory.join(format!("ir-{fingerprint:016x}.manifest"));
     let header_prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{fingerprint:016x}:");
-    let manifest_is_current = if let Ok(cached) = fs::read_to_string(&path)
+    let cached_manifest = if let Ok(cached) = fs::read_to_string(&path)
         && let Some((header, manifest)) = cached.split_once('\n')
         && let Some(checksum) = header.strip_prefix(&header_prefix)
         && checksum == format!("{:016x}", stable_bytes_hash(manifest.as_bytes()))
     {
-        true
+        Some(manifest.to_string())
     } else {
-        false
+        None
     };
     let mut manifest = String::new();
     manifest.push_str(PROJECT_TYPED_IR_CACHE_VERSION);
@@ -336,7 +341,7 @@ fn persist_typed_ir_manifest(
     manifest.push('\n');
     let mut function_artifacts = Vec::new();
     for function in &analysis.program.functions {
-        let cfg = crate::ir::ControlFlowGraph::from_function(function, &analysis.signatures);
+        let cfg = project_typed_ir_cfg(function, &analysis.signatures);
         let definitions = cfg
             .nodes()
             .iter()
@@ -405,6 +410,7 @@ fn persist_typed_ir_manifest(
             function_manifest_line,
         ));
     }
+    let manifest_is_current = cached_manifest.as_deref() == Some(manifest.as_str());
     let checksum = stable_bytes_hash(manifest.as_bytes());
     let header = format!("{header_prefix}{checksum:016x}\n");
     if fs::create_dir_all(&directory).is_err() {
@@ -448,6 +454,15 @@ fn persist_typed_ir_manifest(
     }
 }
 
+fn project_typed_ir_cfg(
+    function: &crate::ast::Function,
+    signatures: &typecheck::Signatures,
+) -> crate::ir::ControlFlowGraph {
+    #[cfg(test)]
+    PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(builds.get() + 1));
+    crate::ir::ControlFlowGraph::from_function(function, signatures)
+}
+
 fn typed_ir_manifest_is_current(
     analysis: &ProjectAnalysis,
     target: &Path,
@@ -476,28 +491,72 @@ fn typed_ir_manifest_is_current(
     if checksum != format!("{:016x}", stable_bytes_hash(manifest.as_bytes())) {
         return false;
     }
-    manifest.starts_with(&format!(
-        "{PROJECT_TYPED_IR_CACHE_VERSION}\n{}\n",
-        native_target_cache_tag(native_target)
-    )) && analysis.program.functions.iter().all(|function| {
-        let module_name = analysis
-            .sources
-            .iter()
-            .find(|source| source.source_id == function.span.source_id)
-            .map(|source| source.module_name.as_str())
-            .unwrap_or("<unknown>");
-        let cfg = crate::ir::ControlFlowGraph::from_function(function, &analysis.signatures);
-        let shape_hash = normalized_cfg_shape_hash(&cfg);
-        manifest.lines().any(|line| {
-            line.starts_with("function\t")
-                && line
-                    .split('\t')
-                    .nth(1)
-                    .is_some_and(|name| name == function.name)
-                && line.contains(&format!("\tmodule={module_name}\t"))
-                && line.contains(&format!("\tshape={shape_hash:016x}\t"))
+    let mut lines = manifest.lines();
+    if lines.next() != Some(PROJECT_TYPED_IR_CACHE_VERSION)
+        || lines.next() != Some(native_target_cache_tag(native_target))
+    {
+        return false;
+    }
+
+    let expected = analysis
+        .program
+        .functions
+        .iter()
+        .map(|function| {
+            let module_name = analysis
+                .sources
+                .iter()
+                .find(|source| source.source_id == function.span.source_id)
+                .map(|source| source.module_name.as_str())
+                .unwrap_or("<unknown>");
+            (function.name.as_str(), module_name)
         })
-    })
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    for line in lines {
+        let mut fields = line.split('\t');
+        if fields.next() != Some("function") {
+            return false;
+        }
+        let Some(function_name) = fields.next() else {
+            return false;
+        };
+        let Some(module_name) = fields
+            .next()
+            .and_then(|field| field.strip_prefix("module="))
+        else {
+            return false;
+        };
+        let Some(shape) = fields.next().and_then(|field| field.strip_prefix("shape=")) else {
+            return false;
+        };
+        if shape.len() != 16 || !shape.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        for prefix in [
+            "nodes=",
+            "edges=",
+            "values=",
+            "reachable=",
+            "definitions=",
+            "borrows=",
+            "moves=",
+            "calls=",
+            "returns=",
+            "drops=",
+        ] {
+            let Some(value) = fields.next().and_then(|field| field.strip_prefix(prefix)) else {
+                return false;
+            };
+            if value.parse::<usize>().is_err() {
+                return false;
+            }
+        }
+        if fields.next().is_some() || !observed.insert((function_name, module_name)) {
+            return false;
+        }
+    }
+    observed == expected
 }
 
 /// Publish a separately addressable typed-IR artifact for one function.
@@ -8651,6 +8710,101 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn typed_ir_manifest_validation_does_not_rebuild_normalized_cfgs() {
+        let root = test_path("typed-ir-current-no-cfg-rebuild");
+        fs::create_dir_all(&root).expect("typed IR validation fixture should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn helper(value: i64) -> i64 {\n    return value + 1\n}\nfn main() -> i64 {\n    return helper(41)\n}\n",
+        )
+        .expect("typed IR validation source should be writable");
+
+        let analysis = super::analyze(&entry).expect("typed IR validation fixture should analyze");
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        let first = analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("initial typed IR validation codegen should succeed");
+        let initial_builds = super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get);
+        assert_eq!(
+            initial_builds,
+            analysis.program.functions.len(),
+            "initial manifest publication should normalize each function exactly once"
+        );
+
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        let cached = analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("whole-C cache hit should validate typed IR metadata");
+        assert_eq!(first, cached);
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            0,
+            "a checksum-validated manifest keyed by the exact codegen fingerprint must not rebuild CFGs merely to prove its own identity"
+        );
+
+        let fingerprint =
+            super::codegen_cache_fingerprint(&analysis, crate::codegen::NativeTarget::Linux);
+        let manifest_path = root
+            .join(".flux/ir-cache")
+            .join(format!("ir-{fingerprint:016x}.manifest"));
+        let persisted =
+            fs::read_to_string(&manifest_path).expect("typed IR manifest should be readable");
+        let (_, payload) = persisted
+            .split_once('\n')
+            .expect("typed IR manifest should have a header");
+        let malformed = payload
+            .lines()
+            .map(|line| {
+                if line.starts_with("function\t") {
+                    line.split('\t').take(4).collect::<Vec<_>>().join("\t")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let malformed_header = format!(
+            "{}:{fingerprint:016x}:{:016x}\n",
+            super::PROJECT_TYPED_IR_CACHE_VERSION,
+            super::stable_bytes_hash(malformed.as_bytes())
+        );
+        fs::write(&manifest_path, format!("{malformed_header}{malformed}"))
+            .expect("malformed typed IR manifest should be writable");
+        assert!(
+            !super::typed_ir_manifest_is_current(
+                &analysis,
+                &root,
+                crate::codegen::NativeTarget::Linux,
+                fingerprint,
+            ),
+            "checksum-valid but structurally truncated function records must be rejected"
+        );
+
+        super::PROJECT_TYPED_IR_CFG_BUILDS.with(|builds| builds.set(0));
+        analysis
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("whole-C hit should repair malformed typed IR metadata");
+        assert_eq!(
+            super::PROJECT_TYPED_IR_CFG_BUILDS.with(std::cell::Cell::get),
+            analysis.program.functions.len(),
+            "repairing malformed typed IR metadata should rebuild each normalized function once"
+        );
+        assert!(
+            super::typed_ir_manifest_is_current(
+                &analysis,
+                &root,
+                crate::codegen::NativeTarget::Linux,
+                fingerprint,
+            ),
+            "malformed typed IR metadata should be replaced by a current manifest"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
