@@ -17763,12 +17763,10 @@ fn emit_linux_gtk_application(
             _ => {}
         }
         for (property_name, setter) in [("align_x", "halign"), ("align_y", "valign")] {
-            if view_property(element, property_name).is_some() {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ GtkAlign alignment = GTK_ALIGN_START; bool alignment_valid = true; if (strcmp(value, \"start\") == 0) alignment = GTK_ALIGN_START; else if (strcmp(value, \"center\") == 0) alignment = GTK_ALIGN_CENTER; else if (strcmp(value, \"end\") == 0) alignment = GTK_ALIGN_END; else if (strcmp(value, \"fill\") == 0) alignment = GTK_ALIGN_FILL; else alignment_valid = false; if (alignment_valid) gtk_widget_set_{setter}({widget}, alignment); }}",
-                    c_string(&element.name)
-                ));
-            }
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {host} != NULL) {{ GtkAlign alignment = GTK_ALIGN_START; bool alignment_valid = true; if (strcmp(value, \"start\") == 0) alignment = GTK_ALIGN_START; else if (strcmp(value, \"center\") == 0) alignment = GTK_ALIGN_CENTER; else if (strcmp(value, \"end\") == 0) alignment = GTK_ALIGN_END; else if (strcmp(value, \"fill\") == 0) alignment = GTK_ALIGN_FILL; else alignment_valid = false; if (alignment_valid) gtk_widget_set_{setter}({host}, alignment); }}",
+                c_string(&element.name)
+            ));
         }
         if element.kind != "TextInput" || view_property(element, "validation_message").is_none() {
             out.push_str(&format!(

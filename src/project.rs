@@ -2334,6 +2334,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if matches!(property_name.as_str(), "align_x" | "align_y") {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(value.as_str(), "start" | "center" | "end" | "fill") {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "text_align" && element.kind == "Text" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2529,6 +2538,9 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "variant" && element.kind == "Text" {
         return Some("body".to_string());
+    }
+    if matches!(property, "align_x" | "align_y") {
+        return Some("fill".to_string());
     }
     if property == "text_align" && element.kind == "Text" {
         return Some("left".to_string());
@@ -3166,6 +3178,8 @@ fn development_ui_string_literals(
             "max_lines",
             "letter_spacing",
             "line_height_percent",
+            "align_x",
+            "align_y",
             "text_align",
             "wrap_mode",
             "ellipsize",

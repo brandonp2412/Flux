@@ -44588,6 +44588,120 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_common_alignment_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-common-alignment-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary common alignment lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"fn tapped() -> void {
+    print("tap")
+}
+
+view Screen {
+    state alignment: str = "end"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text body at 1,1
+        text: "Body"
+    Text tappable at 2,1
+        text: "Tappable"
+        onTap: tapped
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial common alignment source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial common alignment source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("common alignment lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"align_x\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("strcmp(property, \"align_y\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("gtk_widget_set_halign(flux__ui_action_tappable, alignment)"));
+    assert!(generated.contains("gtk_widget_set_valign(flux__ui_action_tappable, alignment)"));
+
+    let entry = fs::canonicalize(entry).expect("common alignment entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        alignX: \"fill\"\n        alignY: \"fill\"\n",
+    );
+    fs::write(&entry, &explicit_default)
+        .expect("explicit common alignment defaults should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit common alignment defaults should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding implicit fill alignment must not change the development ABI"
+    );
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding explicit fill alignment should be an in-process no-op"
+    );
+
+    let centered = explicit_default.replace("alignX: \"fill\"", "alignX: \"center\"");
+    fs::write(&entry, &centered).expect("centered common alignment source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("centered common alignment source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("center alignment should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "align_x".to_string(),
+            value: "center".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed common alignment source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed common alignment source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing alignment should restore fill"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "align_x".to_string(),
+            value: "fill".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text body at 1,1\n",
+        "    Text body at 1,1\n        alignX: alignment\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic common alignment source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic common alignment source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fourth).is_none(),
+        "state-driven common alignment must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_align_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-align-lifecycle-{}",
