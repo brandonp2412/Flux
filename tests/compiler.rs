@@ -48864,13 +48864,18 @@ app Screen
         .next()
         .expect("base scale handler should have a bounded body");
     assert!(
-        scale_handler.contains("flux__ui_hot_transform_card_scale_x = (int)integer_value"),
+        scale_handler.contains(
+            "if (!flux__ui_hot_transform_card_scale_x_explicit) flux__ui_hot_transform_card_scale_x = (int)integer_value"
+        ),
         "base scale should update the non-overridden X scale"
     );
     assert!(
-        !scale_handler.contains("flux__ui_hot_transform_card_scale_y = (int)integer_value"),
-        "base scale must preserve the explicit Y scale override"
+        scale_handler.contains(
+            "if (!flux__ui_hot_transform_card_scale_y_explicit) flux__ui_hot_transform_card_scale_y = (int)integer_value"
+        ),
+        "base scale must guard the explicit Y scale override"
     );
+    assert!(generated.contains("static bool flux__ui_hot_transform_card_scale_y_explicit = true"));
 
     let dynamic_initial = r#"view Screen {
     state offset: i64 = 0
@@ -49041,6 +49046,195 @@ app Screen
     assert!(
         dynamic.development_ui_string_patch_from(&third).is_none(),
         "adding a state-driven transform must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_scale_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-scale-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary scale lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state factor: i64 = 120
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Scale"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial scale lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial scale lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial scale lifecycle fixture should lower for Linux");
+    for declaration in [
+        "static int flux__ui_hot_transform_card_scale_base = 100",
+        "static int flux__ui_hot_transform_card_scale_x = 100",
+        "static int flux__ui_hot_transform_card_scale_y = 100",
+        "static bool flux__ui_hot_transform_card_scale_x_explicit = false",
+        "static bool flux__ui_hot_transform_card_scale_y_explicit = false",
+    ] {
+        assert!(
+            generated.contains(declaration),
+            "missing retained scale lifecycle state {declaration}"
+        );
+    }
+    assert!(
+        generated.contains("strcmp(property, \"scale_percent\") == 0 && flux__ui_card != NULL")
+    );
+    assert!(generated.contains(
+        "flux__ui_hot_transform_card_scale_base = (int)integer_value; if (!flux__ui_hot_transform_card_scale_x_explicit) flux__ui_hot_transform_card_scale_x = (int)integer_value; if (!flux__ui_hot_transform_card_scale_y_explicit) flux__ui_hot_transform_card_scale_y = (int)integer_value"
+    ));
+    for axis in ["x", "y"] {
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"scale_{axis}_percent\") == 0 && flux__ui_card != NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "flux__ui_hot_transform_card_scale_{axis}_explicit = false; flux__ui_hot_transform_card_scale_{axis} = flux__ui_hot_transform_card_scale_base"
+        )));
+        assert!(generated.contains(&format!(
+            "flux__ui_hot_transform_card_scale_{axis}_explicit = true; flux__ui_hot_transform_card_scale_{axis} = (int)integer_value"
+        )));
+    }
+
+    let base = initial.replace(
+        "        text: \"Scale\"\n",
+        "        text: \"Scale\"\n        scalePercent: 120\n",
+    );
+    let entry = fs::canonicalize(entry).expect("scale lifecycle entry should canonicalize");
+    fs::write(&entry, &base).expect("base scale should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("base scale should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding base scale should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "scale_percent".to_string(),
+            value: "120".to_string(),
+        }]
+    );
+
+    let axes = base.replace(
+        "        scalePercent: 120\n",
+        "        scalePercent: 120\n        scaleXPercent: 150\n        scaleYPercent: 80\n",
+    );
+    fs::write(&entry, &axes).expect("axis scale overrides should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("axis scale overrides should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("adding axis scale overrides should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("card".to_string(), "scale_x_percent".to_string())),
+        Some(&"150".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "scale_y_percent".to_string())),
+        Some(&"80".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let base_updated = axes.replace("scalePercent: 120", "scalePercent: 130");
+    fs::write(&entry, &base_updated).expect("updated base scale should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated base scale should analyze");
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("base scale edits should preserve explicit axes"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "scale_percent".to_string(),
+            value: "130".to_string(),
+        }]
+    );
+
+    let x_removed = base_updated.replace("        scaleXPercent: 150\n", "");
+    fs::write(&entry, &x_removed).expect("removed X scale should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed X scale should analyze");
+    assert_eq!(
+        fifth
+            .development_ui_string_patch_from(&fourth)
+            .expect("removing X scale should restore the live base"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "scale_x_percent".to_string(),
+            value: "__flux_transform_scale_axis_default__".to_string(),
+        }]
+    );
+
+    let y_removed = x_removed.replace("        scaleYPercent: 80\n", "");
+    fs::write(&entry, &y_removed).expect("removed Y scale should be writable");
+    cache.invalidate_path(&entry);
+    let sixth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed Y scale should analyze");
+    assert_eq!(
+        sixth
+            .development_ui_string_patch_from(&fifth)
+            .expect("removing Y scale should restore the live base"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "scale_y_percent".to_string(),
+            value: "__flux_transform_scale_axis_default__".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed base scale should be writable");
+    cache.invalidate_path(&entry);
+    let seventh = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed base scale should analyze");
+    assert_eq!(
+        seventh
+            .development_ui_string_patch_from(&sixth)
+            .expect("removing base scale should restore 100%"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "card".to_string(),
+            property: "scale_percent".to_string(),
+            value: "100".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        text: \"Scale\"\n",
+        "        text: \"Scale\"\n        scalePercent: factor\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic scale should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic scale should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&seventh).is_none(),
+        "adding a state-driven scale must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);

@@ -2023,6 +2023,8 @@ const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
     "__flux_accessibility_property_default__";
 const DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_shadow_property_default__";
 const DEVELOPMENT_BORDER_STYLE_DEFAULT_SENTINEL: &str = "__flux_border_style_default__";
+const DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL: &str =
+    "__flux_transform_scale_axis_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2569,7 +2571,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
-    if DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES.contains(&property_name.as_str())
+    if DEVELOPMENT_UI_TRANSFORM_PROPERTIES.contains(&property_name.as_str())
         && development_ui_transform_is_static_literal(element)
     {
         let value = development_ui_i64_literal_value(&property.value)?;
@@ -3067,17 +3069,17 @@ fn development_ui_property_lifecycle_default(
     {
         return Some("-1".to_string());
     }
-    if DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES.contains(&property)
+    if DEVELOPMENT_UI_TRANSFORM_PROPERTIES.contains(&property)
         && development_ui_transform_is_static_literal(element)
     {
         return Some(
-            if matches!(
-                property,
-                "transform_origin_x_percent" | "transform_origin_y_percent"
-            ) {
-                "50"
-            } else {
-                "0"
+            match property {
+                "scale_percent" => "100",
+                "scale_x_percent" | "scale_y_percent" => {
+                    DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL
+                }
+                "transform_origin_x_percent" | "transform_origin_y_percent" => "50",
+                _ => "0",
             }
             .to_string(),
         );
@@ -3323,16 +3325,6 @@ const DEVELOPMENT_UI_TRANSFORM_PROPERTIES: &[&str] = &[
     "scale_percent",
     "scale_x_percent",
     "scale_y_percent",
-    "skew_x_degrees",
-    "skew_y_degrees",
-    "transform_origin_x_percent",
-    "transform_origin_y_percent",
-];
-
-const DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES: &[&str] = &[
-    "translate_x",
-    "translate_y",
-    "rotate_degrees",
     "skew_x_degrees",
     "skew_y_degrees",
     "transform_origin_x_percent",
@@ -3863,6 +3855,9 @@ fn development_ui_string_literals(
             "translate_x",
             "translate_y",
             "rotate_degrees",
+            "scale_percent",
+            "scale_x_percent",
+            "scale_y_percent",
             "skew_x_degrees",
             "skew_y_degrees",
             "transform_origin_x_percent",

@@ -17455,6 +17455,8 @@ fn emit_linux_gtk_application(
                 static_style_i64(element, "scale_x_percent", signatures)?.unwrap_or(scale);
             let scale_y =
                 static_style_i64(element, "scale_y_percent", signatures)?.unwrap_or(scale);
+            let scale_x_explicit = view_property(element, "scale_x_percent").is_some();
+            let scale_y_explicit = view_property(element, "scale_y_percent").is_some();
             let skew_x = static_style_i64(element, "skew_x_degrees", signatures)?.unwrap_or(0);
             let skew_y = static_style_i64(element, "skew_y_degrees", signatures)?.unwrap_or(0);
             let origin_x =
@@ -17466,6 +17468,7 @@ fn emit_linux_gtk_application(
                 ("translate_x", translate_x),
                 ("translate_y", translate_y),
                 ("rotate", rotate),
+                ("scale_base", scale),
                 ("scale_x", scale_x),
                 ("scale_y", scale_y),
                 ("skew_x", skew_x),
@@ -17477,6 +17480,15 @@ fn emit_linux_gtk_application(
             for (name, value) in values {
                 out.push_str(&format!(
                     "static int {} = {value};\n",
+                    linux_ui_hot_transform_value_c_name(element, name)
+                ));
+            }
+            for (name, explicit) in [
+                ("scale_x_explicit", scale_x_explicit),
+                ("scale_y_explicit", scale_y_explicit),
+            ] {
+                out.push_str(&format!(
+                    "static bool {} = {explicit};\n",
                     linux_ui_hot_transform_value_c_name(element, name)
                 ));
             }
@@ -18262,33 +18274,29 @@ fn emit_linux_gtk_application(
                 ("translate_x", &translate_x),
                 ("translate_y", &translate_y),
                 ("rotate_degrees", &rotate),
-                ("scale_x_percent", &scale_x),
-                ("scale_y_percent", &scale_y),
                 ("skew_x_degrees", &skew_x),
                 ("skew_y_degrees", &skew_y),
                 ("transform_origin_x_percent", &origin_x),
                 ("transform_origin_y_percent", &origin_y),
             ] {
-                if view_property(element, property_name).is_none()
-                    && !STATIC_TRANSFORM_LIFECYCLE_PROPERTIES.contains(&property_name)
-                {
-                    continue;
-                }
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{ {variable} = (int)integer_value;{apply} }} }}",
                     c_string(&element.name)
                 ));
             }
-            if view_property(element, "scale_percent").is_some() {
-                let mut scale_updates = String::new();
-                if view_property(element, "scale_x_percent").is_none() {
-                    scale_updates.push_str(&format!(" {scale_x} = (int)integer_value;"));
-                }
-                if view_property(element, "scale_y_percent").is_none() {
-                    scale_updates.push_str(&format!(" {scale_y} = (int)integer_value;"));
-                }
+            let scale_base = linux_ui_hot_transform_value_c_name(element, "scale_base");
+            let scale_x_explicit = linux_ui_hot_transform_value_c_name(element, "scale_x_explicit");
+            let scale_y_explicit = linux_ui_hot_transform_value_c_name(element, "scale_y_explicit");
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"scale_percent\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{ {scale_base} = (int)integer_value; if (!{scale_x_explicit}) {scale_x} = (int)integer_value; if (!{scale_y_explicit}) {scale_y} = (int)integer_value;{apply} }} }}",
+                c_string(&element.name)
+            ));
+            for (property_name, variable, explicit) in [
+                ("scale_x_percent", &scale_x, &scale_x_explicit),
+                ("scale_y_percent", &scale_y, &scale_y_explicit),
+            ] {
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"scale_percent\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{{scale_updates}{apply} }} }}",
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ if (strcmp(value, \"__flux_transform_scale_axis_default__\") == 0) {{ {explicit} = false; {variable} = {scale_base};{apply} }} else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= INT32_MIN && integer_value <= INT32_MAX) {{ {explicit} = true; {variable} = (int)integer_value;{apply} }} }} }}",
                     c_string(&element.name)
                 ));
             }
@@ -23775,16 +23783,6 @@ const TRANSFORM_VIEW_PROPERTIES: &[&str] = &[
     "scale_percent",
     "scale_x_percent",
     "scale_y_percent",
-    "skew_x_degrees",
-    "skew_y_degrees",
-    "transform_origin_x_percent",
-    "transform_origin_y_percent",
-];
-
-const STATIC_TRANSFORM_LIFECYCLE_PROPERTIES: &[&str] = &[
-    "translate_x",
-    "translate_y",
-    "rotate_degrees",
     "skew_x_degrees",
     "skew_y_degrees",
     "transform_origin_x_percent",
