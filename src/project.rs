@@ -2461,6 +2461,13 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "focus_scope" {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "source" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2614,6 +2621,9 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "shortcut_scope" && development_ui_element_has_property(element, "shortcut") {
         return Some("window".to_string());
+    }
+    if property == "focus_scope" {
+        return Some("-1".to_string());
     }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
         return Some(String::new());
@@ -3193,6 +3203,7 @@ fn development_ui_string_literals(
             "validation_state",
             "status",
             "shortcut_scope",
+            "focus_scope",
             "tooltip",
             "placeholder",
             "max_length",

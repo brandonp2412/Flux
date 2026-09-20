@@ -17965,12 +17965,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "focus_scope").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"focus_scope\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) g_object_set_data(G_OBJECT({widget}), \"flux-focus-scope\", (gpointer)(intptr_t)(integer_value + 1)); }}",
-                c_string(&element.name)
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"focus_scope\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if (integer_value < 0) g_object_set_data(G_OBJECT({widget}), \"flux-focus-scope\", NULL); else g_object_set_data(G_OBJECT({widget}), \"flux-focus-scope\", (gpointer)(intptr_t)(integer_value + 1)); }} }}",
+            c_string(&element.name)
+        ));
         let mut margin_setters = String::new();
         for (property_name, setter) in [
             ("margin_top", "top"),

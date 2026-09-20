@@ -49021,6 +49021,99 @@ app Shortcuts
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_focus_scope_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-focus-scope-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary focus-scope lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Focused {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+}
+app Focused
+"#;
+    fs::write(&entry, initial).expect("initial focus-scope lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial focus-scope lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("focus-scope lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains("strcmp(property, \"focus_scope\") == 0 && flux__ui_action != NULL")
+    );
+    assert!(generated.contains(
+        "if (integer_value < 0) g_object_set_data(G_OBJECT(flux__ui_action), \"flux-focus-scope\", NULL)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("focus-scope lifecycle entry should canonicalize");
+    let scoped = initial.replace(
+        "        text: \"Action\"\n",
+        "        text: \"Action\"\n        focusScope: 7\n",
+    );
+    fs::write(&entry, &scoped).expect("scoped focus source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("scoped focus analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding focusScope should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "focus_scope".to_string(),
+            value: "7".to_string(),
+        }]
+    );
+
+    let rescoped = scoped.replace("focusScope: 7", "focusScope: 9");
+    fs::write(&entry, &rescoped).expect("rescoped focus source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("rescoped focus analysis should succeed");
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("changing focusScope should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "focus_scope".to_string(),
+            value: "9".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed focus scope source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed focus-scope analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing focusScope should restore unscoped navigation"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "focus_scope".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_multiline_placeholder() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-multiline-placeholder-patch-{}",
