@@ -48906,6 +48906,147 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_independent_transform_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-transform-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary transform lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state offset: i64 = 3
+    grid columns: 1fr
+    grid rows: auto
+    Text card at 1,1
+        text: "Transform"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial transform lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial transform lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial transform lifecycle fixture should lower for Linux");
+    assert!(generated.contains("static GtkCssProvider *flux__ui_hot_style_card_transform = NULL"));
+    for declaration in [
+        "static int flux__ui_hot_transform_card_translate_x = 0",
+        "static int flux__ui_hot_transform_card_translate_y = 0",
+        "static int flux__ui_hot_transform_card_rotate = 0",
+        "static int flux__ui_hot_transform_card_skew_x = 0",
+        "static int flux__ui_hot_transform_card_skew_y = 0",
+        "static int flux__ui_hot_transform_card_origin_x = 50",
+        "static int flux__ui_hot_transform_card_origin_y = 50",
+    ] {
+        assert!(
+            generated.contains(declaration),
+            "missing retained transform lifecycle state {declaration}"
+        );
+    }
+    for property in [
+        "translate_x",
+        "translate_y",
+        "rotate_degrees",
+        "skew_x_degrees",
+        "skew_y_degrees",
+        "transform_origin_x_percent",
+        "transform_origin_y_percent",
+    ] {
+        assert!(
+            generated.contains(&format!(
+                "strcmp(property, \"{property}\") == 0 && flux__ui_card != NULL"
+            )),
+            "missing retained transform lifecycle handler for {property}"
+        );
+    }
+
+    let explicit = initial.replace(
+        "        text: \"Transform\"\n",
+        "        text: \"Transform\"\n        translateX: 8\n        rotateDegrees: -15\n        skewYDegrees: 2\n        transformOriginXPercent: 25\n",
+    );
+    let entry = fs::canonicalize(entry).expect("transform lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit transforms should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit transforms should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding independent static transforms should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("card".to_string(), "translate_x".to_string())),
+        Some(&"8".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "rotate_degrees".to_string())),
+        Some(&"-15".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "skew_y_degrees".to_string())),
+        Some(&"2".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "transform_origin_x_percent".to_string())),
+        Some(&"25".to_string())
+    );
+    assert_eq!(patch.len(), 4);
+
+    fs::write(&entry, initial).expect("removed transforms should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed transforms should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing independent static transforms should restore native defaults")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("card".to_string(), "translate_x".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "rotate_degrees".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "skew_y_degrees".to_string())),
+        Some(&"0".to_string())
+    );
+    assert_eq!(
+        patch.get(&("card".to_string(), "transform_origin_x_percent".to_string())),
+        Some(&"50".to_string())
+    );
+    assert_eq!(patch.len(), 4);
+
+    let dynamic = initial.replace(
+        "        text: \"Transform\"\n",
+        "        text: \"Transform\"\n        translateX: offset\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic transform should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic transform should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&third).is_none(),
+        "adding a state-driven transform must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_text_color_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-color-lifecycle-{}",

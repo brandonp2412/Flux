@@ -17446,7 +17446,7 @@ fn emit_linux_gtk_application(
             "static GtkCssProvider *{} = NULL;\n",
             linux_ui_hot_style_provider_c_name(element, "border_style")
         ));
-        if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
+        if !element_has_dynamic_transform(element, signatures) {
             let translate_x = static_style_i64(element, "translate_x", signatures)?.unwrap_or(0);
             let translate_y = static_style_i64(element, "translate_y", signatures)?.unwrap_or(0);
             let rotate = static_style_i64(element, "rotate_degrees", signatures)?.unwrap_or(0);
@@ -18240,7 +18240,7 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
-        if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
+        if !element_has_dynamic_transform(element, signatures) {
             let provider = linux_ui_hot_transform_provider_c_name(element);
             let translate_x = linux_ui_hot_transform_value_c_name(element, "translate_x");
             let translate_y = linux_ui_hot_transform_value_c_name(element, "translate_y");
@@ -18269,7 +18269,9 @@ fn emit_linux_gtk_application(
                 ("transform_origin_x_percent", &origin_x),
                 ("transform_origin_y_percent", &origin_y),
             ] {
-                if view_property(element, property_name).is_none() {
+                if view_property(element, property_name).is_none()
+                    && !STATIC_TRANSFORM_LIFECYCLE_PROPERTIES.contains(&property_name)
+                {
                     continue;
                 }
                 out.push_str(&format!(
@@ -23773,6 +23775,16 @@ const TRANSFORM_VIEW_PROPERTIES: &[&str] = &[
     "scale_percent",
     "scale_x_percent",
     "scale_y_percent",
+    "skew_x_degrees",
+    "skew_y_degrees",
+    "transform_origin_x_percent",
+    "transform_origin_y_percent",
+];
+
+const STATIC_TRANSFORM_LIFECYCLE_PROPERTIES: &[&str] = &[
+    "translate_x",
+    "translate_y",
+    "rotate_degrees",
     "skew_x_degrees",
     "skew_y_degrees",
     "transform_origin_x_percent",

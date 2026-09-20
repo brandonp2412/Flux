@@ -2569,6 +2569,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES.contains(&property_name.as_str())
+        && development_ui_transform_is_static_literal(element)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if i32::try_from(value).is_err() {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3058,6 +3067,21 @@ fn development_ui_property_lifecycle_default(
     {
         return Some("-1".to_string());
     }
+    if DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES.contains(&property)
+        && development_ui_transform_is_static_literal(element)
+    {
+        return Some(
+            if matches!(
+                property,
+                "transform_origin_x_percent" | "transform_origin_y_percent"
+            ) {
+                "50"
+            } else {
+                "0"
+            }
+            .to_string(),
+        );
+    }
     if property == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3299,6 +3323,16 @@ const DEVELOPMENT_UI_TRANSFORM_PROPERTIES: &[&str] = &[
     "scale_percent",
     "scale_x_percent",
     "scale_y_percent",
+    "skew_x_degrees",
+    "skew_y_degrees",
+    "transform_origin_x_percent",
+    "transform_origin_y_percent",
+];
+
+const DEVELOPMENT_UI_INDEPENDENT_TRANSFORM_PROPERTIES: &[&str] = &[
+    "translate_x",
+    "translate_y",
+    "rotate_degrees",
     "skew_x_degrees",
     "skew_y_degrees",
     "transform_origin_x_percent",
@@ -3826,6 +3860,13 @@ fn development_ui_string_literals(
             "radius_top_right",
             "radius_bottom_left",
             "radius_bottom_right",
+            "translate_x",
+            "translate_y",
+            "rotate_degrees",
+            "skew_x_degrees",
+            "skew_y_degrees",
+            "transform_origin_x_percent",
+            "transform_origin_y_percent",
             "border_color",
             "border_top_color",
             "border_bottom_color",
