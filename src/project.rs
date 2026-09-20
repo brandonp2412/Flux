@@ -3262,13 +3262,17 @@ fn development_ui_property_lifecycle_default(
     if property == "submit_on_enter"
         && element.kind == "TextInput"
         && development_ui_element_has_property(element, "on_submit")
-        && element
+    {
+        let multiline = element
             .properties
             .iter()
             .find(|property| typecheck::source_name_to_internal(&property.name) == "multiline")
-            .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
-    {
-        return Some("1".to_string());
+            .map(|property| match property.value.kind {
+                ExprKind::Bool(value) => Some(value),
+                _ => None,
+            })
+            .unwrap_or(Some(false))?;
+        return Some(if multiline { "0" } else { "1" }.to_string());
     }
     if property == "shortcut" && development_ui_element_has_shortcut_action(element) {
         return Some(String::new());

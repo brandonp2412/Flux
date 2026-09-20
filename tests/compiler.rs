@@ -51230,7 +51230,7 @@ app Form
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_single_line_submit_on_enter_lifecycle() {
+fn development_ui_string_patch_hot_applies_submit_on_enter_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-submit-on-enter-lifecycle-{}",
         std::process::id()
@@ -51265,11 +51265,17 @@ app Form
         .emit_c()
         .expect("initial submit-on-enter lifecycle fixture should lower for Linux");
     assert!(generated.contains("static bool flux__ui_submit_on_enter_single = true"));
-    assert!(generated.contains(
-        "strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_single = bool_value"
-    ));
+    assert!(generated.contains("static bool flux__ui_submit_on_enter_multi = false"));
+    for element in ["single", "multi"] {
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_{element} = bool_value"
+        )));
+    }
     assert!(generated.contains("if (!flux__ui_submit_on_enter_single) return;"));
-    assert!(!generated.contains("flux__ui_submit_on_enter_multi"));
+    assert!(generated.contains("if (!flux__ui_submit_on_enter_multi) return FALSE;"));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    GtkEventController *flux__submit_controller_multi = gtk_event_controller_key_new()"
+    ));
 
     let disabled = initial.replace(
         "    TextInput single at 1,1\n",
@@ -51309,19 +51315,44 @@ app Form
         }]
     );
 
-    let unsafe_multiline_enable = initial.replace(
+    let multiline_enabled = initial.replace(
         "        multiline: true\n",
         "        multiline: true\n        submitOnEnter: true\n",
     );
-    fs::write(&entry, unsafe_multiline_enable)
+    fs::write(&entry, multiline_enabled)
         .expect("multiline submit-on-enter source should be writable");
     cache.invalidate_path(&entry);
-    let multiline = cache
+    let fourth = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("multiline submit-on-enter lifecycle analysis should succeed");
-    assert!(
-        multiline.development_ui_string_patch_from(&third).is_none(),
-        "adding submitOnEnter to an omitted multiline input must retain controlled restart"
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth.development_ui_string_patch_from(&third).expect(
+            "adding multiline submitOnEnter should hot-apply to the dormant key controller"
+        ),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "multi".to_string(),
+            property: "submit_on_enter".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial)
+        .expect("removed multiline submit-on-enter source should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed multiline submit-on-enter lifecycle analysis should succeed");
+    assert_eq!(fifth.development_abi(), fourth.development_abi());
+    assert_eq!(
+        fifth
+            .development_ui_string_patch_from(&fourth)
+            .expect("removing multiline submitOnEnter should restore the false default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "multi".to_string(),
+            property: "submit_on_enter".to_string(),
+            value: "0".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

@@ -17580,24 +17580,19 @@ fn emit_linux_gtk_application(
                 None => false,
             };
             let submit_on_enter = match view_property(element, "submit_on_enter") {
-                Some(property) => Some(
-                    static_expr_bool(&property.value, signatures).ok_or_else(|| {
-                        diag(
-                            property.value.span,
-                            "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
-                        )
-                    })?,
-                ),
-                None if !multiline => Some(true),
-                None => None,
+                Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                    diag(
+                        property.value.span,
+                        "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
+                    )
+                })?,
+                None => !multiline,
             };
-            if let Some(submit_on_enter) = submit_on_enter {
-                out.push_str(&format!(
-                    "static bool flux__ui_submit_on_enter_{} = {};\n",
-                    element.name,
-                    if submit_on_enter { "true" } else { "false" }
-                ));
-            }
+            out.push_str(&format!(
+                "static bool flux__ui_submit_on_enter_{} = {};\n",
+                element.name,
+                if submit_on_enter { "true" } else { "false" }
+            ));
         }
         if view_property(element, "drag_text").is_some() {
             out.push_str(&format!(
@@ -17799,9 +17794,7 @@ fn emit_linux_gtk_application(
                         c_string(&element.name)
                     ));
                 }
-                if view_property(element, "on_submit").is_some()
-                    && (view_property(element, "submit_on_enter").is_some() || !multiline)
-                {
+                if view_property(element, "on_submit").is_some() {
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"submit_on_enter\") == 0 && bool_value_valid) flux__ui_submit_on_enter_{} = bool_value;",
                         c_string(&element.name),
@@ -18594,9 +18587,7 @@ fn emit_linux_gtk_application(
                 let Some(action) = view_property(element, property_name) else {
                     continue;
                 };
-                let submit_guard = if property_name == "on_submit"
-                    && (view_property(element, "submit_on_enter").is_some() || !multiline)
-                {
+                let submit_guard = if property_name == "on_submit" {
                     if multiline {
                         format!(
                             " if (!flux__ui_submit_on_enter_{}) return FALSE;",
@@ -19441,15 +19432,14 @@ fn emit_linux_gtk_application(
                     })?,
                     None => false,
                 };
-                let submit_on_enter = match view_property(element, "submit_on_enter") {
-                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
+                if let Some(property) = view_property(element, "submit_on_enter") {
+                    static_expr_bool(&property.value, signatures).ok_or_else(|| {
                         diag(
                             property.value.span,
                             "bootstrap Linux TextInput.submitOnEnter must be a compile-time bool value",
                         )
-                    })?,
-                    None => !multiline,
-                };
+                    })?;
+                }
                 let read_only = match view_property(element, "read_only") {
                     Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
                         diag(
@@ -19640,15 +19630,20 @@ fn emit_linux_gtk_application(
                         ));
                     }
                 }
-                if view_property(element, "on_submit").is_some()
-                    && (submit_on_enter || view_property(element, "submit_on_enter").is_some())
-                {
+                if view_property(element, "on_submit").is_some() {
                     if multiline {
                         let controller = format!("flux__submit_controller_{}", element.name);
-                        out.push_str(&format!(
+                        let wiring = format!(
                             "    GtkEventController *{controller} = gtk_event_controller_key_new();\n    g_signal_connect({controller}, \"key-pressed\", G_CALLBACK(flux__ui_submit_{}), NULL);\n    gtk_widget_add_controller({variable}, {controller});\n",
                             element.name
-                        ));
+                        );
+                        if view_property(element, "submit_on_enter").is_some() {
+                            out.push_str(&wiring);
+                        } else {
+                            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                            out.push_str(&wiring);
+                            out.push_str("#endif\n");
+                        }
                     } else {
                         out.push_str(&format!(
                             "    g_signal_connect({variable}, \"activate\", G_CALLBACK(flux__ui_submit_{}), NULL);\n",
