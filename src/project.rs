@@ -2018,6 +2018,7 @@ const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
 ];
 const DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL: &str = "__flux_theme_default__";
 const DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL: &str = "__flux_keyboard_type_default__";
+const DEVELOPMENT_FOCUSABLE_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_focusable_default__";
 const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
     "__flux_accessibility_property_default__";
 
@@ -2790,6 +2791,7 @@ fn development_ui_property_lifecycle_patch_value(
         property_name.as_str(),
         "visible"
             | "clip"
+            | "focusable"
             | "autofocus"
             | "enabled"
             | "primary"
@@ -3000,6 +3002,9 @@ fn development_ui_property_lifecycle_default(
         && !development_ui_element_has_property(element, "variant")
     {
         return Some("0".to_string());
+    }
+    if property == "focusable" {
+        return Some(DEVELOPMENT_FOCUSABLE_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
     if matches!(
         property,
@@ -3572,6 +3577,7 @@ fn development_ui_string_literals(
             "title",
             "visible",
             "clip",
+            "focusable",
             "autofocus",
             "enabled",
             "primary",

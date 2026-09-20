@@ -17304,8 +17304,9 @@ fn emit_linux_gtk_application(
     }
     for element in &view.elements {
         out.push_str(&format!(
-            "static GtkWidget *{} = NULL;\n",
-            ui_widget_c_name(&element.name)
+            "static GtkWidget *{} = NULL;\nstatic bool {} = false;\n",
+            ui_widget_c_name(&element.name),
+            linux_ui_focusable_default_c_name(element)
         ));
         let multiline_text_input_placeholder = element.kind == "TextInput"
             && view_property(element, "placeholder").is_some()
@@ -17956,12 +17957,11 @@ fn emit_linux_gtk_application(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_hidden\") == 0 && bool_value_valid && {host} != NULL) gtk_accessible_update_state(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_STATE_HIDDEN, bool_value, -1);",
             c_string(&element.name)
         ));
-        if view_property(element, "focusable").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"focusable\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_focusable({host}, bool_value);",
-                c_string(&element.name)
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"focusable\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_focusable_default__\") == 0) gtk_widget_set_focusable({host}, {}); else if (bool_value_valid) gtk_widget_set_focusable({host}, bool_value); }}",
+            c_string(&element.name),
+            linux_ui_focusable_default_c_name(element)
+        ));
         let ensure_focusable = if view_property(element, "focusable").is_none() {
             format!(" gtk_widget_set_focusable({widget}, TRUE);")
         } else {
@@ -19710,6 +19710,18 @@ fn emit_linux_gtk_application(
         } else {
             variable
         };
+        let omitted_focusable = view_property(element, "on_key").is_some()
+            || view_property(element, "on_context_menu").is_some()
+            || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
+            || view_property(element, "autofocus")
+                .and_then(|property| static_expr_bool(&property.value, signatures))
+                .unwrap_or(false);
+        out.push_str(&format!(
+            "    {} = gtk_widget_get_focusable({variable}) || {};\n",
+            linux_ui_focusable_default_c_name(element),
+            if omitted_focusable { "true" } else { "false" }
+        ));
         if let Some(property) = view_property(element, "shortcut") {
             let Some(shortcut) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -22150,6 +22162,10 @@ fn linux_ui_host_c_name(element: &crate::ast::ViewElement) -> String {
     } else {
         ui_widget_c_name(&element.name)
     }
+}
+
+fn linux_ui_focusable_default_c_name(element: &crate::ast::ViewElement) -> String {
+    format!("flux__ui_focusable_default_{}", element.name)
 }
 
 fn linux_ui_constraint_c_name(element: &crate::ast::ViewElement) -> String {
