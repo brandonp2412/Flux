@@ -52918,11 +52918,91 @@ app Form
     let input_conflict = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("conflicting TextInput source should analyze");
+    assert_eq!(
+        input_conflict.development_abi(),
+        input_first.development_abi()
+    );
+    let patch = input_conflict
+        .development_ui_string_patch_from(&input_first)
+        .expect("literal TextInput tooltip and validation message should hot-apply together")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("email".to_string(), "tooltip".to_string())),
+        Some(&"General help".to_string())
+    );
+    assert_eq!(
+        patch.get(&("email".to_string(), "validation_message".to_string())),
+        Some(&"Invalid".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let generated = input_conflict
+        .emit_c()
+        .expect("TextInput tooltip precedence fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_tooltip_explicit_email = true"));
+    assert!(generated.contains(
+        "flux__ui_tooltip_explicit_email ? flux__ui_tooltip_email : flux__ui_validation_message_email"
+    ));
+
+    let validation_only = input_conflict
+        .sources
+        .iter()
+        .find(|source| source.path == entry)
+        .expect("TextInput conflict source should remain loaded")
+        .text
+        .replace("        tooltip: \"General help\"\n", "");
+    fs::write(&entry, validation_only)
+        .expect("validation-only TextInput source should be writable");
+    cache.invalidate_path(&entry);
+    let validation_only = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("validation-only TextInput source should analyze");
+    assert_eq!(
+        validation_only
+            .development_ui_string_patch_from(&input_conflict)
+            .expect("removing an explicit tooltip should reveal the live validation message"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "tooltip".to_string(),
+            value: "__flux_tooltip_default__".to_string(),
+        }]
+    );
+
+    let dynamic_validation = r#"view Form {
+    state feedback: str = "Invalid"
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        tooltip: "General help"
+        validationMessage: feedback
+}
+app Form
+"#;
+    fs::write(&entry, dynamic_validation).expect("dynamic validation source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_validation = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic validation source should analyze");
+    let dynamic_tooltip_edit = dynamic_validation
+        .sources
+        .iter()
+        .find(|source| source.path == entry)
+        .expect("dynamic validation source should remain loaded")
+        .text
+        .replace("General help", "Updated help");
+    fs::write(&entry, dynamic_tooltip_edit)
+        .expect("dynamic validation tooltip edit should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_tooltip_edit = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic validation tooltip edit should analyze");
     assert!(
-        input_conflict
-            .development_ui_string_patch_from(&input_first)
+        dynamic_tooltip_edit
+            .development_ui_string_patch_from(&dynamic_validation)
             .is_none(),
-        "tooltip lifecycle must retain controlled restart when validation-message precedence is introduced"
+        "tooltip edits beside state-driven validation text must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -53028,16 +53108,50 @@ app Form
     let conflict_first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("conflicting TextInput source should analyze");
-    fs::write(&entry, conflicting_updated).expect("conflicting TextInput edit should be writable");
+    fs::write(&entry, &conflicting_updated).expect("conflicting TextInput edit should be writable");
     cache.invalidate_path(&entry);
     let conflict_second = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("conflicting TextInput edit should analyze");
-    assert!(
+    assert_eq!(
+        conflict_second.development_abi(),
+        conflict_first.development_abi()
+    );
+    assert_eq!(
         conflict_second
             .development_ui_string_patch_from(&conflict_first)
-            .is_none(),
-        "validation-message edits that interact with an explicit tooltip must use controlled restart"
+            .expect("validation-message edits should preserve an explicit tooltip in process"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "validation_message".to_string(),
+            value: "After validation".to_string(),
+        }]
+    );
+    let generated = conflict_second
+        .emit_c()
+        .expect("conflicting TextInput patch fixture should lower for Linux");
+    assert!(generated.contains(
+        "g_free(flux__ui_validation_message_owned_email); flux__ui_validation_message_owned_email = message_copy"
+    ));
+    assert!(generated.contains(
+        "flux__ui_tooltip_explicit_email ? flux__ui_tooltip_email : flux__ui_validation_message_email"
+    ));
+
+    let without_tooltip = conflicting_updated.replace("        tooltip: \"General help\"\n", "");
+    fs::write(&entry, without_tooltip).expect("tooltip removal source should be writable");
+    cache.invalidate_path(&entry);
+    let without_tooltip = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("tooltip removal source should analyze");
+    assert_eq!(
+        without_tooltip
+            .development_ui_string_patch_from(&conflict_second)
+            .expect("removing the explicit tooltip should reveal validation feedback"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "email".to_string(),
+            property: "tooltip".to_string(),
+            value: "__flux_tooltip_default__".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);

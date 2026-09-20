@@ -17576,6 +17576,27 @@ fn emit_linux_gtk_application(
                     "false"
                 }
             ));
+            let tooltip = view_property(element, "tooltip")
+                .and_then(|property| static_expr_str(&property.value, signatures));
+            let validation_message = view_property(element, "validation_message")
+                .and_then(|property| static_expr_str(&property.value, signatures));
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static bool flux__ui_tooltip_explicit_{} = {};\nstatic const char *flux__ui_tooltip_{} = {};\nstatic char *flux__ui_tooltip_owned_{} = NULL;\nstatic const char *flux__ui_validation_message_{} = {};\nstatic char *flux__ui_validation_message_owned_{} = NULL;\n",
+                element.name,
+                if view_property(element, "tooltip").is_some() {
+                    "true"
+                } else {
+                    "false"
+                },
+                element.name,
+                c_string(tooltip.as_deref().unwrap_or("")),
+                element.name,
+                element.name,
+                c_string(validation_message.as_deref().unwrap_or("")),
+                element.name,
+            ));
+            out.push_str("#endif\n");
         }
         if element.kind == "Text" {
             let (variant_size, variant_bold, variant_line_height_percent, variant_max_width_chars) =
@@ -17963,8 +17984,14 @@ fn emit_linux_gtk_application(
                     c_string(&element.name)
                 ));
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ gtk_widget_set_tooltip_text({widget}, (value != NULL && value[0] != '\\0') ? value : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }}",
-                    c_string(&element.name)
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"validation_message\") == 0 && {widget} != NULL) {{ char *message_copy = g_strdup(value); if (message_copy != NULL) {{ g_free(flux__ui_validation_message_owned_{}); flux__ui_validation_message_owned_{} = message_copy; flux__ui_validation_message_{} = message_copy; const char *effective_tooltip = flux__ui_tooltip_explicit_{} ? flux__ui_tooltip_{} : flux__ui_validation_message_{}; gtk_widget_set_tooltip_text({widget}, (effective_tooltip != NULL && effective_tooltip[0] != '\\0') ? effective_tooltip : NULL); gtk_accessible_update_property(GTK_ACCESSIBLE({widget}), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, value, -1); }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
                 ));
                 let multiline = view_property(element, "multiline")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -17984,7 +18011,23 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if element.kind != "TextInput" || view_property(element, "validation_message").is_none() {
+        if element.kind == "TextInput" {
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"tooltip\") == 0 && {widget} != NULL) {{ bool restore_default = strcmp(value, \"__flux_tooltip_default__\") == 0; if (restore_default) {{ g_free(flux__ui_tooltip_owned_{}); flux__ui_tooltip_owned_{} = NULL; flux__ui_tooltip_{} = \"\"; flux__ui_tooltip_explicit_{} = false; }} else {{ char *tooltip_copy = g_strdup(value); if (tooltip_copy != NULL) {{ g_free(flux__ui_tooltip_owned_{}); flux__ui_tooltip_owned_{} = tooltip_copy; flux__ui_tooltip_{} = tooltip_copy; flux__ui_tooltip_explicit_{} = true; }} }} const char *effective_tooltip = flux__ui_tooltip_explicit_{} ? flux__ui_tooltip_{} : flux__ui_validation_message_{}; gtk_widget_set_tooltip_text({widget}, (effective_tooltip != NULL && effective_tooltip[0] != '\\0') ? effective_tooltip : NULL); }}",
+                c_string(&element.name),
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+            ));
+        } else {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"tooltip\") == 0 && {widget} != NULL) {{ if (value != NULL && value[0] != '\\0') gtk_widget_set_tooltip_text({widget}, value); else gtk_widget_set_tooltip_text({widget}, NULL); }}",
                 c_string(&element.name)
@@ -20579,6 +20622,14 @@ fn emit_linux_gtk_application(
     }
     out.push_str("    int status = g_application_run(G_APPLICATION(application), argc, argv);\n");
     for element in &view.elements {
+        if element.kind == "TextInput" {
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "    g_free(flux__ui_tooltip_owned_{});\n    g_free(flux__ui_validation_message_owned_{});\n",
+                element.name, element.name
+            ));
+            out.push_str("#endif\n");
+        }
         if view_property(element, "context_menu_label").is_some() {
             out.push_str(&format!(
                 "    g_free(flux__ui_context_menu_label_owned_{});\n",

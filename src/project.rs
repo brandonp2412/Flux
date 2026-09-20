@@ -2023,6 +2023,7 @@ const DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL: &str =
 const DEVELOPMENT_RICH_TEXT_DEFAULT_SENTINEL: &str = "<flux-development-rich-text-default>";
 const DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL: &str =
     "__flux_text_semantic_override_default__";
+const DEVELOPMENT_TOOLTIP_DEFAULT_SENTINEL: &str = "__flux_tooltip_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2197,6 +2198,16 @@ fn development_ui_element_has_property(element: &ViewElement, property: &str) ->
         .any(|candidate| typecheck::source_name_to_internal(&candidate.name) == property)
 }
 
+fn development_ui_element_has_literal_string_property(
+    element: &ViewElement,
+    property: &str,
+) -> bool {
+    element.properties.iter().any(|candidate| {
+        typecheck::source_name_to_internal(&candidate.name) == property
+            && matches!(candidate.value.kind, ExprKind::Str(_))
+    })
+}
+
 fn development_ui_element_has_shortcut_action(element: &ViewElement) -> bool {
     (element.kind == "Button" && development_ui_element_has_property(element, "on_press"))
         || development_ui_element_has_property(element, "on_tap")
@@ -2244,6 +2255,7 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "tooltip" => {
             element.kind != "TextInput"
                 || !development_ui_element_has_property(element, "validation_message")
+                || development_ui_element_has_literal_string_property(element, "validation_message")
         }
         "drag_text" => true,
         "context_menu_label" => true,
@@ -2254,7 +2266,8 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         "validation_state" => element.kind == "TextInput",
         "validation_message" => {
             element.kind == "TextInput"
-                && !development_ui_element_has_property(element, "tooltip")
+                && (!development_ui_element_has_property(element, "tooltip")
+                    || development_ui_element_has_literal_string_property(element, "tooltip"))
                 && ![
                     "accessibility_description",
                     "accessibility_action_label",
@@ -2486,12 +2499,15 @@ fn development_ui_property_lifecycle_patch_value(
     }
     if property_name == "tooltip"
         && (element.kind != "TextInput"
-            || !development_ui_element_has_property(element, "validation_message"))
+            || !development_ui_element_has_property(element, "validation_message")
+            || development_ui_element_has_literal_string_property(element, "validation_message"))
     {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
         };
-        if value.as_bytes().contains(&0) {
+        if value.as_bytes().contains(&0)
+            || (element.kind == "TextInput" && value == DEVELOPMENT_TOOLTIP_DEFAULT_SENTINEL)
+        {
             return None;
         }
         return Some(value.clone());
@@ -2781,7 +2797,8 @@ fn development_ui_property_lifecycle_patch_value(
     }
     if property_name == "validation_message"
         && element.kind == "TextInput"
-        && !development_ui_element_has_property(element, "tooltip")
+        && (!development_ui_element_has_property(element, "tooltip")
+            || development_ui_element_has_literal_string_property(element, "tooltip"))
         && ![
             "accessibility_description",
             "accessibility_action_label",
@@ -3155,7 +3172,17 @@ fn development_ui_property_lifecycle_default(
     if property == "ellipsize" && element.kind == "Text" {
         return Some("none".to_string());
     }
-    if matches!(property, "tooltip" | "drag_text") {
+    if property == "tooltip" {
+        return Some(
+            if element.kind == "TextInput" {
+                DEVELOPMENT_TOOLTIP_DEFAULT_SENTINEL
+            } else {
+                ""
+            }
+            .to_string(),
+        );
+    }
+    if property == "drag_text" {
         return Some(String::new());
     }
     if property == "placeholder" && element.kind == "TextInput" {
@@ -3190,7 +3217,8 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "validation_message"
         && element.kind == "TextInput"
-        && !development_ui_element_has_property(element, "tooltip")
+        && (!development_ui_element_has_property(element, "tooltip")
+            || development_ui_element_has_literal_string_property(element, "tooltip"))
         && ![
             "accessibility_description",
             "accessibility_action_label",
