@@ -1957,6 +1957,7 @@ view Screen {
         onContextMenuSelect: count => count + 1
     TextInput email at 2,1
         placeholder: "Email"
+        validationState: "error"
         validationMessage: "Enter a valid email"
     Button action at 3,1
         text: "Run"
@@ -51098,6 +51099,13 @@ app Form
         "flux__win_accessibility_set_description(flux__ui_email, \"Enter a valid email address\")"
     ));
     assert!(windows.contains("TTM_ADDTOOLA"));
+    assert!(windows.contains("static void flux__win_set_validation_state"));
+    assert!(windows.contains("flux__ui_validation_state(value)"));
+    assert!(windows.contains("RGB(207, 34, 46)"));
+    assert!(windows.contains("RGB(26, 127, 55)"));
+    assert!(windows.contains("RGB(154, 103, 0)"));
+    assert!(windows.contains("flux__win_set_validation_state(flux__ui_email"));
+    assert!(windows.contains("else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT))"));
 
     let dynamic = r#"
 view Form {
@@ -51150,6 +51158,9 @@ app Form
         "flux__win_accessibility_set_description(flux__ui_email, flux__ui_state_validation)"
     ));
     assert!(windows.contains("flux__win_set_tooltip(flux__ui_email"));
+    assert!(windows.contains(
+        "flux__win_set_validation_state(flux__ui_email, &flux__win_validation_color_email, &flux__win_validation_active_email, flux__ui_state_validation)"
+    ));
 
     let invalid = r#"
 view Form {

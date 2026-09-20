@@ -13598,6 +13598,9 @@ fn emit_windows_native_application(
     let uses_input_scopes = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
     });
+    let uses_validation_states = view.elements.iter().any(|element| {
+        element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+    });
     if uses_input_scopes {
         for element in view
             .elements
@@ -13877,6 +13880,12 @@ fn emit_windows_native_application(
                 element.name
             ));
         }
+        if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
+            out.push_str(&format!(
+                "static COLORREF flux__win_validation_color_{} = 0;\nstatic bool flux__win_validation_active_{} = false;\n",
+                element.name, element.name
+            ));
+        }
         for property_name in ["background_color", "color"] {
             if property_name == "color" && element.kind != "Text" {
                 continue;
@@ -14106,6 +14115,9 @@ fn emit_windows_native_application(
     );
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
+    if uses_validation_states {
+        out.push_str("static void flux__win_set_validation_state(HWND control, COLORREF *color, bool *active, const char *value) { if (control == NULL || color == NULL || active == NULL) return; const char *state = flux__ui_validation_state(value); bool next_active = strcmp(state, \"normal\") != 0; COLORREF next_color = 0; if (strcmp(state, \"error\") == 0) next_color = RGB(207, 34, 46); else if (strcmp(state, \"success\") == 0) next_color = RGB(26, 127, 55); else if (strcmp(state, \"warning\") == 0) next_color = RGB(154, 103, 0); if (*active == next_active && (!next_active || *color == next_color)) return; *active = next_active; *color = next_color; InvalidateRect(control, NULL, TRUE); }\n");
+    }
     let uses_dynamic_colors = view.elements.iter().any(|element| {
         ["background_color", "color"].iter().any(|property_name| {
             (property_name == &"background_color" || element.kind == "Text")
@@ -14740,6 +14752,15 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             }
         }
         if element.kind == "TextInput"
+            && let Some(validation_state) = view_property(element, "validation_state")
+        {
+            let validation_state_value = ui_expr_c(&validation_state.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_validation_state({variable}, &flux__win_validation_color_{}, &flux__win_validation_active_{}, {validation_state_value});\n",
+                element.name, element.name
+            ));
+        }
+        if element.kind == "TextInput"
             && let Some(validation) = view_property(element, "validation_message")
         {
             let validation_value = ui_expr_c(&validation.value, view, signatures)?;
@@ -14883,11 +14904,18 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     for element in view.elements.iter().filter(|element| {
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
+            || (element.kind == "TextInput" && view_property(element, "validation_state").is_some())
     }) {
         out.push_str(&format!(
             "if (control == {}) {{",
             ui_widget_c_name(&element.name)
         ));
+        if element.kind == "TextInput" && view_property(element, "validation_state").is_some() {
+            out.push_str(&format!(
+                " if (flux__win_validation_active_{}) SetTextColor(dc, flux__win_validation_color_{}); else SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));",
+                element.name, element.name
+            ));
+        }
         if let Some(property) = view_property(element, "color") {
             if static_expr_str(&property.value, signatures).is_some() {
                 out.push_str(&format!(
