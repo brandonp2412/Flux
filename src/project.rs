@@ -111,6 +111,17 @@ impl ProjectAnalysis {
             return None;
         }
 
+        if current.iter().any(|((element, property), value)| {
+            property == "accessibility_description"
+                && previous_literals
+                    .get(&(element.clone(), property.clone()))
+                    .is_some_and(|previous| previous != value)
+                && current.get(&(element.clone(), "validation_message".to_string()))
+                    != previous_literals.get(&(element.clone(), "validation_message".to_string()))
+        }) {
+            return None;
+        }
+
         if current.iter().any(|(key, value)| {
             key.1 == "autofocus"
                 && value == "0"
@@ -2640,6 +2651,27 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "accessibility_description"
+        && (element.kind != "TextInput"
+            || !development_ui_element_has_property(element, "validation_message"))
+        && ![
+            "accessibility_action_label",
+            "accessibility_long_press_label",
+            "accessibility_actions",
+        ]
+        .iter()
+        .any(|candidate| development_ui_element_has_property(element, candidate))
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0)
+            || value == DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL
+        {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "accessibility_role" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2880,6 +2912,9 @@ fn development_ui_property_lifecycle_default(
         property,
         "accessibility_label" | "accessibility_value" | "accessibility_role"
     ) {
+        return Some(DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL.to_string());
+    }
+    if property == "accessibility_description" {
         return Some(DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
@@ -3485,6 +3520,7 @@ fn development_ui_string_literals(
             "transition_delay_ms",
             "transition_easing",
             "accessibility_label",
+            "accessibility_description",
             "accessibility_value",
             "accessibility_role",
             "fit",

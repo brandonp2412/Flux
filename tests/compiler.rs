@@ -42098,6 +42098,7 @@ app Screen
         .expect("accessibility metadata lifecycle fixture should lower for Linux");
     for property in [
         "accessibility_label",
+        "accessibility_description",
         "accessibility_value",
         "accessibility_role",
     ] {
@@ -42105,6 +42106,9 @@ app Screen
     }
     assert!(generated.contains(
         "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_LABEL)"
+    ));
+    assert!(generated.contains(
+        "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION)"
     ));
     assert!(generated.contains(
         "gtk_accessible_reset_property(GTK_ACCESSIBLE(flux__ui_action), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT)"
@@ -42115,7 +42119,7 @@ app Screen
 
     let explicit = initial.replace(
         "        text: \"Run\"\n",
-        "        text: \"Run\"\n        accessibilityLabel: \"Run action\"\n        accessibilityValue: \"idle\"\n        accessibilityRole: \"button\"\n",
+        "        text: \"Run\"\n        accessibilityLabel: \"Run action\"\n        accessibilityDescription: \"Runs the action\"\n        accessibilityValue: \"idle\"\n        accessibilityRole: \"button\"\n",
     );
     let entry = fs::canonicalize(entry)
         .expect("accessibility metadata lifecycle entry should canonicalize");
@@ -42138,6 +42142,7 @@ app Screen
         .collect::<std::collections::BTreeMap<_, _>>();
     for (property, value) in [
         ("accessibility_label", "Run action"),
+        ("accessibility_description", "Runs the action"),
         ("accessibility_value", "idle"),
         ("accessibility_role", "button"),
     ] {
@@ -42146,7 +42151,7 @@ app Screen
             Some(&value.to_string())
         );
     }
-    assert_eq!(patch.len(), 3);
+    assert_eq!(patch.len(), 4);
 
     let explicit_empty = explicit
         .replace(
@@ -42190,6 +42195,7 @@ app Screen
         .collect::<std::collections::BTreeMap<_, _>>();
     for property in [
         "accessibility_label",
+        "accessibility_description",
         "accessibility_value",
         "accessibility_role",
     ] {
@@ -42198,7 +42204,7 @@ app Screen
             Some(&"__flux_accessibility_property_default__".to_string())
         );
     }
-    assert_eq!(patch.len(), 3);
+    assert_eq!(patch.len(), 4);
 
     let reserved = initial.replace(
         "        text: \"Run\"\n",
@@ -42212,6 +42218,91 @@ app Screen
     assert!(
         reserved.development_ui_string_patch_from(&fourth).is_none(),
         "a source value matching the compiler-private reset sentinel must retain controlled restart"
+    );
+
+    let reserved_description = initial.replace(
+        "        text: \"Run\"\n",
+        "        text: \"Run\"\n        accessibilityDescription: \"__flux_accessibility_property_default__\"\n",
+    );
+    fs::write(&entry, reserved_description)
+        .expect("reserved accessibility description sentinel source should be writable");
+    cache.invalidate_path(&entry);
+    let reserved_description = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("reserved accessibility description sentinel source should analyze");
+    assert!(
+        reserved_description
+            .development_ui_string_patch_from(&fourth)
+            .is_none(),
+        "accessibilityDescription matching the compiler-private reset sentinel must retain controlled restart"
+    );
+
+    let precedence_initial = r#"fn tapped() -> void {
+    print("tap")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text action at 1,1
+        text: "Run"
+        onTap: tapped
+        accessibilityActionLabel: "Fallback action"
+}
+app Screen
+"#;
+    fs::write(&entry, &precedence_initial)
+        .expect("accessibility precedence baseline should be writable");
+    cache.invalidate_path(&entry);
+    let precedence_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("accessibility precedence baseline should analyze");
+    let precedence_with_description = precedence_initial.replace(
+        "        accessibilityActionLabel: \"Fallback action\"\n",
+        "        accessibilityActionLabel: \"Fallback action\"\n        accessibilityDescription: \"Explicit description\"\n",
+    );
+    fs::write(&entry, precedence_with_description)
+        .expect("accessibility precedence update should be writable");
+    cache.invalidate_path(&entry);
+    let precedence_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("accessibility precedence update should analyze");
+    assert!(
+        precedence_second
+            .development_ui_string_patch_from(&precedence_first)
+            .is_none(),
+        "description lifecycle must retain controlled restart when fallback accessibility descriptions are present"
+    );
+
+    let validation_initial = r#"view Form {
+    grid columns: 1fr
+    grid rows: auto
+    TextInput email at 1,1
+        validationMessage: "Required"
+}
+app Form
+"#;
+    fs::write(&entry, validation_initial)
+        .expect("validation-description precedence baseline should be writable");
+    cache.invalidate_path(&entry);
+    let validation_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("validation-description precedence baseline should analyze");
+    let validation_with_description = validation_initial.replace(
+        "        validationMessage: \"Required\"\n",
+        "        validationMessage: \"Required\"\n        accessibilityDescription: \"Email field\"\n",
+    );
+    fs::write(&entry, validation_with_description)
+        .expect("validation-description precedence update should be writable");
+    cache.invalidate_path(&entry);
+    let validation_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("validation-description precedence update should analyze");
+    assert!(
+        validation_second
+            .development_ui_string_patch_from(&validation_first)
+            .is_none(),
+        "description lifecycle must retain controlled restart when TextInput validation feedback owns the native description"
     );
 
     let _ = fs::remove_dir_all(root);
