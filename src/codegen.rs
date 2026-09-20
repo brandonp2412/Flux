@@ -17407,12 +17407,10 @@ fn emit_linux_gtk_application(
             "static GtkCssProvider *{} = NULL;\n",
             linux_ui_hot_style_provider_c_name(element, "transition_easing")
         ));
-        if view_property(element, "border_style").is_some() {
-            out.push_str(&format!(
-                "static GtkCssProvider *{} = NULL;\n",
-                linux_ui_hot_style_provider_c_name(element, "border_style")
-            ));
-        }
+        out.push_str(&format!(
+            "static GtkCssProvider *{} = NULL;\n",
+            linux_ui_hot_style_provider_c_name(element, "border_style")
+        ));
         if element_has_transform(element) && !element_has_dynamic_transform(element, signatures) {
             let translate_x = static_style_i64(element, "translate_x", signatures)?.unwrap_or(0);
             let translate_y = static_style_i64(element, "translate_y", signatures)?.unwrap_or(0);
@@ -18216,7 +18214,7 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "border_style").is_some() {
+        {
             let provider = linux_ui_hot_style_provider_c_name(element, "border_style");
             let css_format = c_string(&format!(
                 "#flux-ui-{} {{ border-style: %s; }}",

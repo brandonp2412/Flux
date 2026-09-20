@@ -2649,6 +2649,18 @@ fn development_ui_property_lifecycle_patch_value(
         typecheck::transition_easing_css_value(value)?;
         return Some(value.clone());
     }
+    if property_name == "border_style" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(
+            value.as_str(),
+            "none" | "solid" | "dashed" | "dotted" | "double"
+        ) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if matches!(
         property_name.as_str(),
         "accessibility_label" | "accessibility_value"
@@ -2959,6 +2971,9 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "transition_easing" {
         return Some("ease".to_string());
+    }
+    if property == "border_style" {
+        return Some("solid".to_string());
     }
     if matches!(
         property,
@@ -3576,6 +3591,7 @@ fn development_ui_string_literals(
             "transition_ms",
             "transition_delay_ms",
             "transition_easing",
+            "border_style",
             "accessibility_label",
             "accessibility_description",
             "accessibility_action_label",

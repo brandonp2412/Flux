@@ -48439,6 +48439,107 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_border_style_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-border-style-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary border-style lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Border"
+        borderWidth: 2
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial border-style lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial border-style lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("border-style lifecycle fixture should lower for Linux");
+    assert!(
+        generated.contains("static GtkCssProvider *flux__ui_hot_style_action_border_style = NULL")
+    );
+    assert!(
+        generated.contains("strcmp(property, \"border_style\") == 0 && flux__ui_action != NULL")
+    );
+
+    let explicit = initial.replace(
+        "        borderWidth: 2\n",
+        "        borderWidth: 2\n        borderStyle: \"dashed\"\n",
+    );
+    let entry = fs::canonicalize(entry).expect("border-style lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit border style should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit border style should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding a literal border style should preserve the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding borderStyle should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_style".to_string(),
+            value: "dashed".to_string(),
+        }]
+    );
+
+    let updated = explicit.replace("borderStyle: \"dashed\"", "borderStyle: \"dotted\"");
+    fs::write(&entry, &updated).expect("updated border style should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated border style should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("editing borderStyle should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_style".to_string(),
+            value: "dotted".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed border style should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed border style should analyze");
+    assert_eq!(
+        fourth.development_abi(),
+        third.development_abi(),
+        "removing a literal border style should preserve the development ABI"
+    );
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing borderStyle should restore the compiler-owned solid default"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_style".to_string(),
+            value: "solid".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_css_transition_timing_and_border_style() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-css-transition-patch-{}",
