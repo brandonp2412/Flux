@@ -134,16 +134,6 @@ impl ProjectAnalysis {
             return None;
         }
 
-        if current.iter().any(|(key, value)| {
-            key.1 == "autofocus"
-                && value == "0"
-                && previous_literals
-                    .get(key)
-                    .is_some_and(|previous| previous == "1")
-        }) {
-            return None;
-        }
-
         Some(
             current
                 .into_iter()

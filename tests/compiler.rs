@@ -51651,7 +51651,7 @@ app Focus
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_autofocus_enable_only() {
+fn development_ui_string_patch_hot_applies_autofocus_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-autofocus-patch-{}",
         std::process::id()
@@ -51707,9 +51707,15 @@ app Focus
     let disabled = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("removed autofocus patch analysis should succeed");
-    assert!(
-        disabled.development_ui_string_patch_from(&second).is_none(),
-        "removing active autofocus must use the controlled restart path"
+    assert_eq!(
+        disabled
+            .development_ui_string_patch_from(&second)
+            .expect("removing autofocus should preserve the current focus in process"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "autofocus".to_string(),
+            value: "0".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
