@@ -42783,52 +42783,79 @@ app Actions
 }
 
 #[test]
-fn development_ui_string_patch_hot_applies_rich_text_markup() {
+fn development_ui_string_patch_hot_applies_rich_text_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
-        "flux-development-rich-text-patch-{}",
+        "flux-development-rich-text-lifecycle-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temporary rich-text patch project should be writable");
+    fs::create_dir_all(&root).expect("temporary rich-text lifecycle project should be writable");
     let entry = root.join("main.flux");
     let initial = r#"view Screen {
     grid columns: 1fr
     grid rows: auto
     Text title at 1,1
-        richText: "<b>Horse</b> <i>Tinder</i>"
 }
 app Screen
 "#;
-    fs::write(&entry, initial).expect("initial rich-text source should be writable");
+    fs::write(&entry, initial).expect("initial rich-text lifecycle source should be writable");
 
     let mut cache = fluxc::project::ProjectAnalysisCache::default();
     let first = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("initial rich-text analysis should succeed");
+        .expect("initial rich-text lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("rich-text lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"rich_text\") == 0 && flux__ui_title != NULL"));
+    assert!(generated.contains("strcmp(value, \"<flux-development-rich-text-default>\") == 0"));
+    assert!(generated.contains("gtk_label_set_text(GTK_LABEL(flux__ui_title), \"title\")"));
 
-    let updated = initial.replace(
+    let entry = fs::canonicalize(entry).expect("rich-text lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "    Text title at 1,1\n",
+        "    Text title at 1,1\n        richText: \"<b>Horse</b> <i>Tinder</i>\"\n",
+    );
+    fs::write(&entry, &explicit).expect("added rich-text source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("added rich-text analysis should succeed");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding richText without a competing Text.text declaration must preserve the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding valid richText should hot-apply to the existing GtkLabel"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "rich_text".to_string(),
+            value: "<b>Horse</b> <i>Tinder</i>".to_string(),
+        }]
+    );
+
+    let updated = explicit.replace(
         "<b>Horse</b> <i>Tinder</i>",
         "<b>Flux</b> <u>&amp; friends</u>",
     );
     fs::write(&entry, &updated).expect("updated rich-text source should be writable");
-    let entry = fs::canonicalize(entry).expect("rich-text patch entry should canonicalize");
     cache.invalidate_path(&entry);
-    let second = cache
+    let third = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("updated rich-text analysis should succeed");
-    let patch = second
-        .development_ui_string_patch_from(&first)
-        .expect("valid rich-text edits should hot-apply");
-    assert_eq!(patch.len(), 1);
-    assert_eq!(patch[0].element, "title");
-    assert_eq!(patch[0].property, "rich_text");
-    assert_eq!(patch[0].value, "<b>Flux</b> <u>&amp; friends</u>");
-
-    let generated = second
-        .emit_c()
-        .expect("rich-text patch fixture should lower for Linux");
-    assert!(generated.contains("strcmp(property, \"rich_text\") == 0 && flux__ui_title != NULL"));
-    assert!(generated.contains("gtk_label_set_markup(GTK_LABEL(flux__ui_title), value)"));
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("valid rich-text edits should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "rich_text".to_string(),
+            value: "<b>Flux</b> <u>&amp; friends</u>".to_string(),
+        }]
+    );
 
     let invalid = updated.replace(
         "<b>Flux</b> <u>&amp; friends</u>",
@@ -42836,12 +42863,52 @@ app Screen
     );
     fs::write(&entry, invalid).expect("invalid rich-text edit should be writable");
     cache.invalidate_path(&entry);
-    let third = cache
+    let invalid_analysis = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("unsupported rich-text markup remains parseable and type-correct");
     assert!(
-        third.development_ui_string_patch_from(&second).is_none(),
+        invalid_analysis
+            .development_ui_string_patch_from(&third)
+            .is_none(),
         "unsupported rich-text markup must retain controlled restart/codegen validation"
+    );
+
+    fs::write(&entry, initial).expect("removed rich-text source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed rich-text analysis should succeed");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing richText should restore the ordinary element-name label"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "title".to_string(),
+            property: "rich_text".to_string(),
+            value: "<flux-development-rich-text-default>".to_string(),
+        }]
+    );
+
+    let plain = initial.replace(
+        "    Text title at 1,1\n",
+        "    Text title at 1,1\n        text: \"Plain title\"\n",
+    );
+    fs::write(&entry, &plain).expect("plain text source should be writable");
+    cache.invalidate_path(&entry);
+    let plain_analysis = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("plain text analysis should succeed");
+    fs::write(&entry, &explicit).expect("rich-text mode switch source should be writable");
+    cache.invalidate_path(&entry);
+    let rich_again = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("rich-text mode switch analysis should succeed");
+    assert!(
+        rich_again
+            .development_ui_string_patch_from(&plain_analysis)
+            .is_none(),
+        "switching between explicit Text.text and richText must retain controlled restart"
     );
 
     let _ = fs::remove_dir_all(root);

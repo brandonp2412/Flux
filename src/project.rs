@@ -79,6 +79,7 @@ impl ProjectAnalysis {
         if self.development_abi() != previous.development_abi()
             || !development_ui_transition_contract_is_valid(self)
             || !development_ui_transition_contract_is_valid(previous)
+            || !development_ui_rich_text_lifecycle_is_safe(self, previous)
         {
             return None;
         }
@@ -2017,6 +2018,7 @@ const DEVELOPMENT_MINIMUM_SIZE_DEFAULT_SENTINEL: &str = "__flux_minimum_size_def
 const DEVELOPMENT_MAXIMUM_SIZE_DEFAULT_SENTINEL: &str = "__flux_maximum_size_default__";
 const DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL: &str =
     "__flux_transform_scale_axis_default__";
+const DEVELOPMENT_RICH_TEXT_DEFAULT_SENTINEL: &str = "<flux-development-rich-text-default>";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2354,6 +2356,53 @@ fn development_ui_text_input_is_single_line(element: &ViewElement) -> bool {
             .is_none_or(|property| matches!(property.value.kind, ExprKind::Bool(false)))
 }
 
+fn development_ui_rich_text_lifecycle_is_safe(
+    current: &ProjectAnalysis,
+    previous: &ProjectAnalysis,
+) -> bool {
+    let Some(current_application) = current.program.application.as_ref() else {
+        return false;
+    };
+    let Some(previous_application) = previous.program.application.as_ref() else {
+        return false;
+    };
+    let Some(current_view) = current
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == current_application.view_name)
+    else {
+        return false;
+    };
+    let Some(previous_view) = previous
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == previous_application.view_name)
+    else {
+        return false;
+    };
+    current_view.elements.iter().all(|current_element| {
+        let Some(previous_element) = previous_view
+            .elements
+            .iter()
+            .find(|element| element.name == current_element.name)
+        else {
+            return false;
+        };
+        if current_element.kind != "Text" {
+            return true;
+        }
+        let current_rich = development_ui_element_has_property(current_element, "rich_text");
+        let previous_rich = development_ui_element_has_property(previous_element, "rich_text");
+        if current_rich == previous_rich {
+            return true;
+        }
+        !development_ui_element_has_property(current_element, "text")
+            && !development_ui_element_has_property(previous_element, "text")
+    })
+}
+
 fn development_ui_transition_contract_is_valid(analysis: &ProjectAnalysis) -> bool {
     let Some(application) = analysis.program.application.as_ref() else {
         return false;
@@ -2488,6 +2537,18 @@ fn development_ui_property_lifecycle_patch_value(
             return None;
         };
         if value.is_empty() || value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
+    if property_name == "rich_text"
+        && element.kind == "Text"
+        && !development_ui_element_has_property(element, "text")
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) || !codegen::valid_portable_rich_text(value) {
             return None;
         }
         return Some(value.clone());
@@ -3034,9 +3095,7 @@ fn development_ui_property_lifecycle_default(
         return Some(String::new());
     }
     if (property == "text"
-        && (matches!(element.kind.as_str(), "Button" | "Header")
-            || (element.kind == "Text"
-                && !development_ui_element_has_property(element, "rich_text"))))
+        && (matches!(element.kind.as_str(), "Button" | "Header") || element.kind == "Text"))
         || (property == "label"
             && matches!(
                 element.kind.as_str(),
@@ -3117,10 +3176,10 @@ fn development_ui_property_lifecycle_default(
     {
         return Some(DEVELOPMENT_MAXIMUM_SIZE_DEFAULT_SENTINEL.to_string());
     }
-    if property == "color"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "rich_text")
-    {
+    if property == "rich_text" && element.kind == "Text" {
+        return Some(DEVELOPMENT_RICH_TEXT_DEFAULT_SENTINEL.to_string());
+    }
+    if property == "color" && element.kind == "Text" {
         return Some(String::new());
     }
     if property == "font_family" && element.kind == "Text" {
@@ -3831,6 +3890,7 @@ fn development_ui_string_literals(
             "text",
             "label",
             "title",
+            "rich_text",
             "visible",
             "clip",
             "focusable",
