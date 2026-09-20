@@ -47781,6 +47781,158 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_shadow_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-shadow-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary shadow lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Shadow"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial shadow lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial shadow lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("shadow lifecycle fixture should lower for Linux");
+    assert!(generated.contains("static GtkCssProvider *flux__ui_hot_style_action_shadow = NULL"));
+    for declaration in [
+        "static bool flux__ui_hot_shadow_action_color_explicit = false",
+        "static bool flux__ui_hot_shadow_action_blur_explicit = false",
+        "static bool flux__ui_hot_shadow_action_offset_x_explicit = false",
+        "static bool flux__ui_hot_shadow_action_offset_y_explicit = false",
+    ] {
+        assert!(
+            generated.contains(declaration),
+            "missing shadow lifecycle state {declaration}"
+        );
+    }
+    for property in [
+        "shadow_color",
+        "shadow_blur",
+        "shadow_offset_x",
+        "shadow_offset_y",
+    ] {
+        assert!(generated.contains(&format!("strcmp(property, \"{property}\") == 0")));
+    }
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow, \"#flux-ui-action { box-shadow: none; }\", -1)"
+    ));
+
+    let explicit = initial.replace(
+        "        text: \"Shadow\"\n",
+        "        text: \"Shadow\"\n        shadowColor: \"accent\"\n        shadowBlur: 8\n        shadowOffsetX: 2\n        shadowOffsetY: 3\n",
+    );
+    let entry = fs::canonicalize(entry).expect("shadow lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit shadow source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit shadow source should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding static shadow declarations should preserve the development ABI"
+    );
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit shadow lifecycle fixture should lower for Linux");
+    assert!(explicit_generated.contains("box-shadow: 2px 3px 8px @flux_accent;"));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow, \"#flux-ui-action { box-shadow: none; }\", -1)"
+    ));
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding static shadow declarations should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (property, value) in [
+        ("shadow_color", "accent"),
+        ("shadow_blur", "8"),
+        ("shadow_offset_x", "2"),
+        ("shadow_offset_y", "3"),
+    ] {
+        assert_eq!(
+            patch.get(&("action".to_string(), property.to_string())),
+            Some(&value.to_string())
+        );
+    }
+    assert_eq!(patch.len(), 4);
+
+    fs::write(&entry, initial).expect("removed shadow declarations should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed shadow declarations should analyze");
+    assert_eq!(
+        third.development_abi(),
+        second.development_abi(),
+        "removing static shadow declarations should preserve the development ABI"
+    );
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing static shadow declarations should clear the live shadow")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for property in [
+        "shadow_color",
+        "shadow_blur",
+        "shadow_offset_x",
+        "shadow_offset_y",
+    ] {
+        assert_eq!(
+            patch.get(&("action".to_string(), property.to_string())),
+            Some(&"__flux_shadow_property_default__".to_string())
+        );
+    }
+    assert_eq!(patch.len(), 4);
+
+    let mixed_initial = r#"view Screen {
+    state blur: i64 = 8
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Shadow"
+        shadowColor: "shadow"
+        shadowBlur: blur
+}
+app Screen
+"#;
+    fs::write(&entry, mixed_initial).expect("mixed shadow source should be writable");
+    cache.invalidate_path(&entry);
+    let mixed_first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("mixed shadow source should analyze");
+    let mixed_updated = mixed_initial.replace("shadowColor: \"shadow\"", "shadowColor: \"accent\"");
+    fs::write(&entry, mixed_updated).expect("mixed shadow update should be writable");
+    cache.invalidate_path(&entry);
+    let mixed_second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("mixed shadow update should analyze");
+    assert!(
+        mixed_second
+            .development_ui_string_patch_from(&mixed_first)
+            .is_none(),
+        "mixed dynamic/static shadow groups must retain controlled restart"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_composite_shadow_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-shadow-patch-{}",
