@@ -13791,6 +13791,22 @@ fn emit_windows_native_application(
                 element.name
             ));
         }
+        if element.kind == "Button"
+            && let Some(property) = view_property(element, "size")
+        {
+            if let Some(value) = static_expr_i64(&property.value, signatures)
+                && (value <= 0 || value > i64::from(i32::MAX))
+            {
+                return Err(diag(
+                    property.value.span,
+                    "Button.size must be greater than zero and fit within a 32-bit signed integer",
+                ));
+            }
+            out.push_str(&format!(
+                "static HFONT flux__win_button_font_{} = NULL;\nstatic int64_t flux__win_button_font_size_{} = INT64_C(0);\nstatic UINT flux__win_button_font_dpi_{} = 0;\n",
+                element.name, element.name, element.name
+            ));
+        }
         if element.kind == "Image" {
             out.push_str(&format!(
                 "static HBITMAP flux__win_bitmap_{} = NULL;\n",
@@ -13944,6 +13960,32 @@ fn emit_windows_native_application(
             out.push_str(&format!("if (flux__win_font_{} != NULL) {{ DeleteObject(flux__win_font_{}); flux__win_font_{} = NULL; }}\n", element.name, element.name, element.name));
         }
         out.push_str("}\n");
+    }
+    if view
+        .elements
+        .iter()
+        .any(|element| element.kind == "Button" && view_property(element, "size").is_some())
+    {
+        out.push_str("static void flux__win_set_button_size(HWND control, HFONT *font, int64_t *current_size, UINT *current_dpi, int64_t size) { if (control == NULL || font == NULL || current_size == NULL || current_dpi == NULL) return; if (size <= 0 || size > INT32_MAX) { fputs(\"Flux runtime error: Button.size must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); } if (*font != NULL && *current_size == size && *current_dpi == flux__win_dpi) return; if (*font != NULL) { DeleteObject(*font); *font = NULL; } *font = CreateFontW(-flux__win_scale(size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L\"Segoe UI\"); if (*font == NULL) { fputs(\"Flux runtime error: unable to create Windows Button font\\n\", stderr); abort(); } *current_size = size; *current_dpi = flux__win_dpi; SendMessageW(control, WM_SETFONT, (WPARAM)*font, TRUE); }\n");
+        out.push_str("static void flux__win_delete_button_fonts(void) {\n");
+        for element in view
+            .elements
+            .iter()
+            .filter(|element| element.kind == "Button" && view_property(element, "size").is_some())
+        {
+            out.push_str(&format!(
+                "if (flux__win_button_font_{} != NULL) {{ DeleteObject(flux__win_button_font_{}); flux__win_button_font_{} = NULL; }}\n",
+                element.name, element.name, element.name
+            ));
+        }
+        out.push_str("}\n");
+    }
+    if view
+        .elements
+        .iter()
+        .any(|element| element.kind == "Button" && view_property(element, "primary").is_some())
+    {
+        out.push_str("static void flux__win_set_button_primary(HWND control, bool primary) { if (control == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); LONG_PTR next = (style & ~((LONG_PTR)BS_TYPEMASK)) | (primary ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON); if (next == style) return; SetWindowLongPtrW(control, GWL_STYLE, next); SetWindowPos(control, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); InvalidateRect(control, NULL, TRUE); }\n");
     }
     out.push_str(
         "static bool flux__win_refreshing = false;\nstatic void flux__win_refresh(void);\n",
@@ -14603,6 +14645,21 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 "if ({variable} != NULL) ShowWindow({variable}, ({value}) ? SW_SHOW : SW_HIDE);\n"
             ));
         }
+        if element.kind == "Button" {
+            if let Some(property) = view_property(element, "primary") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "flux__win_set_button_primary({variable}, {value});\n"
+                ));
+            }
+            if let Some(property) = view_property(element, "size") {
+                let value = ui_expr_c(&property.value, view, signatures)?;
+                out.push_str(&format!(
+                    "flux__win_set_button_size({variable}, &flux__win_button_font_{}, &flux__win_button_font_size_{}, &flux__win_button_font_dpi_{}, {value});\n",
+                    element.name, element.name, element.name
+                ));
+            }
+        }
         if let Some(property) = view_property(element, "enabled") {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
@@ -14850,10 +14907,19 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 "STATIC",
                 "WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE",
             ),
-            "Button" => (
-                "BUTTON",
-                "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON",
-            ),
+            "Button" => {
+                let primary = view_property(element, "primary")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                (
+                    "BUTTON",
+                    if primary {
+                        "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON"
+                    } else {
+                        "WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON"
+                    },
+                )
+            }
             "TextInput" => {
                 let multiline = match view_property(element, "multiline") {
                     Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
@@ -15058,6 +15124,13 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     out.push_str(&format!(" MSG message = {{0}}; int result; while ((result = GetMessageA(&message, NULL, 0, 0)) > 0) {{{key_dispatch} if (IsDialogMessageA(flux__windows_active_window, &message)) continue; TranslateMessage(&message); DispatchMessageA(&message); }} int exit_code = result < 0 ? 1 : (int)message.wParam;"));
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str(" flux__win_delete_fonts();");
+    }
+    if view
+        .elements
+        .iter()
+        .any(|element| element.kind == "Button" && view_property(element, "size").is_some())
+    {
+        out.push_str(" flux__win_delete_button_fonts();");
     }
     if view.elements.iter().any(|element| {
         view_property(element, "background_color").is_some()

@@ -1498,6 +1498,81 @@ app Screen(title: "Native Flux", width: 640, height: 480)
 }
 
 #[test]
+fn windows_button_primary_and_size_use_native_dpi_aware_semantics() {
+    let source = r#"
+view Screen {
+    state active: bool = false
+    state scale: i64 = 19
+    grid columns: 1fr
+    grid rows: auto auto
+    Button submit at 1,1
+        text: "Submit"
+        primary: true
+        size: 18
+    Button dynamic at 2,1
+        text: "Dynamic"
+        primary: active
+        size: scale
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows Button style source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows Button style source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Windows Button style source should lower to native Win32 C");
+
+    assert!(generated.contains("WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON"));
+    assert!(
+        generated.contains("flux__win_set_button_primary(flux__ui_dynamic, flux__ui_state_active)")
+    );
+    assert!(generated.contains("static HFONT flux__win_button_font_dynamic = NULL;"));
+    assert!(generated.contains(
+        "flux__win_set_button_size(flux__ui_submit, &flux__win_button_font_submit, &flux__win_button_font_size_submit, &flux__win_button_font_dpi_submit, INT64_C(18))"
+    ));
+    assert!(generated.contains(
+        "flux__win_set_button_size(flux__ui_dynamic, &flux__win_button_font_dynamic, &flux__win_button_font_size_dynamic, &flux__win_button_font_dpi_dynamic, flux__ui_state_scale)"
+    ));
+    assert!(generated.contains("*current_size == size && *current_dpi == flux__win_dpi"));
+    assert!(generated.contains("CreateFontW(-flux__win_scale(size)"));
+    assert!(generated.contains("flux__win_delete_button_fonts();"));
+}
+
+#[test]
+fn windows_button_size_rejects_invalid_static_values() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button submit at 1,1
+        text: "Submit"
+        size: 0
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("invalid Windows Button size should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("invalid Windows Button size should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows must reject a non-positive Button.size");
+    assert!(
+        error.message.contains(
+            "Button.size must be greater than zero and fit within a 32-bit signed integer"
+        )
+    );
+}
+
+#[test]
 fn windows_backend_refreshes_dynamic_text_alignment_in_place() {
     let source = r#"
 view Screen {
@@ -1757,6 +1832,8 @@ view Screen {
         validationMessage: "Enter a valid email"
     Button action at 3,1
         text: "Run"
+        primary: true
+        size: 18
         shortcut: "Ctrl+Shift+Enter"
         onPress: count => count + 1
     Image logo at 4,1
