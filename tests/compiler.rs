@@ -47671,6 +47671,32 @@ app Screen
     assert!(generated.contains(
         "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_color, \"\", -1)"
     ));
+    let setup = generated
+        .find("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")")
+        .expect("element style setup should name the live widget");
+    let setup = &generated[setup..];
+    let base_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_color)")
+        .expect("omitted base border color provider should be registered from launch");
+    let top_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_top_color)")
+        .expect("omitted top border color provider should be registered from launch");
+    let bottom_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_bottom_color)")
+        .expect("omitted bottom border color provider should be registered from launch");
+    let start_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_start_color)")
+        .expect("omitted start border color provider should be registered from launch");
+    let end_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_end_color)")
+        .expect("omitted end border color provider should be registered from launch");
+    assert!(
+        base_provider < top_provider
+            && top_provider < bottom_provider
+            && bottom_provider < start_provider
+            && start_provider < end_provider,
+        "border color providers must keep canonical base-before-edge registration order"
+    );
 
     let entry = fs::canonicalize(entry).expect("border color lifecycle entry should canonicalize");
     let explicit = initial.replace(

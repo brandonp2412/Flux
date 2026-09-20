@@ -23418,6 +23418,14 @@ fn emit_lifecycle_color_style_setup(
         if property_name == "color" && element.kind != "Text" {
             continue;
         }
+        let css_names = linux_hot_css_color_properties(element, property_name);
+        if css_names.is_empty() {
+            continue;
+        }
+        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+        out.push_str(&format!(
+            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n"
+        ));
         let Some(property) = view_property(element, property_name) else {
             continue;
         };
@@ -23435,10 +23443,6 @@ fn emit_lifecycle_color_style_setup(
                 ),
             ));
         }
-        let css_names = linux_hot_css_color_properties(element, property_name);
-        if css_names.is_empty() {
-            continue;
-        }
         let css_value = gtk_ui_color_css(&value).unwrap_or(value.as_str());
         let declarations = css_names
             .iter()
@@ -23446,9 +23450,8 @@ fn emit_lifecycle_color_style_setup(
             .collect::<Vec<_>>()
             .join(" ");
         let css = format!("#flux-ui-{} {{ {declarations} }}", element.name);
-        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
         out.push_str(&format!(
-            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            "    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
             c_string(&css)
         ));
     }
