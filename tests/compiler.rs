@@ -29397,10 +29397,14 @@ app Status
     assert!(ui_generated.contains("((void)(flux_neg_i64(flux__ui_state_count)), true)"));
     assert_eq!(
         ui_generated
-            .matches("flux_neg_i64(flux__ui_state_count)")
+            .matches("((void)(flux_neg_i64(flux__ui_state_count)), true)")
             .count(),
-        1,
-        "UI lowering should evaluate the checked negation once",
+        3,
+        "each generated Linux UI path should preserve the single-evaluation fold",
+    );
+    assert!(
+        !ui_generated
+            .contains("flux_neg_i64(flux__ui_state_count) == flux_neg_i64(flux__ui_state_count)")
     );
 }
 
@@ -29507,11 +29511,14 @@ app Status
     );
     assert_eq!(
         ui_generated
-            .matches("flux_add_i64(flux__ui_state_count, INT64_C(1))")
+            .matches("((void)(flux_add_i64(flux__ui_state_count, INT64_C(1))), true)")
             .count(),
-        1,
-        "UI lowering should evaluate the checked arithmetic expression once",
+        3,
+        "each generated Linux UI path should preserve the single-evaluation fold",
     );
+    assert!(!ui_generated.contains(
+        "flux_add_i64(flux__ui_state_count, INT64_C(1)) == flux_add_i64(flux__ui_state_count, INT64_C(1))"
+    ));
 }
 
 #[test]
@@ -29622,11 +29629,14 @@ app Status
     );
     assert_eq!(
         ui_generated
-            .matches("flux_add_i64(flux__ui_state_count, INT64_C(1))")
+            .matches("((void)(flux_add_i64(flux__ui_state_count, INT64_C(1))), true)")
             .count(),
-        1,
-        "UI lowering should evaluate the checked commutative expression once",
+        3,
+        "each generated Linux UI path should preserve the commutative single-evaluation fold",
     );
+    assert!(!ui_generated.contains(
+        "flux_add_i64(flux__ui_state_count, INT64_C(1)) == flux_add_i64(INT64_C(1), flux__ui_state_count)"
+    ));
 }
 
 #[test]
@@ -29857,10 +29867,14 @@ app Counter
         compile_to_c(ui).expect("UI constant-alias equivalence should share optimized lowering");
     assert_eq!(
         ui_generated
-            .matches("flux_add_i64(flux__ui_state_count, INT64_C(7))")
+            .matches("((void)(flux_add_i64(flux__ui_state_count, INT64_C(7))), true)")
             .count(),
-        1,
+        3,
+        "each generated Linux UI path should preserve constant-alias single-evaluation folding",
     );
+    assert!(!ui_generated.contains(
+        "flux_add_i64(flux__ui_state_count, INT64_C(7)) == flux_add_i64(INT64_C(7), flux__ui_state_count)"
+    ));
 }
 
 #[test]
@@ -54759,15 +54773,15 @@ app Dashboard
         generated
             .contains("if (changed_state == -1 || changed_state == 0) flux__ui_derived_hasCount")
     );
-    assert!(generated.contains(
-        "if (changed_state == -1 || changed_state == 0) {\n    if (flux__ui_countLabel != NULL) gtk_widget_set_visible"
-    ));
-    assert!(generated.contains(
-        "if (changed_state == -1 || changed_state == 1) {\n    if (flux__ui_panel != NULL) gtk_widget_set_visible"
-    ));
-    assert!(generated.contains(
-        "if (changed_state < 0) {\n    if (flux__ui_widthLabel != NULL) gtk_widget_set_visible"
-    ));
+    assert!(generated.contains("if (changed_state == -1 || changed_state == 0) {"));
+    assert!(generated.contains("if (changed_state == -1 || changed_state == 1) {"));
+    assert!(generated.contains("if (changed_state < 0) {"));
+    for element in ["countLabel", "panel", "widthLabel"] {
+        assert!(generated.contains(&format!(
+            "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_{element})"
+        )));
+        assert!(generated.contains(&format!("gtk_widget_set_visible(flux__ui_{element}")));
+    }
     assert!(generated.contains("if (changed_state == -1) {\n    if (flux__ui_staticLabel"));
     assert!(generated.contains("flux__ui_refresh_changed(0);"));
     assert!(generated.contains("flux__ui_refresh_changed(1);"));
@@ -56138,7 +56152,10 @@ view StaticLayout {
 app StaticLayout
 "#;
     let linux = compile_to_c(ordinary).expect("ordinary UI should still compile");
-    assert!(!linux.contains("gtk_revealer_new"));
+    assert!(linux.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_layout_title = gtk_revealer_new();"
+    ));
+    assert!(linux.contains("#else\n    gtk_grid_attach(GTK_GRID(grid), flux__ui_title"));
     let database = fluxc::semantic::SemanticDatabase::analyze(ordinary, SourceId::UNKNOWN)
         .expect("ordinary UI fixture should analyze");
     let android = fluxc::codegen::emit_c_for_target_with_source_paths(
