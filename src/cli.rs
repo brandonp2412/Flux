@@ -3050,7 +3050,7 @@ fn build_msix_bundle(
         run_checked(
             Command::new("zip")
                 .current_dir(&staged)
-                .args(["-X", "-q"])
+                .args(["-X", "-0", "-q"])
                 .arg(output)
                 .args(files.iter().map(|path| path.as_os_str())),
             "MSIX package archive",
