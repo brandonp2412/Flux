@@ -17392,9 +17392,17 @@ fn emit_linux_gtk_application(
             let blur = linux_ui_hot_shadow_value_c_name(element, "blur");
             let offset_x = linux_ui_hot_shadow_value_c_name(element, "offset_x");
             let offset_y = linux_ui_hot_shadow_value_c_name(element, "offset_y");
+            let color_explicit = linux_ui_hot_shadow_value_c_name(element, "color_explicit");
+            let blur_explicit = linux_ui_hot_shadow_value_c_name(element, "blur_explicit");
+            let offset_x_explicit = linux_ui_hot_shadow_value_c_name(element, "offset_x_explicit");
+            let offset_y_explicit = linux_ui_hot_shadow_value_c_name(element, "offset_y_explicit");
             out.push_str(&format!(
-                "static GtkCssProvider *{provider} = NULL;\nstatic char {color}[32] = {};\nstatic int {blur} = {shadow_blur};\nstatic int {offset_x} = {shadow_offset_x};\nstatic int {offset_y} = {shadow_offset_y};\n",
-                c_string(&shadow_color)
+                "static GtkCssProvider *{provider} = NULL;\nstatic char {color}[32] = {};\nstatic int {blur} = {shadow_blur};\nstatic int {offset_x} = {shadow_offset_x};\nstatic int {offset_y} = {shadow_offset_y};\nstatic bool {color_explicit} = {};\nstatic bool {blur_explicit} = {};\nstatic bool {offset_x_explicit} = {};\nstatic bool {offset_y_explicit} = {};\n",
+                c_string(&shadow_color),
+                view_property(element, "shadow_color").is_some(),
+                view_property(element, "shadow_blur").is_some(),
+                view_property(element, "shadow_offset_x").is_some(),
+                view_property(element, "shadow_offset_y").is_some()
             ));
         }
         for property_name in ["transition_ms", "transition_delay_ms"] {
@@ -18117,34 +18125,34 @@ fn emit_linux_gtk_application(
             let blur = linux_ui_hot_shadow_value_c_name(element, "blur");
             let offset_x = linux_ui_hot_shadow_value_c_name(element, "offset_x");
             let offset_y = linux_ui_hot_shadow_value_c_name(element, "offset_y");
+            let color_explicit = linux_ui_hot_shadow_value_c_name(element, "color_explicit");
+            let blur_explicit = linux_ui_hot_shadow_value_c_name(element, "blur_explicit");
+            let offset_x_explicit = linux_ui_hot_shadow_value_c_name(element, "offset_x_explicit");
+            let offset_y_explicit = linux_ui_hot_shadow_value_c_name(element, "offset_y_explicit");
             let css_format = c_string(&format!(
                 "#flux-ui-{} {{ box-shadow: %dpx %dpx %dpx %s; }}",
                 element.name
             ));
             let apply = format!(
-                " if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {offset_x}, {offset_y}, {blur}, {color}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }}"
+                " if (!{color_explicit} && !{blur_explicit} && !{offset_x_explicit} && !{offset_y_explicit}) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {offset_x}, {offset_y}, {blur}, {color}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }}"
             );
-            if view_property(element, "shadow_color").is_some() {
-                out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"shadow_color\") == 0 && {widget} != NULL) {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ g_strlcpy({color}, css_value, sizeof({color}));{apply} }} }}",
-                    c_string(&element.name)
-                ));
-            }
-            for (property_name, variable, signed) in [
-                ("shadow_blur", &blur, false),
-                ("shadow_offset_x", &offset_x, true),
-                ("shadow_offset_y", &offset_y, true),
+            let default_color = c_string(gtk_ui_color_css("shadow").unwrap_or("#00000080"));
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"shadow_color\") == 0 && {widget} != NULL) {{ if (strcmp(value, \"__flux_shadow_property_default__\") == 0) {{ {color_explicit} = false; g_strlcpy({color}, {default_color}, sizeof({color}));{apply} }} else {{ const char *css_value = flux__ui_hot_css_color(value); if (css_value != NULL) {{ {color_explicit} = true; g_strlcpy({color}, css_value, sizeof({color}));{apply} }} }} }}",
+                c_string(&element.name)
+            ));
+            for (property_name, variable, explicit, signed) in [
+                ("shadow_blur", &blur, &blur_explicit, false),
+                ("shadow_offset_x", &offset_x, &offset_x_explicit, true),
+                ("shadow_offset_y", &offset_y, &offset_y_explicit, true),
             ] {
-                if view_property(element, property_name).is_none() {
-                    continue;
-                }
                 let range = if signed {
                     "integer_value >= INT32_MIN && integer_value <= INT32_MAX"
                 } else {
                     "integer_value >= 0 && integer_value <= INT32_MAX"
                 };
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && {range}) {{ {variable} = (int)integer_value;{apply} }} }}",
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ if (strcmp(value, \"__flux_shadow_property_default__\") == 0) {{ {explicit} = false; {variable} = 0;{apply} }} else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && {range}) {{ {explicit} = true; {variable} = (int)integer_value;{apply} }} }} }}",
                     c_string(&element.name)
                 ));
             }
@@ -22298,24 +22306,10 @@ fn linux_ui_hot_transform_value_c_name(
     format!("flux__ui_hot_transform_{}_{}", element.name, property_name)
 }
 
-fn linux_element_has_shadow_style(element: &crate::ast::ViewElement) -> bool {
-    [
-        "shadow_color",
-        "shadow_blur",
-        "shadow_offset_x",
-        "shadow_offset_y",
-    ]
-    .iter()
-    .any(|property| view_property(element, property).is_some())
-}
-
 fn linux_hot_shadow_values(
     element: &crate::ast::ViewElement,
     signatures: &Signatures,
 ) -> Option<(String, i64, i64, i64)> {
-    if !linux_element_has_shadow_style(element) {
-        return None;
-    }
     let color = match view_property(element, "shadow_color") {
         Some(property) => static_expr_str(&property.value, signatures)?,
         None => "shadow".to_string(),

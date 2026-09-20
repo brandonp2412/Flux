@@ -2020,6 +2020,7 @@ const DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL: &str = "__flux_theme_defau
 const DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL: &str = "__flux_keyboard_type_default__";
 const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
     "__flux_accessibility_property_default__";
+const DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_shadow_property_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2262,7 +2263,8 @@ fn development_ui_string_property_is_patchable(element: &ViewElement, property: 
         ),
         "title" => element.kind == "Card",
         "source" | "alt" | "fit" => element.kind == "Image",
-        "background_color" | "shadow_color" => true,
+        "background_color" => true,
+        "shadow_color" => development_ui_shadow_group_is_static_literal(element),
         "border_color" => [
             "border_top_color",
             "border_bottom_color",
@@ -2371,6 +2373,24 @@ fn development_ui_transition_contract_is_valid(analysis: &ProjectAnalysis) -> bo
     })
 }
 
+fn development_ui_shadow_group_is_static_literal(element: &ViewElement) -> bool {
+    element.properties.iter().all(|property| {
+        match typecheck::source_name_to_internal(&property.name).as_str() {
+            "shadow_color" => {
+                matches!(&property.value.kind, ExprKind::Str(value) if typecheck::valid_ui_color(value))
+            }
+            "shadow_blur" => development_ui_i64_literal_value(&property.value)
+                .is_some_and(|value| (0..=i64::from(i32::MAX)).contains(&value)),
+            "shadow_offset_x" | "shadow_offset_y" => {
+                development_ui_i64_literal_value(&property.value).is_some_and(|value| {
+                    (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
+                })
+            }
+            _ => true,
+        }
+    })
+}
+
 fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
@@ -2430,6 +2450,33 @@ fn development_ui_property_lifecycle_patch_value(
             return None;
         }
         return Some(value.clone());
+    }
+    if property_name == "shadow_color" && development_ui_shadow_group_is_static_literal(element) {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !typecheck::valid_ui_color(value) {
+            return None;
+        }
+        return Some(value.clone());
+    }
+    if matches!(
+        property_name.as_str(),
+        "shadow_blur" | "shadow_offset_x" | "shadow_offset_y"
+    ) && development_ui_shadow_group_is_static_literal(element)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if property_name == "shadow_blur" && !(0..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        if matches!(
+            property_name.as_str(),
+            "shadow_offset_x" | "shadow_offset_y"
+        ) && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
+        {
+            return None;
+        }
+        return Some(value.to_string());
     }
     if property_name == "color"
         && element.kind == "Text"
@@ -2869,6 +2916,12 @@ fn development_ui_property_lifecycle_default(
     if property == "background_color" {
         return Some(String::new());
     }
+    if matches!(
+        property,
+        "shadow_color" | "shadow_blur" | "shadow_offset_x" | "shadow_offset_y"
+    ) {
+        return Some(DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL.to_string());
+    }
     if property == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3141,7 +3194,9 @@ fn development_ui_i64_property_is_patchable(element: &ViewElement, property: &st
         | "layout_transition_ms"
         | "transition_ms"
         | "transition_delay_ms" => true,
-        "shadow_blur" | "shadow_offset_x" | "shadow_offset_y" => true,
+        "shadow_blur" | "shadow_offset_x" | "shadow_offset_y" => {
+            development_ui_shadow_group_is_static_literal(element)
+        }
         "translate_x"
         | "translate_y"
         | "rotate_degrees"
@@ -3612,6 +3667,10 @@ fn development_ui_string_literals(
             "submit_on_enter",
             "max_length",
             "background_color",
+            "shadow_color",
+            "shadow_blur",
+            "shadow_offset_x",
+            "shadow_offset_y",
             "color",
             "font_family",
             "variant",
