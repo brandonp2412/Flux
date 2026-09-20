@@ -19912,6 +19912,7 @@ fn emit_linux_gtk_application(
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
+        emit_lifecycle_color_style_setup(out, element, &variable, signatures)?;
         emit_dynamic_transform_setup(out, element, &variable, signatures)?;
         if let Some(property) = view_property(element, "clip") {
             let clip = ui_expr_c(&property.value, view, signatures)?;
@@ -23385,24 +23386,72 @@ fn emit_element_alignment(
     Ok(())
 }
 
+fn emit_lifecycle_color_style_setup(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    for property_name in ["background_color", "color"] {
+        if property_name == "color" && element.kind != "Text" {
+            continue;
+        }
+        let Some(property) = view_property(element, property_name) else {
+            continue;
+        };
+        let Some(value) = static_expr_str(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                &format!("{property_name} must be a compile-time string"),
+            ));
+        };
+        if !valid_ui_color(&value) {
+            return Err(diag(
+                property.value.span,
+                &format!(
+                    "{property_name} must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
+                ),
+            ));
+        }
+        let css_names = linux_hot_css_color_properties(element, property_name);
+        if css_names.is_empty() {
+            continue;
+        }
+        let css_value = gtk_ui_color_css(&value).unwrap_or(value.as_str());
+        let declarations = css_names
+            .iter()
+            .map(|css_name| format!("{css_name}: {css_value};"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let css = format!("#flux-ui-{} {{ {declarations} }}", element.name);
+        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+        out.push_str(&format!(
+            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            c_string(&css)
+        ));
+    }
+    Ok(())
+}
+
 fn emit_element_style(
     out: &mut String,
     element: &crate::ast::ViewElement,
     variable: &str,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
+    let widget_name = format!("flux-ui-{}", element.name);
+    out.push_str(&format!(
+        "    gtk_widget_set_name({variable}, {});\n",
+        c_string(&widget_name)
+    ));
     let mut declarations = Vec::new();
-    let mut color_properties = vec![
-        ("background_color", "background-color"),
+    let color_properties = vec![
         ("border_color", "border-color"),
         ("border_top_color", "border-top-color"),
         ("border_bottom_color", "border-bottom-color"),
         ("border_start_color", "border-left-color"),
         ("border_end_color", "border-right-color"),
     ];
-    if element.kind == "Text" {
-        color_properties.push(("color", "color"));
-    }
     for (property_name, css_name) in color_properties {
         let Some(property) = view_property(element, property_name) else {
             continue;
@@ -23602,7 +23651,6 @@ fn emit_element_style(
     if declarations.is_empty() {
         return Ok(());
     }
-    let widget_name = format!("flux-ui-{}", element.name);
     let provider = format!("flux__style_{}", element.name);
     let css = if transition_ms.is_some() {
         format!(
@@ -23613,8 +23661,7 @@ fn emit_element_style(
         format!("#{widget_name} {{ {} }}", declarations.join(" "))
     };
     out.push_str(&format!(
-        "    gtk_widget_set_name({variable}, {});\n    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n",
-        c_string(&widget_name),
+        "    GtkCssProvider *{provider} = gtk_css_provider_new();\n    gtk_css_provider_load_from_data({provider}, {}, -1);\n    gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);\n",
         c_string(&css),
     ));
     if transition_ms.is_some() {

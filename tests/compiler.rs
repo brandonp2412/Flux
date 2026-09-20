@@ -47542,6 +47542,7 @@ app Screen
     assert!(generated.contains(
         "gtk_css_provider_load_from_data(flux__ui_hot_style_action_background_color, \"\", -1)"
     ));
+    assert!(generated.contains("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")"));
 
     let entry =
         fs::canonicalize(entry).expect("background color lifecycle entry should canonicalize");
@@ -47555,6 +47556,13 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("explicit background color should analyze");
     assert_eq!(second.development_abi(), first.development_abi());
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit background color should lower for Linux");
+    assert!(!explicit_generated.contains("GtkCssProvider *flux__style_action ="));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_background_color, \"#flux-ui-action { background-color: @flux_surface_raised; }\", -1)"
+    ));
     assert_eq!(
         second
             .development_ui_string_patch_from(&first)
@@ -48246,6 +48254,7 @@ app Screen
         generated
             .contains("gtk_css_provider_load_from_data(flux__ui_hot_style_body_color, \"\", -1)")
     );
+    assert!(generated.contains("gtk_widget_set_name(flux__ui_body, \"flux-ui-body\")"));
 
     let entry = fs::canonicalize(entry).expect("text color lifecycle entry should canonicalize");
     let explicit = initial.replace(
@@ -48258,6 +48267,13 @@ app Screen
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("explicit text color should analyze");
     assert_eq!(second.development_abi(), first.development_abi());
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit text color should lower for Linux");
+    assert!(!explicit_generated.contains("GtkCssProvider *flux__style_body ="));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_body_color, \"#flux-ui-body { color: #112233; }\", -1)"
+    ));
     assert_eq!(
         second
             .development_ui_string_patch_from(&first)
