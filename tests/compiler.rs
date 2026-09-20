@@ -1533,11 +1533,13 @@ fn windows_backend_applies_text_max_width_chars_to_native_layout() {
     let source = r#"
 view Screen {
     state width: i64 = 24
+    state lines: i64 = 2
     grid columns: 1fr
     grid rows: auto auto
     Text title at 1,1
         text: "Title"
         maxWidthChars: width
+        maxLines: lines
     Text body at 2,1
         text: "Body"
 }
@@ -1558,6 +1560,9 @@ app Screen
         generated.contains("flux__win_text_width_for_chars(flux__ui_title, flux__ui_state_width)")
     );
     assert!(generated.contains("flux__win_text_width_for_chars(flux__ui_body, INT64_C(72))"));
+    assert!(
+        generated.contains("flux__win_text_height_for_lines(flux__ui_title, flux__ui_state_lines)")
+    );
     assert!(generated.contains("RECT flux__win_refresh_client = {0}"));
 }
 

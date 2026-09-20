@@ -13617,13 +13617,18 @@ fn emit_windows_native_application(
                 .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
         })
     });
-    let uses_dynamic_text_widths = view.elements.iter().any(|element| {
+    let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
-            && view_property(element, "max_width_chars")
-                .is_some_and(|property| static_expr_i64(&property.value, signatures).is_none())
+            && ["max_width_chars", "max_lines"]
+                .iter()
+                .any(|property_name| {
+                    view_property(element, property_name).is_some_and(|property| {
+                        static_expr_i64(&property.value, signatures).is_none()
+                    })
+                })
     });
     let uses_dynamic_layout =
-        uses_dynamic_layout_constraints || uses_dynamic_margins || uses_dynamic_text_widths;
+        uses_dynamic_layout_constraints || uses_dynamic_margins || uses_dynamic_text_layout;
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13651,6 +13656,7 @@ fn emit_windows_native_application(
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
         out.push_str("static int flux__win_text_width_for_chars(HWND control, int64_t chars) { if (control == NULL) return INT32_MAX; if (chars < 0 || chars > INT32_MAX) { fputs(\"Flux runtime error: Text.maxWidthChars must be between 0 and 2147483647\\n\", stderr); abort(); } if (chars == 0) return INT32_MAX; HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int average = metrics.tmAveCharWidth > 0 ? metrics.tmAveCharWidth : 1; int64_t measured = chars * (int64_t)average; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
+        out.push_str("static int flux__win_text_height_for_lines(HWND control, int64_t lines) { if (control == NULL) return INT32_MAX; if (lines < 1 || lines > INT32_MAX) { fputs(\"Flux runtime error: Text.maxLines must be between 1 and 2147483647\\n\", stderr); abort(); } HDC dc = GetDC(control); if (dc == NULL) return INT32_MAX; HFONT font = (HFONT)SendMessageW(control, WM_GETFONT, 0, 0); HGDIOBJ previous = font != NULL ? SelectObject(dc, font) : NULL; TEXTMETRICA metrics = {0}; int result = INT32_MAX; if (GetTextMetricsA(dc, &metrics)) { int line_height = metrics.tmHeight + metrics.tmExternalLeading; if (line_height < 1) line_height = 1; int64_t measured = lines * (int64_t)line_height; result = measured > INT32_MAX ? INT32_MAX : (int)measured; } if (previous != NULL && previous != HGDI_ERROR) SelectObject(dc, previous); ReleaseDC(control, dc); return result; }\n");
     }
     if uses_tooltips {
         out.push_str("static HWND flux__win_tooltips = NULL;\nstatic void flux__win_set_tooltip(HWND control, char **storage, const char *text) { if (control == NULL || flux__win_tooltips == NULL || storage == NULL) return; if (text == NULL) text = \"\"; size_t length = 0; if (!flux__win_bounded_length(text, 65536, &length)) { fputs(\"Flux runtime error: tooltip exceeds 65536 bytes\\n\", stderr); abort(); } if (*storage != NULL && strcmp(*storage, text) == 0) return; char *copy = (char *)malloc(length + 1); if (copy == NULL) { fputs(\"Flux runtime error: unable to store tooltip text\\n\", stderr); abort(); } memcpy(copy, text, length + 1); free(*storage); *storage = copy; TOOLINFOA info = {0}; info.cbSize = sizeof(info); info.uFlags = TTF_IDISHWND | TTF_SUBCLASS; info.hwnd = flux__windows_active_window; info.uId = (UINT_PTR)control; info.lpszText = *storage; SendMessageA(flux__win_tooltips, TTM_UPDATETIPTEXTA, 0, (LPARAM)&info); }\n");
@@ -14361,6 +14367,28 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         } else {
             String::new()
         };
+        let text_max_lines = if element.kind == "Text" {
+            if let Some(property) = view_property(element, "max_lines") {
+                if let Some(value) = static_expr_i64(&property.value, signatures) {
+                    if value < 1 || value > i64::from(i32::MAX) {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.maxLines must be between 1 and 2147483647",
+                        ));
+                    }
+                    Some(format!("INT64_C({value})"))
+                } else {
+                    Some(ui_expr_c(&property.value, view, signatures)?)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let text_height_limit = text_max_lines
+            .map(|lines| format!("int text_maximum_height = flux__win_text_height_for_lines({variable}, {lines}); if (control_height > text_maximum_height) control_height = text_maximum_height; "))
+            .unwrap_or_default();
         let width_relationship = if min_width.is_some() && max_width.is_some() {
             "if (requested_max_width < requested_min_width) { fputs(\"Flux runtime error: maxWidth must be greater than or equal to minWidth\\n\", stderr); abort(); } "
         } else {
@@ -14371,7 +14399,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         } else {
             ""
         };
-        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top; x = adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x; y = adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y; int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{text_width_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
+        out.push_str(&format!("if ({variable} != NULL) {{ int x = scaled_padding + {column_offset} * column_width; int y = scaled_padding + {row_offset} * row_height; int control_width = {column_span} * column_width - scaled_gap; int control_height = {row_span} * row_height - scaled_gap; int64_t requested_margin_top = {margin_top_value}; int64_t requested_margin_bottom = {margin_bottom_value}; int64_t requested_margin_start = {margin_start_value}; int64_t requested_margin_end = {margin_end_value}; int physical_margin_top = flux__win_scale(requested_margin_top); int physical_margin_bottom = flux__win_scale(requested_margin_bottom); int physical_margin_start = flux__win_scale(requested_margin_start); int physical_margin_end = flux__win_scale(requested_margin_end); int64_t adjusted_x = (int64_t)x + physical_margin_start; int64_t adjusted_y = (int64_t)y + physical_margin_top; x = adjusted_x > INT32_MAX ? INT32_MAX : (int)adjusted_x; y = adjusted_y > INT32_MAX ? INT32_MAX : (int)adjusted_y; int64_t margin_width = (int64_t)control_width - physical_margin_start - physical_margin_end; int64_t margin_height = (int64_t)control_height - physical_margin_top - physical_margin_bottom; control_width = margin_width < 1 ? 1 : (margin_width > INT32_MAX ? INT32_MAX : (int)margin_width); control_height = margin_height < 1 ? 1 : (margin_height > INT32_MAX ? INT32_MAX : (int)margin_height); int64_t requested_min_width = {min_width_value}; int64_t requested_min_height = {min_height_value}; int64_t requested_max_width = {max_width_value}; int64_t requested_max_height = {max_height_value}; {width_relationship}{height_relationship}{text_width_limit}{text_height_limit}int minimum_width = flux__win_scale(requested_min_width); int minimum_height = flux__win_scale(requested_min_height); if (control_width < minimum_width) control_width = minimum_width; if (control_height < minimum_height) control_height = minimum_height; if (requested_max_width > 0) {{ int maximum_width = flux__win_scale(requested_max_width); if (control_width > maximum_width) control_width = maximum_width; }} if (requested_max_height > 0) {{ int maximum_height = flux__win_scale(requested_max_height); if (control_height > maximum_height) control_height = maximum_height; }} MoveWindow({variable}, x, y, control_width, control_height, TRUE); }}\n"));
     }
     out.push_str("}\nstatic void flux__win_refresh(void) { bool previous_refreshing = flux__win_refreshing; flux__win_refreshing = true;\n");
     for derived in &view.derived {
