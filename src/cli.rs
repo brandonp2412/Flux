@@ -10836,6 +10836,7 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
     const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
     const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
+    const LINUX_SECURE_SCHEMA: &str = "static const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };";
     const MENU_CALLBACK: &str = "static void (*flux__menu_callback)(int64_t) = NULL;";
     const MENU_BAR: &str = "static GtkWidget *flux__menu_bar = NULL;";
     const MENU_ACTION: &str = "static GSimpleAction *flux__menu_action = NULL;";
@@ -10953,6 +10954,18 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             1,
         );
         definitions.push_str("\nbool flux__websocket_client_sessions[1024];\n");
+        isolated = true;
+    }
+
+    if prefix.contains(LINUX_SECURE_SCHEMA) {
+        partition_prefix = partition_prefix.replacen(
+            LINUX_SECURE_SCHEMA,
+            "extern const SecretSchema flux__linux_secure_schema;",
+            1,
+        );
+        definitions.push_str(
+            "\nconst SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };\n",
+        );
         isolated = true;
     }
 
@@ -13931,6 +13944,21 @@ app OverlayDemo(title: "Overlay")
                 .count(),
             1,
             "the WebSocket client-mode table must have exactly one process-wide definition"
+        );
+
+        let linux_secure = "#include <stdint.h>\ntypedef struct { const char *name; int flags; struct { const char *name; int type; } attributes[3]; } SecretSchema;\n#define SECRET_SCHEMA_NONE 0\n#define SECRET_SCHEMA_ATTRIBUTE_STRING 1\nstatic const SecretSchema flux__linux_secure_schema = { .name = \"app.flux.secure\", .flags = SECRET_SCHEMA_NONE, .attributes = { { \"application\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { \"key\", SECRET_SCHEMA_ATTRIBUTE_STRING }, { NULL, 0 } } };\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";
+        let linux_secure_units = partition_native_c_by_source(linux_secure)
+            .expect("the Linux Secret Service schema should move into one shared runtime unit");
+        assert_eq!(linux_secure_units.len(), 3);
+        assert_eq!(
+            linux_secure_units
+                .iter()
+                .filter(|unit| unit.lines().any(|line| {
+                    line.starts_with("const SecretSchema flux__linux_secure_schema =")
+                }))
+                .count(),
+            1,
+            "the Linux Secret Service schema must have exactly one process-wide definition"
         );
 
         let time_zone = "#include <stdint.h>\n#if defined(__GLIBC__)\nstatic volatile int flux_time_zone_transaction_lock = 0;\n#endif\nint64_t flux__fn_left(void);\nint64_t flux__fn_right(void);\n#line 1 \"/tmp/left.flux\"\nint64_t flux__fn_left(void) { return 1; }\n#line 1 \"/tmp/right.flux\"\nint64_t flux__fn_right(void) { return 2; }\n";

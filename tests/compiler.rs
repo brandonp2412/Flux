@@ -37890,6 +37890,108 @@ pub fn startup() -> void {
 }
 
 #[test]
+fn native_module_object_cache_isolates_linux_secure_schema() {
+    if !Command::new("pkg-config")
+        .args(["--exists", "gtk4", "libsecret-1"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-native-linux-secure-module-cache-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("native Linux secure module cache fixture should be writable");
+    let hooks = root.join("hooks.flux");
+    let main = root.join("main.flux");
+    let initial_hooks = r#"pub fn storeSecret() -> bool {
+    return linux.secureStore("session", "opaque")
+}
+"#;
+    fs::write(&hooks, initial_hooks).expect("Linux secure hook module should be writable");
+    fs::write(
+        &main,
+        "import \"hooks.flux\"\n\nfn startup() -> void {\n    print(storeSecret())\n}\n\nview Screen {\n    grid columns: 1fr\n    grid rows: auto\n\n    Text label at 1,1\n        text: \"ready\"\n}\n\napp Screen(id: \"nz.flux.secure.cache\", title: \"Secure cache\", onStart: startup)\n",
+    )
+    .expect("Linux secure entry module should be writable");
+
+    let cache = root.join("cache");
+    let first = root.join("first");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&first)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("first Linux secure module-object build should run");
+    assert!(
+        built.status.success(),
+        "first Linux secure module-object build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let object_dir = cache.join("native/objects");
+    let object_names = || {
+        let mut names = fs::read_dir(&object_dir)
+            .expect("native Linux secure object cache should exist")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("o"))
+            .filter_map(|path| path.file_name().map(|name| name.to_os_string()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let first_objects = object_names();
+    assert!(
+        first_objects.len() >= 3,
+        "the Linux secure schema should be isolated so the secure helper, root UI, and shared runtime do not collapse into one object: {first_objects:?}"
+    );
+
+    let updated_hooks = initial_hooks.replace("\"opaque\"", "\"updated\"");
+    fs::write(&hooks, updated_hooks).expect("changed Linux secure hook module should be writable");
+    let second = root.join("second");
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&main)
+        .args(["--mode", "debug"])
+        .arg("-o")
+        .arg(&second)
+        .env("FLUX_CACHE_DIR", &cache)
+        .output()
+        .expect("changed Linux secure module-object build should run");
+    assert!(
+        rebuilt.status.success(),
+        "changed Linux secure module-object build failed: {}",
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+
+    let second_objects = object_names();
+    assert_eq!(
+        second_objects.len(),
+        first_objects.len() + 1,
+        "a body-only Linux secure value edit should compile one new object"
+    );
+    assert!(
+        first_objects
+            .iter()
+            .all(|object| second_objects.contains(object)),
+        "unchanged root UI and shared Linux secure runtime objects should remain reusable"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_module_object_cache_reuses_linux_ui_runtime_for_root_function_edit() {
     let root = std::env::temp_dir().join(format!(
         "flux-native-ui-root-function-cache-{}-{}",
