@@ -10667,6 +10667,19 @@ fn build_native_instrumented(
     )
 }
 
+fn native_clang_link_args(
+    mode: BuildMode,
+    native_target: &NativeTargetOptions,
+) -> Vec<&'static str> {
+    let mut args = mode.clang_link_args().to_vec();
+    if mode == BuildMode::Release
+        && native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows
+    {
+        args.push("-fuse-ld=lld");
+    }
+    args
+}
+
 fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     let mut libraries = Vec::new();
     if c_source.contains("CreateWindowExA(")
@@ -11840,7 +11853,7 @@ fn build_native_configured(
     }
 
     let mut link = Command::new("clang");
-    link.args(mode.clang_link_args());
+    link.args(native_clang_link_args(mode, native_target));
     if let Some(target) = native_target.triple.as_deref() {
         link.arg(format!("--target={target}"));
     }
@@ -12571,7 +12584,7 @@ mod tests {
         display_flux_symbol, emit_llvm_from_c, find_android_compile_jar, github_repository_parts,
         json_string, linux_desktop_entry, msix_block_map_xml, msix_content_types_xml,
         msix_manifest_xml, msix_version, native_build_cache_path_configured,
-        native_cache_entry_is_valid, native_object_cache_path_configured,
+        native_cache_entry_is_valid, native_clang_link_args, native_object_cache_path_configured,
         native_package_config_for_target, output_with_timeout, package_artifact_name,
         package_options, parse_adb_devices, partition_native_c_by_source, profile_options,
         profile_report_addresses, prune_native_cache_directory, publish_registry_package_command,
@@ -14378,6 +14391,31 @@ app OverlayDemo(title: "Overlay")
         assert!(release.contains(&"-DNDEBUG"));
         assert!(!release.contains(&"-g"));
         assert!(!release.contains(&"-DFLUX_DEBUG_METADATA=1"));
+    }
+
+    #[test]
+    fn windows_release_lto_selects_lld_linker() {
+        let windows = NativeTargetOptions {
+            triple: Some("x86_64-pc-windows-msvc".to_string()),
+            sysroot: None,
+        };
+        assert_eq!(
+            native_clang_link_args(BuildMode::Release, &windows),
+            vec!["-O3", "-flto", "-fuse-ld=lld"]
+        );
+        assert_eq!(
+            native_clang_link_args(BuildMode::Profile, &windows),
+            vec!["-O2", "-g"]
+        );
+
+        let linux = NativeTargetOptions {
+            triple: Some("x86_64-unknown-linux-gnu".to_string()),
+            sysroot: None,
+        };
+        assert_eq!(
+            native_clang_link_args(BuildMode::Release, &linux),
+            vec!["-O3", "-flto"]
+        );
     }
 
     #[test]

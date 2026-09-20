@@ -90,6 +90,9 @@ jobs:
           "@ | Set-Content -Encoding utf8 (Join-Path $root "src/main.flux")
           $package = Join-Path $root "smoke.msix"
           cargo run --quiet --bin fluxc -- package $root --format msix -o $package
+          if ($LASTEXITCODE -ne 0) {
+            throw "fluxc failed to build the MSIX smoke package"
+          }
           $makeAppx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" |
             Sort-Object FullName -Descending |
             Select-Object -First 1
