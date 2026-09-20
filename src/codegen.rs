@@ -14494,6 +14494,27 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         };
         out.push_str(&format!("static WNDPROC flux__win_hover_orig_{index} = NULL;\nstatic bool flux__win_hovering_{index} = false;\nstatic LRESULT CALLBACK flux__win_hover_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_MOUSEMOVE && !flux__win_hovering_{index}) {{ TRACKMOUSEEVENT tracking = {{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 }}; if (TrackMouseEvent(&tracking)) {{ flux__win_hovering_{index} = true; {hover_body} }} }} else if (message == WM_MOUSELEAVE) {{ flux__win_hovering_{index} = false; {leave_body} }} return CallWindowProcA(flux__win_hover_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
+    for (index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_double_tap") else {
+            continue;
+        };
+        let event_body = if let Some(transition) = &action.transition {
+            let next = ui_expr_c(&action.value, view, signatures)?;
+            format!(
+                "{} = {next}; flux__win_refresh();",
+                ui_state_c_name(&transition.state)
+            )
+        } else {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onDoubleTap requires a named fn() -> void callback or state transition",
+                ));
+            };
+            format!("{}(); flux__win_refresh();", function_c_name(function))
+        };
+        out.push_str(&format!("static WNDPROC flux__win_double_tap_orig_{index} = NULL;\nstatic bool flux__win_double_tap_armed_{index} = false;\nstatic DWORD flux__win_double_tap_time_{index} = 0;\nstatic int flux__win_double_tap_x_{index} = 0;\nstatic int flux__win_double_tap_y_{index} = 0;\nstatic LRESULT CALLBACK flux__win_double_tap_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcA(flux__win_double_tap_orig_{index}, hwnd, message, wparam, lparam); if (message == WM_LBUTTONUP) {{ DWORD now = (DWORD)GetMessageTime(); int x = (int)(short)LOWORD(lparam); int y = (int)(short)HIWORD(lparam); int dx = x - flux__win_double_tap_x_{index}; int dy = y - flux__win_double_tap_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; int max_dx = (GetSystemMetrics(SM_CXDOUBLECLK) + 1) / 2; int max_dy = (GetSystemMetrics(SM_CYDOUBLECLK) + 1) / 2; if (flux__win_double_tap_armed_{index} && (DWORD)(now - flux__win_double_tap_time_{index}) <= GetDoubleClickTime() && dx <= max_dx && dy <= max_dy) {{ flux__win_double_tap_armed_{index} = false; {event_body} }} else {{ flux__win_double_tap_armed_{index} = true; flux__win_double_tap_time_{index} = now; flux__win_double_tap_x_{index} = x; flux__win_double_tap_y_{index} = y; }} }} return result; }}\n"));
+    }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
         for (index, element) in view.elements.iter().enumerate() {
@@ -15317,6 +15338,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             || view_property(element, "on_leave").is_some()
         {
             out.push_str(&format!("SetLastError(0); flux__win_hover_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_hover_proc_{index}); if (flux__win_hover_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "on_double_tap").is_some() {
+            out.push_str(&format!("SetLastError(0); flux__win_double_tap_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_double_tap_proc_{index}); if (flux__win_double_tap_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
     }
     if let Some(first) = accessibility_order.first() {

@@ -53879,6 +53879,12 @@ app HoverCard
     assert!(windows.contains("flux__fn_leave_notice(); flux__win_refresh();"));
     assert!(windows.contains("flux__win_hover_proc_0"));
     assert!(windows.contains("flux__win_hover_proc_1"));
+    assert!(windows.contains("flux__win_double_tap_proc_0"));
+    assert!(windows.contains("GetDoubleClickTime()"));
+    assert!(windows.contains("SM_CXDOUBLECLK"));
+    assert!(windows.contains("SM_CYDOUBLECLK"));
+    assert!(windows.contains("message == WM_LBUTTONUP"));
+    assert!(windows.contains("flux__fn_tapped(); flux__win_refresh();"));
 }
 
 #[test]
