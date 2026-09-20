@@ -44588,6 +44588,105 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_status_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-status-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary status lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state presentation: str = "loading"
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Status"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial status source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial status source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("status lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"status\") == 0 && flux__ui_label != NULL"));
+
+    let entry = fs::canonicalize(entry).expect("status lifecycle entry should canonicalize");
+    let explicit_default = initial.replace(
+        "    Text label at 1,1\n",
+        "    Text label at 1,1\n        status: \"normal\"\n",
+    );
+    fs::write(&entry, &explicit_default).expect("explicit normal status should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit normal status should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second.development_ui_string_patch_from(&first),
+        Some(Vec::new()),
+        "adding the implicit normal status should be an in-process no-op"
+    );
+
+    let errored = explicit_default.replace("status: \"normal\"", "status: \"error\"");
+    fs::write(&entry, &errored).expect("error status source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("error status source should analyze");
+    assert_eq!(third.development_abi(), first.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("error status should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "status".to_string(),
+            value: "error".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed status source should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed status source should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing status should restore normal"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "status".to_string(),
+            value: "normal".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "    Text label at 1,1\n",
+        "    Text label at 1,1\n        status: presentation\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic status source should be writable");
+    cache.invalidate_path(&entry);
+    let errors = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("state-driven status must remain outside the portable status contract");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("status must be a compile-time string value")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_common_alignment_declaration_lifecycle() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-common-alignment-lifecycle-{}",

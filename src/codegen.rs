@@ -17891,12 +17891,10 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "status").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"status\") == 0 && {host} != NULL) {{ bool status_valid = strcmp(value, \"normal\") == 0 || strcmp(value, \"loading\") == 0 || strcmp(value, \"empty\") == 0 || strcmp(value, \"error\") == 0; if (status_valid) {{ gtk_widget_remove_css_class({host}, \"flux-status-loading\"); gtk_widget_remove_css_class({host}, \"flux-status-empty\"); gtk_widget_remove_css_class({host}, \"flux-status-error\"); if (strcmp(value, \"loading\") == 0) gtk_widget_add_css_class({host}, \"flux-status-loading\"); else if (strcmp(value, \"empty\") == 0) gtk_widget_add_css_class({host}, \"flux-status-empty\"); else if (strcmp(value, \"error\") == 0) gtk_widget_add_css_class({host}, \"flux-status-error\"); }} }}",
-                c_string(&element.name)
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"status\") == 0 && {host} != NULL) {{ bool status_valid = strcmp(value, \"normal\") == 0 || strcmp(value, \"loading\") == 0 || strcmp(value, \"empty\") == 0 || strcmp(value, \"error\") == 0; if (status_valid) {{ gtk_widget_remove_css_class({host}, \"flux-status-loading\"); gtk_widget_remove_css_class({host}, \"flux-status-empty\"); gtk_widget_remove_css_class({host}, \"flux-status-error\"); if (strcmp(value, \"loading\") == 0) gtk_widget_add_css_class({host}, \"flux-status-loading\"); else if (strcmp(value, \"empty\") == 0) gtk_widget_add_css_class({host}, \"flux-status-empty\"); else if (strcmp(value, \"error\") == 0) gtk_widget_add_css_class({host}, \"flux-status-error\"); }} }}",
+            c_string(&element.name)
+        ));
         if view_property(element, "layout_transition_ms").is_some() {
             let layout = linux_ui_layout_c_name(element);
             out.push_str(&format!(

@@ -2442,6 +2442,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "status" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !typecheck::UI_PRESENTATION_STATES.contains(&value.as_str()) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "source" && element.kind == "Image" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -2588,6 +2597,9 @@ fn development_ui_property_lifecycle_default(
         return Some("140".to_string());
     }
     if property == "validation_state" && element.kind == "TextInput" {
+        return Some("normal".to_string());
+    }
+    if property == "status" {
         return Some("normal".to_string());
     }
     if matches!(property, "source" | "alt") && element.kind == "Image" {
@@ -3166,6 +3178,7 @@ fn development_ui_string_literals(
             "alt",
             "source",
             "validation_state",
+            "status",
             "tooltip",
             "placeholder",
             "max_length",
