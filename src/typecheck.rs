@@ -9,6 +9,22 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
 use crate::ir::ControlFlowGraph;
 
+#[cfg(test)]
+thread_local! {
+    static TYPECHECK_FUNCTION_BODY_CHECKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_function_body_check_count() {
+    TYPECHECK_FUNCTION_BODY_CHECKS.with(|checks| checks.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn function_body_check_count() -> usize {
+    TYPECHECK_FUNCTION_BODY_CHECKS.with(std::cell::Cell::get)
+}
+
 /// The native multi-socket readiness helpers use a bounded stack descriptor
 /// array. Keep the source-level literal check in sync with that native limit.
 pub const MAX_SOCKET_READINESS_DESCRIPTORS: usize = 1024;
@@ -1500,6 +1516,35 @@ pub(crate) fn check_changed_sources_with_signatures(
 
     for function in &program.functions {
         if changed_sources.contains(&function.name_span.source_id) {
+            check_function_all(function, signatures, &mut diagnostics);
+        }
+    }
+
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
+pub(crate) fn check_changed_functions_with_signatures(
+    program: &Program,
+    signatures: &Signatures,
+    changed_sources: &HashSet<SourceId>,
+    changed_functions: &HashSet<(SourceId, String)>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+
+    if program
+        .views
+        .iter()
+        .any(|view| changed_sources.contains(&view.name_span.source_id))
+    {
+        validate_views(program, signatures, &mut diagnostics);
+    }
+
+    for function in &program.functions {
+        if changed_functions.contains(&(function.name_span.source_id, function.name.clone())) {
             check_function_all(function, signatures, &mut diagnostics);
         }
     }
@@ -3256,6 +3301,8 @@ fn check_function_all(
     if function.foreign_symbol.is_some() {
         return;
     }
+    #[cfg(test)]
+    TYPECHECK_FUNCTION_BODY_CHECKS.with(|checks| checks.set(checks.get() + 1));
     let mut env = HashMap::new();
     let mut mutable = HashSet::new();
     let mut borrowed_collection_parameters = function
