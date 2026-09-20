@@ -14160,6 +14160,22 @@ fn emit_windows_native_application(
             }
         }
     }
+    for element in &view.elements {
+        if let Some(property) = view_property(element, "status") {
+            let Some(status) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows status must be a compile-time string value",
+                ));
+            };
+            if !typecheck::UI_PRESENTATION_STATES.contains(&status.as_str()) {
+                return Err(diag(
+                    property.value.span,
+                    &format!("unsupported UI status '{status}'"),
+                ));
+            }
+        }
+    }
     let uses_dynamic_layout_constraints = view.elements.iter().any(|element| {
         ["min_width", "min_height", "max_width", "max_height"]
             .iter()
@@ -15594,9 +15610,14 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     out.push_str("flux__win_refreshing = previous_refreshing; }\n");
     out.push_str("static LRESULT CALLBACK flux__win_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) { switch (message) { case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN: case WM_CTLCOLOREDIT: { HDC dc = (HDC)wparam; HWND control = (HWND)lparam;\n");
     for element in view.elements.iter().filter(|element| {
+        let presentation_text_color = element.kind != "Image"
+            && view_property(element, "status")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some_and(|status| matches!(status.as_str(), "empty" | "error"));
         view_property(element, "background_color").is_some()
             || (element.kind == "Text" && view_property(element, "color").is_some())
             || (element.kind == "TextInput" && view_property(element, "validation_state").is_some())
+            || presentation_text_color
     }) {
         out.push_str(&format!(
             "if (control == {}) {{",
@@ -15616,6 +15637,16 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 ));
             } else {
                 out.push_str(&format!(" if (flux__win_dynamic_has_color_{}_color) SetTextColor(dc, flux__win_dynamic_color_{}_color);", element.name, element.name));
+            }
+        }
+        if element.kind != "Image"
+            && let Some(status) = view_property(element, "status")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+        {
+            match status.as_str() {
+                "empty" => out.push_str(" SetTextColor(dc, RGB(87, 96, 106));"),
+                "error" => out.push_str(" SetTextColor(dc, RGB(207, 34, 46));"),
+                _ => {}
             }
         }
         if let Some(property) = view_property(element, "background_color") {
@@ -15917,7 +15948,20 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         } else {
             "0".to_string()
         };
-        out.push_str(&format!("{variable} = CreateWindowExW(0, L\"{class}\", L\"\", {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        let presentation_status = view_property(element, "status")
+            .and_then(|property| static_expr_str(&property.value, signatures))
+            .unwrap_or_else(|| "normal".to_string());
+        let element_ex_style = if presentation_status == "loading" {
+            "WS_EX_LAYERED"
+        } else {
+            "0"
+        };
+        out.push_str(&format!("{variable} = CreateWindowExW({element_ex_style}, L\"{class}\", L\"\", {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        if presentation_status == "loading" {
+            out.push_str(&format!(
+                "if (!SetLayeredWindowAttributes({variable}, 0, (BYTE)173, LWA_ALPHA)) return 1;\n"
+            ));
+        }
         if element.kind != "Image" {
             out.push_str(&format!(
                 "flux__win_set_text_if_changed({variable}, {text});\n"

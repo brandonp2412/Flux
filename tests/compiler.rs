@@ -2043,6 +2043,7 @@ view Screen {
     grid rows: auto auto auto auto
     Text title at 1,1
         text: "Cross target"
+        status: "loading"
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
@@ -51391,6 +51392,24 @@ app Statuses
     assert!(android.contains("NewStringUTF(env, \"loading\")"));
     assert!(android.contains("NewStringUTF(env, \"empty\")"));
     assert!(android.contains("NewStringUTF(env, \"error\")"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("UI presentation status should lower on Windows");
+    assert!(windows.contains("flux__ui_loading = CreateWindowExW(WS_EX_LAYERED, L\"STATIC\""));
+    assert!(
+        windows.contains("SetLayeredWindowAttributes(flux__ui_loading, 0, (BYTE)173, LWA_ALPHA)")
+    );
+    assert!(
+        windows.contains("if (control == flux__ui_empty) { SetTextColor(dc, RGB(87, 96, 106));")
+    );
+    assert!(
+        windows.contains("if (control == flux__ui_failed) { SetTextColor(dc, RGB(207, 34, 46));")
+    );
 
     let invalid = r#"
 view Invalid {
