@@ -13650,8 +13650,29 @@ fn emit_windows_native_application(
                     })
                 })
     });
-    let uses_dynamic_layout =
-        uses_dynamic_layout_constraints || uses_dynamic_margins || uses_dynamic_text_layout;
+    let uses_dynamic_text_typography = view.elements.iter().any(|element| {
+        element.kind == "Text"
+            && [
+                "size",
+                "bold",
+                "italic",
+                "underline",
+                "strikethrough",
+                "font_family",
+            ]
+            .iter()
+            .any(|property_name| {
+                view_property(element, property_name).is_some_and(|property| match *property_name {
+                    "size" => static_expr_i64(&property.value, signatures).is_none(),
+                    "font_family" => static_expr_str(&property.value, signatures).is_none(),
+                    _ => static_expr_bool(&property.value, signatures).is_none(),
+                })
+            })
+    });
+    let uses_dynamic_layout = uses_dynamic_layout_constraints
+        || uses_dynamic_margins
+        || uses_dynamic_text_layout
+        || uses_dynamic_text_typography;
     let (bootstrap_width, bootstrap_height) = bootstrap_window_size(view);
     let width = application_metadata_i64(application, "width", signatures)
         .unwrap_or(i64::from(bootstrap_width));
@@ -13813,7 +13834,15 @@ fn emit_windows_native_application(
         ));
         if element.kind == "Text" {
             out.push_str(&format!(
-                "static HFONT flux__win_font_{} = NULL;\n",
+                "static HFONT flux__win_font_{} = NULL;\nstatic char *flux__win_font_family_{} = NULL;\nstatic int64_t flux__win_font_size_{} = INT64_C(0);\nstatic bool flux__win_font_bold_{} = false;\nstatic bool flux__win_font_italic_{} = false;\nstatic bool flux__win_font_underline_{} = false;\nstatic bool flux__win_font_strikethrough_{} = false;\nstatic UINT flux__win_font_dpi_{} = 0;\nstatic bool flux__win_font_initialized_{} = false;\n",
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
                 element.name
             ));
         }
@@ -13907,6 +13936,36 @@ fn emit_windows_native_application(
         out.push_str("}\n");
     }
     if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str(
+            r#"static void flux__win_apply_font(HWND control, HFONT *font, char **current_family, int64_t *current_size, bool *current_bold, bool *current_italic, bool *current_underline, bool *current_strikethrough, UINT *current_dpi, bool *initialized, const char *family, int64_t size, bool bold, bool italic, bool underline, bool strikethrough) {
+    if (control == NULL || font == NULL || current_family == NULL || current_size == NULL || current_bold == NULL || current_italic == NULL || current_underline == NULL || current_strikethrough == NULL || current_dpi == NULL || initialized == NULL) return;
+    if (family == NULL || family[0] == '\0') { fputs("Flux runtime error: Text.font_family cannot be empty\n", stderr); abort(); }
+    if (size <= 0 || size > INT32_MAX) { fputs("Flux runtime error: Text.size must be greater than zero and fit within a 32-bit signed integer\n", stderr); abort(); }
+    if (*initialized && *font != NULL && *current_family != NULL && *current_size == size && *current_bold == bold && *current_italic == italic && *current_underline == underline && *current_strikethrough == strikethrough && *current_dpi == flux__win_dpi && strcmp(*current_family, family) == 0) return;
+    wchar_t *wide_family = flux__windows_utf8_to_wide(family);
+    if (wide_family == NULL) { fputs("Flux runtime error: Text.font_family is not valid UTF-8\n", stderr); abort(); }
+    HFONT next_font = CreateFontW(-flux__win_scale(size), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, italic ? TRUE : FALSE, underline ? TRUE : FALSE, strikethrough ? TRUE : FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, wide_family);
+    free(wide_family);
+    if (next_font == NULL) { fputs("Flux runtime error: unable to create Windows Text font\n", stderr); abort(); }
+    size_t family_length = strlen(family);
+    char *next_family = (char *)malloc(family_length + 1);
+    if (next_family == NULL) { DeleteObject(next_font); fputs("Flux runtime error: unable to cache Windows Text font family\n", stderr); abort(); }
+    memcpy(next_family, family, family_length + 1);
+    if (*font != NULL) DeleteObject(*font);
+    free(*current_family);
+    *font = next_font;
+    *current_family = next_family;
+    *current_size = size;
+    *current_bold = bold;
+    *current_italic = italic;
+    *current_underline = underline;
+    *current_strikethrough = strikethrough;
+    *current_dpi = flux__win_dpi;
+    *initialized = true;
+    SendMessageW(control, WM_SETFONT, (WPARAM)*font, TRUE);
+}
+"#,
+        );
         out.push_str("static void flux__win_apply_fonts(void) {\n");
         for element in view
             .elements
@@ -13914,34 +13973,48 @@ fn emit_windows_native_application(
             .filter(|element| element.kind == "Text")
         {
             let (default_size, default_bold, _, _) = text_semantic_typography(element, signatures)?;
+            let typography_is_dynamic = [
+                "size",
+                "bold",
+                "italic",
+                "underline",
+                "strikethrough",
+                "font_family",
+            ]
+            .iter()
+            .any(|property_name| {
+                view_property(element, property_name).is_some_and(|property| match *property_name {
+                    "size" => static_expr_i64(&property.value, signatures).is_none(),
+                    "font_family" => static_expr_str(&property.value, signatures).is_none(),
+                    _ => static_expr_bool(&property.value, signatures).is_none(),
+                })
+            });
             let size = match view_property(element, "size") {
                 Some(property) => {
-                    static_expr_i64(&property.value, signatures).ok_or_else(|| {
-                        diag(
-                            property.value.span,
-                            "bootstrap Windows Text.size must be a compile-time i64 value",
-                        )
-                    })?
+                    if let Some(value) = static_expr_i64(&property.value, signatures) {
+                        if value <= 0 || value > i64::from(i32::MAX) {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.size must be greater than zero and fit within a 32-bit signed integer",
+                            ));
+                        }
+                        format!("INT64_C({value})")
+                    } else {
+                        ui_expr_c(&property.value, view, signatures)?
+                    }
                 }
-                None => default_size,
+                None => format!("INT64_C({default_size})"),
             };
-            if size <= 0 || size > i64::from(i32::MAX) {
-                return Err(diag(
-                    view_property(element, "size")
-                        .map(|property| property.value.span)
-                        .unwrap_or(element.kind_span),
-                    "Text.size must be greater than zero and fit within a 32-bit signed integer",
-                ));
-            }
-            let boolean_style = |name: &str, default: bool| -> Result<bool, Diagnostic> {
+            let boolean_style = |name: &str, default: bool| -> Result<String, Diagnostic> {
                 match view_property(element, name) {
-                    Some(property) => static_expr_bool(&property.value, signatures).ok_or_else(|| {
-                        diag(
-                            property.value.span,
-                            &format!("bootstrap Windows Text.{name} must be a compile-time bool value"),
-                        )
-                    }),
-                    None => Ok(default),
+                    Some(property) => {
+                        if let Some(value) = static_expr_bool(&property.value, signatures) {
+                            Ok(if value { "true" } else { "false" }.to_string())
+                        } else {
+                            ui_expr_c(&property.value, view, signatures)
+                        }
+                    }
+                    None => Ok(if default { "true" } else { "false" }.to_string()),
                 }
             };
             let bold = boolean_style("bold", default_bold)?;
@@ -13950,32 +14023,44 @@ fn emit_windows_native_application(
             let strikethrough = boolean_style("strikethrough", false)?;
             let font_family = match view_property(element, "font_family") {
                 Some(property) => {
-                    let value = static_expr_str(&property.value, signatures).ok_or_else(|| {
-                        diag(
-                            property.value.span,
-                            "bootstrap Windows Text.font_family must be a compile-time str value",
-                        )
-                    })?;
-                    if value.is_empty() {
-                        return Err(diag(
-                            property.value.span,
-                            "Text.font_family cannot be empty",
-                        ));
+                    if let Some(value) = static_expr_str(&property.value, signatures) {
+                        if value.is_empty() {
+                            return Err(diag(
+                                property.value.span,
+                                "Text.font_family cannot be empty",
+                            ));
+                        }
+                        c_string(&value)
+                    } else {
+                        ui_expr_c(&property.value, view, signatures)?
                     }
-                    value
                 }
-                None => "Segoe UI".to_string(),
+                None => c_string("Segoe UI"),
             };
-            let font = format!("flux__win_font_{}", element.name);
             let widget = ui_widget_c_name(&element.name);
-            out.push_str(&format!(
-                "if ({font} != NULL) {{ DeleteObject({font}); {font} = NULL; }} wchar_t *flux__win_font_face = flux__windows_utf8_to_wide({}); if (flux__win_font_face == NULL) {{ fputs(\"Flux runtime error: Text.font_family is not valid UTF-8\n\", stderr); abort(); }} {font} = CreateFontW(-flux__win_scale(INT64_C({size})), 0, 0, 0, {}, {}, {}, {}, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, flux__win_font_face); free(flux__win_font_face); if ({font} != NULL && {widget} != NULL) SendMessageW({widget}, WM_SETFONT, (WPARAM){font}, TRUE);\n",
-                c_string(&font_family),
-                if bold { "FW_BOLD" } else { "FW_NORMAL" },
-                if italic { "TRUE" } else { "FALSE" },
-                if underline { "TRUE" } else { "FALSE" },
-                if strikethrough { "TRUE" } else { "FALSE" }
-            ));
+            if typography_is_dynamic {
+                out.push_str(&format!(
+                    "flux__win_apply_font({widget}, &flux__win_font_{name}, &flux__win_font_family_{name}, &flux__win_font_size_{name}, &flux__win_font_bold_{name}, &flux__win_font_italic_{name}, &flux__win_font_underline_{name}, &flux__win_font_strikethrough_{name}, &flux__win_font_dpi_{name}, &flux__win_font_initialized_{name}, {font_family}, {size}, {bold}, {italic}, {underline}, {strikethrough});\n",
+                    name = element.name
+                ));
+            } else {
+                let weight = if bold == "true" {
+                    "FW_BOLD"
+                } else {
+                    "FW_NORMAL"
+                };
+                let italic_flag = if italic == "true" { "TRUE" } else { "FALSE" };
+                let underline_flag = if underline == "true" { "TRUE" } else { "FALSE" };
+                let strikethrough_flag = if strikethrough == "true" {
+                    "TRUE"
+                } else {
+                    "FALSE"
+                };
+                out.push_str(&format!(
+                    "if (!flux__win_font_initialized_{name} || flux__win_font_dpi_{name} != flux__win_dpi) {{ wchar_t *flux__win_font_face = flux__windows_utf8_to_wide({font_family}); if (flux__win_font_face == NULL) {{ fputs(\"Flux runtime error: Text.font_family is not valid UTF-8\\n\", stderr); abort(); }} HFONT flux__win_next_font = CreateFontW(-flux__win_scale({size}), 0, 0, 0, {weight}, {italic_flag}, {underline_flag}, {strikethrough_flag}, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, flux__win_font_face); free(flux__win_font_face); if (flux__win_next_font == NULL) {{ fputs(\"Flux runtime error: unable to create Windows Text font\\n\", stderr); abort(); }} if (flux__win_font_{name} != NULL) DeleteObject(flux__win_font_{name}); flux__win_font_{name} = flux__win_next_font; flux__win_font_dpi_{name} = flux__win_dpi; flux__win_font_initialized_{name} = true; if ({widget} != NULL) SendMessageW({widget}, WM_SETFONT, (WPARAM)flux__win_font_{name}, TRUE); }}\n",
+                    name = element.name
+                ));
+            }
         }
         out.push_str("}\nstatic void flux__win_delete_fonts(void) {\n");
         for element in view
@@ -13983,7 +14068,10 @@ fn emit_windows_native_application(
             .iter()
             .filter(|element| element.kind == "Text")
         {
-            out.push_str(&format!("if (flux__win_font_{} != NULL) {{ DeleteObject(flux__win_font_{}); flux__win_font_{} = NULL; }}\n", element.name, element.name, element.name));
+            out.push_str(&format!(
+                "if (flux__win_font_{name} != NULL) {{ DeleteObject(flux__win_font_{name}); flux__win_font_{name} = NULL; }} free(flux__win_font_family_{name}); flux__win_font_family_{name} = NULL; flux__win_font_initialized_{name} = false;\n",
+                name = element.name
+            ));
         }
         out.push_str("}\n");
     }
@@ -14587,6 +14675,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             ui_derived_c_name(&derived.name)
         ));
     }
+    if view.elements.iter().any(|element| element.kind == "Text") {
+        out.push_str("flux__win_apply_fonts();\n");
+    }
     if uses_dynamic_layout {
         out.push_str("RECT flux__win_refresh_client = {0}; if (flux__windows_active_window != NULL && GetClientRect(flux__windows_active_window, &flux__win_refresh_client)) { flux__win_layout(flux__win_refresh_client.right - flux__win_refresh_client.left, flux__win_refresh_client.bottom - flux__win_refresh_client.top); }\n");
     }
@@ -15146,9 +15237,6 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
     }
     out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); }");
-    if view.elements.iter().any(|element| element.kind == "Text") {
-        out.push_str(" flux__win_apply_fonts();");
-    }
     out.push_str(" flux__win_refresh(); if (GetClientRect(flux__windows_active_window, &flux__win_client)) flux__win_layout(flux__win_client.right - flux__win_client.left, flux__win_client.bottom - flux__win_client.top);\n");
     if on_restore_state.is_some() {
         out.push_str("flux__win_restore_app_state();\n");

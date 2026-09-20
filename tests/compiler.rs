@@ -1794,6 +1794,134 @@ app Screen(title: "Font")
 }
 
 #[test]
+fn windows_text_typography_refreshes_native_font_in_place() {
+    let source = r#"
+view Screen {
+    state family: str = "Aptos"
+    state fontSize: i64 = 18
+    state strong: bool = false
+    state italicized: bool = false
+    state underlined: bool = false
+    state struck: bool = false
+    derived face: str = family
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Dynamic typography"
+        fontFamily: face
+        size: fontSize
+        bold: strong
+        italic: italicized
+        underline: underlined
+        strikethrough: struck
+        maxWidthChars: 40
+}
+app Screen(title: "Typography")
+"#;
+    let program = fluxc::parser::parse(source).expect("dynamic Windows typography should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dynamic Windows typography should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic Windows typography should lower to native Win32 C");
+
+    assert!(generated.contains("static char *flux__win_font_family_body = NULL;"));
+    assert!(generated.contains("static int64_t flux__win_font_size_body = INT64_C(0);"));
+    assert!(generated.contains("static UINT flux__win_font_dpi_body = 0;"));
+    assert!(generated.contains("strcmp(*current_family, family) == 0"));
+    assert!(generated.contains("*current_dpi == flux__win_dpi"));
+    assert!(generated.contains("CreateFontW(-flux__win_scale(size)"));
+    assert!(generated.contains(
+        "flux__ui_derived_face = flux__ui_state_family;
+flux__win_apply_fonts();"
+    ));
+    assert!(generated.contains(
+        "flux__win_apply_font(flux__ui_body, &flux__win_font_body, &flux__win_font_family_body, &flux__win_font_size_body"
+    ));
+    assert!(generated.contains(
+        "flux__ui_derived_face, flux__ui_state_fontSize, flux__ui_state_strong, flux__ui_state_italicized, flux__ui_state_underlined, flux__ui_state_struck"
+    ));
+    assert!(generated.contains("RECT flux__win_refresh_client = {0};"));
+    assert!(
+        generated.contains("free(flux__win_font_family_body); flux__win_font_family_body = NULL;")
+    );
+    assert!(generated.contains("Text.font_family cannot be empty"));
+    assert!(
+        generated
+            .contains("Text.size must be greater than zero and fit within a 32-bit signed integer")
+    );
+
+    let header_root = PathBuf::from("/usr/include/wine/windows");
+    if header_root.join("windows.h").is_file()
+        && Command::new("clang").arg("--version").output().is_ok()
+    {
+        let root = std::env::temp_dir().join(format!(
+            "flux-windows-typography-syntax-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("Windows typography syntax directory should be writable");
+        let c_path = root.join("generated.c");
+        fs::write(&c_path, generated).expect("generated Windows typography C should be writable");
+        let result = Command::new("clang")
+            .args([
+                "-fsyntax-only",
+                "-std=c17",
+                "-fshort-wchar",
+                "-I",
+                header_root
+                    .to_str()
+                    .expect("Wine header path should be UTF-8"),
+            ])
+            .arg(&c_path)
+            .output()
+            .expect("clang should validate generated Windows typography C");
+        let _ = fs::remove_dir_all(&root);
+        assert!(
+            result.status.success(),
+            "generated Windows typography C should validate against Wine headers: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
+fn windows_text_size_rejects_invalid_static_value() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text body at 1,1
+        text: "Invalid"
+        size: 0
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("invalid Windows text size should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("invalid Windows text size should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows must reject a non-positive Text.size");
+    assert!(
+        error
+            .message
+            .contains("Text.size must be greater than zero and fit within a 32-bit signed integer")
+    );
+}
+
+#[test]
 fn windows_backend_validates_against_available_wine_headers() {
     let header_root = PathBuf::from("/usr/include/wine/windows");
     if !header_root.join("windows.h").is_file()
