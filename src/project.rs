@@ -2276,6 +2276,25 @@ fn development_ui_property_lifecycle_patch_value(
         return None;
     }
     let property_name = typecheck::source_name_to_internal(&property.name);
+    if (property_name == "text"
+        && (matches!(element.kind.as_str(), "Button" | "Header")
+            || (element.kind == "Text"
+                && !development_ui_element_has_property(element, "rich_text"))))
+        || (property_name == "label"
+            && matches!(
+                element.kind.as_str(),
+                "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
+            ))
+        || (property_name == "title" && element.kind == "Card")
+    {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if value.as_bytes().contains(&0) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "tooltip"
         && (element.kind != "TextInput"
             || !development_ui_element_has_property(element, "validation_message"))
@@ -2590,6 +2609,19 @@ fn development_ui_property_lifecycle_default(
     element: &ViewElement,
     property: &str,
 ) -> Option<String> {
+    if (property == "text"
+        && (matches!(element.kind.as_str(), "Button" | "Header")
+            || (element.kind == "Text"
+                && !development_ui_element_has_property(element, "rich_text"))))
+        || (property == "label"
+            && matches!(
+                element.kind.as_str(),
+                "Toggle" | "Radio" | "Nav" | "Chart" | "Content"
+            ))
+        || (property == "title" && element.kind == "Card")
+    {
+        return Some(element.name.clone());
+    }
     if property == "background_color" {
         return Some(String::new());
     }
@@ -3237,6 +3269,9 @@ fn development_ui_string_literals(
             literals.insert((element.name.clone(), property_name), value);
         }
         for property_name in [
+            "text",
+            "label",
+            "title",
             "visible",
             "clip",
             "enabled",

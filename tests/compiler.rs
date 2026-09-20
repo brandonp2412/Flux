@@ -42069,6 +42069,134 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_native_label_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-native-label-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary native-label lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto auto auto auto
+    Text body at 1,1
+    Button action at 2,1
+    Header header at 3,1
+    Toggle toggle at 4,1
+    Radio radio at 5,1
+    Nav navigation at 6,1
+    Chart chart at 7,1
+    Content content at 8,1
+    Card card at 9,1
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial native-label lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial native-label lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("native-label lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"text\") == 0 && flux__ui_body != NULL"));
+    assert!(generated.contains("strcmp(property, \"text\") == 0 && flux__ui_action != NULL"));
+    assert!(generated.contains("strcmp(property, \"label\") == 0 && flux__ui_toggle != NULL"));
+    assert!(generated.contains("strcmp(property, \"title\") == 0 && flux__ui_card != NULL"));
+
+    let updated = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto auto auto auto auto auto auto
+    Text body at 1,1
+        text: "Body copy"
+    Button action at 2,1
+        text: "Run"
+    Header header at 3,1
+        text: "Heading"
+    Toggle toggle at 4,1
+        label: "Toggle label"
+    Radio radio at 5,1
+        label: "Radio label"
+    Nav navigation at 6,1
+        label: "Navigation label"
+    Chart chart at 7,1
+        label: "Chart label"
+    Content content at 8,1
+        label: "Content label"
+    Card card at 9,1
+        title: "Card title"
+}
+app Screen
+"#;
+    fs::write(&entry, updated).expect("explicit native labels should be writable");
+    let entry = fs::canonicalize(entry).expect("native-label lifecycle entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit native-label analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal native labels should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (element, property, value) in [
+        ("body", "text", "Body copy"),
+        ("action", "text", "Run"),
+        ("header", "text", "Heading"),
+        ("toggle", "label", "Toggle label"),
+        ("radio", "label", "Radio label"),
+        ("navigation", "label", "Navigation label"),
+        ("chart", "label", "Chart label"),
+        ("content", "label", "Content label"),
+        ("card", "title", "Card title"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&value.to_string()),
+            "missing native-label hot patch for {element}.{property}"
+        );
+    }
+    assert_eq!(patch.len(), 9);
+
+    fs::write(&entry, initial).expect("removed native labels should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed native-label analysis should succeed");
+    assert_eq!(third.development_abi(), second.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing native labels should restore element-name defaults")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (element, property) in [
+        ("body", "text"),
+        ("action", "text"),
+        ("header", "text"),
+        ("toggle", "label"),
+        ("radio", "label"),
+        ("navigation", "label"),
+        ("chart", "label"),
+        ("content", "label"),
+        ("card", "title"),
+    ] {
+        assert_eq!(
+            patch.get(&(element.to_string(), property.to_string())),
+            Some(&element.to_string()),
+            "removing {element}.{property} should restore the compiler-owned element-name label"
+        );
+    }
+    assert_eq!(patch.len(), 9);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_hot_applies_accessibility_action_labels_with_linux_precedence() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-accessibility-action-patch-{}",
