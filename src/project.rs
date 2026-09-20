@@ -2986,7 +2986,7 @@ fn development_ui_property_lifecycle_patch_value(
     }
     if matches!(
         property_name.as_str(),
-        "transition_ms" | "transition_delay_ms"
+        "layout_transition_ms" | "transition_ms" | "transition_delay_ms"
     ) {
         if !development_ui_i64_property_is_patchable(element, &property_name) {
             return None;
@@ -3276,8 +3276,10 @@ fn development_ui_property_lifecycle_default(
             .to_string(),
         );
     }
-    if matches!(property, "transition_ms" | "transition_delay_ms")
-        && development_ui_i64_property_is_patchable(element, property)
+    if matches!(
+        property,
+        "layout_transition_ms" | "transition_ms" | "transition_delay_ms"
+    ) && development_ui_i64_property_is_patchable(element, property)
     {
         return Some("0".to_string());
     }
@@ -3839,6 +3841,7 @@ fn development_ui_string_literals(
             "min_height",
             "max_width",
             "max_height",
+            "layout_transition_ms",
             "transition_ms",
             "transition_delay_ms",
             "transition_easing",

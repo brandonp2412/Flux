@@ -17346,7 +17346,12 @@ fn emit_linux_gtk_application(
         if view_property(element, "layout_transition_ms").is_some() {
             out.push_str(&format!(
                 "static GtkWidget *{} = NULL;\n",
-                linux_ui_layout_c_name(element)
+                linux_ui_revealer_c_name(element)
+            ));
+        } else {
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkWidget *{} = NULL;\n#endif\n",
+                linux_ui_revealer_c_name(element)
             ));
         }
         for property_name in [
@@ -17982,22 +17987,17 @@ fn emit_linux_gtk_application(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"status\") == 0 && {host} != NULL) {{ bool status_valid = strcmp(value, \"normal\") == 0 || strcmp(value, \"loading\") == 0 || strcmp(value, \"empty\") == 0 || strcmp(value, \"error\") == 0; if (status_valid) {{ gtk_widget_remove_css_class({host}, \"flux-status-loading\"); gtk_widget_remove_css_class({host}, \"flux-status-empty\"); gtk_widget_remove_css_class({host}, \"flux-status-error\"); if (strcmp(value, \"loading\") == 0) gtk_widget_add_css_class({host}, \"flux-status-loading\"); else if (strcmp(value, \"empty\") == 0) gtk_widget_add_css_class({host}, \"flux-status-empty\"); else if (strcmp(value, \"error\") == 0) gtk_widget_add_css_class({host}, \"flux-status-error\"); }} }}",
             c_string(&element.name)
         ));
-        if view_property(element, "layout_transition_ms").is_some() {
-            let layout = linux_ui_layout_c_name(element);
+        {
+            let layout = linux_ui_revealer_c_name(element);
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"layout_transition_ms\") == 0 && {layout} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint)integer_value); }}",
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "layout_transition_ms").is_some() {
-            let layout = linux_ui_layout_c_name(element);
+        {
+            let layout = linux_ui_revealer_c_name(element);
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), bool_value);",
-                c_string(&element.name)
-            ));
-        } else {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid && {host} != NULL) gtk_widget_set_visible({host}, bool_value);",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"visible\") == 0 && bool_value_valid) {{ if ({layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), bool_value); else if ({host} != NULL) gtk_widget_set_visible({host}, bool_value); }}",
                 c_string(&element.name)
             ));
         }
@@ -20258,14 +20258,14 @@ fn emit_linux_gtk_application(
             variable.clone()
         };
         let has_layout_transition = view_property(element, "layout_transition_ms").is_some();
+        let visible = view_property(element, "visible")
+            .map(|property| ui_expr_c(&property.value, view, signatures))
+            .transpose()?
+            .unwrap_or_else(|| "true".to_string());
+        let layout = linux_ui_revealer_c_name(element);
         let layout_variable = if let Some(duration) =
             static_non_negative_style_i64(element, "layout_transition_ms", signatures)?
         {
-            let layout = linux_ui_layout_c_name(element);
-            let visible = view_property(element, "visible")
-                .map(|property| ui_expr_c(&property.value, view, signatures))
-                .transpose()?
-                .unwrap_or_else(|| "true".to_string());
             out.push_str(&format!(
                 "    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), (guint){duration});\n"
             ));
@@ -20281,23 +20281,22 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n"
             ));
-            layout
+            layout.clone()
         } else {
-            constrained_variable
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    {layout} = gtk_revealer_new();\n    gtk_revealer_set_transition_type(GTK_REVEALER({layout}), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);\n    gtk_revealer_set_transition_duration(GTK_REVEALER({layout}), 0);\n    gtk_revealer_set_child(GTK_REVEALER({layout}), {constraint});\n    gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {visible});\n#endif\n"
+            ));
+            constrained_variable.clone()
         };
-        let sizing_variable = if !has_max_constraint && !has_layout_transition {
-            variable.clone()
-        } else {
+        let sizing_variable = if has_layout_transition {
             layout_variable.clone()
+        } else {
+            constrained_variable.clone()
         };
         emit_grid_sizing(out, view, element, &sizing_variable, signatures)?;
-        if !has_max_constraint && !has_layout_transition {
+        if has_layout_transition {
             out.push_str(&format!(
-                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    gtk_grid_attach(GTK_GRID(grid), {constraint}, {}, {}, {}, {});\n#else\n    gtk_grid_attach(GTK_GRID(grid), {variable}, {}, {}, {}, {});\n#endif\n",
-                element.column - 1,
-                element.row - 1,
-                element.column_span,
-                element.row_span,
+                "    gtk_grid_attach(GTK_GRID(grid), {layout_variable}, {}, {}, {}, {});\n",
                 element.column - 1,
                 element.row - 1,
                 element.column_span,
@@ -20305,7 +20304,11 @@ fn emit_linux_gtk_application(
             ));
         } else {
             out.push_str(&format!(
-                "    gtk_grid_attach(GTK_GRID(grid), {layout_variable}, {}, {}, {}, {});\n",
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    gtk_grid_attach(GTK_GRID(grid), {layout}, {}, {}, {}, {});\n#else\n    gtk_grid_attach(GTK_GRID(grid), {constrained_variable}, {}, {}, {}, {});\n#endif\n",
+                element.column - 1,
+                element.row - 1,
+                element.column_span,
+                element.row_span,
                 element.column - 1,
                 element.row - 1,
                 element.column_span,
@@ -22337,9 +22340,13 @@ fn linux_ui_constraint_c_name(element: &crate::ast::ViewElement) -> String {
     format!("flux__ui_constraint_{}", element.name)
 }
 
+fn linux_ui_revealer_c_name(element: &crate::ast::ViewElement) -> String {
+    format!("flux__ui_layout_{}", element.name)
+}
+
 fn linux_ui_layout_c_name(element: &crate::ast::ViewElement) -> String {
     if view_property(element, "layout_transition_ms").is_some() {
-        format!("flux__ui_layout_{}", element.name)
+        linux_ui_revealer_c_name(element)
     } else if view_property(element, "max_width").is_some()
         || view_property(element, "max_height").is_some()
     {
@@ -23006,8 +23013,9 @@ fn emit_ui_refresh(
                     "    if ({layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {value});\n"
                 ));
             } else {
+                let layout = linux_ui_revealer_c_name(element);
                 out.push_str(&format!(
-                    "    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n"
+                    "#ifdef FLUX_DEVELOPMENT_RELOAD\n    if ({layout} != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER({layout}), {value});\n#else\n    if ({widget} != NULL) gtk_widget_set_visible({widget}, {value});\n#endif\n"
                 ));
             }
         }

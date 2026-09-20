@@ -43209,9 +43209,8 @@ app Screen
         .emit_c()
         .expect("palette-free visible lifecycle fixture should lower for Linux");
     assert!(generated.contains(
-        "strcmp(property, \"visible\") == 0 && bool_value_valid && flux__ui_label != NULL"
+        "strcmp(property, \"visible\") == 0 && bool_value_valid) { if (flux__ui_layout_label != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_label), bool_value); else if (flux__ui_label != NULL) gtk_widget_set_visible(flux__ui_label, bool_value); }"
     ));
-    assert!(generated.contains("gtk_widget_set_visible(flux__ui_label, bool_value)"));
     assert!(generated.contains(
         "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
     ));
@@ -46727,6 +46726,130 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_layout_transition_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-layout-transition-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary layout-transition lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+        visible: true
+}
+app Screen
+"#;
+    fs::write(&entry, initial)
+        .expect("initial layout-transition lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial layout-transition lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("layout-transition lifecycle fixture should lower for Linux");
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic GtkWidget *flux__ui_layout_action = NULL;"
+    ));
+    assert!(generated.contains("flux__ui_layout_action = gtk_revealer_new()"));
+    assert!(
+        generated.contains(
+            "gtk_revealer_set_transition_duration(GTK_REVEALER(flux__ui_layout_action), 0)"
+        )
+    );
+    assert!(generated.contains(
+        "strcmp(property, \"layout_transition_ms\") == 0 && flux__ui_layout_action != NULL"
+    ));
+    assert!(generated.contains(
+        "if (flux__ui_layout_action != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
+    ));
+
+    let entry =
+        fs::canonicalize(entry).expect("layout-transition lifecycle entry should canonicalize");
+    let explicit = initial.replace(
+        "        visible: true\n",
+        "        visible: true\n        layoutTransitionMs: 120\n",
+    );
+    fs::write(&entry, &explicit).expect("explicit layout transition should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit layout transition should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding a literal layout transition must not change the development ABI"
+    );
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding a literal layout transition should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "layout_transition_ms".to_string(),
+            value: "120".to_string(),
+        }]
+    );
+
+    let updated = explicit.replace("layoutTransitionMs: 120", "layoutTransitionMs: 240");
+    fs::write(&entry, &updated).expect("updated layout transition should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated layout transition should analyze");
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("editing a literal layout transition should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "layout_transition_ms".to_string(),
+            value: "240".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed layout transition should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed layout transition should analyze");
+    assert_eq!(fourth.development_abi(), third.development_abi());
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing a literal layout transition should restore zero duration"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "layout_transition_ms".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let invalid = initial.replace(
+        "        visible: true\n",
+        "        visible: true\n        layoutTransitionMs: -1\n",
+    );
+    fs::write(&entry, invalid).expect("invalid layout transition should be writable");
+    cache.invalidate_path(&entry);
+    let invalid = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("negative layout transition remains semantically an i64");
+    assert!(
+        invalid.development_ui_string_patch_from(&fourth).is_none(),
+        "invalid layout transitions must retain normal backend validation"
+    );
+    assert!(invalid.emit_c().is_err());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_covers_safe_static_scalar_properties() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-ui-scalar-patch-{}",
@@ -46942,9 +47065,8 @@ app Screen
         .emit_c()
         .expect("native boolean property patch fixture should lower for Linux");
     assert!(generated.contains(
-        "strcmp(property, \"visible\") == 0 && bool_value_valid && flux__ui_label != NULL"
+        "strcmp(property, \"visible\") == 0 && bool_value_valid) { if (flux__ui_layout_label != NULL) gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_label), bool_value); else if (flux__ui_label != NULL) gtk_widget_set_visible(flux__ui_label, bool_value); }"
     ));
-    assert!(generated.contains("gtk_widget_set_visible(flux__ui_label, bool_value)"));
     assert!(generated.contains(
         "gtk_revealer_set_reveal_child(GTK_REVEALER(flux__ui_layout_action), bool_value)"
     ));
