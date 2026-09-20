@@ -14035,6 +14035,11 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         .elements
         .iter()
         .any(|element| view_property(element, "shortcut").is_some());
+    let uses_context_menus = view.elements.iter().any(|element| {
+        view_property(element, "on_context_menu").is_some()
+            || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
+    });
     let uses_passive_keyboard_activation = view.elements.iter().any(|element| {
         !matches!(element.kind.as_str(), "Button" | "Toggle" | "Radio")
             && view_property(element, "on_tap").is_some()
@@ -14101,6 +14106,97 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                 function_c_name(function)
             ));
         }
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        if view_property(element, "on_context_menu").is_none()
+            && view_property(element, "context_menu_label").is_none()
+            && view_property(element, "context_menu_items").is_none()
+        {
+            continue;
+        }
+        let request_body = if let Some(action) = view_property(element, "on_context_menu") {
+            if let Some(transition) = &action.transition {
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                format!(
+                    "{} = {next}; flux__win_refresh(); ",
+                    ui_state_c_name(&transition.state)
+                )
+            } else {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap Windows onContextMenu requires a named fn() -> void callback or state transition",
+                    ));
+                };
+                format!("{}(); flux__win_refresh(); ", function_c_name(function))
+            }
+        } else {
+            String::new()
+        };
+        let position = "POINT point = {0}; if (position == (LPARAM)-1) { RECT bounds = {0}; if (!GetWindowRect(anchor, &bounds)) return; point.x = bounds.left + (bounds.right - bounds.left) / 2; point.y = bounds.top + (bounds.bottom - bounds.top) / 2; } else { point.x = (int)(short)LOWORD(position); point.y = (int)(short)HIWORD(position); } SetForegroundWindow(flux__windows_active_window); ";
+        let menu_body = if let Some(items) = static_context_menu_items(element, signatures)? {
+            let ExprKind::Var(function) = &view_property(element, "on_context_menu_item_select")
+                .expect("validated context menu item callback")
+                .value
+                .kind
+            else {
+                return Err(diag(
+                    view_property(element, "on_context_menu_item_select")
+                        .expect("validated context menu item callback")
+                        .value
+                        .span,
+                    "native onContextMenuItemSelect requires a named fn(i64) -> void callback",
+                ));
+            };
+            let mut body =
+                format!("{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; ");
+            for (item_index, label) in items.iter().enumerate() {
+                body.push_str(&format!(
+                    "wchar_t *label_{item_index} = flux__windows_utf8_to_wide({}); if (label_{item_index} == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR){}, label_{item_index})) {{ free(label_{item_index}); DestroyMenu(menu); return; }} free(label_{item_index}); ",
+                    c_string(label),
+                    item_index + 1,
+                ));
+            }
+            body.push_str(&format!(
+                "UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, flux__windows_active_window, NULL); DestroyMenu(menu); if (command >= 1 && command <= {}) {{ {}((int64_t)(command - 1)); flux__win_refresh(); }} ",
+                items.len(),
+                function_c_name(function),
+            ));
+            body
+        } else if let Some(label_property) = view_property(element, "context_menu_label") {
+            let Some(label) = static_expr_str(&label_property.value, signatures) else {
+                return Err(diag(
+                    label_property.value.span,
+                    "contextMenuLabel must be a compile-time string value",
+                ));
+            };
+            let action = view_property(element, "on_context_menu_select")
+                .expect("validated context menu selection callback");
+            let select_body = if let Some(transition) = &action.transition {
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                format!(
+                    "{} = {next}; flux__win_refresh();",
+                    ui_state_c_name(&transition.state)
+                )
+            } else {
+                let ExprKind::Var(function) = &action.value.kind else {
+                    return Err(diag(
+                        action.value.span,
+                        "bootstrap Windows onContextMenuSelect requires a named fn() -> void callback or state transition",
+                    ));
+                };
+                format!("{}(); flux__win_refresh();", function_c_name(function))
+            };
+            format!(
+                "{position}HMENU menu = CreatePopupMenu(); if (menu == NULL) return; wchar_t *label = flux__windows_utf8_to_wide({}); if (label == NULL || !AppendMenuW(menu, MF_STRING, (UINT_PTR)1, label)) {{ free(label); DestroyMenu(menu); return; }} free(label); UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, flux__windows_active_window, NULL); DestroyMenu(menu); if (command == 1) {{ {select_body} }} ",
+                c_string(&label),
+            )
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "static void flux__win_context_menu_{index}(HWND anchor, LPARAM position) {{ if (anchor == NULL) return; {request_body}{menu_body}}}\n"
+        ));
     }
     for (index, element) in view.elements.iter().enumerate() {
         if element.kind != "TextInput" {
@@ -14664,6 +14760,22 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) flux__win_tap_{index}(); return 0;\n", 1000 + index));
         }
     }
+    let mut context_menu_messages = String::new();
+    if uses_context_menus {
+        context_menu_messages.push_str(" case WM_CONTEXTMENU: { HWND control = (HWND)wparam;");
+        for (index, element) in view.elements.iter().enumerate() {
+            if view_property(element, "on_context_menu").is_some()
+                || view_property(element, "context_menu_label").is_some()
+                || view_property(element, "context_menu_items").is_some()
+            {
+                context_menu_messages.push_str(&format!(
+                    " if (control == {}) {{ flux__win_context_menu_{index}(control, lparam); return 0; }}",
+                    ui_widget_c_name(&element.name)
+                ));
+            }
+        }
+        context_menu_messages.push_str(" } break;");
+    }
     let dpi_font_refresh = if view.elements.iter().any(|element| element.kind == "Text") {
         " flux__win_apply_fonts();"
     } else {
@@ -14687,7 +14799,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         String::new()
     };
-    out.push_str(&format!("default: break; }} break; case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
+    out.push_str(&format!("default: break; }} break;{context_menu_messages} case WM_SIZE: {{ int physical_width = (int)LOWORD(lparam); int physical_height = (int)HIWORD(lparam); flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); flux__win_layout(physical_width, physical_height); flux__win_refresh(); }} return 0; case WM_DPICHANGED: {{ UINT next_dpi = HIWORD(wparam); if (next_dpi > 0) flux__win_dpi = next_dpi; flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT *suggested = (RECT *)lparam; if (suggested != NULL) SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOZORDER);{dpi_font_refresh} RECT client = {{0}}; if (GetClientRect(hwnd, &client)) {{ int physical_width = client.right - client.left; int physical_height = client.bottom - client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); flux__win_layout(physical_width, physical_height); }} flux__win_refresh(); }}{configuration_messages} return 0; case WM_DESTROY: {save} {exit} flux__windows_active_window = NULL; PostQuitMessage(0); return 0; default: break; }} return DefWindowProcA(hwnd, message, wparam, lparam); }}\n",
         save = save_callback,
         exit = exit_callback,
     ));
@@ -14816,6 +14928,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         };
         let implicitly_focusable = view_property(element, "on_key").is_some()
             || view_property(element, "on_tap").is_some()
+            || view_property(element, "on_context_menu").is_some()
+            || view_property(element, "context_menu_label").is_some()
+            || view_property(element, "context_menu_items").is_some()
             || autofocus;
         let mut style = style.to_string();
         if implicitly_focusable

@@ -1749,6 +1749,9 @@ view Screen {
         minWidth: extent
         maxWidth: 320
         marginStart: extent
+        onContextMenu: count => count + 1
+        contextMenuLabel: "Open"
+        onContextMenuSelect: count => count + 1
     TextInput email at 2,1
         placeholder: "Email"
         validationMessage: "Enter a valid email"
@@ -53577,6 +53580,21 @@ app ContextCard
         "flux__ui_state_selected = true; if (flux__android_activity != NULL) flux__android_ui_refresh(env, flux__android_activity->clazz, 1);"
     ));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("context-menu requests should lower to native Win32 menus");
+    assert!(windows.contains("case WM_CONTEXTMENU"));
+    assert!(windows.contains("CreatePopupMenu()"));
+    assert!(windows.contains("AppendMenuW(menu, MF_STRING, (UINT_PTR)1"));
+    assert!(windows.contains("TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON"));
+    assert!(windows.contains("flux__ui_state_opened = true; flux__win_refresh();"));
+    assert!(windows.contains("flux__ui_state_selected = true; flux__win_refresh();"));
+    assert!(windows.contains("WS_TABSTOP"));
+
     let multi_item = r#"
 fn menuSelected(index: i64) -> void {
     print(index)
@@ -53619,6 +53637,18 @@ app ContextCard
     assert!(android.contains("NewStringUTF(env, \"Open\")"));
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnContextMenuItemSelect"));
     assert!(android.contains("flux__fn_menuSelected((int64_t)item_index)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("multi-item context menus should lower to Win32 popup menus");
+    assert!(windows.contains("flux__windows_utf8_to_wide(\"Open\")"));
+    assert!(windows.contains("AppendMenuW(menu, MF_STRING, (UINT_PTR)3"));
+    assert!(windows.contains("command >= 1 && command <= 3"));
+    assert!(windows.contains("flux__fn_menuSelected((int64_t)(command - 1))"));
 
     let invalid_items = r#"
 fn menuSelected(index: i64) -> void {
