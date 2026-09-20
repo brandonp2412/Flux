@@ -17356,7 +17356,15 @@ fn emit_linux_gtk_application(
             "radius_bottom_left",
             "radius_bottom_right",
         ] {
-            if view_property(element, property_name).is_some()
+            if (view_property(element, property_name).is_some()
+                || matches!(
+                    property_name,
+                    "border_width"
+                        | "border_top_width"
+                        | "border_bottom_width"
+                        | "border_start_width"
+                        | "border_end_width"
+                ))
                 && !linux_hot_css_i64_properties(element, property_name).is_empty()
             {
                 out.push_str(&format!(
@@ -18061,7 +18069,17 @@ fn emit_linux_gtk_application(
             "radius_bottom_right",
         ] {
             let css_names = linux_hot_css_i64_properties(element, property_name);
-            if css_names.is_empty() || view_property(element, property_name).is_none() {
+            let border_width_property = matches!(
+                property_name,
+                "border_width"
+                    | "border_top_width"
+                    | "border_bottom_width"
+                    | "border_start_width"
+                    | "border_end_width"
+            );
+            if css_names.is_empty()
+                || (view_property(element, property_name).is_none() && !border_width_property)
+            {
                 continue;
             }
             let provider = linux_ui_hot_style_provider_c_name(element, property_name);
@@ -18072,10 +18090,22 @@ fn emit_linux_gtk_application(
                 .join(" ");
             let css_values = vec!["integer_value"; css_names.len()].join(", ");
             let css_format = c_string(&format!("#flux-ui-{} {{ {declarations} }}", element.name));
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
-                c_string(&element.name)
-            ));
+            if border_width_property {
+                let solid_declarations = format!("{declarations} border-style: solid;");
+                let solid_css_format = c_string(&format!(
+                    "#flux-ui-{} {{ {solid_declarations} }}",
+                    element.name
+                ));
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (integer_value < 0) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ const char *patch_format = integer_value > 0 ? {solid_css_format} : {css_format}; char *patch_css = g_strdup_printf(patch_format, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
+                    c_string(&element.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"{property_name}\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {css_values}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                    c_string(&element.name)
+                ));
+            }
         }
         for property_name in [
             "background_color",
@@ -18252,7 +18282,7 @@ fn emit_linux_gtk_application(
                 element.name
             ));
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"border_style\") == 0 && {widget} != NULL) {{ bool css_value_valid = strcmp(value, \"none\") == 0 || strcmp(value, \"solid\") == 0 || strcmp(value, \"dashed\") == 0 || strcmp(value, \"dotted\") == 0 || strcmp(value, \"double\") == 0; if (css_value_valid) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }}",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"border_style\") == 0 && {widget} != NULL) {{ bool restore_default = strcmp(value, \"__flux_border_style_default__\") == 0; bool css_value_valid = restore_default || strcmp(value, \"none\") == 0 || strcmp(value, \"solid\") == 0 || strcmp(value, \"dashed\") == 0 || strcmp(value, \"dotted\") == 0 || strcmp(value, \"double\") == 0; if (css_value_valid) {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (restore_default) gtk_css_provider_load_from_data({provider}, \"\", -1); else {{ char *patch_css = g_strdup_printf({css_format}, value); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }} }} }}",
                 c_string(&element.name)
             ));
         }
@@ -19931,6 +19961,7 @@ fn emit_linux_gtk_application(
         emit_element_alignment(out, element, &variable, signatures)?;
         emit_element_margins(out, element, &variable, signatures)?;
         emit_element_style(out, element, &variable, signatures)?;
+        emit_lifecycle_border_style_setup(out, element, &variable, signatures)?;
         emit_lifecycle_color_style_setup(out, element, &variable, signatures)?;
         emit_dynamic_transform_setup(out, element, &variable, signatures)?;
         if let Some(property) = view_property(element, "clip") {
@@ -22242,16 +22273,7 @@ fn linux_hot_css_i64_properties(
     property_name: &str,
 ) -> Vec<&'static str> {
     match property_name {
-        "border_width" => linux_hot_css_unshadowed_properties(
-            element,
-            "border-width",
-            &[
-                ("border_top_width", "border-top-width"),
-                ("border_bottom_width", "border-bottom-width"),
-                ("border_start_width", "border-left-width"),
-                ("border_end_width", "border-right-width"),
-            ],
-        ),
+        "border_width" => vec!["border-width"],
         "border_top_width" => vec!["border-top-width"],
         "border_bottom_width" => vec!["border-bottom-width"],
         "border_start_width" => vec!["border-left-width"],
@@ -23400,6 +23422,73 @@ fn emit_element_alignment(
     Ok(())
 }
 
+fn emit_lifecycle_border_style_setup(
+    out: &mut String,
+    element: &crate::ast::ViewElement,
+    variable: &str,
+    signatures: &Signatures,
+) -> Result<(), Diagnostic> {
+    for property_name in [
+        "border_width",
+        "border_top_width",
+        "border_bottom_width",
+        "border_start_width",
+        "border_end_width",
+    ] {
+        let css_names = linux_hot_css_i64_properties(element, property_name);
+        if css_names.is_empty() {
+            continue;
+        }
+        let provider = linux_ui_hot_style_provider_c_name(element, property_name);
+        out.push_str(&format!(
+            "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n"
+        ));
+        let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? else {
+            continue;
+        };
+        let mut declarations = css_names
+            .iter()
+            .map(|css_name| format!("{css_name}: {value}px;"))
+            .collect::<Vec<_>>();
+        if value > 0 {
+            declarations.push("border-style: solid;".to_string());
+        }
+        let css = format!("#flux-ui-{} {{ {} }}", element.name, declarations.join(" "));
+        out.push_str(&format!(
+            "    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            c_string(&css)
+        ));
+    }
+
+    let provider = linux_ui_hot_style_provider_c_name(element, "border_style");
+    out.push_str(&format!(
+        "    if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({variable}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }}\n"
+    ));
+    if let Some(property) = view_property(element, "border_style") {
+        let Some(value) = static_expr_str(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                "border_style must be a compile-time string",
+            ));
+        };
+        if !matches!(
+            value.as_str(),
+            "none" | "solid" | "dashed" | "dotted" | "double"
+        ) {
+            return Err(diag(
+                property.value.span,
+                "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
+            ));
+        }
+        let css = format!("#flux-ui-{} {{ border-style: {value}; }}", element.name);
+        out.push_str(&format!(
+            "    if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, {}, -1);\n",
+            c_string(&css)
+        ));
+    }
+    Ok(())
+}
+
 fn emit_lifecycle_color_style_setup(
     out: &mut String,
     element: &crate::ast::ViewElement,
@@ -23486,43 +23575,6 @@ fn emit_element_style(
             declarations.push(format!("{css_name}: {value}px;"));
         }
     }
-    let border_width = static_non_negative_style_i64(element, "border_width", signatures)?;
-    let mut has_visible_border_width = border_width.is_some_and(|value| value > 0);
-    if let Some(value) = border_width {
-        declarations.push(format!("border-width: {value}px;"));
-    }
-    for (property_name, css_name) in [
-        ("border_top_width", "border-top-width"),
-        ("border_bottom_width", "border-bottom-width"),
-        ("border_start_width", "border-left-width"),
-        ("border_end_width", "border-right-width"),
-    ] {
-        if let Some(value) = static_non_negative_style_i64(element, property_name, signatures)? {
-            has_visible_border_width |= value > 0;
-            declarations.push(format!("{css_name}: {value}px;"));
-        }
-    }
-    if let Some(property) = view_property(element, "border_style") {
-        let Some(value) = static_expr_str(&property.value, signatures) else {
-            return Err(diag(
-                property.value.span,
-                "border_style must be a compile-time string",
-            ));
-        };
-        if !matches!(
-            value.as_str(),
-            "none" | "solid" | "dashed" | "dotted" | "double"
-        ) {
-            return Err(diag(
-                property.value.span,
-                "border_style must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
-            ));
-        }
-        declarations.push(format!("border-style: {value};"));
-    } else if has_visible_border_width {
-        declarations.push("border-style: solid;".to_string());
-    }
-
     let radius = static_non_negative_style_i64(element, "radius", signatures)?;
     if let Some(value) = radius {
         declarations.push(format!("border-radius: {value}px;"));

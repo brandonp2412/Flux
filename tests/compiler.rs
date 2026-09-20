@@ -47496,9 +47496,205 @@ app Screen
     let overridden_generated = overridden_second
         .emit_c()
         .expect("overridden border width patch fixture should lower for Linux");
-    assert!(overridden_generated.contains(
-        "#flux-ui-base { border-bottom-width: %lldpx; border-left-width: %lldpx; border-right-width: %lldpx; }"
+    assert!(overridden_generated.contains("#flux-ui-base { border-width: %lldpx; }"));
+    let setup = overridden_generated
+        .find("gtk_widget_set_name(flux__ui_base, \"flux-ui-base\")")
+        .expect("border width setup should name the live widget");
+    let setup = &overridden_generated[setup..];
+    let base_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_border_width)")
+        .expect("base border width provider should be registered from launch");
+    let top_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_base_border_top_width)")
+        .expect("top border width provider should be registered from launch");
+    assert!(
+        base_provider < top_provider,
+        "edge border width providers must retain precedence over the base provider"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_ui_string_patch_hot_applies_border_width_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-border-width-lifecycle-{}",
+        std::process::id()
     ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary border width lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    state stroke: i64 = 6
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Border"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial border width lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial border width lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("initial border width lifecycle fixture should lower for Linux");
+    for property in [
+        "border_width",
+        "border_top_width",
+        "border_bottom_width",
+        "border_start_width",
+        "border_end_width",
+    ] {
+        assert!(generated.contains(&format!(
+            "static GtkCssProvider *flux__ui_hot_style_action_{property} = NULL"
+        )));
+        assert!(generated.contains(&format!(
+            "strcmp(property, \"{property}\") == 0 && flux__ui_action != NULL"
+        )));
+    }
+    let setup = generated
+        .find("gtk_widget_set_name(flux__ui_action, \"flux-ui-action\")")
+        .expect("border width lifecycle setup should name the live widget");
+    let setup = &generated[setup..];
+    let base_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_width)")
+        .expect("base width provider should be registered from launch");
+    let top_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_top_width)")
+        .expect("top width provider should be registered from launch");
+    let bottom_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_bottom_width)")
+        .expect("bottom width provider should be registered from launch");
+    let start_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_start_width)")
+        .expect("start width provider should be registered from launch");
+    let end_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_end_width)")
+        .expect("end width provider should be registered from launch");
+    let style_provider = setup
+        .find("GTK_STYLE_PROVIDER(flux__ui_hot_style_action_border_style)")
+        .expect("border style provider should be registered from launch");
+    assert!(
+        base_provider < top_provider
+            && top_provider < bottom_provider
+            && bottom_provider < start_provider
+            && start_provider < end_provider
+            && end_provider < style_provider,
+        "border width and style providers must keep canonical base-before-edge-before-style order"
+    );
+
+    let explicit = initial.replace(
+        "        text: \"Border\"\n",
+        "        text: \"Border\"\n        borderWidth: 2\n        borderTopWidth: 4\n",
+    );
+    let entry = fs::canonicalize(entry).expect("border width lifecycle entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit border widths should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit border widths should analyze");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal border widths should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_width".to_string())),
+        Some(&"2".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_top_width".to_string())),
+        Some(&"4".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+    let explicit_generated = second
+        .emit_c()
+        .expect("explicit border widths should lower for Linux");
+    assert!(!explicit_generated.contains("GtkCssProvider *flux__style_action ="));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_width, \"#flux-ui-action { border-width: 2px; border-style: solid; }\", -1)"
+    ));
+    assert!(explicit_generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_border_top_width, \"#flux-ui-action { border-top-width: 4px; border-style: solid; }\", -1)"
+    ));
+
+    let edited = explicit
+        .replace("borderWidth: 2", "borderWidth: 5")
+        .replace("borderTopWidth: 4", "borderTopWidth: 7");
+    fs::write(&entry, &edited).expect("edited border widths should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("edited border widths should analyze");
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("editing literal border widths should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_width".to_string())),
+        Some(&"5".to_string())
+    );
+    assert_eq!(
+        patch.get(&("action".to_string(), "border_top_width".to_string())),
+        Some(&"7".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    let base_only = edited.replace("        borderTopWidth: 7\n", "");
+    fs::write(&entry, &base_only).expect("removed edge border width should be writable");
+    cache.invalidate_path(&entry);
+    let fourth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed edge border width should analyze");
+    assert_eq!(
+        fourth
+            .development_ui_string_patch_from(&third)
+            .expect("removing an edge width should reveal the live base width"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_top_width".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed base border width should be writable");
+    cache.invalidate_path(&entry);
+    let fifth = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed base border width should analyze");
+    assert_eq!(fifth.development_abi(), fourth.development_abi());
+    assert_eq!(
+        fifth
+            .development_ui_string_patch_from(&fourth)
+            .expect("removing the last width should clear its retained provider"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "border_width".to_string(),
+            value: "-1".to_string(),
+        }]
+    );
+
+    let dynamic = initial.replace(
+        "        text: \"Border\"\n",
+        "        text: \"Border\"\n        borderWidth: stroke\n",
+    );
+    fs::write(&entry, dynamic).expect("dynamic border width source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic border width source should analyze");
+    assert!(
+        dynamic.development_ui_string_patch_from(&fifth).is_none(),
+        "state-driven border widths must retain controlled restart"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -48857,11 +49053,11 @@ app Screen
     assert_eq!(
         fourth
             .development_ui_string_patch_from(&third)
-            .expect("removing borderStyle should restore the compiler-owned solid default"),
+            .expect("removing borderStyle should reveal the compiler-owned width default"),
         vec![fluxc::project::DevelopmentUiStringPatch {
             element: "action".to_string(),
             property: "border_style".to_string(),
-            value: "solid".to_string(),
+            value: "__flux_border_style_default__".to_string(),
         }]
     );
 

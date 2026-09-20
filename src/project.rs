@@ -2022,6 +2022,7 @@ const DEVELOPMENT_FOCUSABLE_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_focusable_
 const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
     "__flux_accessibility_property_default__";
 const DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_shadow_property_default__";
+const DEVELOPMENT_BORDER_STYLE_DEFAULT_SENTINEL: &str = "__flux_border_style_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2392,6 +2393,20 @@ fn development_ui_shadow_group_is_static_literal(element: &ViewElement) -> bool 
     })
 }
 
+fn development_ui_border_width_group_is_static_literal(element: &ViewElement) -> bool {
+    element.properties.iter().all(|property| {
+        match typecheck::source_name_to_internal(&property.name).as_str() {
+            "border_width"
+            | "border_top_width"
+            | "border_bottom_width"
+            | "border_start_width"
+            | "border_end_width" => development_ui_i64_literal_value(&property.value)
+                .is_some_and(|value| (0..=i64::from(i32::MAX)).contains(&value)),
+            _ => true,
+        }
+    })
+}
+
 fn development_ui_property_lifecycle_patch_value(
     element: &ViewElement,
     property: &crate::ast::ViewProperty,
@@ -2483,6 +2498,21 @@ fn development_ui_property_lifecycle_patch_value(
             "shadow_offset_x" | "shadow_offset_y"
         ) && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value)
         {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    if matches!(
+        property_name.as_str(),
+        "border_width"
+            | "border_top_width"
+            | "border_bottom_width"
+            | "border_start_width"
+            | "border_end_width"
+    ) && development_ui_border_width_group_is_static_literal(element)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(0..=i64::from(i32::MAX)).contains(&value) {
             return None;
         }
         return Some(value.to_string());
@@ -2947,6 +2977,17 @@ fn development_ui_property_lifecycle_default(
     ) {
         return Some(DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
+    if matches!(
+        property,
+        "border_width"
+            | "border_top_width"
+            | "border_bottom_width"
+            | "border_start_width"
+            | "border_end_width"
+    ) && development_ui_border_width_group_is_static_literal(element)
+    {
+        return Some("-1".to_string());
+    }
     if property == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3054,7 +3095,7 @@ fn development_ui_property_lifecycle_default(
         return Some("ease".to_string());
     }
     if property == "border_style" {
-        return Some("solid".to_string());
+        return Some(DEVELOPMENT_BORDER_STYLE_DEFAULT_SENTINEL.to_string());
     }
     if matches!(
         property,
@@ -3700,6 +3741,11 @@ fn development_ui_string_literals(
             "submit_on_enter",
             "max_length",
             "background_color",
+            "border_width",
+            "border_top_width",
+            "border_bottom_width",
+            "border_start_width",
+            "border_end_width",
             "border_color",
             "border_top_color",
             "border_bottom_color",
