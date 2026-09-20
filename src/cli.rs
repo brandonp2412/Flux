@@ -6328,6 +6328,7 @@ fn clean_target(target: &Path) -> Result<(), CliError> {
     for cache in [
         cache_root.join(".flux").join("cache"),
         cache_root.join(".flux").join("ir-cache"),
+        cache_root.join(".flux").join("analysis-cache"),
     ] {
         if cache.is_dir() {
             fs::remove_dir_all(&cache)
@@ -12688,10 +12689,17 @@ mod tests {
         fs::create_dir_all(root.join(".flux/cache")).expect("cache fixture should be writable");
         fs::create_dir_all(root.join(".flux/ir-cache"))
             .expect("typed IR cache fixture should be writable");
+        fs::create_dir_all(root.join(".flux/analysis-cache"))
+            .expect("analysis cache fixture should be writable");
         fs::write(root.join(".flux/cache/codegen-dead.c"), "stale")
             .expect("cache fixture should contain an artifact");
         fs::write(root.join(".flux/ir-cache/function-dead.manifest"), "stale")
             .expect("typed IR cache fixture should contain an artifact");
+        fs::write(
+            root.join(".flux/analysis-cache/analysis-v1.manifest"),
+            "stale",
+        )
+        .expect("analysis cache fixture should contain an artifact");
         let entry = root.join("main.flux");
         fs::write(&entry, "fn main() -> i64 {\n    return 0\n}\n")
             .expect("source fixture should be writable");
@@ -12700,6 +12708,7 @@ mod tests {
 
         assert!(!root.join(".flux/cache").exists());
         assert!(!root.join(".flux/ir-cache").exists());
+        assert!(!root.join(".flux/analysis-cache").exists());
         let _ = fs::remove_dir_all(root);
     }
 

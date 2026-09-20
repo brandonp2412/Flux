@@ -18,6 +18,8 @@ const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_SOURCE_INDEX_VERSION: &str = "flux-project-typed-ir-source-v1";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
+const PROJECT_ANALYSIS_SNAPSHOT_VERSION: &str = "flux-project-analysis-v1";
+const PROJECT_ANALYSIS_SNAPSHOT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -1597,6 +1599,26 @@ impl ProjectAnalysisCache {
 
         let current_manifest_text = manifest_snapshot(&key);
         let current_package_manifests = package_manifest_snapshots(&report.sources);
+        let durable_analysis = if previous.is_none()
+            && overlays.is_empty()
+            && project_analysis_snapshot_path(&key).is_file()
+        {
+            let signatures = typecheck::collect_signatures_with_package_constants(
+                &report.program,
+                &report.package_constants,
+            )?;
+            read_project_analysis_snapshot_changed_sources(
+                &key,
+                &report.program,
+                &signatures,
+                &report.sources,
+                &current_manifest_text,
+                &current_package_manifests,
+            )
+            .map(|changed| (signatures, changed))
+        } else {
+            None
+        };
         let incremental_sources = previous.as_ref().and_then(|previous| {
             (previous.manifest_text == current_manifest_text
                 && previous.package_manifest_texts == current_package_manifests)
@@ -1657,11 +1679,40 @@ impl ProjectAnalysisCache {
                     translations: report.translations,
                 }
             }
+        } else if let Some((signatures, changed_sources)) = durable_analysis {
+            if changed_sources.is_empty() {
+                self.last_outcome = Some(ProjectAnalysisOutcome::Cached);
+            } else {
+                self.incremental_typecheck_runs += 1;
+                self.incremental_typecheck_modules += changed_sources.len();
+                self.last_outcome = Some(ProjectAnalysisOutcome::Incremental {
+                    rechecked_modules: changed_sources.len(),
+                });
+                typecheck::check_changed_sources_with_signatures(
+                    &report.program,
+                    &signatures,
+                    &changed_sources,
+                )?;
+            }
+            ProjectAnalysis {
+                program: report.program,
+                signatures,
+                sources: report.sources,
+                translations: report.translations,
+            }
         } else {
             self.full_typecheck_runs += 1;
             self.last_outcome = Some(ProjectAnalysisOutcome::Full);
             analyze_with_overlays_report(report)?
         };
+        if overlays.is_empty() {
+            store_project_analysis_snapshot(
+                &key,
+                &analysis,
+                &current_manifest_text,
+                &current_package_manifests,
+            );
+        }
         self.entries.insert(
             key.clone(),
             CachedProjectAnalysis {
@@ -1768,8 +1819,10 @@ impl ProjectAnalysisCache {
             self.last_codegen_outcome = Some(ProjectCodegenOutcome::Cached);
             return Ok(generated.clone());
         }
-        if self.last_outcome == Some(ProjectAnalysisOutcome::Full)
-            && let Some(generated) = analysis.read_cached_c_for_target(target, native_target)
+        if matches!(
+            self.last_outcome,
+            Some(ProjectAnalysisOutcome::Cached) | Some(ProjectAnalysisOutcome::Full)
+        ) && let Some(generated) = analysis.read_cached_c_for_target(target, native_target)
         {
             self.generated_c
                 .insert(cache_key.clone(), generated.clone());
@@ -1968,6 +2021,226 @@ fn package_manifest_snapshots(sources: &[ProjectSource]) -> BTreeMap<PathBuf, St
         }
     }
     manifests
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectAnalysisSnapshotModule {
+    source_id: SourceId,
+    source_hash: u64,
+    surface_hash: u64,
+}
+
+fn project_analysis_snapshot_path(target: &Path) -> PathBuf {
+    let root = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or_else(|| Path::new("."))
+    };
+    root.join(".flux")
+        .join("analysis-cache")
+        .join("analysis-v1.manifest")
+}
+
+fn project_analysis_snapshot_context(
+    target: &Path,
+    sources: &[ProjectSource],
+    signatures: &typecheck::Signatures,
+    manifest_text: &Option<String>,
+    package_manifests: &BTreeMap<PathBuf, String>,
+) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut add = |bytes: &[u8]| {
+        hash = stable_bytes_hash_with_seed(bytes, hash);
+    };
+    add(PROJECT_ANALYSIS_SNAPSHOT_VERSION.as_bytes());
+    add(env!("CARGO_PKG_VERSION").as_bytes());
+    add(COMPILER_SOURCE_FINGERPRINT.as_bytes());
+    add(target.to_string_lossy().as_bytes());
+    match manifest_text {
+        Some(text) => {
+            add(b"manifest");
+            add(text.as_bytes());
+        }
+        None => add(b"no-manifest"),
+    }
+    for (path, text) in package_manifests {
+        add(path.to_string_lossy().as_bytes());
+        add(text.as_bytes());
+    }
+    add(signatures.package_constants_fingerprint().as_bytes());
+    let mut identities = sources
+        .iter()
+        .map(|source| (&source.path, source.module_name.as_str()))
+        .collect::<Vec<_>>();
+    identities.sort_by(|left, right| left.0.cmp(right.0).then(left.1.cmp(right.1)));
+    for (path, module_name) in identities {
+        add(path.to_string_lossy().as_bytes());
+        add(module_name.as_bytes());
+    }
+    hash
+}
+
+fn project_analysis_snapshot_modules(
+    program: &Program,
+    signatures: &typecheck::Signatures,
+    sources: &[ProjectSource],
+) -> Option<BTreeMap<u64, ProjectAnalysisSnapshotModule>> {
+    let mut modules = BTreeMap::new();
+    for source in sources {
+        let mut identity_hash = stable_bytes_hash(source.path.to_string_lossy().as_bytes());
+        identity_hash = stable_bytes_hash_with_seed(source.module_name.as_bytes(), identity_hash);
+        let canonical =
+            formatter::format_source(&source.text).unwrap_or_else(|_| source.text.clone());
+        let module = ProjectAnalysisSnapshotModule {
+            source_id: source.source_id,
+            source_hash: stable_bytes_hash(canonical.as_bytes()),
+            surface_hash: stable_bytes_hash(
+                module_type_surface(program, signatures, source.source_id).as_bytes(),
+            ),
+        };
+        if modules.insert(identity_hash, module).is_some() {
+            return None;
+        }
+    }
+    Some(modules)
+}
+
+fn read_project_analysis_snapshot_changed_sources(
+    target: &Path,
+    program: &Program,
+    signatures: &typecheck::Signatures,
+    sources: &[ProjectSource],
+    manifest_text: &Option<String>,
+    package_manifests: &BTreeMap<PathBuf, String>,
+) -> Option<HashSet<SourceId>> {
+    let path = project_analysis_snapshot_path(target);
+    if fs::metadata(&path).ok()?.len() > PROJECT_ANALYSIS_SNAPSHOT_MAX_BYTES {
+        return None;
+    }
+    let cached = fs::read_to_string(path).ok()?;
+    let (header, payload) = cached.split_once('\n')?;
+    let checksum = header.strip_prefix(&format!("{PROJECT_ANALYSIS_SNAPSHOT_VERSION}:"))?;
+    if checksum.len() != 16
+        || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || checksum != format!("{:016x}", stable_bytes_hash(payload.as_bytes()))
+    {
+        return None;
+    }
+
+    let expected_context = project_analysis_snapshot_context(
+        target,
+        sources,
+        signatures,
+        manifest_text,
+        package_manifests,
+    );
+    let mut lines = payload.lines();
+    let context = lines.next()?.strip_prefix("context	")?;
+    if context != format!("{expected_context:016x}") {
+        return None;
+    }
+
+    let current = project_analysis_snapshot_modules(program, signatures, sources)?;
+    let mut persisted = BTreeMap::new();
+    for line in lines {
+        let mut fields = line.split('\t');
+        if fields.next() != Some("module") {
+            return None;
+        }
+        let key = fields.next()?;
+        let source_hash = fields.next()?;
+        let surface_hash = fields.next()?;
+        if fields.next().is_some()
+            || [key, source_hash, surface_hash].iter().any(|field| {
+                field.len() != 16 || !field.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return None;
+        }
+        let key = u64::from_str_radix(key, 16).ok()?;
+        let source_hash = u64::from_str_radix(source_hash, 16).ok()?;
+        let surface_hash = u64::from_str_radix(surface_hash, 16).ok()?;
+        if persisted.insert(key, (source_hash, surface_hash)).is_some() {
+            return None;
+        }
+    }
+    if persisted.len() != current.len() {
+        return None;
+    }
+
+    let mut changed = HashSet::new();
+    for (key, module) in current {
+        let (source_hash, surface_hash) = persisted.get(&key).copied()?;
+        if surface_hash != module.surface_hash {
+            return None;
+        }
+        if source_hash != module.source_hash {
+            changed.insert(module.source_id);
+        }
+    }
+    Some(changed)
+}
+
+fn store_project_analysis_snapshot(
+    target: &Path,
+    analysis: &ProjectAnalysis,
+    manifest_text: &Option<String>,
+    package_manifests: &BTreeMap<PathBuf, String>,
+) {
+    let Some(modules) = project_analysis_snapshot_modules(
+        &analysis.program,
+        &analysis.signatures,
+        &analysis.sources,
+    ) else {
+        return;
+    };
+    let context = project_analysis_snapshot_context(
+        target,
+        &analysis.sources,
+        &analysis.signatures,
+        manifest_text,
+        package_manifests,
+    );
+    let mut payload = format!("context\t{context:016x}\n");
+    for (key, module) in modules {
+        payload.push_str(&format!(
+            "module\t{key:016x}\t{:016x}\t{:016x}\n",
+            module.source_hash, module.surface_hash
+        ));
+    }
+    if payload.len() as u64 > PROJECT_ANALYSIS_SNAPSHOT_MAX_BYTES {
+        return;
+    }
+    let checksum = stable_bytes_hash(payload.as_bytes());
+    let contents = format!("{PROJECT_ANALYSIS_SNAPSHOT_VERSION}:{checksum:016x}\n{payload}");
+    let path = project_analysis_snapshot_path(target);
+    if fs::read_to_string(&path).is_ok_and(|cached| cached == contents) {
+        return;
+    }
+    let Some(directory) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(directory).is_err() {
+        return;
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let persisted = File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()
+        })
+        .is_ok();
+    if persisted {
+        if fs::rename(&temporary, &path).is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+    } else {
+        let _ = fs::remove_file(&temporary);
+    }
 }
 
 fn changed_source_ids(
@@ -9176,6 +9449,199 @@ mod tests {
 
         assert_eq!(cache.incremental_typecheck_stats().full_runs, 2);
         assert_eq!(cache.incremental_typecheck_stats().runs, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_analysis_snapshot_rechecks_only_changed_module_after_restart() {
+        let root = test_path("durable-analysis-body-edit");
+        fs::create_dir_all(&root).expect("temporary durable analysis project should be writable");
+        let dependency = root.join("dependency.flux");
+        let entry = root.join("main.flux");
+        fs::write(
+            &dependency,
+            "pub fn value() -> i64 {
+    return 1
+}
+",
+        )
+        .expect("dependency should be writable");
+        fs::write(
+            &entry,
+            r#"import "dependency.flux"
+fn main() -> i64 {
+    return value()
+}
+"#,
+        )
+        .expect("entry should be writable");
+
+        let mut initial = super::ProjectAnalysisCache::default();
+        let initial_analysis = initial
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("initial project should analyze");
+        assert_eq!(initial.incremental_typecheck_stats().full_runs, 1);
+        initial
+            .emit_c_for_target_cached(
+                &entry,
+                &initial_analysis,
+                crate::codegen::NativeTarget::Linux,
+            )
+            .expect("initial cached codegen should succeed");
+        assert!(
+            root.join(".flux/analysis-cache/analysis-v1.manifest")
+                .is_file(),
+            "successful disk-backed analysis should publish a durable semantic snapshot"
+        );
+
+        let mut exact = super::ProjectAnalysisCache::default();
+        let exact_analysis = exact
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("unchanged cold project should restore durable semantics");
+        assert_eq!(exact.incremental_typecheck_stats().full_runs, 0);
+        assert_eq!(exact.incremental_typecheck_stats().runs, 0);
+        assert_eq!(
+            exact.last_outcome(),
+            Some(super::ProjectAnalysisOutcome::Cached)
+        );
+        exact
+            .emit_c_for_target_cached(&entry, &exact_analysis, crate::codegen::NativeTarget::Linux)
+            .expect("unchanged cold project should restore durable generated C");
+        assert_eq!(
+            exact.last_codegen_outcome(),
+            Some(super::ProjectCodegenOutcome::Cached)
+        );
+
+        fs::write(
+            &dependency,
+            "pub fn value() -> i64 {
+    return 2
+}
+",
+        )
+        .expect("body-only edit should be writable");
+
+        let mut resumed = super::ProjectAnalysisCache::default();
+        let incremental = resumed
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("cold body-only edit should analyze");
+        assert_eq!(resumed.incremental_typecheck_stats().full_runs, 0);
+        assert_eq!(resumed.incremental_typecheck_stats().runs, 1);
+        assert_eq!(resumed.incremental_typecheck_stats().rechecked_modules, 1);
+        assert_eq!(
+            resumed.last_outcome(),
+            Some(super::ProjectAnalysisOutcome::Incremental {
+                rechecked_modules: 1
+            })
+        );
+
+        let fresh = super::analyze(&entry).expect("fresh full analysis should succeed");
+        assert_eq!(
+            incremental
+                .emit_c_for_target(crate::codegen::NativeTarget::Linux)
+                .expect("incremental codegen should succeed"),
+            fresh
+                .emit_c_for_target(crate::codegen::NativeTarget::Linux)
+                .expect("fresh codegen should succeed"),
+            "cold durable semantic reuse must preserve fresh-analysis codegen parity"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_analysis_snapshot_ignores_and_repairs_corruption_after_restart() {
+        let root = test_path("durable-analysis-corruption");
+        fs::create_dir_all(&root).expect("temporary durable analysis project should be writable");
+        let entry = root.join("main.flux");
+        fs::write(
+            &entry,
+            "fn main() -> i64 {
+    return 7
+}
+",
+        )
+        .expect("entry should be writable");
+
+        let mut initial = super::ProjectAnalysisCache::default();
+        initial
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("initial project should analyze");
+
+        let snapshot = root.join(".flux/analysis-cache/analysis-v1.manifest");
+        fs::write(&snapshot, "corrupt semantic snapshot")
+            .expect("semantic snapshot should be corruptible for the regression");
+
+        let mut resumed = super::ProjectAnalysisCache::default();
+        resumed
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("corrupt semantic snapshot should fall back to full analysis");
+        assert_eq!(resumed.incremental_typecheck_stats().full_runs, 1);
+        assert_eq!(resumed.incremental_typecheck_stats().runs, 0);
+        assert_eq!(
+            resumed.last_outcome(),
+            Some(super::ProjectAnalysisOutcome::Full)
+        );
+
+        let repaired =
+            fs::read_to_string(&snapshot).expect("successful fallback should republish snapshot");
+        assert!(
+            repaired.starts_with(super::PROJECT_ANALYSIS_SNAPSHOT_VERSION),
+            "fallback analysis should replace corrupt bytes with a versioned semantic snapshot"
+        );
+        assert_ne!(repaired, "corrupt semantic snapshot");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_analysis_snapshot_rejects_public_surface_change_after_restart() {
+        let root = test_path("durable-analysis-surface-edit");
+        fs::create_dir_all(&root).expect("temporary durable analysis project should be writable");
+        let dependency = root.join("constants.flux");
+        let entry = root.join("main.flux");
+        fs::write(
+            &dependency,
+            "pub const LIMIT: i64 = 3
+",
+        )
+        .expect("constant dependency should be writable");
+        fs::write(
+            &entry,
+            r#"import "constants.flux"
+fn main() -> i64 {
+    return LIMIT
+}
+"#,
+        )
+        .expect("entry should be writable");
+
+        let mut initial = super::ProjectAnalysisCache::default();
+        initial
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("initial project should analyze");
+        fs::write(
+            &dependency,
+            "pub const LIMIT: i64 = 4
+",
+        )
+        .expect("public constant edit should be writable");
+
+        let mut resumed = super::ProjectAnalysisCache::default();
+        resumed
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("public-surface edit should still analyze");
+        assert_eq!(
+            resumed.incremental_typecheck_stats().full_runs,
+            1,
+            "a changed public semantic surface must reject the durable incremental shortcut"
+        );
+        assert_eq!(resumed.incremental_typecheck_stats().runs, 0);
+        assert_eq!(
+            resumed.last_outcome(),
+            Some(super::ProjectAnalysisOutcome::Full)
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 

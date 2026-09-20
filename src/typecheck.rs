@@ -384,6 +384,21 @@ pub fn check_all_with_package_constants(
     program: &Program,
     package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
 ) -> Result<Signatures, Vec<Diagnostic>> {
+    check_all_with_package_constants_mode(program, package_constants, true)
+}
+
+pub(crate) fn collect_signatures_with_package_constants(
+    program: &Program,
+    package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
+) -> Result<Signatures, Vec<Diagnostic>> {
+    check_all_with_package_constants_mode(program, package_constants, false)
+}
+
+fn check_all_with_package_constants_mode(
+    program: &Program,
+    package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
+    check_function_bodies: bool,
+) -> Result<Signatures, Vec<Diagnostic>> {
     let package_constants = package_constants
         .iter()
         .map(|(source_id, constants)| {
@@ -1455,8 +1470,10 @@ pub fn check_all_with_package_constants(
         }
     }
 
-    for function in &program.functions {
-        check_function_all(function, &signatures, &mut diagnostics);
+    if check_function_bodies {
+        for function in &program.functions {
+            check_function_all(function, &signatures, &mut diagnostics);
+        }
     }
 
     if diagnostics.is_empty() {

@@ -40065,7 +40065,7 @@ fn project_analysis_cache_preserves_durable_codegen_reuse_across_runner_caches()
         .expect("cold runner analysis should succeed");
     assert_eq!(
         second_cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+        Some(fluxc::project::ProjectAnalysisOutcome::Cached)
     );
     let second_c = second_cache
         .emit_c_for_target_cached(
@@ -40654,8 +40654,10 @@ fn project_codegen_cache_reuses_function_fragments_across_cache_restarts() {
         .expect("updated source should analyze in a fresh cache");
     assert_eq!(
         second_cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Full),
-        "a fresh analysis cache should not depend on prior in-memory state"
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1
+        }),
+        "a fresh analysis cache should recover compatible durable semantic state without prior in-memory state"
     );
     let second_c = second_cache
         .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
@@ -40920,7 +40922,9 @@ fn project_codegen_cache_reuses_application_fragment_across_cache_restarts() {
         .expect("updated application source should analyze in a fresh cache");
     assert_eq!(
         second_cache.last_outcome(),
-        Some(fluxc::project::ProjectAnalysisOutcome::Full)
+        Some(fluxc::project::ProjectAnalysisOutcome::Incremental {
+            rechecked_modules: 1
+        })
     );
     let second_c = second_cache
         .emit_c_for_target_cached(&entry, &second, fluxc::codegen::NativeTarget::Linux)
@@ -41028,7 +41032,17 @@ fn project_function_codegen_cache_ignores_corrupt_durable_fragments() {
         .expect("corrupt durable fragments should fall back to full codegen");
     assert_eq!(
         second_cache.last_codegen_outcome(),
-        Some(fluxc::project::ProjectCodegenOutcome::Full)
+        Some(fluxc::project::ProjectCodegenOutcome::Incremental {
+            reused_functions: 0,
+            regenerated_functions: 2,
+            reused_helpers: 0,
+            regenerated_helpers: 0,
+            reused_runtime_fragments: 0,
+            regenerated_runtime_fragments: 1,
+            reused_application_fragments: 0,
+            regenerated_application_fragments: 0,
+        }),
+        "corrupt codegen fragments should regenerate every codegen fragment while preserving durable semantic reuse"
     );
     assert_eq!(
         incremental,
