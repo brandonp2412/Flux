@@ -14459,6 +14459,41 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         };
         out.push_str(&format!("static WNDPROC flux__win_focus_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_focus_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_SETFOCUS) {{ {focus_body} }} else if (message == WM_KILLFOCUS) {{ {blur_body} }} return CallWindowProcA(flux__win_focus_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
+    for (index, element) in view.elements.iter().enumerate() {
+        let hover_action = view_property(element, "on_hover");
+        let leave_action = view_property(element, "on_leave");
+        if hover_action.is_none() && leave_action.is_none() {
+            continue;
+        }
+        let event_body = |action: &crate::ast::ViewProperty| -> Result<String, Diagnostic> {
+            if let Some(transition) = &action.transition {
+                let next = ui_expr_c(&action.value, view, signatures)?;
+                return Ok(format!(
+                    "{} = {next}; flux__win_refresh();",
+                    ui_state_c_name(&transition.state)
+                ));
+            }
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows hover events require a named fn() -> void callback or state transition",
+                ));
+            };
+            Ok(format!(
+                "{}(); flux__win_refresh();",
+                function_c_name(function)
+            ))
+        };
+        let hover_body = match hover_action {
+            Some(action) => event_body(action)?,
+            None => String::new(),
+        };
+        let leave_body = match leave_action {
+            Some(action) => event_body(action)?,
+            None => String::new(),
+        };
+        out.push_str(&format!("static WNDPROC flux__win_hover_orig_{index} = NULL;\nstatic bool flux__win_hovering_{index} = false;\nstatic LRESULT CALLBACK flux__win_hover_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_MOUSEMOVE && !flux__win_hovering_{index}) {{ TRACKMOUSEEVENT tracking = {{ sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0 }}; if (TrackMouseEvent(&tracking)) {{ flux__win_hovering_{index} = true; {hover_body} }} }} else if (message == WM_MOUSELEAVE) {{ flux__win_hovering_{index} = false; {leave_body} }} return CallWindowProcA(flux__win_hover_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
         for (index, element) in view.elements.iter().enumerate() {
@@ -15277,6 +15312,11 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             || view_property(element, "on_blur").is_some()
         {
             out.push_str(&format!("SetLastError(0); flux__win_focus_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_focus_proc_{index}); if (flux__win_focus_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "on_hover").is_some()
+            || view_property(element, "on_leave").is_some()
+        {
+            out.push_str(&format!("SetLastError(0); flux__win_hover_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_hover_proc_{index}); if (flux__win_hover_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
     }
     if let Some(first) = accessibility_order.first() {

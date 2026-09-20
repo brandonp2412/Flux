@@ -53859,6 +53859,26 @@ app HoverCard
     assert!(
         generated.contains("gtk_widget_add_controller(flux__ui_action_title, flux__motion_title)")
     );
+
+    let program = fluxc::parser::parse(source).expect("hover/leave Windows sample should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("hover/leave Windows sample should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("hover/leave events should lower to native Win32 tracking");
+    assert!(windows.contains("TRACKMOUSEEVENT tracking"));
+    assert!(windows.contains("TME_LEAVE"));
+    assert!(windows.contains("TrackMouseEvent(&tracking)"));
+    assert!(windows.contains("WM_MOUSELEAVE"));
+    assert!(windows.contains("flux__ui_state_hovered = true; flux__win_refresh();"));
+    assert!(windows.contains("flux__ui_state_hovered = false; flux__win_refresh();"));
+    assert!(windows.contains("flux__fn_leave_notice(); flux__win_refresh();"));
+    assert!(windows.contains("flux__win_hover_proc_0"));
+    assert!(windows.contains("flux__win_hover_proc_1"));
 }
 
 #[test]
