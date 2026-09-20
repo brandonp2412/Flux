@@ -14213,25 +14213,18 @@ fn emit_windows_native_application(
                 ));
             }
         }
-        if let Some(property) = view_property(element, "wrap") {
-            let Some(wrap) = static_expr_bool(&property.value, signatures) else {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Windows Text.wrap must be a compile-time bool value",
-                ));
-            };
-            if !wrap {
-                let alignment = view_property(element, "text_align")
-                    .and_then(|alignment| static_expr_str(&alignment.value, signatures))
-                    .unwrap_or_else(|| "left".to_string());
-                if matches!(alignment.as_str(), "center" | "right") {
+        let wrap = match view_property(element, "wrap") {
+            Some(property) => {
+                let Some(wrap) = static_expr_bool(&property.value, signatures) else {
                     return Err(diag(
                         property.value.span,
-                        "bootstrap Windows Text.wrap: false currently supports only left/fill alignment",
+                        "bootstrap Windows Text.wrap must be a compile-time bool value",
                     ));
-                }
+                };
+                wrap
             }
-        }
+            None => true,
+        };
         if let Some(property) = view_property(element, "wrap_mode") {
             let Some(wrap_mode) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -14255,7 +14248,7 @@ fn emit_windows_native_application(
                 }
             }
         }
-        if let Some(property) = view_property(element, "ellipsize") {
+        let ellipsize = if let Some(property) = view_property(element, "ellipsize") {
             let Some(ellipsize) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
                     property.value.span,
@@ -14281,6 +14274,41 @@ fn emit_windows_native_application(
                     return Err(diag(
                         property.value.span,
                         "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                    ));
+                }
+            }
+            Some(ellipsize)
+        } else {
+            None
+        };
+        if !wrap {
+            let wrap_span = view_property(element, "wrap")
+                .expect("wrap exists when explicitly disabled")
+                .value
+                .span;
+            if selectable {
+                let alignment = view_property(element, "text_align")
+                    .and_then(|alignment| static_expr_str(&alignment.value, signatures))
+                    .unwrap_or_else(|| "left".to_string());
+                if matches!(alignment.as_str(), "center" | "right") {
+                    return Err(diag(
+                        wrap_span,
+                        "bootstrap Windows selectable Text.wrap: false currently supports only left/fill alignment",
+                    ));
+                }
+            } else if ellipsize.as_deref() != Some("end")
+                && let Some(alignment) = view_property(element, "text_align")
+            {
+                let Some(alignment_value) = static_expr_str(&alignment.value, signatures) else {
+                    return Err(diag(
+                        alignment.value.span,
+                        "bootstrap Windows Text.wrap: false requires compile-time textAlign unless ellipsize: 'end' is used",
+                    ));
+                };
+                if matches!(alignment_value.as_str(), "center" | "right") {
+                    return Err(diag(
+                        wrap_span,
+                        "bootstrap Windows Text.wrap: false without ellipsize: 'end' currently supports only left/fill alignment",
                     ));
                 }
             }

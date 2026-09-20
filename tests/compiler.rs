@@ -2006,24 +2006,70 @@ app Screen
         "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
     ));
 
+    let centered_ellipsized_nowrap_source = nowrap_source.replace(
+        "wrapMode: \"word\"",
+        "textAlign: \"center\"\n        wrapMode: \"word\"",
+    );
+    let centered_ellipsized_nowrap_program =
+        fluxc::parser::parse(&centered_ellipsized_nowrap_source)
+            .expect("centered ellipsized Windows no-wrap Text source should parse");
+    let centered_ellipsized_nowrap_signatures =
+        fluxc::typecheck::check(&centered_ellipsized_nowrap_program)
+            .expect("centered ellipsized Windows no-wrap Text source should typecheck");
+    let centered_ellipsized_nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &centered_ellipsized_nowrap_program,
+        &centered_ellipsized_nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("end ellipsis should preserve centered native no-wrap Text");
+    assert!(centered_ellipsized_nowrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_CENTER | SS_ENDELLIPSIS"
+    ));
+
     let centered_nowrap_source =
         nowrap_source.replace("ellipsize: \"end\"", "textAlign: \"center\"");
     let centered_nowrap_program = fluxc::parser::parse(&centered_nowrap_source)
-        .expect("centered Windows no-wrap Text source should parse");
+        .expect("centered Windows clipped no-wrap Text source should parse");
     let centered_nowrap_signatures = fluxc::typecheck::check(&centered_nowrap_program)
-        .expect("centered Windows no-wrap Text source should typecheck");
+        .expect("centered Windows clipped no-wrap Text source should typecheck");
     let centered_nowrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
         &centered_nowrap_program,
         &centered_nowrap_signatures,
         &std::collections::HashMap::new(),
         fluxc::codegen::NativeTarget::Windows,
     )
-    .expect_err("centered Windows no-wrap Text must not silently wrap");
-    assert!(
-        centered_nowrap_error
-            .message
-            .contains("Text.wrap: false currently supports only left/fill alignment")
-    );
+    .expect_err("centered Windows clipped no-wrap Text must not silently wrap");
+    assert!(centered_nowrap_error.message.contains(
+        "Text.wrap: false without ellipsize: 'end' currently supports only left/fill alignment"
+    ));
+
+    let dynamic_nowrap_source = r#"
+view Screen {
+    state alignment: str = "right"
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "A long native label"
+        wrap: false
+        textAlign: alignment
+}
+app Screen
+"#;
+    let dynamic_nowrap_program = fluxc::parser::parse(dynamic_nowrap_source)
+        .expect("dynamic Windows no-wrap alignment source should parse");
+    let dynamic_nowrap_signatures = fluxc::typecheck::check(&dynamic_nowrap_program)
+        .expect("dynamic Windows no-wrap alignment source should typecheck");
+    let dynamic_nowrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &dynamic_nowrap_program,
+        &dynamic_nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("dynamic clipped no-wrap alignment must not silently regain wrapping");
+    assert!(dynamic_nowrap_error.message.contains(
+        "Text.wrap: false requires compile-time textAlign unless ellipsize: 'end' is used"
+    ));
 
     for (property, message) in [
         (
