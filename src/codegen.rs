@@ -14161,6 +14161,33 @@ fn emit_windows_native_application(
         }
     }
     for element in &view.elements {
+        if element.kind == "Text"
+            && let Some(property) = view_property(element, "selectable")
+        {
+            let Some(selectable) = static_expr_bool(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows Text.selectable must be a compile-time bool value",
+                ));
+            };
+            if selectable && view_property(element, "on_tap").is_some() {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows selectable Text cannot currently combine selectable: true with onTap",
+                ));
+            }
+            if selectable
+                && let Some(alignment) = view_property(element, "text_align")
+                && static_expr_str(&alignment.value, signatures).is_none()
+            {
+                return Err(diag(
+                    alignment.value.span,
+                    "bootstrap Windows selectable Text requires compile-time textAlign",
+                ));
+            }
+        }
+    }
+    for element in &view.elements {
         if let Some(property) = view_property(element, "status") {
             let Some(status) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -15895,22 +15922,49 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
                         .unwrap_or_else(|| "left".to_string()),
                     None => "left".to_string(),
                 };
-                let style = match alignment.as_str() {
-                    "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
-                    "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
-                    "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
-                    "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
-                    _ => {
-                        return Err(diag(
-                            view_property(element, "text_align")
-                                .expect("text_align exists for invalid value")
-                                .value
-                                .span,
-                            "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
-                        ));
-                    }
-                };
-                ("STATIC", style)
+                let selectable = view_property(element, "selectable")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .unwrap_or(false);
+                if selectable {
+                    let style = match alignment.as_str() {
+                        "left" | "fill" => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
+                        }
+                        "center" => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_CENTER | ES_MULTILINE | ES_READONLY"
+                        }
+                        "right" => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+                        }
+                        _ => {
+                            return Err(diag(
+                                view_property(element, "text_align")
+                                    .expect("text_align exists for invalid value")
+                                    .value
+                                    .span,
+                                "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
+                            ));
+                        }
+                    };
+                    ("EDIT", style)
+                } else {
+                    let style = match alignment.as_str() {
+                        "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
+                        "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
+                        "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                        "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
+                        _ => {
+                            return Err(diag(
+                                view_property(element, "text_align")
+                                    .expect("text_align exists for invalid value")
+                                    .value
+                                    .span,
+                                "Text.textAlign must be one of 'left', 'center', 'right', or 'fill'",
+                            ));
+                        }
+                    };
+                    ("STATIC", style)
+                }
             }
             _ if view_property(element, "on_tap").is_some() => {
                 ("STATIC", "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY")

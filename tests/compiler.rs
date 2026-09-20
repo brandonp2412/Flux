@@ -1606,6 +1606,99 @@ app Screen
 }
 
 #[test]
+fn windows_selectable_text_uses_native_read_only_edit_control() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto
+    Text selectable at 1,1
+        text: "Copy me"
+        selectable: true
+        textAlign: "right"
+    Text label at 2,1
+        text: "Ordinary"
+        selectable: false
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("selectable Windows Text should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("selectable Windows Text should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("compile-time selectable Windows Text should lower natively");
+    assert!(windows.contains(
+        "flux__ui_selectable = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_RIGHT | ES_MULTILINE | ES_READONLY"
+    ));
+    assert!(windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT"
+    ));
+
+    let dynamic = r#"
+view Screen {
+    state selectable: bool = false
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Dynamic"
+        selectable: selectable
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(dynamic).expect("dynamic selectable Windows Text should parse");
+    let signatures = fluxc::typecheck::check(&program)
+        .expect("dynamic selectable Windows Text should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("dynamic Windows Text.selectable must not be silently ignored");
+    assert!(
+        error
+            .message
+            .contains("Text.selectable must be a compile-time bool value")
+    );
+
+    let tappable = r#"
+fn tapped() -> void {
+    print("tap")
+}
+
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Selectable action"
+        selectable: true
+        onTap: tapped
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(tappable).expect("tappable selectable Text should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("tappable selectable Text should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("unsupported selectable-onTap composition must be explicit");
+    assert!(
+        error
+            .message
+            .contains("selectable Text cannot currently combine selectable: true with onTap")
+    );
+}
+
+#[test]
 fn windows_backend_keeps_ui_text_on_unicode_win32_path() {
     let source = r#"
 view Screen {
@@ -2044,6 +2137,7 @@ view Screen {
     Text title at 1,1
         text: "Cross target"
         status: "loading"
+        selectable: true
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
