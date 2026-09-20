@@ -14589,7 +14589,7 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             };
             format!("{}(); flux__win_refresh();", function_c_name(function))
         };
-        out.push_str(&format!("static WNDPROC flux__win_long_press_orig_{index} = NULL;\nstatic bool flux__win_long_press_armed_{index} = false;\nstatic bool flux__win_long_press_consumed_{index} = false;\nstatic POINT flux__win_long_press_start_{index} = {{0}};\nstatic const UINT_PTR flux__win_long_press_timer_{index} = (UINT_PTR)(0xF100u + {index}u);\nstatic LRESULT CALLBACK flux__win_long_press_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); flux__win_long_press_start_{index} = point; flux__win_long_press_armed_{index} = SetTimer(hwnd, flux__win_long_press_timer_{index}, GetDoubleClickTime(), NULL) != 0; flux__win_long_press_consumed_{index} = false; return result; }} if (message == WM_MOUSEMOVE && flux__win_long_press_armed_{index}) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} }} }} if (message == WM_TIMER && wparam == flux__win_long_press_timer_{index}) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (flux__win_long_press_armed_{index} && inside_threshold) {{ flux__win_long_press_consumed_{index} = true; {event_body} }} flux__win_long_press_armed_{index} = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); flux__win_long_press_consumed_{index} = false; return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} return CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+        out.push_str(&format!("static WNDPROC flux__win_long_press_orig_{index} = NULL;\nstatic bool flux__win_long_press_armed_{index} = false;\nstatic bool flux__win_long_press_consumed_{index} = false;\nstatic POINT flux__win_long_press_start_{index} = {{0}};\nstatic const UINT_PTR flux__win_long_press_timer_{index} = (UINT_PTR)(0xF100u + {index}u);\nstatic LRESULT CALLBACK flux__win_long_press_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); flux__win_long_press_start_{index} = point; flux__win_long_press_armed_{index} = SetTimer(hwnd, flux__win_long_press_timer_{index}, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && flux__win_long_press_armed_{index}) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} }} }} if (message == WM_TIMER && wparam == flux__win_long_press_timer_{index}) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (flux__win_long_press_armed_{index} && inside_threshold) {{ flux__win_long_press_consumed_{index} = true; {event_body} }} flux__win_long_press_armed_{index} = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} return CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
     for (index, element) in view.elements.iter().enumerate() {
         let Some(action) = view_property(element, "on_drag") else {
@@ -14603,6 +14603,19 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         };
         let callback = function_c_name(function);
         out.push_str(&format!("static WNDPROC flux__win_drag_orig_{index} = NULL;\nstatic bool flux__win_dragging_{index} = false;\nstatic int flux__win_drag_start_x_{index} = 0;\nstatic int flux__win_drag_start_y_{index} = 0;\nstatic LRESULT CALLBACK flux__win_drag_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_dragging_{index} = true; flux__win_drag_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_drag_start_y_{index} = (int)(short)HIWORD(lparam); SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_dragging_{index}) {{ LRESULT result = CallWindowProcA(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); if ((wparam & MK_LBUTTON) == 0) {{ flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} int offset_x = (int)(short)LOWORD(lparam) - flux__win_drag_start_x_{index}; int offset_y = (int)(short)HIWORD(lparam) - flux__win_drag_start_y_{index}; {callback}(flux__win_unscale(offset_x), flux__win_unscale(offset_y)); flux__win_refresh(); return result; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED) {{ LRESULT result = CallWindowProcA(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_dragging_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); return result; }} return CallWindowProcA(flux__win_drag_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        let Some(action) = view_property(element, "on_swipe") else {
+            continue;
+        };
+        let ExprKind::Var(function) = &action.value.kind else {
+            return Err(diag(
+                action.value.span,
+                "bootstrap Windows onSwipe requires a named fn(i64, i64) -> void callback",
+            ));
+        };
+        let callback = function_c_name(function);
+        out.push_str(&format!("static WNDPROC flux__win_swipe_orig_{index} = NULL;\nstatic bool flux__win_swipe_tracking_{index} = false;\nstatic bool flux__win_swipe_moved_{index} = false;\nstatic bool flux__win_swipe_consumed_{index} = false;\nstatic int flux__win_swipe_start_x_{index} = 0;\nstatic int flux__win_swipe_start_y_{index} = 0;\nstatic DWORD flux__win_swipe_start_time_{index} = 0;\nstatic LRESULT CALLBACK flux__win_swipe_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); flux__win_swipe_tracking_{index} = true; flux__win_swipe_moved_{index} = false; flux__win_swipe_consumed_{index} = false; flux__win_swipe_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_swipe_start_y_{index} = (int)(short)HIWORD(lparam); flux__win_swipe_start_time_{index} = (DWORD)GetMessageTime(); SetCapture(hwnd); return result; }} if (message == WM_MOUSEMOVE && flux__win_swipe_tracking_{index}) {{ if ((wparam & MK_LBUTTON) == 0) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); }} else {{ int dx = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int dy = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; }} }} if (message == WM_LBUTTONUP && flux__win_swipe_tracking_{index}) {{ int delta_x = (int)(short)LOWORD(lparam) - flux__win_swipe_start_x_{index}; int delta_y = (int)(short)HIWORD(lparam) - flux__win_swipe_start_y_{index}; DWORD elapsed = (DWORD)((DWORD)GetMessageTime() - flux__win_swipe_start_time_{index}); int abs_x = delta_x < 0 ? -delta_x : delta_x; int abs_y = delta_y < 0 ? -delta_y : delta_y; if (abs_x > GetSystemMetrics(SM_CXDRAG) || abs_y > GetSystemMetrics(SM_CYDRAG)) flux__win_swipe_moved_{index} = true; flux__win_swipe_consumed_{index} = flux__win_swipe_moved_{index}; if (flux__win_swipe_moved_{index} && elapsed > 0) {{ int64_t logical_x = flux__win_unscale(delta_x); int64_t logical_y = flux__win_unscale(delta_y); int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed; int64_t velocity_y = logical_y * INT64_C(1000) / (int64_t)elapsed; UINT interval = GetDoubleClickTime(); if (interval == 0) interval = 1; int64_t minimum_x = (flux__win_unscale(GetSystemMetrics(SM_CXDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t minimum_y = (flux__win_unscale(GetSystemMetrics(SM_CYDRAG)) * INT64_C(1000) + (int64_t)interval - 1) / (int64_t)interval; int64_t speed_x = velocity_x < 0 ? -velocity_x : velocity_x; int64_t speed_y = velocity_y < 0 ? -velocity_y : velocity_y; if (speed_x >= minimum_x || speed_y >= minimum_y) {{ {callback}(velocity_x, velocity_y); flux__win_refresh(); }} }} flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; LRESULT result = CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); if (GetCapture() == hwnd) ReleaseCapture(); return result; }} if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ flux__win_swipe_tracking_{index} = false; flux__win_swipe_moved_{index} = false; }} return CallWindowProcA(flux__win_swipe_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
     }
     if uses_key_events || uses_passive_keyboard_activation || uses_shortcuts {
         out.push_str("static bool flux__win_dispatch_key(const MSG *message) { if (message == NULL || (message->message != WM_KEYDOWN && message->message != WM_SYSKEYDOWN)) return false; HWND focused = GetFocus(); char utf8[8] = {0};\n");
@@ -15105,14 +15118,16 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             _ => None,
         };
         if click_action.is_some() {
+            let mut consume_pointer_gesture = String::new();
+            if view_property(element, "on_long_press").is_some() {
+                consume_pointer_gesture.push_str(&format!("if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
+            }
+            if view_property(element, "on_swipe").is_some() {
+                consume_pointer_gesture.push_str(&format!("if (flux__win_swipe_consumed_{index}) {{ flux__win_swipe_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
+            }
             out.push_str(&format!(
-                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {}flux__win_click_{index}(); }} return 0;\n",
+                "case {}: if (HIWORD(wparam) == BN_CLICKED) {{ {consume_pointer_gesture}flux__win_click_{index}(); }} return 0;\n",
                 1000 + index,
-                if view_property(element, "on_long_press").is_some() {
-                    format!("if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; return 0; }} ")
-                } else {
-                    String::new()
-                }
             ));
         } else if matches!(element.kind.as_str(), "Toggle" | "Radio") {
             let action_name = if element.kind == "Toggle" {
@@ -15137,14 +15152,14 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             } else {
                 "STN_CLICKED"
             };
-            let consume_long_press = if view_property(element, "on_long_press").is_some() {
-                format!(
-                    "if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; return 0; }} "
-                )
-            } else {
-                String::new()
-            };
-            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) {{ {consume_long_press}flux__win_tap_{index}(); }} return 0;\n", 1000 + index));
+            let mut consume_pointer_gesture = String::new();
+            if view_property(element, "on_long_press").is_some() {
+                consume_pointer_gesture.push_str(&format!("if (flux__win_long_press_consumed_{index}) {{ flux__win_long_press_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
+            }
+            if view_property(element, "on_swipe").is_some() {
+                consume_pointer_gesture.push_str(&format!("if (flux__win_swipe_consumed_{index}) {{ flux__win_swipe_consumed_{index} = false; flux__win_refresh(); return 0; }} "));
+            }
+            out.push_str(&format!("case {}: if (HIWORD(wparam) == {notification}) {{ {consume_pointer_gesture}flux__win_tap_{index}(); }} return 0;\n", 1000 + index));
         }
     }
     let mut context_menu_messages = String::new();
@@ -15466,6 +15481,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
         if view_property(element, "on_drag").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_{index}); if (flux__win_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+        if view_property(element, "on_swipe").is_some() {
+            out.push_str(&format!("SetLastError(0); flux__win_swipe_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_swipe_proc_{index}); if (flux__win_swipe_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
     }
     if let Some(first) = accessibility_order.first() {

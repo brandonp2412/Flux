@@ -53897,6 +53897,15 @@ app HoverCard
     assert!(windows.contains("message == WM_LBUTTONUP"));
     assert!(windows.contains("flux__fn_tapped(); flux__win_refresh();"));
     assert!(windows.contains("flux__win_drag_proc_0"));
+    assert!(windows.contains("flux__win_swipe_proc_0"));
+    assert!(windows.contains("flux__win_swipe_consumed_0 = flux__win_swipe_moved_0"));
+    assert!(
+        windows.contains("flux__win_long_press_consumed_0 = false; flux__win_refresh(); return 0;")
+    );
+    assert!(windows.contains("flux__win_swipe_consumed_0 = false; flux__win_refresh(); return 0;"));
+    assert!(windows.contains("int64_t logical_x = flux__win_unscale(delta_x)"));
+    assert!(windows.contains("int64_t velocity_x = logical_x * INT64_C(1000) / (int64_t)elapsed"));
+    assert!(windows.contains("flux__fn_swiped(velocity_x, velocity_y); flux__win_refresh();"));
     assert!(windows.contains("SetCapture(hwnd)"));
     assert!(windows.contains("WM_CAPTURECHANGED"));
     assert!(windows.contains("GetCapture() == hwnd"));
