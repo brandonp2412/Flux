@@ -1450,11 +1450,11 @@ app Screen(title: "Native Flux", width: 640, height: 480)
     )
     .expect("Windows application should lower to native Win32 C");
     assert!(generated.contains("#include <windows.h>"));
-    assert!(generated.contains("WNDCLASSA"));
-    assert!(generated.contains("CreateWindowExA(0, \"STATIC\""));
+    assert!(generated.contains("WNDCLASSW"));
+    assert!(generated.contains("CreateWindowExW(0, L\"STATIC\""));
     assert!(generated.contains("WS_CHILD | WS_VISIBLE | SS_CENTER"));
-    assert!(generated.contains("CreateWindowExA(0, \"EDIT\""));
-    assert!(generated.contains("CreateWindowExA(0, \"BUTTON\""));
+    assert!(generated.contains("CreateWindowExW(0, L\"EDIT\""));
+    assert!(generated.contains("CreateWindowExW(0, L\"BUTTON\""));
     assert!(generated.contains("BS_AUTOCHECKBOX"));
     assert!(generated.contains("BS_AUTORADIOBUTTON"));
     assert!(generated.contains("flux__windows_utf8_to_wide(\"Aptos\")"));
@@ -1573,6 +1573,56 @@ app Screen
 }
 
 #[test]
+fn windows_backend_keeps_ui_text_on_unicode_win32_path() {
+    let source = r#"
+view Screen {
+    state query: str = "你好"
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text title at 1,1
+        text: "Café 🚀"
+    TextInput input at 2,1
+        text: query
+        onChange: query, value => value
+    Button action at 3,1
+        text: "保存"
+}
+app Screen(title: "Flux 日本語")
+"#;
+    let program = fluxc::parser::parse(source).expect("Unicode Windows UI source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Unicode Windows UI source should typecheck");
+    let generated = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("Unicode Windows UI should lower to native Win32 C");
+
+    assert!(generated.contains("WNDCLASSW"));
+    assert!(generated.contains("RegisterClassW(&wc)"));
+    assert!(generated.contains(r#"CreateWindowExW(0, L"STATIC", L""#));
+    assert!(generated.contains(r#"CreateWindowExW(0, L"EDIT", L""#));
+    assert!(generated.contains(r#"CreateWindowExW(0, L"BUTTON", L""#));
+    assert!(generated.contains("SetWindowTextW(control, wide)"));
+    assert!(generated.contains("GetWindowTextW(control, wide, length + 1)"));
+    assert!(generated.contains("flux__windows_wide_to_utf8(wide)"));
+    assert!(
+        generated.contains(
+            r#"flux__win_set_text_if_changed(flux__windows_active_window, "Flux 日本語")"#
+        )
+    );
+    assert!(generated.contains(r#"flux__win_set_text_if_changed(flux__ui_title, "Café 🚀")"#));
+    assert!(generated.contains(r#"flux__win_set_text_if_changed(flux__ui_action, "保存")"#));
+    assert!(generated.contains("TOOLTIPS_CLASSW") || !generated.contains("flux__win_tooltips"));
+    assert!(generated.contains("GetMessageW(&message"));
+    assert!(generated.contains("DispatchMessageW(&message)"));
+    assert!(!generated.contains("GetWindowTextA(control"));
+    assert!(!generated.contains("SetWindowTextA(control"));
+}
+
+#[test]
 fn windows_backend_refreshes_dynamic_text_alignment_in_place() {
     let source = r#"
 view Screen {
@@ -1600,7 +1650,7 @@ app Screen
         generated
             .contains("flux__win_set_text_alignment(flux__ui_title, flux__ui_state_alignment)")
     );
-    assert!(generated.contains("SetWindowLongPtrA(control, GWL_STYLE"));
+    assert!(generated.contains("SetWindowLongPtrW(control, GWL_STYLE"));
 }
 
 #[test]
@@ -1755,10 +1805,10 @@ app Screen(title: "Tooltips")
     .expect("Windows tooltips should lower to native common controls");
 
     assert!(generated.contains("InitCommonControlsEx"));
-    assert!(generated.contains("TOOLTIPS_CLASSA"));
-    assert!(generated.contains("TTM_ADDTOOLA"));
-    assert!(generated.contains("TTM_UPDATETIPTEXTA"));
-    assert!(generated.contains("static char *flux__win_tooltip_text_query = NULL;"));
+    assert!(generated.contains("TOOLTIPS_CLASSW"));
+    assert!(generated.contains("TTM_ADDTOOLW"));
+    assert!(generated.contains("TTM_UPDATETIPTEXTW"));
+    assert!(generated.contains("static wchar_t *flux__win_tooltip_text_query = NULL;"));
     assert!(generated.contains(
         "flux__win_set_tooltip(flux__ui_query, &flux__win_tooltip_text_query, flux__ui_state_help)"
     ));
@@ -2295,7 +2345,7 @@ app Screen(title: "Stateful Windows", width: 720, height: 480)
     assert!(generated.contains("(!(flux__ui_state_enabled))"));
     assert!(generated.contains("flux__ui_state_selected = INT64_C(1)"));
     assert!(generated.contains("flux__win_refresh();"));
-    assert!(generated.contains("CreateWindowExA(0, \"STATIC\", \"Summary\""));
+    assert!(generated.contains("flux__win_set_text_if_changed(flux__ui_summary, \"Summary\")"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }
@@ -2360,7 +2410,7 @@ app Screen(title: "Accessible Windows")
     assert!(generated.contains("flux__ui_state_accessibleName"));
     assert!(generated.contains("flux__ui_state_accessibleValue"));
     assert!(generated.contains("flux__ui_state_accessibilityHidden"));
-    assert!(generated.contains("GetWindowLongPtrA(flux__ui_action, GWL_STYLE)"));
+    assert!(generated.contains("GetWindowLongPtrW(flux__ui_action, GWL_STYLE)"));
     assert!(generated.contains("WS_TABSTOP"));
     assert!(generated.contains("CreateFontW(-flux__win_scale(INT64_C(30))"));
     assert!(generated.contains("FW_NORMAL, TRUE, TRUE, TRUE"));
@@ -2427,7 +2477,7 @@ app Screen(title: "Keyboard Windows")
     assert!(generated.contains("flux__win_focus_proc_0"));
     assert!(generated.contains("SS_LEFT | SS_NOTIFY | WS_TABSTOP"));
     assert!(generated.contains("if (flux__ui_title != NULL) SetFocus(flux__ui_title);"));
-    assert!(generated.contains("IsDialogMessageA(flux__windows_active_window, &message)"));
+    assert!(generated.contains("IsDialogMessageW(flux__windows_active_window, &message)"));
     assert!(!generated.contains("method_channel"));
     assert!(!generated.contains("plugin_registry"));
 }
@@ -2491,7 +2541,7 @@ app Screen(title: "Windows input")
     assert!(generated.contains("flux__win_submit_0"));
     assert!(generated.contains("WM_KEYDOWN && wparam == VK_RETURN"));
     assert!(generated.contains("SetLastError(0);"));
-    assert!(generated.contains("SetWindowLongPtrA(flux__ui_input, GWLP_WNDPROC"));
+    assert!(generated.contains("SetWindowLongPtrW(flux__ui_input, GWLP_WNDPROC"));
     assert!(generated.contains("flux__win_set_cue(flux__ui_input, \"Search\")"));
     assert!(generated.contains("EM_SETREADONLY"));
     assert!(generated.contains("EM_SETPASSWORDCHAR"));
@@ -2683,7 +2733,7 @@ app Screen(onStart: started)
         );
     }
     let window = generated
-        .find("flux__windows_active_window = CreateWindowExA(")
+        .find("flux__windows_active_window = CreateWindowExW(")
         .expect("Windows root window should be created");
     let startup = generated
         .find("flux__fn_started();")
@@ -51182,7 +51232,7 @@ app Form
     assert!(windows.contains(
         "flux__win_accessibility_set_description(flux__ui_email, \"Enter a valid email address\")"
     ));
-    assert!(windows.contains("TTM_ADDTOOLA"));
+    assert!(windows.contains("TTM_ADDTOOLW"));
     assert!(windows.contains("static void flux__win_set_validation_state"));
     assert!(windows.contains("flux__ui_validation_state(value)"));
     assert!(windows.contains("RGB(207, 34, 46)"));
@@ -55201,7 +55251,7 @@ app Screen(layoutDirection: "rtl")
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect("RTL direction should lower to Windows");
-    assert!(windows.contains("CreateWindowExA(WS_EX_LAYOUTRTL, wc.lpszClassName"));
+    assert!(windows.contains("CreateWindowExW(WS_EX_LAYOUTRTL, wc.lpszClassName"));
 
     let system = r#"
 view Screen {
@@ -55230,7 +55280,7 @@ app Screen(layoutDirection: "system")
         fluxc::codegen::NativeTarget::Windows,
     )
     .expect("system direction should preserve Windows default layout");
-    assert!(windows.contains("CreateWindowExA(0, wc.lpszClassName"));
+    assert!(windows.contains("CreateWindowExW(0, wc.lpszClassName"));
 
     let invalid = r#"
 view Screen {
@@ -56794,13 +56844,13 @@ app Screen(onStart: started)
     )
     .expect("portable TextInput selection should lower on Windows");
     assert!(windows.contains("static HWND flux__windows_focused_text_input(void)"));
-    assert!(windows.contains("GetClassNameA(control, class_name"));
-    assert!(windows.contains("lstrcmpiA(class_name, \"Edit\")"));
-    assert!(windows.contains("SendMessageA(control, EM_GETSEL"));
+    assert!(windows.contains("GetClassNameW(control, class_name"));
+    assert!(windows.contains("lstrcmpiW(class_name, L\"Edit\")"));
+    assert!(windows.contains("SendMessageW(control, EM_GETSEL"));
     assert!(windows.contains("static inline int64_t flux__text_input_selection_start(void)"));
     assert!(windows.contains("static inline int64_t flux__text_input_selection_end(void)"));
-    assert!(windows.contains("GetWindowTextLengthA(control)"));
-    assert!(windows.contains("SendMessageA(control, EM_SETSEL"));
+    assert!(windows.contains("GetWindowTextLengthW(control)"));
+    assert!(windows.contains("SendMessageW(control, EM_SETSEL"));
     assert!(windows.contains("static inline bool flux__text_input_set_caret(int64_t position)"));
 
     let unused = r#"
