@@ -49069,7 +49069,6 @@ fn development_ui_string_patch_hot_applies_autofocus_enable_only() {
     grid rows: auto
     Button action at 1,1
         text: "Focus me"
-        autofocus: false
 }
 app Focus
 "#;
@@ -49080,7 +49079,10 @@ app Focus
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("initial autofocus patch analysis should succeed");
 
-    let updated = initial.replace("autofocus: false", "autofocus: true");
+    let updated = initial.replace(
+        "        text: \"Focus me\"\n",
+        "        text: \"Focus me\"\n        autofocus: true\n",
+    );
     fs::write(&entry, updated).expect("updated autofocus patch source should be writable");
     let entry = fs::canonicalize(entry).expect("autofocus patch entry should canonicalize");
     cache.invalidate_path(&entry);
@@ -49105,14 +49107,14 @@ app Focus
         "gtk_widget_set_focusable(flux__ui_action, TRUE); gtk_widget_grab_focus(flux__ui_action);"
     ));
 
-    fs::write(&entry, initial).expect("disabled autofocus source should be writable");
+    fs::write(&entry, initial).expect("removed autofocus source should be writable");
     cache.invalidate_path(&entry);
     let disabled = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
-        .expect("disabled autofocus patch analysis should succeed");
+        .expect("removed autofocus patch analysis should succeed");
     assert!(
         disabled.development_ui_string_patch_from(&second).is_none(),
-        "disabling autofocus must use the controlled restart path"
+        "removing active autofocus must use the controlled restart path"
     );
 
     let _ = fs::remove_dir_all(root);

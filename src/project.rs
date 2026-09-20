@@ -2582,6 +2582,7 @@ fn development_ui_property_lifecycle_patch_value(
         property_name.as_str(),
         "visible"
             | "clip"
+            | "autofocus"
             | "enabled"
             | "primary"
             | "accessibility_hidden"
@@ -2748,6 +2749,7 @@ fn development_ui_property_lifecycle_default(
         property,
         "visible"
             | "clip"
+            | "autofocus"
             | "enabled"
             | "primary"
             | "accessibility_hidden"
@@ -3292,6 +3294,7 @@ fn development_ui_string_literals(
             "title",
             "visible",
             "clip",
+            "autofocus",
             "enabled",
             "primary",
             "accessibility_hidden",

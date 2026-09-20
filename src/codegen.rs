@@ -17935,17 +17935,15 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "autofocus").is_some() {
-            let ensure_focusable = if view_property(element, "focusable").is_none() {
-                format!(" gtk_widget_set_focusable({widget}, TRUE);")
-            } else {
-                String::new()
-            };
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"autofocus\") == 0 && bool_value_valid && bool_value && {widget} != NULL) {{{ensure_focusable} gtk_widget_grab_focus({widget}); }}",
-                c_string(&element.name)
-            ));
-        }
+        let ensure_focusable = if view_property(element, "focusable").is_none() {
+            format!(" gtk_widget_set_focusable({widget}, TRUE);")
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"autofocus\") == 0 && bool_value_valid && bool_value && {widget} != NULL) {{{ensure_focusable} gtk_widget_grab_focus({widget}); }}",
+            c_string(&element.name)
+        ));
         if view_property(element, "drag_translate").is_some() {
             let enabled = ui_gesture_translate_enabled_c_name(&element.name);
             let translate_x = ui_gesture_translate_x_c_name(&element.name);
