@@ -14221,10 +14221,15 @@ fn emit_windows_native_application(
                 ));
             };
             if !wrap {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Windows Text.wrap: false is not yet supported by the native Win32 text backend",
-                ));
+                let alignment = view_property(element, "text_align")
+                    .and_then(|alignment| static_expr_str(&alignment.value, signatures))
+                    .unwrap_or_else(|| "left".to_string());
+                if matches!(alignment.as_str(), "center" | "right") {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows Text.wrap: false currently supports only left/fill alignment",
+                    ));
+                }
             }
         }
         if let Some(property) = view_property(element, "wrap_mode") {
@@ -16357,8 +16362,14 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 let selectable = view_property(element, "selectable")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     .unwrap_or(false);
+                let nowrap = view_property(element, "wrap")
+                    .and_then(|property| static_expr_bool(&property.value, signatures))
+                    .is_some_and(|wrap| !wrap);
                 if selectable {
                     let style = match alignment.as_str() {
+                        "left" | "fill" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+                        }
                         "left" | "fill" => {
                             "WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY"
                         }
@@ -16381,9 +16392,13 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                     ("EDIT", style)
                 } else {
                     let style = match alignment.as_str() {
+                        "left" if nowrap => "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP",
                         "left" => "WS_CHILD | WS_VISIBLE | SS_LEFT",
                         "center" => "WS_CHILD | WS_VISIBLE | SS_CENTER",
                         "right" => "WS_CHILD | WS_VISIBLE | SS_RIGHT",
+                        "fill" if nowrap => {
+                            "WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX"
+                        }
                         "fill" => "WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX",
                         _ => {
                             return Err(diag(

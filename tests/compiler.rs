@@ -1974,8 +1974,58 @@ app Screen
         "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS"
     ));
 
+    let nowrap_source = source.replace("wrap: true", "wrap: false");
+    let nowrap_program =
+        fluxc::parser::parse(&nowrap_source).expect("Windows no-wrap Text source should parse");
+    let nowrap_signatures = fluxc::typecheck::check(&nowrap_program)
+        .expect("Windows no-wrap Text source should typecheck");
+    let nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &nowrap_program,
+        &nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("left-aligned Windows no-wrap Text should lower");
+    assert!(nowrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS"
+    ));
+
+    let selectable_nowrap_source = nowrap_source.replace("ellipsize: \"end\"", "selectable: true");
+    let selectable_nowrap_program = fluxc::parser::parse(&selectable_nowrap_source)
+        .expect("Windows selectable no-wrap Text source should parse");
+    let selectable_nowrap_signatures = fluxc::typecheck::check(&selectable_nowrap_program)
+        .expect("Windows selectable no-wrap Text source should typecheck");
+    let selectable_nowrap_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &selectable_nowrap_program,
+        &selectable_nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("left-aligned selectable Windows no-wrap Text should lower");
+    assert!(selectable_nowrap_windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"EDIT\", L\"\", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT | ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL"
+    ));
+
+    let centered_nowrap_source =
+        nowrap_source.replace("ellipsize: \"end\"", "textAlign: \"center\"");
+    let centered_nowrap_program = fluxc::parser::parse(&centered_nowrap_source)
+        .expect("centered Windows no-wrap Text source should parse");
+    let centered_nowrap_signatures = fluxc::typecheck::check(&centered_nowrap_program)
+        .expect("centered Windows no-wrap Text source should typecheck");
+    let centered_nowrap_error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &centered_nowrap_program,
+        &centered_nowrap_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("centered Windows no-wrap Text must not silently wrap");
+    assert!(
+        centered_nowrap_error
+            .message
+            .contains("Text.wrap: false currently supports only left/fill alignment")
+    );
+
     for (property, message) in [
-        ("wrap: false", "Text.wrap: false is not yet supported"),
         (
             "wrapMode: \"char\"",
             "Text.wrapMode currently supports only 'word'",
