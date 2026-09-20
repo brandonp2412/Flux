@@ -2242,6 +2242,11 @@ fn development_ui_element_has_property(element: &ViewElement, property: &str) ->
         .any(|candidate| typecheck::source_name_to_internal(&candidate.name) == property)
 }
 
+fn development_ui_element_has_shortcut_action(element: &ViewElement) -> bool {
+    (element.kind == "Button" && development_ui_element_has_property(element, "on_press"))
+        || development_ui_element_has_property(element, "on_tap")
+}
+
 fn development_ui_string_property_is_patchable(element: &ViewElement, property: &str) -> bool {
     match property {
         "text" => {
@@ -2486,6 +2491,12 @@ fn development_ui_property_lifecycle_patch_value(
             return None;
         }
         return Some(value.clone());
+    }
+    if property_name == "shortcut" && development_ui_element_has_shortcut_action(element) {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        return codegen::gtk_shortcut_trigger(value);
     }
     if matches!(
         property_name.as_str(),
@@ -3200,7 +3211,10 @@ fn development_ui_property_lifecycle_default(
     {
         return Some("1".to_string());
     }
-    if property == "shortcut_scope" && development_ui_element_has_property(element, "shortcut") {
+    if property == "shortcut" && development_ui_element_has_shortcut_action(element) {
+        return Some(String::new());
+    }
+    if property == "shortcut_scope" && development_ui_element_has_shortcut_action(element) {
         return Some("window".to_string());
     }
     if property == "focus_scope" {
@@ -3862,6 +3876,7 @@ fn development_ui_string_literals(
             "accessibility_order",
             "tooltip",
             "drag_text",
+            "shortcut",
             "placeholder",
             "keyboard_type",
             "submit_on_enter",

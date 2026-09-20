@@ -17643,6 +17643,13 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name
             ));
+        } else if linux_ui_has_shortcut_action(element) {
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data);\nstatic GtkShortcutController *flux__ui_shortcut_controller_{} = NULL;\nstatic GtkShortcut *flux__ui_shortcut_object_{} = NULL;\n#endif\n",
+                element.name,
+                element.name,
+                element.name
+            ));
         }
         let order = match view_property(element, "accessibility_order") {
             Some(property) => static_expr_i64(&property.value, signatures).ok_or_else(|| {
@@ -17905,9 +17912,9 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
-        if view_property(element, "shortcut").is_some() {
+        if linux_ui_has_shortcut_action(element) {
             out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut\") == 0 && flux__ui_shortcut_controller_{} != NULL && flux__ui_shortcut_object_{} != NULL) {{ GtkShortcutTrigger *trigger = gtk_shortcut_trigger_parse_string(value); if (trigger != NULL) {{ GtkShortcut *replacement = gtk_shortcut_new(trigger, gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)); if (replacement != NULL) {{ gtk_shortcut_controller_add_shortcut(flux__ui_shortcut_controller_{}, replacement); gtk_shortcut_controller_remove_shortcut(flux__ui_shortcut_controller_{}, flux__ui_shortcut_object_{}); flux__ui_shortcut_object_{} = replacement; }} }} }}",
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut\") == 0 && flux__ui_shortcut_controller_{} != NULL) {{ if (value_length == 0) {{ if (flux__ui_shortcut_object_{} != NULL) {{ gtk_shortcut_controller_remove_shortcut(flux__ui_shortcut_controller_{}, flux__ui_shortcut_object_{}); flux__ui_shortcut_object_{} = NULL; }} }} else {{ GtkShortcutTrigger *trigger = gtk_shortcut_trigger_parse_string(value); if (trigger != NULL) {{ GtkShortcut *replacement = gtk_shortcut_new(trigger, gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL)); if (replacement != NULL) {{ gtk_shortcut_controller_add_shortcut(flux__ui_shortcut_controller_{}, replacement); if (flux__ui_shortcut_object_{} != NULL) gtk_shortcut_controller_remove_shortcut(flux__ui_shortcut_controller_{}, flux__ui_shortcut_object_{}); flux__ui_shortcut_object_{} = replacement; }} }} }} }}",
                 c_string(&element.name),
                 element.name,
                 element.name,
@@ -17916,9 +17923,11 @@ fn emit_linux_gtk_application(
                 element.name,
                 element.name,
                 element.name,
+                element.name,
+                element.name,
+                element.name,
+                element.name,
             ));
-        }
-        if view_property(element, "shortcut").is_some() {
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"shortcut_scope\") == 0 && flux__ui_shortcut_controller_{} != NULL) {{ if (strcmp(value, \"window\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_GLOBAL); else if (strcmp(value, \"focused\") == 0) gtk_shortcut_controller_set_scope(flux__ui_shortcut_controller_{}, GTK_SHORTCUT_SCOPE_LOCAL); }}",
                 c_string(&element.name),
@@ -18693,20 +18702,29 @@ fn emit_linux_gtk_application(
         ));
     }
     for element in &view.elements {
-        if view_property(element, "shortcut").is_none() {
+        let has_shortcut = view_property(element, "shortcut").is_some();
+        if !has_shortcut && !linux_ui_has_shortcut_action(element) {
             continue;
         }
+        let mut shortcut_callback = String::new();
         if element.kind == "Button" && view_property(element, "on_press").is_some() {
-            out.push_str(&format!(
+            shortcut_callback = format!(
                 "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data) {{ (void)args; (void)data; flux__ui_click_{}(widget, NULL); return TRUE; }}\n",
                 element.name, element.name
-            ));
+            );
         } else if let Some(action) = view_property(element, "on_tap") {
             let body = ui_zero_arg_event_body(action, view, signatures)?;
-            out.push_str(&format!(
+            shortcut_callback = format!(
                 "static gboolean flux__ui_shortcut_{}(GtkWidget *widget, GVariant *args, gpointer data) {{ (void)widget; (void)args; (void)data; {body} return TRUE; }}\n",
                 element.name
-            ));
+            );
+        }
+        if has_shortcut {
+            out.push_str(&shortcut_callback);
+        } else if !shortcut_callback.is_empty() {
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&shortcut_callback);
+            out.push_str("#endif\n");
         }
     }
     if view
@@ -19888,6 +19906,11 @@ fn emit_linux_gtk_application(
                 "    {controller} = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());\n    gtk_shortcut_controller_set_scope({controller}, {scope});\n    {shortcut_object} = gtk_shortcut_new(gtk_shortcut_trigger_parse_string({}), gtk_callback_action_new(flux__ui_shortcut_{}, NULL, NULL));\n    gtk_shortcut_controller_add_shortcut({controller}, {shortcut_object});\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({controller}));\n",
                 c_string(&trigger),
                 element.name,
+            ));
+        } else if linux_ui_has_shortcut_action(element) {
+            let controller = format!("flux__ui_shortcut_controller_{}", element.name);
+            out.push_str(&format!(
+                "#ifdef FLUX_DEVELOPMENT_RELOAD\n    {controller} = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());\n    gtk_shortcut_controller_set_scope({controller}, GTK_SHORTCUT_SCOPE_GLOBAL);\n    gtk_widget_add_controller({variable}, GTK_EVENT_CONTROLLER({controller}));\n#endif\n"
             ));
         }
         let presentation_status = match view_property(element, "status") {
@@ -22347,6 +22370,11 @@ fn linux_ui_focusable_default_c_name(element: &crate::ast::ViewElement) -> Strin
 
 fn linux_ui_constraint_c_name(element: &crate::ast::ViewElement) -> String {
     format!("flux__ui_constraint_{}", element.name)
+}
+
+fn linux_ui_has_shortcut_action(element: &crate::ast::ViewElement) -> bool {
+    (element.kind == "Button" && view_property(element, "on_press").is_some())
+        || view_property(element, "on_tap").is_some()
 }
 
 fn linux_ui_revealer_c_name(element: &crate::ast::ViewElement) -> String {
