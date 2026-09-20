@@ -10836,6 +10836,16 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
         "static struct flux__tls_resumption_slot flux__tls_resumption_slots[64];";
     const TLS_REGISTERED: &str = "static bool flux__tls_cleanup_registered = false;";
     const WEBSOCKET_CLIENT_SESSIONS: &str = "static bool flux__websocket_client_sessions[1024];";
+    const MENU_CALLBACK: &str = "static void (*flux__menu_callback)(int64_t) = NULL;";
+    const MENU_BAR: &str = "static GtkWidget *flux__menu_bar = NULL;";
+    const MENU_ACTION: &str = "static GSimpleAction *flux__menu_action = NULL;";
+    const TRAY_CALLBACK: &str = "static void (*flux__tray_callback)(void) = NULL;";
+    const TRAY_CONNECTION: &str = "static GDBusConnection *flux__tray_connection = NULL;";
+    const TRAY_NODE: &str = "static GDBusNodeInfo *flux__tray_node = NULL;";
+    const TRAY_REGISTRATION: &str = "static guint flux__tray_registration = 0;";
+    const TRAY_TITLE: &str = "static char *flux__tray_title = NULL;";
+    const TRAY_ICON: &str = "static char *flux__tray_icon = NULL;";
+    const TRAY_VTABLE: &str = "static const GDBusInterfaceVTable flux__tray_vtable = { flux__tray_method_call, flux__tray_get_property, NULL };";
     const TIME_ZONE_TRANSACTION_LOCK: &str =
         "static volatile int flux_time_zone_transaction_lock = 0;";
     const CHANNEL_REGISTRY_MUTEX: &str =
@@ -10943,6 +10953,59 @@ fn partition_native_shared_runtime(prefix: &str) -> Option<(String, String)> {
             1,
         );
         definitions.push_str("\nbool flux__websocket_client_sessions[1024];\n");
+        isolated = true;
+    }
+
+    if prefix.contains(MENU_CALLBACK) && prefix.contains(MENU_BAR) && prefix.contains(MENU_ACTION) {
+        partition_prefix = partition_prefix
+            .replacen(
+                MENU_CALLBACK,
+                "extern void (*flux__menu_callback)(int64_t);",
+                1,
+            )
+            .replacen(MENU_BAR, "extern GtkWidget *flux__menu_bar;", 1)
+            .replacen(MENU_ACTION, "extern GSimpleAction *flux__menu_action;", 1);
+        definitions.push_str(
+            "\nvoid (*flux__menu_callback)(int64_t) = NULL;\nGtkWidget *flux__menu_bar = NULL;\nGSimpleAction *flux__menu_action = NULL;\n",
+        );
+        isolated = true;
+    }
+
+    if prefix.contains(TRAY_CALLBACK)
+        && prefix.contains(TRAY_CONNECTION)
+        && prefix.contains(TRAY_NODE)
+        && prefix.contains(TRAY_REGISTRATION)
+        && prefix.contains(TRAY_TITLE)
+        && prefix.contains(TRAY_ICON)
+        && prefix.contains(TRAY_VTABLE)
+    {
+        partition_prefix = partition_prefix
+            .replacen(
+                TRAY_CALLBACK,
+                "extern void (*flux__tray_callback)(void);",
+                1,
+            )
+            .replacen(
+                TRAY_CONNECTION,
+                "extern GDBusConnection *flux__tray_connection;",
+                1,
+            )
+            .replacen(TRAY_NODE, "extern GDBusNodeInfo *flux__tray_node;", 1)
+            .replacen(
+                TRAY_REGISTRATION,
+                "extern guint flux__tray_registration;",
+                1,
+            )
+            .replacen(TRAY_TITLE, "extern char *flux__tray_title;", 1)
+            .replacen(TRAY_ICON, "extern char *flux__tray_icon;", 1)
+            .replacen(
+                TRAY_VTABLE,
+                "extern const GDBusInterfaceVTable flux__tray_vtable;",
+                1,
+            );
+        definitions.push_str(
+            "\nvoid (*flux__tray_callback)(void) = NULL;\nGDBusConnection *flux__tray_connection = NULL;\nGDBusNodeInfo *flux__tray_node = NULL;\nguint flux__tray_registration = 0;\nchar *flux__tray_title = NULL;\nchar *flux__tray_icon = NULL;\nconst GDBusInterfaceVTable flux__tray_vtable = { flux__tray_method_call, flux__tray_get_property, NULL };\n",
+        );
         isolated = true;
     }
 
