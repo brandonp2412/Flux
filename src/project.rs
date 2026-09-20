@@ -2023,6 +2023,7 @@ const DEVELOPMENT_ACCESSIBILITY_PROPERTY_DEFAULT_SENTINEL: &str =
     "__flux_accessibility_property_default__";
 const DEVELOPMENT_SHADOW_PROPERTY_DEFAULT_SENTINEL: &str = "__flux_shadow_property_default__";
 const DEVELOPMENT_BORDER_STYLE_DEFAULT_SENTINEL: &str = "__flux_border_style_default__";
+const DEVELOPMENT_MINIMUM_SIZE_DEFAULT_SENTINEL: &str = "__flux_minimum_size_default__";
 const DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL: &str =
     "__flux_transform_scale_axis_default__";
 
@@ -2580,6 +2581,15 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if matches!(property_name.as_str(), "min_width" | "min_height")
+        && development_ui_i64_property_is_patchable(element, &property_name)
+    {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(1..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "color"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "rich_text")
@@ -3083,6 +3093,11 @@ fn development_ui_property_lifecycle_default(
             }
             .to_string(),
         );
+    }
+    if matches!(property, "min_width" | "min_height")
+        && development_ui_i64_property_is_patchable(element, property)
+    {
+        return Some(DEVELOPMENT_MINIMUM_SIZE_DEFAULT_SENTINEL.to_string());
     }
     if property == "color"
         && element.kind == "Text"
@@ -3812,6 +3827,8 @@ fn development_ui_string_literals(
             "checked",
             "selected",
             "margin",
+            "min_width",
+            "min_height",
             "transition_ms",
             "transition_delay_ms",
             "transition_easing",
