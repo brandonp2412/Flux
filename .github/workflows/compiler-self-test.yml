@@ -62,3 +62,45 @@ jobs:
       - name: Build and launch native Windows smoke
         shell: pwsh
         run: cargo test --locked windows_native_gui_runtime_smoke_uses_host_target_by_default -- --nocapture
+      - name: Build and validate native MSIX
+        shell: pwsh
+        run: |
+          if (-not (Get-Command zip -ErrorAction SilentlyContinue)) {
+            choco install zip --yes --no-progress
+          }
+          $root = Join-Path $env:RUNNER_TEMP "flux-msix-smoke"
+          Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force (Join-Path $root "src") | Out-Null
+          @"
+          [package]
+          format_version = 1
+          name = "msix-smoke"
+          version = "1.2.3"
+          entry = "src/main.flux"
+          "@ | Set-Content -Encoding utf8 (Join-Path $root "flux.toml")
+          @"
+          view Screen {
+              grid columns: 1fr
+              grid rows: auto
+              Text title at 1,1
+                  text: "MSIX smoke"
+          }
+
+          app Screen(title: "Flux MSIX smoke")
+          "@ | Set-Content -Encoding utf8 (Join-Path $root "src/main.flux")
+          $package = Join-Path $root "smoke.msix"
+          cargo run --quiet --bin fluxc -- package $root --format msix -o $package
+          $makeAppx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $makeAppx) {
+            throw "Windows SDK MakeAppx.exe was not found"
+          }
+          $unpacked = Join-Path $root "unpacked"
+          & $makeAppx.FullName unpack /o /p $package /d $unpacked
+          if ($LASTEXITCODE -ne 0) {
+            throw "MakeAppx rejected the generated MSIX"
+          }
+          if (-not (Test-Path (Join-Path $unpacked "msix-smoke.exe"))) {
+            throw "MSIX payload did not contain msix-smoke.exe"
+          }

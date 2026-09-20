@@ -2834,7 +2834,12 @@ fn build_package_directory(
 ) -> Result<(), CliError> {
     fs::create_dir_all(output)
         .map_err(|error| format!("failed to create package '{}': {error}", output.display()))?;
-    let binary = output.join(&manifest.name);
+    let binary_name = if native_target.codegen_target() == fluxc::codegen::NativeTarget::Windows {
+        format!("{}.exe", manifest.name)
+    } else {
+        manifest.name.clone()
+    };
+    let binary = output.join(&binary_name);
     if let Err(error) = build_native_configured(
         generated,
         &binary,
@@ -2920,7 +2925,7 @@ fn msix_manifest_xml(
     let publisher = xml_escape(publisher_identity);
     let executable = xml_escape(executable);
     Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Dependencies><TargetDeviceFamily Name=\"Windows.Desktop\" MinVersion=\"10.0.14316.0\" MaxVersionTested=\"10.0.19041.0\" /></Dependencies>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
     ))
 }
 
@@ -3016,7 +3021,7 @@ fn build_msix_bundle(
             .map_err(|error| format!("failed to create MSIX asset directory: {error}"))?;
         fs::write(
             staged.join("AppxManifest.xml"),
-            msix_manifest_xml(manifest, &manifest.name, publisher)?,
+            msix_manifest_xml(manifest, &format!("{}.exe", manifest.name), publisher)?,
         )
         .map_err(|error| format!("failed to write AppxManifest.xml: {error}"))?;
         const EMPTY_PNG: &[u8] = &[
@@ -3083,7 +3088,7 @@ fn build_msix_bundle(
 }
 
 fn msix_content_types_xml() -> &'static str {
-    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"exe\" ContentType=\"application/octet-stream\"/></Types>\n"
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"exe\" ContentType=\"application/octet-stream\"/><Default Extension=\"toml\" ContentType=\"application/octet-stream\"/><Override PartName=\"/AppxManifest.xml\" ContentType=\"application/vnd.ms-appx.manifest+xml\"/><Override PartName=\"/AppxBlockMap.xml\" ContentType=\"application/vnd.ms-appx.blockmap+xml\"/></Types>\n"
 }
 
 fn msix_files(root: &Path) -> Result<Vec<PathBuf>, CliError> {
@@ -13381,12 +13386,13 @@ app OverlayDemo(title: "Overlay")
             },
             workspace_members: Vec::new(),
         };
-        let xml = msix_manifest_xml(&manifest, "flux-demo", Some("CN=Flux Demo"))
+        let xml = msix_manifest_xml(&manifest, "flux-demo.exe", Some("CN=Flux Demo"))
             .expect("MSIX manifest should emit");
         assert!(xml.contains("Name=\"flux-demo\""));
         assert!(xml.contains("Version=\"1.2.3.0\""));
         assert!(xml.contains("Publisher=\"CN=Flux Demo\""));
-        assert!(xml.contains("Executable=\"flux-demo\""));
+        assert!(xml.contains("Executable=\"flux-demo.exe\""));
+        assert!(xml.contains("TargetDeviceFamily Name=\"Windows.Desktop\""));
         assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
         assert!(xml.contains("runFullTrust"));
         assert!(msix_version(&manifest).is_ok());
@@ -13440,7 +13446,11 @@ app OverlayDemo(title: "Overlay")
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
         assert_eq!(base64_encode(b"M"), "TQ==");
-        assert!(msix_content_types_xml().contains("Extension=\"xml\""));
+        let content_types = msix_content_types_xml();
+        assert!(content_types.contains("Extension=\"xml\""));
+        assert!(content_types.contains("Extension=\"toml\""));
+        assert!(content_types.contains("application/vnd.ms-appx.manifest+xml"));
+        assert!(content_types.contains("application/vnd.ms-appx.blockmap+xml"));
         let block_map = msix_block_map_xml(&root).expect("block map should generate");
         assert!(block_map.contains("Name=\"AppxManifest.xml\" Size=\"8\" LfhSize=\"46\""));
         assert!(block_map.contains("Name=\"Assets\\icon.png\" Size=\"3\" LfhSize=\"45\""));
