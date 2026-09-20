@@ -54288,6 +54288,18 @@ app Actions
     assert!(android.contains("child_accessibility_long_press_label"));
     assert!(android.contains("refresh_accessibility_action_labels"));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("accessibility action labels should lower to Windows metadata");
+    assert!(windows.contains("PROPID_ACC_DEFAULTACTION"));
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(flux__ui_more, flux__ui_state_holdLabel)"
+    ));
+
     let explicit_description = r#"
 fn tapped() -> void {
     print("tap")
@@ -54312,6 +54324,22 @@ app DescribedAction
     assert!(!linux.contains(
         "GTK_ACCESSIBLE(flux__ui_action_title), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, \"Open item\", -1"
     ));
+
+    let described_program = fluxc::parser::parse(explicit_description)
+        .expect("described accessibility action should parse");
+    let described_signatures = fluxc::typecheck::check(&described_program)
+        .expect("described accessibility action should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &described_program,
+        &described_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("explicit accessibility descriptions should retain Windows precedence");
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(flux__ui_title, \"Opens the selected item\")"
+    ));
+    assert!(windows.contains("PROPID_ACC_DEFAULTACTION"));
 
     let missing_action = r#"
 view Broken {
@@ -54394,6 +54422,17 @@ app Actions
     assert!(android.contains("child_accessibility_action_1"));
     assert!(android.contains("nativeOnAccessibilityAction"));
     assert!(android.contains("flux__fn_runAction((int64_t)action_index)"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("custom accessibility action labels should remain discoverable on Windows");
+    assert!(windows.contains(
+        "flux__win_accessibility_set_description(flux__ui_title, \"Actions: Open details; Archive\")"
+    ));
 
     let missing_handler = r#"
 view Broken {

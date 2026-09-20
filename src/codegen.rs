@@ -13586,6 +13586,8 @@ fn emit_windows_native_application(
             || view_property(element, "accessibility_value").is_some()
             || view_property(element, "accessibility_role").is_some()
             || view_property(element, "accessibility_action_label").is_some()
+            || view_property(element, "accessibility_long_press_label").is_some()
+            || view_property(element, "accessibility_actions").is_some()
             || view_property(element, "accessibility_hidden").is_some()
             || (element.kind == "Image" && view_property(element, "alt").is_some())
             || (element.kind == "TextInput"
@@ -14829,6 +14831,18 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "flux__win_accessibility_set_description({variable}, {value});\n"
+            ));
+        } else if let Some(property) = view_property(element, "accessibility_long_press_label") {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_accessibility_set_description({variable}, {value});\n"
+            ));
+        } else if let Some(property) = view_property(element, "accessibility_actions") {
+            let actions = static_string_list(&property.value, signatures, "accessibilityActions")?;
+            let action_description = format!("Actions: {}", actions.join("; "));
+            out.push_str(&format!(
+                "flux__win_accessibility_set_description({variable}, {});\n",
+                c_string(&action_description)
             ));
         }
         if let Some(property) = view_property(element, "accessibility_value") {
