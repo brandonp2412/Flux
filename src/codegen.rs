@@ -14303,6 +14303,55 @@ fn emit_windows_native_application(
         }
     }
     for element in &view.elements {
+        for (property_name, source_name) in [
+            ("border_top_color", "borderTopColor"),
+            ("border_end_color", "borderEndColor"),
+            ("border_bottom_color", "borderBottomColor"),
+            ("border_start_color", "borderStartColor"),
+            ("border_top_width", "borderTopWidth"),
+            ("border_end_width", "borderEndWidth"),
+            ("border_bottom_width", "borderBottomWidth"),
+            ("border_start_width", "borderStartWidth"),
+        ] {
+            if let Some(property) = view_property(element, property_name) {
+                return Err(diag(
+                    property.value.span,
+                    &format!(
+                        "bootstrap Windows {source_name} is not yet supported; use uniform borderColor/borderWidth"
+                    ),
+                ));
+            }
+        }
+        if let Some(property) = view_property(element, "border_width")
+            && let Some(value) = static_expr_i64(&property.value, signatures)
+            && !(0..=i64::from(i32::MAX)).contains(&value)
+        {
+            return Err(diag(
+                property.value.span,
+                "borderWidth must be non-negative and fit within a 32-bit signed integer",
+            ));
+        }
+        if let Some(property) = view_property(element, "border_style")
+            && let Some(value) = static_expr_str(&property.value, signatures)
+        {
+            match value.as_str() {
+                "none" | "solid" => {}
+                "dashed" | "dotted" | "double" => {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows borderStyle currently supports only 'none' and 'solid'",
+                    ));
+                }
+                _ => {
+                    return Err(diag(
+                        property.value.span,
+                        "borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'",
+                    ));
+                }
+            }
+        }
+    }
+    for element in &view.elements {
         if let Some(property) = view_property(element, "status") {
             let Some(status) = static_expr_str(&property.value, signatures) else {
                 return Err(diag(
@@ -14605,6 +14654,36 @@ fn emit_windows_native_application(
                 element.name, element.name
             ));
         }
+        if ["border_color", "border_width", "border_style"]
+            .iter()
+            .any(|property_name| view_property(element, property_name).is_some())
+        {
+            let border_color = if let Some(property) = view_property(element, "border_color") {
+                if let Some(value) = static_expr_str(&property.value, signatures) {
+                    windows_colorref(&value).ok_or_else(|| {
+                        diag(
+                            property.value.span,
+                            "borderColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token",
+                        )
+                    })?
+                } else {
+                    windows_colorref("outline").expect("semantic outline color is valid")
+                }
+            } else {
+                windows_colorref("outline").expect("semantic outline color is valid")
+            };
+            let border_width = view_property(element, "border_width")
+                .and_then(|property| static_expr_i64(&property.value, signatures))
+                .unwrap_or(0);
+            let border_solid = view_property(element, "border_style")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .map(|value| value == "solid")
+                .unwrap_or(true);
+            out.push_str(&format!(
+                "static COLORREF flux__win_border_color_{0} = {border_color};\nstatic int64_t flux__win_border_width_{0} = INT64_C({border_width});\nstatic bool flux__win_border_solid_{0} = {border_solid};\n",
+                element.name
+            ));
+        }
         for property_name in ["background_color", "color"] {
             if property_name == "color" && element.kind != "Text" {
                 continue;
@@ -14858,6 +14937,68 @@ fn emit_windows_native_application(
         out.push_str("static bool flux__win_parse_color(const char *value, COLORREF *result) { if (value == NULL || result == NULL) return false; if (strcmp(value, \"surface\") == 0) { *result = RGB(248, 249, 250); return true; } if (strcmp(value, \"surfaceRaised\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"text\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"textMuted\") == 0) { *result = RGB(87, 96, 106); return true; } if (strcmp(value, \"accent\") == 0) { *result = RGB(9, 105, 218); return true; } if (strcmp(value, \"onAccent\") == 0) { *result = RGB(255, 255, 255); return true; } if (strcmp(value, \"outline\") == 0) { *result = RGB(208, 215, 222); return true; } if (strcmp(value, \"danger\") == 0) { *result = RGB(207, 34, 46); return true; } if (strcmp(value, \"success\") == 0) { *result = RGB(26, 127, 55); return true; } if (strcmp(value, \"warning\") == 0) { *result = RGB(154, 103, 0); return true; } if (strcmp(value, \"shadow\") == 0) { *result = RGB(31, 35, 40); return true; } if (strcmp(value, \"transparent\") == 0) { *result = GetSysColor(COLOR_WINDOW); return true; } size_t length = 0; while (length <= 9 && value[length] != '\\0') length += 1; if (length > 9) return false; if (length != 7 && length != 9) return false; if (value[0] != '#') return false; for (size_t index = 1; index < 7; index += 1) if (!isxdigit((unsigned char)value[index])) return false; char *end = NULL; unsigned long red = strtoul(value + 1, &end, 16); unsigned long green = strtoul(value + 3, &end, 16); unsigned long blue = strtoul(value + 5, &end, 16); (void)end; *result = RGB((BYTE)red, (BYTE)green, (BYTE)blue); return true; }\n");
         out.push_str("static void flux__win_set_dynamic_background(HWND control, HBRUSH *brush, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || brush == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { if (*brush != NULL) DeleteObject(*brush); *brush = CreateSolidBrush(next); *current = next; *has_color = *brush != NULL; InvalidateRect(control, NULL, TRUE); } }\nstatic void flux__win_set_dynamic_text_color(HWND control, COLORREF *current, bool *has_color, const char *value) { COLORREF next; if (control == NULL || current == NULL || has_color == NULL || !flux__win_parse_color(value, &next)) return; if (!*has_color || *current != next) { *current = next; *has_color = true; InvalidateRect(control, NULL, TRUE); } }\n");
     }
+    let uses_native_borders = view.elements.iter().any(|element| {
+        ["border_color", "border_width", "border_style"]
+            .iter()
+            .any(|property_name| view_property(element, property_name).is_some())
+    });
+    if uses_native_borders {
+        out.push_str(r#"static bool flux__win_parse_border_color(const char *value, COLORREF *result) {
+    if (value == NULL || result == NULL) return false;
+    if (strcmp(value, "surface") == 0) { *result = RGB(248, 249, 250); return true; }
+    if (strcmp(value, "surfaceRaised") == 0) { *result = RGB(255, 255, 255); return true; }
+    if (strcmp(value, "text") == 0) { *result = RGB(31, 35, 40); return true; }
+    if (strcmp(value, "textMuted") == 0) { *result = RGB(87, 96, 106); return true; }
+    if (strcmp(value, "accent") == 0) { *result = RGB(9, 105, 218); return true; }
+    if (strcmp(value, "onAccent") == 0) { *result = RGB(255, 255, 255); return true; }
+    if (strcmp(value, "outline") == 0) { *result = RGB(208, 215, 222); return true; }
+    if (strcmp(value, "danger") == 0) { *result = RGB(207, 34, 46); return true; }
+    if (strcmp(value, "success") == 0) { *result = RGB(26, 127, 55); return true; }
+    if (strcmp(value, "warning") == 0) { *result = RGB(154, 103, 0); return true; }
+    if (strcmp(value, "shadow") == 0) { *result = RGB(31, 35, 40); return true; }
+    if (strcmp(value, "transparent") == 0) { *result = GetSysColor(COLOR_WINDOW); return true; }
+    size_t length = 0; while (length <= 9 && value[length] != '\0') length += 1;
+    if ((length != 7 && length != 9) || value[0] != '#') return false;
+    for (size_t index = 1; index < 7; index += 1) if (!isxdigit((unsigned char)value[index])) return false;
+    char component[3] = {0}; component[0] = value[1]; component[1] = value[2]; BYTE red = (BYTE)strtoul(component, NULL, 16);
+    component[0] = value[3]; component[1] = value[4]; BYTE green = (BYTE)strtoul(component, NULL, 16);
+    component[0] = value[5]; component[1] = value[6]; BYTE blue = (BYTE)strtoul(component, NULL, 16);
+    *result = RGB(red, green, blue); return true;
+}
+static void flux__win_draw_border(HWND control, COLORREF color, int64_t logical_width, bool solid) {
+    if (control == NULL || !solid || logical_width <= 0) return;
+    int border_width = flux__win_scale(logical_width); if (border_width < 1) border_width = 1;
+    RECT rect = {0}; if (!GetClientRect(control, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) return;
+    HDC dc = GetDC(control); if (dc == NULL) return;
+    HRGN region = CreateRectRgn(0, 0, rect.right, rect.bottom);
+    if (region == NULL) { ReleaseDC(control, dc); return; }
+    int region_type = GetWindowRgn(control, region);
+    if (region_type == ERROR || region_type == NULLREGION) SetRectRgn(region, 0, 0, rect.right, rect.bottom);
+    HBRUSH brush = CreateSolidBrush(color);
+    if (brush != NULL) { FrameRgn(dc, region, brush, border_width, border_width); DeleteObject(brush); }
+    DeleteObject(region); ReleaseDC(control, dc);
+}
+static void flux__win_set_border_color(HWND control, COLORREF *current, const char *value) {
+    COLORREF next = 0; if (control == NULL || current == NULL) return;
+    if (!flux__win_parse_border_color(value, &next)) { fputs("Flux runtime error: borderColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token\n", stderr); abort(); }
+    if (*current != next) { *current = next; InvalidateRect(control, NULL, TRUE); }
+}
+static void flux__win_set_border_width(HWND control, int64_t *current, int64_t value) {
+    if (control == NULL || current == NULL) return;
+    if (value < 0 || value > INT32_MAX) { fputs("Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\n", stderr); abort(); }
+    if (*current != value) { *current = value; InvalidateRect(control, NULL, TRUE); }
+}
+static void flux__win_set_border_style(HWND control, bool *solid, const char *value) {
+    if (control == NULL || solid == NULL || value == NULL) return;
+    bool next = false;
+    if (strcmp(value, "solid") == 0) next = true;
+    else if (strcmp(value, "none") == 0) next = false;
+    else if (strcmp(value, "dashed") == 0 || strcmp(value, "dotted") == 0 || strcmp(value, "double") == 0) { fputs("Flux runtime error: Windows borderStyle currently supports only 'none' and 'solid'\n", stderr); abort(); }
+    else { fputs("Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\n", stderr); abort(); }
+    if (*solid != next) { *solid = next; InvalidateRect(control, NULL, TRUE); }
+}
+"#);
+    }
     if view.elements.iter().any(|element| element.kind == "Image") {
         out.push_str(r#"static char *flux__win_image_source_path(const char *source) { if (source == NULL) return NULL; size_t source_length = 0; while (source_length <= 65536 && source[source_length] != '\0') source_length += 1; if (source_length > 65536) return NULL; if (strncmp(source, "asset://", 8) != 0) return _strdup(source); const char *relative = source + 8; if (*relative == '\0' || *relative == '/' || strstr(relative, "..") != NULL) return NULL; char module[4096]; DWORD length = GetModuleFileNameA(NULL, module, (DWORD)sizeof(module)); if (length == 0 || length >= sizeof(module)) return NULL; char *separator = strrchr(module, '\\'); if (separator == NULL) return NULL; *separator = '\0'; size_t size = strlen(module) + strlen("\\assets\\") + strlen(relative) + 1; char *path = (char *)malloc(size); if (path == NULL) return NULL; snprintf(path, size, "%s\\assets\\%s", module, relative); return path; }
 static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *source, const char *fit) {
@@ -14979,6 +15120,20 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 .is_some_and(|property| static_expr_str(&property.value, signatures).is_none())
     }) {
         out.push_str("static void flux__win_set_text_alignment(HWND control, const char *value) { if (control == NULL || value == NULL) return; LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE); style &= ~((LONG_PTR)SS_TYPEMASK); if (strcmp(value, \"center\") == 0) style |= SS_CENTER; else if (strcmp(value, \"right\") == 0) style |= SS_RIGHT; else if (strcmp(value, \"left\") == 0) style |= SS_LEFT; else if (strcmp(value, \"fill\") == 0) style |= SS_LEFT | SS_NOPREFIX; else { fputs(\"Flux runtime error: Text.textAlign must be one of 'left', 'center', 'right', or 'fill'\\n\", stderr); abort(); } SetWindowLongPtrW(control, GWL_STYLE, style); InvalidateRect(control, NULL, TRUE); }\n");
+    }
+    if uses_native_borders {
+        for (index, element) in view.elements.iter().enumerate() {
+            if !["border_color", "border_width", "border_style"]
+                .iter()
+                .any(|property_name| view_property(element, property_name).is_some())
+            {
+                continue;
+            }
+            out.push_str(&format!(
+                "static WNDPROC flux__win_border_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_border_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcW(flux__win_border_orig_{index}, hwnd, message, wparam, lparam); if (message == WM_PAINT) flux__win_draw_border(hwnd, flux__win_border_color_{0}, flux__win_border_width_{0}, flux__win_border_solid_{0}); return result; }}\n",
+                element.name
+            ));
+        }
     }
     let uses_key_events = view
         .elements
@@ -15696,6 +15851,33 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 element.name, element.name
             ));
         }
+        if let Some(property) = view_property(element, "border_color")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_border_color({variable}, &flux__win_border_color_{}, {value});\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "border_width")
+            && static_expr_i64(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_border_width({variable}, &flux__win_border_width_{}, {value});\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "border_style")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "flux__win_set_border_style({variable}, &flux__win_border_solid_{}, {value});\n",
+                element.name
+            ));
+        }
         let text_property = match element.kind.as_str() {
             "Text" | "Button" | "Header" => Some("text"),
             "Image" => Some("source"),
@@ -16388,6 +16570,14 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         }
         if view_property(element, "on_scale").is_some() {
             out.push_str(&format!(r#"SetLastError(0); flux__win_pinch_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_pinch_proc_{index}); if (flux__win_pinch_orig_{index} == NULL && GetLastError() != 0) return 1; GESTURECONFIG flux__win_zoom_config_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig({variable}, 0, 1, &flux__win_zoom_config_{index}, sizeof(flux__win_zoom_config_{index}))) {{ fputs("Flux runtime error: native Windows zoom gestures are unavailable\n", stderr); return 1; }} "#));
+        }
+        if ["border_color", "border_width", "border_style"]
+            .iter()
+            .any(|property_name| view_property(element, property_name).is_some())
+        {
+            out.push_str(&format!(
+                "SetLastError(0); flux__win_border_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrW({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_{index}); if (flux__win_border_orig_{index} == NULL && GetLastError() != 0) return 1;\n"
+            ));
         }
         if let Some(action) = view_property(element, "on_drop") {
             let ExprKind::Var(function) = &action.value.kind else {

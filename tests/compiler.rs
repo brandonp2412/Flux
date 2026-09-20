@@ -1744,6 +1744,129 @@ app Screen
 }
 
 #[test]
+fn windows_uniform_borders_lower_natively_and_refresh_dynamic_state() {
+    let source = r#"
+view Screen {
+    state strokeWidth: i64 = 2
+    state strokeColor: str = "accent"
+    state strokeStyle: str = "solid"
+    grid columns: 1fr
+    grid rows: auto auto
+    Text label at 1,1
+        text: "Bordered"
+        borderWidth: strokeWidth
+        borderColor: strokeColor
+        borderStyle: strokeStyle
+        radiusTopLeft: 6
+        radiusBottomRight: 10
+    Button action at 2,1
+        text: "Thicken"
+        onPress: strokeWidth => strokeWidth + 1
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows border source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows border source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("uniform Windows borders should lower natively");
+    assert!(windows.contains("static void flux__win_draw_border("));
+    assert!(windows.contains("GetWindowRgn(control, region)"));
+    assert!(windows.contains("FrameRgn(dc, region, brush, border_width, border_width)"));
+    assert!(windows.contains("static WNDPROC flux__win_border_orig_0 = NULL;"));
+    assert!(windows.contains("flux__win_set_border_color(flux__ui_label, &flux__win_border_color_label, flux__ui_state_strokeColor);"));
+    assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_width_label, flux__ui_state_strokeWidth);"));
+    assert!(windows.contains("flux__win_set_border_style(flux__ui_label, &flux__win_border_solid_label, flux__ui_state_strokeStyle);"));
+    assert!(windows.contains(
+        "SetWindowLongPtrW(flux__ui_label, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_0)"
+    ));
+
+    let invalid_width = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Bad"
+        borderWidth: -1
+}
+app Screen
+"#;
+    let program =
+        fluxc::parser::parse(invalid_width).expect("invalid border width source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("invalid border width source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("negative Windows border width must fail lowering");
+    assert!(
+        error
+            .message
+            .contains("borderWidth must be non-negative and fit within a 32-bit signed integer")
+    );
+
+    let per_edge = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Edge"
+        borderTopWidth: 2
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(per_edge).expect("per-edge border source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("per-edge border source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("per-edge Windows borders must fail explicitly");
+    assert!(
+        error
+            .message
+            .contains("borderTopWidth is not yet supported; use uniform borderColor/borderWidth")
+    );
+
+    let dashed = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Dashed"
+        borderWidth: 2
+        borderStyle: "dashed"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(dashed).expect("dashed border source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("dashed border source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("unsupported Windows border style must fail explicitly");
+    assert!(
+        error
+            .message
+            .contains("borderStyle currently supports only 'none' and 'solid'")
+    );
+}
+#[test]
 fn windows_translate_offsets_are_dpi_aware_and_refresh_with_state() {
     let source = r#"
 view Screen {
@@ -2453,6 +2576,9 @@ view Screen {
         radius: 6
         radiusTopLeft: 3
         radiusBottomRight: 9
+        borderColor: "accent"
+        borderWidth: 2
+        borderStyle: "solid"
         tooltip: "Native tooltip"
         minWidth: extent
         maxWidth: 320
