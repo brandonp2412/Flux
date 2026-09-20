@@ -52551,6 +52551,23 @@ app Screen
         android_stable_view_id("Screen", "second")
     )));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("accessibility order should lower to native Win32 child ordering");
+    assert!(windows.contains(
+        "SetWindowPos(flux__ui_first, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)"
+    ));
+    assert!(windows.contains(
+        "SetWindowPos(flux__ui_second, flux__ui_first, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)"
+    ));
+    assert!(windows.contains(
+        "SetWindowPos(flux__ui_third, flux__ui_second, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)"
+    ));
+
     let duplicate = r#"
 view Screen {
     grid columns: 1fr

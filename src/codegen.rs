@@ -13558,6 +13558,7 @@ fn emit_windows_native_application(
                 "app root view was not found during codegen",
             )
         })?;
+    let accessibility_order = ordered_accessibility_elements(view, signatures)?;
     for element in &view.elements {
         if !matches!(
             element.kind.as_str(),
@@ -15262,6 +15263,19 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             || view_property(element, "on_blur").is_some()
         {
             out.push_str(&format!("SetLastError(0); flux__win_focus_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_focus_proc_{index}); if (flux__win_focus_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
+    }
+    if let Some(first) = accessibility_order.first() {
+        let first_variable = ui_widget_c_name(&first.name);
+        out.push_str(&format!(
+            "if (!SetWindowPos({first_variable}, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) return 1;\n"
+        ));
+        for pair in accessibility_order.windows(2) {
+            let previous = ui_widget_c_name(&pair[0].name);
+            let current = ui_widget_c_name(&pair[1].name);
+            out.push_str(&format!(
+                "if (!SetWindowPos({current}, {previous}, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) return 1;\n"
+            ));
         }
     }
     out.push_str("flux__win_dpi = flux__win_query_dpi(flux__windows_active_window); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); RECT flux__win_client = {0}; if (GetClientRect(flux__windows_active_window, &flux__win_client)) { int physical_width = flux__win_client.right - flux__win_client.left; int physical_height = flux__win_client.bottom - flux__win_client.top; flux__ui_window_width = flux__win_unscale(physical_width); flux__ui_window_height = flux__win_unscale(physical_height); }");
