@@ -33773,7 +33773,7 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     )
     .expect("structural dependency update should be writable");
     wait_for_log(&log, &["version-four"], Duration::from_secs(5));
-    wait_for_run_generation(&status_path, 3, Duration::from_secs(5));
+    wait_for_run_reload_method(&status_path, 3, "restart", Duration::from_secs(5));
     let status =
         fs::read_to_string(&status_path).expect("structural run status should be readable");
     assert!(status.contains("\"abi_compatible\":false"));
