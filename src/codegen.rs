@@ -18133,8 +18133,12 @@ fn emit_linux_gtk_application(
                 "#flux-ui-{} {{ box-shadow: %dpx %dpx %dpx %s; }}",
                 element.name
             ));
+            let cleared_css = c_string(&format!(
+                "#flux-ui-{} {{ box-shadow: none; }}",
+                element.name
+            ));
             let apply = format!(
-                " if (!{color_explicit} && !{blur_explicit} && !{offset_x_explicit} && !{offset_y_explicit}) {{ if ({provider} != NULL) gtk_css_provider_load_from_data({provider}, \"\", -1); }} else {{ if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {offset_x}, {offset_y}, {blur}, {color}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }}"
+                " if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ if (!{color_explicit} && !{blur_explicit} && !{offset_x_explicit} && !{offset_y_explicit}) {{ gtk_css_provider_load_from_data({provider}, {cleared_css}, -1); }} else {{ char *patch_css = g_strdup_printf({css_format}, {offset_x}, {offset_y}, {blur}, {color}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }}"
             );
             let default_color = c_string(gtk_ui_color_css("shadow").unwrap_or("#00000080"));
             out.push_str(&format!(

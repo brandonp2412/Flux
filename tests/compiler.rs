@@ -47826,11 +47826,10 @@ app Screen
     ] {
         assert!(generated.contains(&format!("strcmp(property, \"{property}\") == 0")));
     }
-    assert!(
-        generated.contains(
-            "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow, \"\", -1)"
-        )
-    );
+    assert!(generated.contains("#flux-ui-action { box-shadow: none; }"));
+    assert!(generated.contains(
+        "gtk_css_provider_load_from_data(flux__ui_hot_style_action_shadow, \"#flux-ui-action { box-shadow: none; }\", -1)"
+    ));
 
     let explicit = initial.replace(
         "        text: \"Shadow\"\n",
