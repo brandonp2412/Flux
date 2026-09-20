@@ -14161,29 +14161,123 @@ fn emit_windows_native_application(
         }
     }
     for element in &view.elements {
-        if element.kind == "Text"
-            && let Some(property) = view_property(element, "selectable")
+        if element.kind != "Text" {
+            continue;
+        }
+        let selectable = match view_property(element, "selectable") {
+            Some(property) => {
+                let Some(selectable) = static_expr_bool(&property.value, signatures) else {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows Text.selectable must be a compile-time bool value",
+                    ));
+                };
+                selectable
+            }
+            None => false,
+        };
+        if selectable && view_property(element, "on_tap").is_some() {
+            return Err(diag(
+                view_property(element, "selectable")
+                    .expect("selectable exists when selectable is true")
+                    .value
+                    .span,
+                "bootstrap Windows selectable Text cannot currently combine selectable: true with onTap",
+            ));
+        }
+        if selectable
+            && let Some(alignment) = view_property(element, "text_align")
+            && static_expr_str(&alignment.value, signatures).is_none()
         {
-            let Some(selectable) = static_expr_bool(&property.value, signatures) else {
+            return Err(diag(
+                alignment.value.span,
+                "bootstrap Windows selectable Text requires compile-time textAlign",
+            ));
+        }
+        if let Some(property) = view_property(element, "rich_text") {
+            return Err(diag(
+                property.value.span,
+                "bootstrap Windows Text.richText is not yet supported by the native Win32 text backend",
+            ));
+        }
+        for (property_name, source_name) in [
+            ("letter_spacing", "letterSpacing"),
+            ("line_height_percent", "lineHeightPercent"),
+        ] {
+            if let Some(property) = view_property(element, property_name) {
                 return Err(diag(
                     property.value.span,
-                    "bootstrap Windows Text.selectable must be a compile-time bool value",
-                ));
-            };
-            if selectable && view_property(element, "on_tap").is_some() {
-                return Err(diag(
-                    property.value.span,
-                    "bootstrap Windows selectable Text cannot currently combine selectable: true with onTap",
+                    &format!(
+                        "bootstrap Windows Text.{source_name} is not yet supported by the native Win32 text backend"
+                    ),
                 ));
             }
-            if selectable
-                && let Some(alignment) = view_property(element, "text_align")
-                && static_expr_str(&alignment.value, signatures).is_none()
-            {
+        }
+        if let Some(property) = view_property(element, "wrap") {
+            let Some(wrap) = static_expr_bool(&property.value, signatures) else {
                 return Err(diag(
-                    alignment.value.span,
-                    "bootstrap Windows selectable Text requires compile-time textAlign",
+                    property.value.span,
+                    "bootstrap Windows Text.wrap must be a compile-time bool value",
                 ));
+            };
+            if !wrap {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows Text.wrap: false is not yet supported by the native Win32 text backend",
+                ));
+            }
+        }
+        if let Some(property) = view_property(element, "wrap_mode") {
+            let Some(wrap_mode) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows Text.wrapMode must be a compile-time string value",
+                ));
+            };
+            match wrap_mode.as_str() {
+                "word" => {}
+                "char" | "wordChar" => {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows Text.wrapMode currently supports only 'word'",
+                    ));
+                }
+                _ => {
+                    return Err(diag(
+                        property.value.span,
+                        "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                    ));
+                }
+            }
+        }
+        if let Some(property) = view_property(element, "ellipsize") {
+            let Some(ellipsize) = static_expr_str(&property.value, signatures) else {
+                return Err(diag(
+                    property.value.span,
+                    "bootstrap Windows Text.ellipsize must be a compile-time string value",
+                ));
+            };
+            match ellipsize.as_str() {
+                "none" => {}
+                "end" if !selectable => {}
+                "end" => {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows selectable Text does not yet support ellipsize: 'end'",
+                    ));
+                }
+                "start" | "middle" => {
+                    return Err(diag(
+                        property.value.span,
+                        "bootstrap Windows Text.ellipsize currently supports only 'none' and 'end'",
+                    ));
+                }
+                _ => {
+                    return Err(diag(
+                        property.value.span,
+                        "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                    ));
+                }
             }
         }
     }
@@ -15987,6 +16081,13 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             || view_property(element, "context_menu_items").is_some()
             || autofocus;
         let mut style = style.to_string();
+        if element.kind == "Text"
+            && view_property(element, "ellipsize")
+                .and_then(|property| static_expr_str(&property.value, signatures))
+                .is_some_and(|ellipsize| ellipsize == "end")
+        {
+            style.push_str(" | SS_ENDELLIPSIS");
+        }
         if implicitly_focusable
             && view_property(element, "focusable").is_none()
             && !style.contains("WS_TABSTOP")

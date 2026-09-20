@@ -1606,6 +1606,100 @@ app Screen
 }
 
 #[test]
+fn windows_text_overflow_support_is_native_and_never_silently_dropped() {
+    let source = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "A long native label"
+        wrap: true
+        wrapMode: "word"
+        ellipsize: "end"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(source).expect("Windows Text overflow source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows Text overflow source should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("supported Windows Text overflow should lower");
+    assert!(windows.contains(
+        "flux__ui_label = CreateWindowExW(0, L\"STATIC\", L\"\", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS"
+    ));
+
+    for (property, message) in [
+        ("wrap: false", "Text.wrap: false is not yet supported"),
+        (
+            "wrapMode: \"char\"",
+            "Text.wrapMode currently supports only 'word'",
+        ),
+        (
+            "ellipsize: \"middle\"",
+            "Text.ellipsize currently supports only 'none' and 'end'",
+        ),
+        (
+            "letterSpacing: 2",
+            "Text.letterSpacing is not yet supported",
+        ),
+        (
+            "lineHeightPercent: 125",
+            "Text.lineHeightPercent is not yet supported",
+        ),
+    ] {
+        let source = format!(
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"Label\"\n        {property}\n}}\napp Screen\n"
+        );
+        let program =
+            fluxc::parser::parse(&source).expect("unsupported Windows Text source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("unsupported Windows Text source should remain portable-type-valid");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err("unsupported Windows Text semantics must fail target lowering");
+        assert!(
+            error.message.contains(message),
+            "unexpected diagnostic for {property}: {}",
+            error.message
+        );
+    }
+
+    let rich = r#"
+view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        richText: "<b>Native</b>"
+}
+app Screen
+"#;
+    let program = fluxc::parser::parse(rich).expect("Windows rich Text source should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("Windows rich Text source should typecheck");
+    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect_err("Windows richText must not silently display the element name");
+    assert!(
+        error
+            .message
+            .contains("Text.richText is not yet supported by the native Win32 text backend")
+    );
+}
+
+#[test]
 fn windows_selectable_text_uses_native_read_only_edit_control() {
     let source = r#"
 view Screen {
