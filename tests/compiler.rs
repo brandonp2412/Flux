@@ -49174,6 +49174,98 @@ app Notes
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_keyboard_type_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-keyboard-type-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary keyboard-type lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Inputs {
+    grid columns: 1fr
+    grid rows: auto auto
+    TextInput plain at 1,1
+        password: false
+    TextInput secret at 2,1
+        password: true
+}
+app Inputs
+"#;
+    fs::write(&entry, initial).expect("initial keyboard-type lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial keyboard-type lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("keyboard-type lifecycle fixture should lower for Linux");
+    assert!(generated.contains("static bool flux__ui_keyboard_type_explicit_plain = false;"));
+    assert!(generated.contains("static bool flux__ui_keyboard_type_explicit_secret = false;"));
+    assert!(
+        generated.contains("strcmp(property, \"keyboard_type\") == 0 && flux__ui_plain != NULL")
+    );
+    assert!(generated.contains("strcmp(value, \"__flux_keyboard_type_default__\") == 0"));
+    assert!(generated.contains(
+        "gtk_entry_get_visibility(GTK_ENTRY(flux__ui_secret)) ? GTK_INPUT_PURPOSE_FREE_FORM : GTK_INPUT_PURPOSE_PASSWORD"
+    ));
+    assert!(
+        generated
+            .contains("if (!flux__ui_keyboard_type_explicit_plain) gtk_entry_set_input_purpose")
+    );
+
+    let entry = fs::canonicalize(entry).expect("keyboard-type lifecycle entry should canonicalize");
+    let explicit = initial
+        .replace(
+            "        password: false\n",
+            "        password: false\n        keyboardType: \"email\"\n",
+        )
+        .replace(
+            "        password: true\n",
+            "        password: true\n        keyboardType: \"url\"\n",
+        );
+    fs::write(&entry, &explicit).expect("explicit keyboard types should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit keyboard-type analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding keyboardType declarations should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("plain".to_string(), "keyboard_type".to_string())),
+        Some(&"email".to_string())
+    );
+    assert_eq!(
+        patch.get(&("secret".to_string(), "keyboard_type".to_string())),
+        Some(&"url".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed keyboard types should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed keyboard-type analysis should succeed");
+    assert_eq!(third.development_abi(), second.development_abi());
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing keyboardType declarations should restore native defaults");
+    assert_eq!(patch.len(), 2);
+    assert!(patch.iter().all(|record| {
+        record.property == "keyboard_type" && record.value == "__flux_keyboard_type_default__"
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_defers_target_invalid_text_input_literals() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-invalid-text-input-patch-{}",

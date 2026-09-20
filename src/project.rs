@@ -1985,6 +1985,7 @@ const DEVELOPMENT_APPLICATION_LIFECYCLE_PROPERTIES: &[&str] = &[
     "shadow_color",
 ];
 const DEVELOPMENT_APPLICATION_THEME_DEFAULT_SENTINEL: &str = "__flux_theme_default__";
+const DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL: &str = "__flux_keyboard_type_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2379,6 +2380,18 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
+    if property_name == "keyboard_type" && element.kind == "TextInput" {
+        let ExprKind::Str(value) = &property.value.kind else {
+            return None;
+        };
+        if !matches!(
+            value.as_str(),
+            "text" | "email" | "number" | "decimal" | "phone" | "url"
+        ) {
+            return None;
+        }
+        return Some(value.clone());
+    }
     if property_name == "max_length" && development_ui_text_input_is_single_line(element) {
         if !development_ui_i64_property_is_patchable(element, &property_name) {
             return None;
@@ -2585,6 +2598,9 @@ fn development_ui_property_lifecycle_default(
     }
     if property == "placeholder" && development_ui_text_input_is_single_line(element) {
         return Some(String::new());
+    }
+    if property == "keyboard_type" && element.kind == "TextInput" {
+        return Some(DEVELOPMENT_TEXT_INPUT_KEYBOARD_DEFAULT_SENTINEL.to_string());
     }
     if property == "max_length" && development_ui_text_input_is_single_line(element) {
         return Some("0".to_string());
@@ -3206,6 +3222,7 @@ fn development_ui_string_literals(
             "focus_scope",
             "tooltip",
             "placeholder",
+            "keyboard_type",
             "max_length",
             "background_color",
             "color",

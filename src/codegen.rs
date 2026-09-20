@@ -17455,6 +17455,17 @@ fn emit_linux_gtk_application(
                 ui_transform_provider_c_name(&element.name)
             ));
         }
+        if element.kind == "TextInput" {
+            out.push_str(&format!(
+                "static bool flux__ui_keyboard_type_explicit_{} = {};\n",
+                element.name,
+                if view_property(element, "keyboard_type").is_some() {
+                    "true"
+                } else {
+                    "false"
+                }
+            ));
+        }
         if element.kind == "TextInput"
             && view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -17697,32 +17708,32 @@ fn emit_linux_gtk_application(
                     ));
                 }
                 if !multiline {
-                    let input_purpose = if view_property(element, "keyboard_type").is_none() {
-                        format!(
-                            " gtk_entry_set_input_purpose(GTK_ENTRY({widget}), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM);"
-                        )
-                    } else {
-                        String::new()
-                    };
+                    let input_purpose = format!(
+                        " if (!flux__ui_keyboard_type_explicit_{}) gtk_entry_set_input_purpose(GTK_ENTRY({widget}), bool_value ? GTK_INPUT_PURPOSE_PASSWORD : GTK_INPUT_PURPOSE_FREE_FORM);",
+                        element.name
+                    );
                     out.push_str(&format!(
                         " if (strcmp(name, {}) == 0 && strcmp(property, \"password\") == 0 && bool_value_valid && {widget} != NULL) {{ gtk_entry_set_visibility(GTK_ENTRY({widget}), !bool_value);{input_purpose} }}",
                         c_string(&element.name)
                     ));
                 }
-                if view_property(element, "keyboard_type").is_some() {
-                    let multiline = view_property(element, "multiline")
-                        .and_then(|property| static_expr_bool(&property.value, signatures))
-                        .unwrap_or(false);
-                    let setter = if multiline {
-                        format!("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW({widget}), input_purpose);")
-                    } else {
-                        format!("gtk_entry_set_input_purpose(GTK_ENTRY({widget}), input_purpose);")
-                    };
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"keyboard_type\") == 0 && {widget} != NULL) {{ GtkInputPurpose input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; bool input_purpose_valid = true; if (strcmp(value, \"text\") == 0) input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; else if (strcmp(value, \"email\") == 0) input_purpose = GTK_INPUT_PURPOSE_EMAIL; else if (strcmp(value, \"number\") == 0) input_purpose = GTK_INPUT_PURPOSE_DIGITS; else if (strcmp(value, \"decimal\") == 0) input_purpose = GTK_INPUT_PURPOSE_NUMBER; else if (strcmp(value, \"phone\") == 0) input_purpose = GTK_INPUT_PURPOSE_PHONE; else if (strcmp(value, \"url\") == 0) input_purpose = GTK_INPUT_PURPOSE_URL; else input_purpose_valid = false; if (input_purpose_valid) {setter} }}",
-                        c_string(&element.name)
-                    ));
-                }
+                let setter = if multiline {
+                    format!("gtk_text_view_set_input_purpose(GTK_TEXT_VIEW({widget}), input_purpose);")
+                } else {
+                    format!("gtk_entry_set_input_purpose(GTK_ENTRY({widget}), input_purpose);")
+                };
+                let default_purpose = if multiline {
+                    "GTK_INPUT_PURPOSE_FREE_FORM".to_string()
+                } else {
+                    format!(
+                        "gtk_entry_get_visibility(GTK_ENTRY({widget})) ? GTK_INPUT_PURPOSE_FREE_FORM : GTK_INPUT_PURPOSE_PASSWORD"
+                    )
+                };
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"keyboard_type\") == 0 && {widget} != NULL) {{ bool restore_default = strcmp(value, \"__flux_keyboard_type_default__\") == 0; GtkInputPurpose input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; bool input_purpose_valid = true; if (restore_default) input_purpose = {default_purpose}; else if (strcmp(value, \"text\") == 0) input_purpose = GTK_INPUT_PURPOSE_FREE_FORM; else if (strcmp(value, \"email\") == 0) input_purpose = GTK_INPUT_PURPOSE_EMAIL; else if (strcmp(value, \"number\") == 0) input_purpose = GTK_INPUT_PURPOSE_DIGITS; else if (strcmp(value, \"decimal\") == 0) input_purpose = GTK_INPUT_PURPOSE_NUMBER; else if (strcmp(value, \"phone\") == 0) input_purpose = GTK_INPUT_PURPOSE_PHONE; else if (strcmp(value, \"url\") == 0) input_purpose = GTK_INPUT_PURPOSE_URL; else input_purpose_valid = false; if (input_purpose_valid) {{ flux__ui_keyboard_type_explicit_{} = !restore_default; {setter} }} }}",
+                    c_string(&element.name),
+                    element.name
+                ));
                 let multiline = view_property(element, "multiline")
                     .and_then(|property| static_expr_bool(&property.value, signatures))
                     .unwrap_or(false);
