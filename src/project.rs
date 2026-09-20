@@ -441,16 +441,18 @@ fn persist_typed_ir_manifest(
     // manifest is already valid. This keeps the independently addressable
     // cache family self-healing after partial cleanup or interrupted writes.
     if manifest_is_current || path.exists() {
+        let mut current_function_artifacts = BTreeSet::new();
         for (module_name, function_name, shape_hash, function_manifest_line) in function_artifacts {
-            persist_typed_ir_function_artifact(
+            current_function_artifacts.insert(persist_typed_ir_function_artifact(
                 &directory,
                 native_target,
                 module_name,
                 function_name,
                 shape_hash,
                 &function_manifest_line,
-            );
+            ));
         }
+        prune_typed_ir_function_cache(&directory, &current_function_artifacts);
     }
 }
 
@@ -566,6 +568,33 @@ fn typed_ir_manifest_is_current(
 /// key, so same-shaped functions in different modules cannot alias while a
 /// changed sibling does not invalidate an unchanged function's artifact.
 /// Keeping the target in the payload prevents cross-backend reuse.
+fn typed_ir_function_artifact_key(
+    native_target: codegen::NativeTarget,
+    module_name: &str,
+    function_name: &str,
+    shape_hash: u64,
+) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{shape_hash:016x}",
+        PROJECT_TYPED_IR_CACHE_VERSION,
+        native_target_cache_tag(native_target),
+        module_name,
+        function_name,
+    )
+}
+
+fn typed_ir_function_artifact_path(
+    directory: &Path,
+    native_target: codegen::NativeTarget,
+    module_name: &str,
+    function_name: &str,
+    shape_hash: u64,
+) -> PathBuf {
+    let key = typed_ir_function_artifact_key(native_target, module_name, function_name, shape_hash);
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    directory.join(format!("function-{artifact_id:016x}.manifest"))
+}
+
 fn persist_typed_ir_function_artifact(
     directory: &Path,
     native_target: codegen::NativeTarget,
@@ -573,19 +602,17 @@ fn persist_typed_ir_function_artifact(
     function_name: String,
     shape_hash: u64,
     function_manifest_line: &str,
-) {
-    let mut key = String::new();
-    use std::fmt::Write as _;
-    let _ = write!(
-        key,
-        "{}\n{}\n{}\n{}\n{shape_hash:016x}",
-        PROJECT_TYPED_IR_CACHE_VERSION,
-        native_target_cache_tag(native_target),
-        module_name,
-        function_name,
+) -> PathBuf {
+    let key =
+        typed_ir_function_artifact_key(native_target, &module_name, &function_name, shape_hash);
+    let path = typed_ir_function_artifact_path(
+        directory,
+        native_target,
+        &module_name,
+        &function_name,
+        shape_hash,
     );
     let artifact_id = stable_bytes_hash(key.as_bytes());
-    let path = directory.join(format!("function-{artifact_id:016x}.manifest"));
     let mut payload = String::new();
     payload.push_str(&key);
     payload.push('\n');
@@ -603,7 +630,7 @@ fn persist_typed_ir_function_artifact(
     )
     .is_some_and(|cached| cached == payload)
     {
-        return;
+        return path;
     }
     let previous = fs::read_to_string(&path).ok();
     let nonce = SystemTime::now()
@@ -627,23 +654,18 @@ fn persist_typed_ir_function_artifact(
             let current = fs::read_to_string(&path).ok();
             if current != previous {
                 let _ = fs::remove_file(&temporary);
-                return;
+                return path;
             }
             if previous.is_none() {
                 let _ = fs::remove_file(&temporary);
-                return;
+                return path;
             }
             if fs::remove_file(&path).is_err() || fs::rename(&temporary, &path).is_err() {
                 let _ = fs::remove_file(&temporary);
             }
         }
-        prune_typed_ir_family(
-            directory,
-            &path,
-            "function-",
-            PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT,
-        );
     }
+    path
 }
 
 /// Read one durable normalized typed-IR function artifact when it matches the
@@ -658,18 +680,15 @@ fn read_typed_ir_function_artifact(
     function_name: &str,
     shape_hash: u64,
 ) -> Option<String> {
-    let mut key = String::new();
-    use std::fmt::Write as _;
-    let _ = write!(
-        key,
-        "{}\n{}\n{}\n{}\n{shape_hash:016x}",
-        PROJECT_TYPED_IR_CACHE_VERSION,
-        native_target_cache_tag(native_target),
+    let key = typed_ir_function_artifact_key(native_target, module_name, function_name, shape_hash);
+    let artifact_id = stable_bytes_hash(key.as_bytes());
+    let path = typed_ir_function_artifact_path(
+        directory,
+        native_target,
         module_name,
         function_name,
+        shape_hash,
     );
-    let artifact_id = stable_bytes_hash(key.as_bytes());
-    let path = directory.join(format!("function-{artifact_id:016x}.manifest"));
     let cached = fs::read_to_string(path).ok()?;
     let (header, payload) = cached.split_once('\n')?;
     let expected_prefix = format!("{PROJECT_TYPED_IR_CACHE_VERSION}:{artifact_id:016x}:");
@@ -1112,12 +1131,32 @@ fn prune_function_codegen_cache(directory: Option<&Path>, current: &Path) {
 
 fn prune_typed_ir_cache(directory: &Path, current: &Path) {
     prune_typed_ir_family(directory, current, "ir-", PROJECT_TYPED_IR_CACHE_LIMIT);
-    prune_typed_ir_family(
-        directory,
-        Path::new(""),
-        "function-",
-        PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT,
-    );
+}
+
+fn prune_typed_ir_function_cache(directory: &Path, current: &BTreeSet<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut historical = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            !current.contains(&entry.path())
+                && entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with("function-") && name.ends_with(".manifest")
+                })
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    historical.sort_by(|left, right| right.0.cmp(&left.0));
+    let historical_limit = current
+        .len()
+        .saturating_mul(PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT.saturating_sub(1));
+    for (_, path) in historical.into_iter().skip(historical_limit) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn prune_typed_ir_family(directory: &Path, current: &Path, prefix: &str, limit: usize) {
@@ -8698,7 +8737,7 @@ fn first_diagnostic(diagnostics: Vec<Diagnostic>) -> Diagnostic {
 mod tests {
     use super::{module_type_surface, remove_cache_artifact_if_unchanged};
     use crate::diagnostic::SourceId;
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9180,6 +9219,78 @@ mod tests {
         assert!(
             retained_function_ir <= 8,
             "typed IR function cache should retain only the bounded recent artifact set"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_ir_function_cache_preserves_every_current_function_beyond_eight_entries() {
+        let root = test_path("typed-ir-many-functions");
+        fs::create_dir_all(&root).expect("many-function typed IR fixture should be writable");
+        let entry = root.join("main.flux");
+        let source = (0..12)
+            .map(|index| format!("fn value{index}() -> i64 {{\n    return {index}\n}}\n"))
+            .chain(std::iter::once(
+                "fn main() -> i64 {\n    return value0()\n}\n".to_string(),
+            ))
+            .collect::<String>();
+        fs::write(&entry, &source).expect("many-function source should be writable");
+
+        let first = super::analyze(&entry).expect("many-function project should analyze");
+        first
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("many-function project should publish typed IR artifacts");
+        let ir_dir = root.join(".flux/ir-cache");
+        let current_function_names = || {
+            fs::read_dir(&ir_dir)
+                .expect("typed IR cache should be readable")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
+                .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+                .filter_map(|manifest| {
+                    manifest.lines().find_map(|line| {
+                        line.strip_prefix("function\t")
+                            .and_then(|line| line.split('\t').next())
+                            .map(str::to_string)
+                    })
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let expected = (0..12)
+            .map(|index| format!("value{index}"))
+            .chain(std::iter::once("main".to_string()))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            current_function_names(),
+            expected,
+            "current typed IR artifacts must not evict unrelated functions merely because the project has more than eight functions"
+        );
+
+        let changed_source = source.replacen(
+            "fn value0() -> i64 {\n    return 0\n}",
+            "fn value0() -> i64 {\n    return 100\n}",
+            1,
+        );
+        fs::write(&entry, changed_source).expect("changed many-function source should be writable");
+        let changed = super::analyze(&entry).expect("changed many-function project should analyze");
+        changed
+            .emit_c_cached_for_target(&root, crate::codegen::NativeTarget::Linux)
+            .expect("changed many-function project should update typed IR artifacts");
+        assert_eq!(
+            current_function_names(),
+            expected,
+            "publishing a new shape for one function must retain every other current function artifact"
+        );
+        let artifact_count = fs::read_dir(&ir_dir)
+            .expect("typed IR cache should remain readable")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("function-"))
+            .count();
+        assert_eq!(
+            artifact_count,
+            expected.len() + 1,
+            "the changed function should retain one historical shape without evicting current sibling artifacts"
         );
 
         let _ = fs::remove_dir_all(root);
