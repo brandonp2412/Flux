@@ -17577,6 +17577,39 @@ fn emit_linux_gtk_application(
                 }
             ));
         }
+        if element.kind == "Text" {
+            let (variant_size, variant_bold, variant_line_height_percent, variant_max_width_chars) =
+                text_semantic_typography(element, signatures)?;
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static int flux__ui_text_variant_size_{} = {};\nstatic bool flux__ui_text_variant_bold_{} = {};\nstatic double flux__ui_text_variant_line_height_{} = {:.4};\nstatic int flux__ui_text_variant_max_width_chars_{} = {};\nstatic bool flux__ui_text_size_explicit_{} = {};\nstatic bool flux__ui_text_bold_explicit_{} = {};\nstatic bool flux__ui_text_line_height_explicit_{} = {};\nstatic bool flux__ui_text_max_width_chars_explicit_{} = {};\n",
+                element.name,
+                variant_size,
+                element.name,
+                if variant_bold { "true" } else { "false" },
+                element.name,
+                variant_line_height_percent as f64 / 100.0,
+                element.name,
+                variant_max_width_chars,
+                element.name,
+                if view_property(element, "size").is_some() { "true" } else { "false" },
+                element.name,
+                if view_property(element, "bold").is_some() { "true" } else { "false" },
+                element.name,
+                if view_property(element, "line_height_percent").is_some() {
+                    "true"
+                } else {
+                    "false"
+                },
+                element.name,
+                if view_property(element, "max_width_chars").is_some() {
+                    "true"
+                } else {
+                    "false"
+                },
+            ));
+            out.push_str("#endif\n");
+        }
         if element.kind == "TextInput"
             && view_property(element, "multiline")
                 .and_then(|property| static_expr_bool(&property.value, signatures))
@@ -17803,14 +17836,13 @@ fn emit_linux_gtk_application(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"max_lines\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_label_set_lines(GTK_LABEL({widget}), integer_value == 0 ? -1 : (int)integer_value); }}",
                     c_string(&element.name)
                 ));
-                if view_property(element, "max_width_chars").is_some()
-                    || view_property(element, "variant").is_none()
-                {
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"max_width_chars\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) gtk_label_set_max_width_chars(GTK_LABEL({widget}), integer_value == 0 ? -1 : (int)integer_value); }}",
-                        c_string(&element.name)
-                    ));
-                }
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"max_width_chars\") == 0 && {widget} != NULL) {{ if (strcmp(value, \"__flux_text_semantic_override_default__\") == 0) {{ flux__ui_text_max_width_chars_explicit_{} = false; gtk_label_set_max_width_chars(GTK_LABEL({widget}), flux__ui_text_variant_max_width_chars_{}); }} else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0 && integer_value <= INT32_MAX) {{ flux__ui_text_max_width_chars_explicit_{} = true; gtk_label_set_max_width_chars(GTK_LABEL({widget}), integer_value == 0 ? -1 : (int)integer_value); }} }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
             }
             "Button" => out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"text\") == 0 && {widget} != NULL) {{ GtkWidget *button_label = gtk_button_get_child(GTK_BUTTON({widget})); if (GTK_IS_LABEL(button_label)) gtk_label_set_text(GTK_LABEL(button_label), value); else gtk_button_set_label(GTK_BUTTON({widget}), value); }}",
@@ -18518,55 +18550,37 @@ fn emit_linux_gtk_application(
                         c_string(&element.name)
                     ));
                 }
-                {
-                    let mut attribute_updates = String::new();
-                    if view_property(element, "size").is_none() {
-                        attribute_updates.push_str(
-                            " pango_attr_list_change(patched_attrs, pango_attr_size_new(variant_size * PANGO_SCALE));",
-                        );
-                    }
-                    if view_property(element, "bold").is_none() {
-                        attribute_updates.push_str(
-                            " pango_attr_list_change(patched_attrs, pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL));",
-                        );
-                    }
-                    if view_property(element, "line_height_percent").is_none() {
-                        attribute_updates.push_str(
-                            " pango_attr_list_change(patched_attrs, pango_attr_line_height_new(variant_line_height));",
-                        );
-                    }
-                    let attribute_patch = if attribute_updates.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new();{attribute_updates} gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs);"
-                        )
-                    };
-                    let width_patch = if view_property(element, "max_width_chars").is_none() {
-                        format!(
-                            " gtk_label_set_max_width_chars(GTK_LABEL({widget}), variant_max_width_chars);"
-                        )
-                    } else {
-                        String::new()
-                    };
-                    out.push_str(&format!(
-                        " if (strcmp(name, {}) == 0 && strcmp(property, \"variant\") == 0 && {widget} != NULL) {{ int variant_size = 0; bool variant_bold = false; double variant_line_height = 0.0; int variant_max_width_chars = 0; if (flux__ui_hot_text_variant(value, &variant_size, &variant_bold, &variant_line_height, &variant_max_width_chars)) {{{attribute_patch}{width_patch} }} }}",
-                        c_string(&element.name)
-                    ));
-                }
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"size\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_size_new((int)integer_value * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
-                    c_string(&element.name)
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"variant\") == 0 && {widget} != NULL) {{ int variant_size = 0; bool variant_bold = false; double variant_line_height = 0.0; int variant_max_width_chars = 0; if (flux__ui_hot_text_variant(value, &variant_size, &variant_bold, &variant_line_height, &variant_max_width_chars)) {{ flux__ui_text_variant_size_{} = variant_size; flux__ui_text_variant_bold_{} = variant_bold; flux__ui_text_variant_line_height_{} = variant_line_height; flux__ui_text_variant_max_width_chars_{} = variant_max_width_chars; PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); if (!flux__ui_text_size_explicit_{}) pango_attr_list_change(patched_attrs, pango_attr_size_new(variant_size * PANGO_SCALE)); if (!flux__ui_text_bold_explicit_{}) pango_attr_list_change(patched_attrs, pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)); if (!flux__ui_text_line_height_explicit_{}) pango_attr_list_change(patched_attrs, pango_attr_line_height_new(variant_line_height)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); if (!flux__ui_text_max_width_chars_explicit_{}) gtk_label_set_max_width_chars(GTK_LABEL({widget}), variant_max_width_chars); }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"size\") == 0 && {widget} != NULL) {{ int effective_size = 0; bool valid_size = false; if (strcmp(value, \"__flux_text_semantic_override_default__\") == 0) {{ flux__ui_text_size_explicit_{} = false; effective_size = flux__ui_text_variant_size_{}; valid_size = true; }} else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ flux__ui_text_size_explicit_{} = true; effective_size = (int)integer_value; valid_size = true; }} }} if (valid_size) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_size_new(effective_size * PANGO_SCALE)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
                 ));
                 out.push_str(&format!(
                     " if (strcmp(name, {}) == 0 && strcmp(property, \"font_family\") == 0 && {widget} != NULL) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); if (value_length == 0) {{ PangoAttrList *removed_attrs = pango_attr_list_filter(patched_attrs, flux__ui_hot_remove_text_family, NULL); if (removed_attrs != NULL) pango_attr_list_unref(removed_attrs); }} else {{ pango_attr_list_change(patched_attrs, pango_attr_family_new(value)); }} gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }}",
                     c_string(&element.name)
                 ));
+                out.push_str(&format!(
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"bold\") == 0 && {widget} != NULL) {{ bool effective_bold = false; bool valid_bold = false; if (strcmp(value, \"__flux_text_semantic_override_default__\") == 0) {{ flux__ui_text_bold_explicit_{} = false; effective_bold = flux__ui_text_variant_bold_{}; valid_bold = true; }} else if (bool_value_valid) {{ flux__ui_text_bold_explicit_{} = true; effective_bold = bool_value; valid_bold = true; }} if (valid_bold) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_weight_new(effective_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
+                ));
                 for (property, attribute) in [
-                    (
-                        "bold",
-                        "pango_attr_weight_new(bool_value ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)",
-                    ),
                     (
                         "italic",
                         "pango_attr_style_new(bool_value ? PANGO_STYLE_ITALIC : PANGO_STYLE_NORMAL)",
@@ -18587,8 +18601,11 @@ fn emit_linux_gtk_application(
                     c_string(&element.name)
                 ));
                 out.push_str(&format!(
-                    " if (strcmp(name, {}) == 0 && strcmp(property, \"line_height_percent\") == 0 && {widget} != NULL) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_line_height_new((double)integer_value / 100.0)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
-                    c_string(&element.name)
+                    " if (strcmp(name, {}) == 0 && strcmp(property, \"line_height_percent\") == 0 && {widget} != NULL) {{ double effective_line_height = 0.0; bool valid_line_height = false; if (strcmp(value, \"__flux_text_semantic_override_default__\") == 0) {{ flux__ui_text_line_height_explicit_{} = false; effective_line_height = flux__ui_text_variant_line_height_{}; valid_line_height = true; }} else {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 1 && integer_value <= INT32_MAX) {{ flux__ui_text_line_height_explicit_{} = true; effective_line_height = (double)integer_value / 100.0; valid_line_height = true; }} }} if (valid_line_height) {{ PangoAttrList *current_attrs = gtk_label_get_attributes(GTK_LABEL({widget})); PangoAttrList *patched_attrs = current_attrs != NULL ? pango_attr_list_copy(current_attrs) : pango_attr_list_new(); pango_attr_list_change(patched_attrs, pango_attr_line_height_new(effective_line_height)); gtk_label_set_attributes(GTK_LABEL({widget}), patched_attrs); pango_attr_list_unref(patched_attrs); }} }}",
+                    c_string(&element.name),
+                    element.name,
+                    element.name,
+                    element.name,
                 ));
             }
             "Image" => {

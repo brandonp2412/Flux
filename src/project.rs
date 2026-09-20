@@ -97,12 +97,6 @@ impl ProjectAnalysis {
             &mut current,
             &mut previous_literals,
         )?;
-        development_ui_text_variant_lifecycle_defaults(
-            self,
-            previous,
-            &mut current,
-            &mut previous_literals,
-        )?;
         if current.keys().ne(previous_literals.keys()) {
             eprintln!(
                 "development patch key mismatch current={:?} previous={:?}",
@@ -2027,6 +2021,8 @@ const DEVELOPMENT_MAXIMUM_SIZE_DEFAULT_SENTINEL: &str = "__flux_maximum_size_def
 const DEVELOPMENT_TRANSFORM_SCALE_AXIS_DEFAULT_SENTINEL: &str =
     "__flux_transform_scale_axis_default__";
 const DEVELOPMENT_RICH_TEXT_DEFAULT_SENTINEL: &str = "<flux-development-rich-text-default>";
+const DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL: &str =
+    "__flux_text_semantic_override_default__";
 
 fn development_application_metadata_patch_value(
     field: &crate::ast::ApplicationMetadataField,
@@ -2189,57 +2185,6 @@ fn development_ui_margin_side_lifecycle_defaults(
                     development_ui_property_lifecycle_default(previous_element, property)?,
                 );
             }
-        }
-    }
-    Some(())
-}
-
-fn development_ui_text_variant_lifecycle_defaults(
-    current_analysis: &ProjectAnalysis,
-    previous_analysis: &ProjectAnalysis,
-    current: &mut BTreeMap<(String, String), String>,
-    previous: &mut BTreeMap<(String, String), String>,
-) -> Option<()> {
-    let current_application = current_analysis.program.application.as_ref()?;
-    let previous_application = previous_analysis.program.application.as_ref()?;
-    let current_view = current_analysis
-        .program
-        .views
-        .iter()
-        .find(|view| view.name == current_application.view_name)?;
-    let previous_view = previous_analysis
-        .program
-        .views
-        .iter()
-        .find(|view| view.name == previous_application.view_name)?;
-
-    for current_element in &current_view.elements {
-        if current_element.kind != "Text" {
-            continue;
-        }
-        let Some(previous_element) = previous_view
-            .elements
-            .iter()
-            .find(|element| element.name == current_element.name && element.kind == "Text")
-        else {
-            continue;
-        };
-        let current_has_variant = development_ui_element_has_property(current_element, "variant");
-        let previous_has_variant = development_ui_element_has_property(previous_element, "variant");
-        if current_has_variant == previous_has_variant {
-            continue;
-        }
-        let semantic_overrides = ["size", "bold", "line_height_percent", "max_width_chars"];
-        if semantic_overrides.iter().any(|property| {
-            development_ui_element_has_property(current_element, property)
-                || development_ui_element_has_property(previous_element, property)
-        }) {
-            continue;
-        }
-        for property in semantic_overrides {
-            let key = (current_element.name.clone(), property.to_string());
-            current.remove(&key);
-            previous.remove(&key);
         }
     }
     Some(())
@@ -2704,12 +2649,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
-    if property_name == "variant"
-        && element.kind == "Text"
-        && !["size", "bold", "line_height_percent", "max_width_chars"]
-            .iter()
-            .any(|name| development_ui_element_has_property(element, name))
-    {
+    if property_name == "variant" && element.kind == "Text" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
         };
@@ -2788,10 +2728,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
-    if property_name == "size"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
+    if property_name == "size" && element.kind == "Text" {
         let value = development_ui_i64_literal_value(&property.value)?;
         if !(1..=i64::from(i32::MAX)).contains(&value) {
             return None;
@@ -2805,10 +2742,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
-    if property_name == "max_width_chars"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
+    if property_name == "max_width_chars" && element.kind == "Text" {
         let value = development_ui_i64_literal_value(&property.value)?;
         if !(0..=i64::from(i32::MAX)).contains(&value) {
             return None;
@@ -2829,10 +2763,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
-    if property_name == "line_height_percent"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
+    if property_name == "line_height_percent" && element.kind == "Text" {
         let value = development_ui_i64_literal_value(&property.value)?;
         if !(1..=i64::from(i32::MAX)).contains(&value) {
             return None;
@@ -3036,10 +2967,7 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.clone());
     }
-    if property_name == "bold"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
+    if property_name == "bold" && element.kind == "Text" {
         let ExprKind::Bool(value) = property.value.kind else {
             return None;
         };
@@ -3239,20 +3167,14 @@ fn development_ui_property_lifecycle_default(
     if property == "max_length" && element.kind == "TextInput" {
         return Some("0".to_string());
     }
-    if property == "size"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
-        return Some("16".to_string());
+    if property == "size" && element.kind == "Text" {
+        return Some(DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL.to_string());
     }
     if property == "size" && element.kind == "Button" {
         return Some("0".to_string());
     }
-    if property == "max_width_chars"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
-        return Some("72".to_string());
+    if property == "max_width_chars" && element.kind == "Text" {
+        return Some(DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL.to_string());
     }
     if property == "max_lines" && element.kind == "Text" {
         return Some("0".to_string());
@@ -3260,11 +3182,8 @@ fn development_ui_property_lifecycle_default(
     if property == "letter_spacing" && element.kind == "Text" {
         return Some("0".to_string());
     }
-    if property == "line_height_percent"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
-        return Some("140".to_string());
+    if property == "line_height_percent" && element.kind == "Text" {
+        return Some(DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL.to_string());
     }
     if property == "validation_state" && element.kind == "TextInput" {
         return Some("normal".to_string());
@@ -3339,11 +3258,8 @@ fn development_ui_property_lifecycle_default(
     if property == "fit" && element.kind == "Image" {
         return Some("contain".to_string());
     }
-    if property == "bold"
-        && element.kind == "Text"
-        && !development_ui_element_has_property(element, "variant")
-    {
-        return Some("0".to_string());
+    if property == "bold" && element.kind == "Text" {
+        return Some(DEVELOPMENT_TEXT_SEMANTIC_OVERRIDE_DEFAULT_SENTINEL.to_string());
     }
     if property == "focusable" {
         return Some(DEVELOPMENT_FOCUSABLE_PROPERTY_DEFAULT_SENTINEL.to_string());
@@ -4098,24 +4014,6 @@ fn development_ui_string_literals(
                 continue;
             };
             literals.insert((element.name.clone(), property_name.to_string()), default);
-        }
-
-        if element.kind == "Text"
-            && development_ui_element_has_property(element, "variant")
-            && !["size", "bold", "line_height_percent", "max_width_chars"]
-                .iter()
-                .any(|name| development_ui_element_has_property(element, name))
-        {
-            for (property, value) in [
-                ("size", "16"),
-                ("bold", "0"),
-                ("line_height_percent", "140"),
-                ("max_width_chars", "72"),
-            ] {
-                literals
-                    .entry((element.name.clone(), property.to_string()))
-                    .or_insert_with(|| value.to_string());
-            }
         }
     }
     Some(literals)

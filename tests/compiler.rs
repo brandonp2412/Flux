@@ -43151,11 +43151,19 @@ app Screen
     let overridden_variant = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("overridden variant source should analyze");
-    assert!(
+    assert_eq!(
+        overridden_variant.development_abi(),
+        overridden.development_abi()
+    );
+    assert_eq!(
         overridden_variant
             .development_ui_string_patch_from(&overridden)
-            .is_none(),
-        "adding a variant beside explicit semantic overrides must retain controlled restart"
+            .expect("adding a variant beside an explicit size override should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "variant".to_string(),
+            value: "heading".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
@@ -43230,30 +43238,39 @@ app Screen
         generated
             .matches("pango_attr_size_new(variant_size * PANGO_SCALE)")
             .count(),
-        1,
-        "explicit Text.size must win over semantic variant defaults"
+        2,
+        "both Text elements need runtime variant handlers so explicit size ownership can later be removed"
     );
+    assert!(generated.contains(
+        "if (!flux__ui_text_size_explicit_overridden) pango_attr_list_change(patched_attrs, pango_attr_size_new(variant_size * PANGO_SCALE))"
+    ));
     assert_eq!(
         generated
             .matches(
                 "pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
             )
             .count(),
-        1,
-        "explicit Text.bold must win over semantic variant defaults"
+        2,
+        "both Text elements need runtime variant handlers so explicit bold ownership can later be removed"
     );
+    assert!(generated.contains(
+        "if (!flux__ui_text_bold_explicit_overridden) pango_attr_list_change(patched_attrs, pango_attr_weight_new(variant_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL))"
+    ));
     assert_eq!(
         generated
             .matches("pango_attr_line_height_new(variant_line_height)")
             .count(),
-        1,
-        "explicit Text.lineHeightPercent must win over semantic variant defaults"
+        2,
+        "both Text elements need runtime variant handlers so explicit line-height ownership can later be removed"
     );
     assert!(generated.contains(
-        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_defaulted), variant_max_width_chars)"
+        "if (!flux__ui_text_line_height_explicit_overridden) pango_attr_list_change(patched_attrs, pango_attr_line_height_new(variant_line_height))"
     ));
-    assert!(!generated.contains(
-        "gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_overridden), variant_max_width_chars)"
+    assert!(generated.contains(
+        "if (!flux__ui_text_max_width_chars_explicit_defaulted) gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_defaulted), variant_max_width_chars)"
+    ));
+    assert!(generated.contains(
+        "if (!flux__ui_text_max_width_chars_explicit_overridden) gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_overridden), variant_max_width_chars)"
     ));
 
     let _ = fs::remove_dir_all(root);
@@ -43628,11 +43645,9 @@ app Screen
     let generated = first
         .emit_c()
         .expect("bold lifecycle fixture should lower for Linux");
-    assert!(
-        generated.contains(
-            "strcmp(property, \"bold\") == 0 && bool_value_valid && flux__ui_label != NULL"
-        )
-    );
+    assert!(generated.contains("strcmp(property, \"bold\") == 0 && flux__ui_label != NULL"));
+    assert!(generated.contains("strcmp(value, \"__flux_text_semantic_override_default__\") == 0"));
+    assert!(generated.contains("flux__ui_text_bold_explicit_label = false"));
 
     let entry = fs::canonicalize(entry).expect("bold lifecycle entry should canonicalize");
     let explicit_default = initial.replace(
@@ -43650,9 +43665,14 @@ app Screen
         "adding bold: false to default body Text must not change the development ABI"
     );
     assert_eq!(
-        second.development_ui_string_patch_from(&first),
-        Some(Vec::new()),
-        "adding body-default bold: false should be an in-process no-op"
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding an explicit body-default bold override should hot-apply ownership"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "bold".to_string(),
+            value: "0".to_string(),
+        }]
     );
 
     let bold = explicit_default.replace("bold: false", "bold: true");
@@ -43686,7 +43706,7 @@ app Screen
         vec![fluxc::project::DevelopmentUiStringPatch {
             element: "label".to_string(),
             property: "bold".to_string(),
-            value: "0".to_string(),
+            value: "__flux_text_semantic_override_default__".to_string(),
         }]
     );
 
@@ -43714,11 +43734,19 @@ app Screen
     let heading_without_override = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("heading without bold override should analyze");
-    assert!(
+    assert_eq!(
+        heading_without_override.development_abi(),
+        heading_with_override.development_abi()
+    );
+    assert_eq!(
         heading_without_override
             .development_ui_string_patch_from(&heading_with_override)
-            .is_none(),
-        "removing bold beside an explicit semantic variant must restart so future variant patches keep override precedence"
+            .expect("removing bold beside a semantic variant should restore inherited bold"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "label".to_string(),
+            property: "bold".to_string(),
+            value: "__flux_text_semantic_override_default__".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
@@ -45010,7 +45038,7 @@ app Screen
         .emit_c()
         .expect("text size lifecycle fixture should lower for Linux");
     assert!(generated.contains("strcmp(property, \"size\") == 0 && flux__ui_body != NULL"));
-    assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
+    assert!(generated.contains("pango_attr_size_new(effective_size * PANGO_SCALE)"));
 
     let entry = fs::canonicalize(entry).expect("text size lifecycle entry should canonicalize");
     let explicit_default = initial.replace(
@@ -45028,9 +45056,14 @@ app Screen
         "adding size: 16 must not change the default Text development ABI"
     );
     assert_eq!(
-        second.development_ui_string_patch_from(&first),
-        Some(Vec::new()),
-        "adding the body semantic size should be an in-process no-op"
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding an explicit body-default size should hot-apply ownership"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "size".to_string(),
+            value: "16".to_string(),
+        }]
     );
 
     let larger = explicit_default.replace("size: 16", "size: 18");
@@ -45064,7 +45097,7 @@ app Screen
         vec![fluxc::project::DevelopmentUiStringPatch {
             element: "body".to_string(),
             property: "size".to_string(),
-            value: "16".to_string(),
+            value: "__flux_text_semantic_override_default__".to_string(),
         }]
     );
 
@@ -45091,9 +45124,20 @@ app Screen
     let variant = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("variant text size source should analyze");
-    assert!(
-        variant.development_ui_string_patch_from(&fourth).is_none(),
-        "explicit variant/size precedence must retain controlled restart"
+    let variant_patch = variant
+        .development_ui_string_patch_from(&fourth)
+        .expect("adding a variant with an explicit size override should hot-apply");
+    let variant_patch = variant_patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        variant_patch.get(&("body".to_string(), "size".to_string())),
+        Some(&"22".to_string())
+    );
+    assert_eq!(
+        variant_patch.get(&("body".to_string(), "variant".to_string())),
+        Some(&"heading".to_string())
     );
 
     let _ = fs::remove_dir_all(root);
@@ -45131,7 +45175,7 @@ app Screen
         generated
             .contains("strcmp(property, \"line_height_percent\") == 0 && flux__ui_body != NULL")
     );
-    assert!(generated.contains("pango_attr_line_height_new((double)integer_value / 100.0)"));
+    assert!(generated.contains("pango_attr_line_height_new(effective_line_height)"));
 
     let entry =
         fs::canonicalize(entry).expect("text line height lifecycle entry should canonicalize");
@@ -45151,9 +45195,14 @@ app Screen
         "adding lineHeightPercent: 140 must not change the default Text development ABI"
     );
     assert_eq!(
-        second.development_ui_string_patch_from(&first),
-        Some(Vec::new()),
-        "adding the body semantic line height should be an in-process no-op"
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding an explicit body-default line height should hot-apply ownership"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "line_height_percent".to_string(),
+            value: "140".to_string(),
+        }]
     );
 
     let taller = explicit_default.replace("lineHeightPercent: 140", "lineHeightPercent: 150");
@@ -45187,7 +45236,7 @@ app Screen
         vec![fluxc::project::DevelopmentUiStringPatch {
             element: "body".to_string(),
             property: "line_height_percent".to_string(),
-            value: "140".to_string(),
+            value: "__flux_text_semantic_override_default__".to_string(),
         }]
     );
 
@@ -45214,9 +45263,20 @@ app Screen
     let variant = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("variant line height source should analyze");
-    assert!(
-        variant.development_ui_string_patch_from(&fourth).is_none(),
-        "explicit variant/line-height precedence must retain controlled restart"
+    let variant_patch = variant
+        .development_ui_string_patch_from(&fourth)
+        .expect("adding a variant with explicit line height should hot-apply");
+    let variant_patch = variant_patch
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        variant_patch.get(&("body".to_string(), "line_height_percent".to_string())),
+        Some(&"130".to_string())
+    );
+    assert_eq!(
+        variant_patch.get(&("body".to_string(), "variant".to_string())),
+        Some(&"heading".to_string())
     );
 
     let _ = fs::remove_dir_all(root);
@@ -46011,7 +46071,7 @@ app Screen
         generated.contains("strcmp(property, \"max_width_chars\") == 0 && flux__ui_body != NULL")
     );
     assert!(
-        !generated
+        generated
             .contains("strcmp(property, \"max_width_chars\") == 0 && flux__ui_heading != NULL")
     );
     assert!(generated.contains("gtk_label_set_max_width_chars(GTK_LABEL(flux__ui_body), 72)"));
@@ -46034,9 +46094,14 @@ app Screen
         "adding maxWidthChars: 72 to default body text must not change the development ABI"
     );
     assert_eq!(
-        second.development_ui_string_patch_from(&first),
-        Some(Vec::new()),
-        "adding the implicit body max width should be an in-process no-op"
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding an explicit body-default max width should hot-apply ownership"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "body".to_string(),
+            property: "max_width_chars".to_string(),
+            value: "72".to_string(),
+        }]
     );
 
     let narrower = explicit_default.replace("maxWidthChars: 72", "maxWidthChars: 40");
@@ -46070,7 +46135,7 @@ app Screen
         vec![fluxc::project::DevelopmentUiStringPatch {
             element: "body".to_string(),
             property: "max_width_chars".to_string(),
-            value: "72".to_string(),
+            value: "__flux_text_semantic_override_default__".to_string(),
         }]
     );
 
@@ -46097,11 +46162,16 @@ app Screen
     let variant_override = cache
         .analyze_with_overlays(&entry, &std::collections::HashMap::new())
         .expect("variant max width source should analyze");
-    assert!(
+    assert_eq!(variant_override.development_abi(), fourth.development_abi());
+    assert_eq!(
         variant_override
             .development_ui_string_patch_from(&fourth)
-            .is_none(),
-        "adding maxWidthChars beside an explicit semantic variant must restart to preserve precedence"
+            .expect("adding maxWidthChars beside a semantic variant should hot-apply ownership"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "heading".to_string(),
+            property: "max_width_chars".to_string(),
+            value: "40".to_string(),
+        }]
     );
 
     let _ = fs::remove_dir_all(root);
@@ -47261,13 +47331,11 @@ app Screen
     assert!(generated.contains("gtk_label_set_selectable(GTK_LABEL(flux__ui_label), bool_value)"));
     assert!(generated.contains("gtk_label_set_wrap(GTK_LABEL(flux__ui_label), bool_value)"));
     assert!(generated.contains("strcmp(property, \"size\") == 0"));
-    assert!(generated.contains("pango_attr_size_new((int)integer_value * PANGO_SCALE)"));
+    assert!(generated.contains("pango_attr_size_new(effective_size * PANGO_SCALE)"));
     assert!(generated.contains("strcmp(property, \"bold\") == 0"));
-    assert!(
-        generated.contains(
-            "pango_attr_weight_new(bool_value ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
-        )
-    );
+    assert!(generated.contains(
+        "pango_attr_weight_new(effective_bold ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL)"
+    ));
     assert!(generated.contains("strcmp(property, \"italic\") == 0"));
     assert!(
         generated
@@ -47284,7 +47352,7 @@ app Screen
     assert!(generated.contains("strcmp(property, \"letter_spacing\") == 0"));
     assert!(generated.contains("pango_attr_letter_spacing_new((int)integer_value * PANGO_SCALE)"));
     assert!(generated.contains("strcmp(property, \"line_height_percent\") == 0"));
-    assert!(generated.contains("pango_attr_line_height_new((double)integer_value / 100.0)"));
+    assert!(generated.contains("pango_attr_line_height_new(effective_line_height)"));
     assert!(generated.contains("pango_attr_list_change(patched_attrs"));
     assert!(generated.contains("strcmp(property, \"text_align\") == 0"));
     assert!(generated.contains("gtk_label_set_justify(GTK_LABEL(flux__ui_label), justify)"));
