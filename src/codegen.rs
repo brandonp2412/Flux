@@ -17586,20 +17586,22 @@ fn emit_linux_gtk_application(
                 element.name
             ));
         }
-        if let Some(property) = view_property(element, "accessibility_order") {
-            let Some(order) = static_expr_i64(&property.value, signatures) else {
-                return Err(diag(
+        let order = match view_property(element, "accessibility_order") {
+            Some(property) => static_expr_i64(&property.value, signatures).ok_or_else(|| {
+                diag(
                     property.value.span,
                     "accessibilityOrder must be a compile-time i64 value",
-                ));
-            };
-            out.push_str(&format!(
-                "static int64_t flux__ui_accessibility_order_{} = INT64_C({order});\n",
-                element.name
-            ));
-        }
+                )
+            })?,
+            None => -1,
+        };
+        out.push_str(&format!(
+            "static int64_t flux__ui_accessibility_order_{} = INT64_C({order});\n",
+            element.name
+        ));
     }
-    let hot_accessibility_order = ordered_accessibility_elements(view, signatures)?;
+    let initial_accessibility_order = ordered_accessibility_elements(view, signatures)?;
+    let hot_accessibility_order = view.elements.iter().collect::<Vec<_>>();
     if !hot_accessibility_order.is_empty() {
         let count = hot_accessibility_order.len();
         let nodes = hot_accessibility_order
@@ -17612,12 +17614,8 @@ fn emit_linux_gtk_application(
             .map(|element| format!("flux__ui_accessibility_order_{}", element.name))
             .collect::<Vec<_>>()
             .join(", ");
-        let indices = (0..count)
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
         out.push_str(&format!(
-            "static bool flux__ui_accessibility_order_changed = false;\nstatic void flux__ui_refresh_accessibility_order(void) {{ GtkAccessible *nodes[{count}] = {{{nodes}}}; int64_t orders[{count}] = {{{orders}}}; size_t indices[{count}] = {{{indices}}}; for (size_t index = 0; index < {count}; ++index) {{ if (nodes[index] != NULL) gtk_accessible_reset_relation(nodes[index], GTK_ACCESSIBLE_RELATION_FLOW_TO); }} for (size_t left = 0; left < {count}; ++left) {{ for (size_t right = left + 1; right < {count}; ++right) {{ if (orders[indices[right]] < orders[indices[left]]) {{ size_t swap = indices[left]; indices[left] = indices[right]; indices[right] = swap; }} }} }} for (size_t index = 0; index + 1 < {count}; ++index) {{ GtkAccessible *current = nodes[indices[index]]; GtkAccessible *next = nodes[indices[index + 1]]; if (current != NULL && next != NULL) gtk_accessible_update_relation(current, GTK_ACCESSIBLE_RELATION_FLOW_TO, next, -1); }} }}\n"
+            "static bool flux__ui_accessibility_order_changed = false;\nstatic void flux__ui_refresh_accessibility_order(void) {{ GtkAccessible *nodes[{count}] = {{{nodes}}}; int64_t orders[{count}] = {{{orders}}}; size_t indices[{count}]; size_t ordered_count = 0; for (size_t index = 0; index < {count}; ++index) {{ if (nodes[index] != NULL) gtk_accessible_reset_relation(nodes[index], GTK_ACCESSIBLE_RELATION_FLOW_TO); if (orders[index] >= 0) indices[ordered_count++] = index; }} for (size_t left = 0; left < ordered_count; ++left) {{ for (size_t right = left + 1; right < ordered_count; ++right) {{ if (orders[indices[right]] < orders[indices[left]]) {{ size_t swap = indices[left]; indices[left] = indices[right]; indices[right] = swap; }} }} }} for (size_t index = 0; index + 1 < ordered_count; ++index) {{ GtkAccessible *current = nodes[indices[index]]; GtkAccessible *next = nodes[indices[index + 1]]; if (current != NULL && next != NULL) gtk_accessible_update_relation(current, GTK_ACCESSIBLE_RELATION_FLOW_TO, next, -1); }} }}\n"
         ));
     }
     out.push('\n');
@@ -17919,13 +17917,11 @@ fn emit_linux_gtk_application(
                 c_string(&element.name)
             ));
         }
-        if view_property(element, "accessibility_order").is_some() {
-            out.push_str(&format!(
-                " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_order\") == 0) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= 0) {{ flux__ui_accessibility_order_{} = (int64_t)integer_value; flux__ui_accessibility_order_changed = true; }} }}",
-                c_string(&element.name),
-                element.name
-            ));
-        }
+        out.push_str(&format!(
+            " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_order\") == 0) {{ char *integer_end = NULL; long long integer_value = strtoll(value, &integer_end, 10); if (value_length > 0 && integer_end != value && *integer_end == '\\0' && integer_value >= -1) {{ flux__ui_accessibility_order_{} = (int64_t)integer_value; flux__ui_accessibility_order_changed = true; }} }}",
+            c_string(&element.name),
+            element.name
+        ));
         out.push_str(&format!(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"accessibility_value\") == 0 && {host} != NULL) {{ if (strcmp(value, \"__flux_accessibility_property_default__\") == 0) gtk_accessible_reset_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT); else gtk_accessible_update_property(GTK_ACCESSIBLE({host}), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1); }}",
             c_string(&element.name)
@@ -20169,8 +20165,12 @@ fn emit_linux_gtk_application(
     out.push_str(&format!(
         "#ifdef FLUX_PROFILE_TIMELINE\n    if (getenv(\"FLUX_PERF_OVERLAY\") != NULL) {{\n        flux__profile_overlay_label = gtk_label_new(\"Flux refresh: waiting\");\n        gtk_widget_add_css_class(flux__profile_overlay_label, \"osd\");\n        gtk_widget_set_halign(flux__profile_overlay_label, GTK_ALIGN_END);\n        gtk_widget_set_valign(flux__profile_overlay_label, GTK_ALIGN_START);\n        gtk_widget_set_margin_top(flux__profile_overlay_label, 8);\n        gtk_widget_set_margin_end(flux__profile_overlay_label, 8);\n        gtk_grid_attach(GTK_GRID(grid), flux__profile_overlay_label, 0, 0, {overlay_columns}, 1);\n    }}\n#endif\n"
     ));
-    if !hot_accessibility_order.is_empty() {
+    if !initial_accessibility_order.is_empty() {
         out.push_str("    flux__ui_refresh_accessibility_order();\n");
+    } else if !hot_accessibility_order.is_empty() {
+        out.push_str(
+            "#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_refresh_accessibility_order();\n#endif\n",
+        );
     }
     out.push_str("    flux__ui_refresh();\n");
     out.push_str("    gtk_window_present(GTK_WINDOW(window));\n}\n\n");

@@ -2690,6 +2690,13 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if property_name == "accessibility_order" {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if value < 0 {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "transition_easing" {
         let ExprKind::Str(value) = &property.value.kind else {
             return None;
@@ -3022,6 +3029,9 @@ fn development_ui_property_lifecycle_default(
         return Some("window".to_string());
     }
     if property == "focus_scope" {
+        return Some("-1".to_string());
+    }
+    if property == "accessibility_order" {
         return Some("-1".to_string());
     }
     if property == "transition_easing" {
@@ -3667,6 +3677,7 @@ fn development_ui_string_literals(
             "status",
             "shortcut_scope",
             "focus_scope",
+            "accessibility_order",
             "tooltip",
             "placeholder",
             "keyboard_type",

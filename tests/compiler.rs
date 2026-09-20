@@ -55664,6 +55664,125 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_accessibility_order_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-accessibility-order-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .expect("temporary accessibility-order lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Text first at 1,1
+        text: "First"
+    Text second at 2,1
+        text: "Second"
+    Text third at 3,1
+        text: "Third"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial accessibility-order source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial accessibility-order lifecycle source should analyze");
+    let generated = first
+        .emit_c()
+        .expect("omitted accessibility-order fixture should lower for Linux");
+    for element in ["first", "second", "third"] {
+        assert!(generated.contains(&format!(
+            "static int64_t flux__ui_accessibility_order_{element} = INT64_C(-1)"
+        )));
+        assert!(generated.contains(&format!(
+            "strcmp(name, \"{element}\") == 0 && strcmp(property, \"accessibility_order\") == 0"
+        )));
+    }
+    assert!(generated.contains("if (orders[index] >= 0) indices[ordered_count++] = index"));
+    assert!(generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    flux__ui_refresh_accessibility_order();\n#endif"
+    ));
+
+    let explicit = initial
+        .replace(
+            "        text: \"First\"\n",
+            "        text: \"First\"\n        accessibilityOrder: 10\n",
+        )
+        .replace(
+            "        text: \"Third\"\n",
+            "        text: \"Third\"\n        accessibilityOrder: 30\n",
+        );
+    let entry = fs::canonicalize(entry).expect("accessibility-order entry should canonicalize");
+    fs::write(&entry, &explicit).expect("explicit accessibility-order source should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit accessibility-order source should analyze");
+    assert_eq!(
+        second.development_abi(),
+        first.development_abi(),
+        "adding literal accessibilityOrder declarations should preserve the development ABI"
+    );
+    let patch = second
+        .development_ui_string_patch_from(&first)
+        .expect("adding literal accessibilityOrder declarations should hot-apply")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        patch.get(&("first".to_string(), "accessibility_order".to_string())),
+        Some(&"10".to_string())
+    );
+    assert_eq!(
+        patch.get(&("third".to_string(), "accessibility_order".to_string())),
+        Some(&"30".to_string())
+    );
+    assert_eq!(patch.len(), 2);
+
+    fs::write(&entry, initial).expect("removed accessibility-order source should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed accessibility-order source should analyze");
+    assert_eq!(
+        third.development_abi(),
+        second.development_abi(),
+        "removing literal accessibilityOrder declarations should preserve the development ABI"
+    );
+    let patch = third
+        .development_ui_string_patch_from(&second)
+        .expect("removing accessibilityOrder declarations should restore native ordering")
+        .into_iter()
+        .map(|record| ((record.element, record.property), record.value))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for element in ["first", "third"] {
+        assert_eq!(
+            patch.get(&(element.to_string(), "accessibility_order".to_string())),
+            Some(&"-1".to_string())
+        );
+    }
+    assert_eq!(patch.len(), 2);
+
+    let duplicate = explicit.replace("accessibilityOrder: 30", "accessibilityOrder: 10");
+    fs::write(&entry, duplicate).expect("duplicate accessibility-order source should be writable");
+    cache.invalidate_path(&entry);
+    let errors = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect_err("duplicate accessibilityOrder values must fail before hot-reload planning");
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("accessibilityOrder 10 is already used")
+    }));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_controls_preserve_platform_screen_reader_bridges() {
     let source = r#"
 view Screen {
