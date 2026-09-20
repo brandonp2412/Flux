@@ -49153,7 +49153,7 @@ app Screen
         );
     }
     assert!(generated.contains(
-        "#flux-ui-card { transform: translate(%dpx, %dpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }"
+        "#flux-ui-card { transform: translate(%lldpx, %lldpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }"
     ));
     assert!(generated.contains(
         "gtk_css_provider_load_from_data(flux__ui_hot_style_card_transform, patch_css, -1)"
@@ -52077,10 +52077,28 @@ app Motion
         .replace("        pinchScale: false\n", "");
     let omitted_generated =
         compile_to_c(&omitted).expect("omitted gesture transforms should lower for Linux");
-    assert!(!omitted_generated.contains("flux__gesture_translate_enabled_tile"));
-    assert!(!omitted_generated.contains("flux__gesture_scale_enabled_tile"));
-    assert!(!omitted_generated.contains("gtk_gesture_drag_new()"));
-    assert!(!omitted_generated.contains("gtk_gesture_zoom_new()"));
+    assert!(omitted_generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic bool flux__gesture_translate_enabled_tile = false;"
+    ));
+    assert!(omitted_generated.contains("static bool flux__gesture_scale_enabled_tile = false;"));
+    assert!(
+        omitted_generated
+            .contains("static void flux__ui_hot_gesture_transform_apply_tile(GtkWidget *widget)")
+    );
+    assert!(
+        omitted_generated
+            .contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void flux__ui_drag_tile")
+    );
+    assert!(
+        omitted_generated
+            .contains("#ifdef FLUX_DEVELOPMENT_RELOAD\nstatic void flux__ui_scale_tile")
+    );
+    assert!(omitted_generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    GtkEventController *flux__drag_tile = GTK_EVENT_CONTROLLER(gtk_gesture_drag_new());"
+    ));
+    assert!(omitted_generated.contains(
+        "#ifdef FLUX_DEVELOPMENT_RELOAD\n    GtkEventController *flux__scale_tile = GTK_EVENT_CONTROLLER(gtk_gesture_zoom_new());"
+    ));
 
     let updated = initial
         .replace("dragTranslate: false", "dragTranslate: true")
@@ -52118,6 +52136,120 @@ app Motion
         .expect("gesture-transform disablement should hot-apply");
     assert_eq!(patch.len(), 2);
     assert!(patch.iter().all(|record| record.value == "0"));
+
+    fs::write(&entry, &omitted).expect("omitted gesture source should be writable");
+    cache.invalidate_path(&entry);
+    let omitted_analysis = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("omitted gesture source should analyze");
+
+    let drag_added = omitted.replace(
+        "        text: \"Move\"\n",
+        "        text: \"Move\"\n        dragTranslate: true\n",
+    );
+    fs::write(&entry, &drag_added).expect("added drag transform source should be writable");
+    cache.invalidate_path(&entry);
+    let drag_analysis = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("added drag transform source should analyze");
+    assert_eq!(
+        drag_analysis.development_abi(),
+        omitted_analysis.development_abi(),
+        "adding one literal gesture transform should preserve the development ABI"
+    );
+    assert_eq!(
+        drag_analysis
+            .development_ui_string_patch_from(&omitted_analysis)
+            .expect("adding dragTranslate should activate the retained development recognizer"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "tile".to_string(),
+            property: "drag_translate".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    fs::write(&entry, &omitted).expect("removed drag transform source should be writable");
+    cache.invalidate_path(&entry);
+    let drag_removed = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed drag transform source should analyze");
+    assert_eq!(
+        drag_removed
+            .development_ui_string_patch_from(&drag_analysis)
+            .expect("removing dragTranslate should disable and reset the retained recognizer"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "tile".to_string(),
+            property: "drag_translate".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let scale_added = omitted.replace(
+        "        text: \"Move\"\n",
+        "        text: \"Move\"\n        pinchScale: true\n",
+    );
+    fs::write(&entry, &scale_added).expect("added pinch transform source should be writable");
+    cache.invalidate_path(&entry);
+    let scale_analysis = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("added pinch transform source should analyze");
+    assert_eq!(
+        scale_analysis
+            .development_ui_string_patch_from(&drag_removed)
+            .expect("adding pinchScale should activate the retained development recognizer"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "tile".to_string(),
+            property: "pinch_scale".to_string(),
+            value: "1".to_string(),
+        }]
+    );
+
+    let both = drag_added.replace(
+        "        dragTranslate: true\n",
+        "        dragTranslate: true\n        pinchScale: true\n",
+    );
+    fs::write(&entry, both).expect("paired gesture transform source should be writable");
+    cache.invalidate_path(&entry);
+    let both = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("paired gesture transform source should analyze");
+    assert!(
+        both.development_ui_string_patch_from(&drag_analysis)
+            .is_none(),
+        "adding a second gesture recognizer must retain controlled restart"
+    );
+
+    let dynamic_source = omitted
+        .replace(
+            "view Motion {\n",
+            "view Motion {\n    state offset: i64 = 0\n",
+        )
+        .replace(
+            "        text: \"Move\"\n",
+            "        text: \"Move\"\n        translateX: offset\n",
+        );
+    fs::write(&entry, &dynamic_source)
+        .expect("dynamic transform baseline source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_omitted = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic transform baseline should analyze");
+    let dynamic_drag_source = dynamic_source.replace(
+        "        translateX: offset\n",
+        "        translateX: offset\n        dragTranslate: true\n",
+    );
+    fs::write(&entry, dynamic_drag_source)
+        .expect("dynamic gesture transform source should be writable");
+    cache.invalidate_path(&entry);
+    let dynamic_drag = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("dynamic gesture transform source should analyze");
+    assert!(
+        dynamic_drag
+            .development_ui_string_patch_from(&dynamic_omitted)
+            .is_none(),
+        "gesture lifecycle beside state-driven transforms must retain controlled restart"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -58646,14 +58778,12 @@ app HoverCard
     assert!(generated.contains("GtkGestureZoom *gesture"));
     assert!(generated.contains("gtk_gesture_zoom_new()"));
     assert!(generated.contains("\"scale-changed\", G_CALLBACK(flux__ui_scale_title)"));
-    assert!(
-        generated.contains("flux__fn_scaled((int64_t)(scale * 100.0 + 0.5)); flux__ui_refresh();")
-    );
-    assert!(
-        generated.contains(
-            "flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); flux__ui_refresh();"
-        )
-    );
+    assert!(generated.contains(
+        "flux__fn_scaled((int64_t)(scale * 100.0 + 0.5)); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_scale_enabled_title)"
+    ));
+    assert!(generated.contains(
+        "flux__fn_dragged((int64_t)offset_x, (int64_t)offset_y); \n#ifdef FLUX_DEVELOPMENT_RELOAD\nif (flux__gesture_translate_enabled_title)"
+    ));
     assert!(generated.contains(
         "flux__fn_swiped((int64_t)velocity_x, (int64_t)velocity_y); flux__ui_refresh();"
     ));

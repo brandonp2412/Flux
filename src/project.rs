@@ -104,11 +104,19 @@ impl ProjectAnalysis {
             &mut previous_literals,
         )?;
         if current.keys().ne(previous_literals.keys()) {
+            eprintln!(
+                "development patch key mismatch current={:?} previous={:?}",
+                current.keys().collect::<Vec<_>>(),
+                previous_literals.keys().collect::<Vec<_>>()
+            );
             return None;
         }
-        if development_ui_string_masked_sources(self)?
-            != development_ui_string_masked_sources(previous)?
-        {
+        let current_masked = development_ui_string_masked_sources(self)?;
+        let previous_masked = development_ui_string_masked_sources(previous)?;
+        if current_masked != previous_masked {
+            eprintln!(
+                "development patch source mismatch current={current_masked:?} previous={previous_masked:?}"
+            );
             return None;
         }
 
@@ -3017,6 +3025,14 @@ fn development_ui_property_lifecycle_patch_value(
         };
         return Some(if value { "1" } else { "0" }.to_string());
     }
+    if matches!(property_name.as_str(), "drag_translate" | "pinch_scale")
+        && development_ui_gesture_transform_lifecycle_is_safe(element, &property_name)
+    {
+        let ExprKind::Bool(value) = property.value.kind else {
+            return None;
+        };
+        return Some(if value { "1" } else { "0" }.to_string());
+    }
     if matches!(
         property_name.as_str(),
         "visible"
@@ -3143,7 +3159,7 @@ fn development_ui_property_lifecycle_default(
         return Some("-1".to_string());
     }
     if DEVELOPMENT_UI_TRANSFORM_PROPERTIES.contains(&property)
-        && development_ui_transform_is_static_literal(element)
+        && development_ui_transform_lifecycle_defaults_are_safe(element)
     {
         return Some(
             match property {
@@ -3312,6 +3328,11 @@ fn development_ui_property_lifecycle_default(
     if property == "focusable" {
         return Some(DEVELOPMENT_FOCUSABLE_PROPERTY_DEFAULT_SENTINEL.to_string());
     }
+    if matches!(property, "drag_translate" | "pinch_scale")
+        && development_ui_gesture_transform_lifecycle_default_is_safe(element, property)
+    {
+        return Some("0".to_string());
+    }
     if matches!(
         property,
         "visible"
@@ -3371,6 +3392,68 @@ fn development_ui_property_lifecycle_default(
         return Some("-1".to_string());
     }
     None
+}
+
+fn development_ui_gesture_transform_lifecycle_is_safe(
+    element: &ViewElement,
+    property: &str,
+) -> bool {
+    let other_gesture = match property {
+        "drag_translate" => "pinch_scale",
+        "pinch_scale" => "drag_translate",
+        _ => return false,
+    };
+    !development_ui_element_has_property(element, other_gesture)
+        && DEVELOPMENT_UI_TRANSFORM_PROPERTIES
+            .iter()
+            .all(|property_name| {
+                element
+                    .properties
+                    .iter()
+                    .find(|candidate| {
+                        typecheck::source_name_to_internal(&candidate.name) == *property_name
+                    })
+                    .is_none_or(|candidate| {
+                        development_ui_i64_literal_value(&candidate.value)
+                            .is_some_and(|value| i32::try_from(value).is_ok())
+                    })
+            })
+}
+
+fn development_ui_gesture_transform_lifecycle_default_is_safe(
+    element: &ViewElement,
+    property: &str,
+) -> bool {
+    if development_ui_gesture_transform_lifecycle_is_safe(element, property) {
+        return true;
+    }
+    let other_gesture = match property {
+        "drag_translate" => "pinch_scale",
+        "pinch_scale" => "drag_translate",
+        _ => return false,
+    };
+    element
+        .properties
+        .iter()
+        .find(|candidate| typecheck::source_name_to_internal(&candidate.name) == other_gesture)
+        .is_some_and(|candidate| {
+            matches!(candidate.value.kind, ExprKind::Bool(_))
+                && development_ui_gesture_transform_lifecycle_is_safe(element, other_gesture)
+        })
+}
+
+fn development_ui_transform_lifecycle_defaults_are_safe(element: &ViewElement) -> bool {
+    development_ui_transform_is_static_literal(element)
+        || ["drag_translate", "pinch_scale"].iter().any(|property| {
+            element
+                .properties
+                .iter()
+                .find(|candidate| typecheck::source_name_to_internal(&candidate.name) == *property)
+                .is_some_and(|candidate| {
+                    matches!(candidate.value.kind, ExprKind::Bool(_))
+                        && development_ui_gesture_transform_lifecycle_is_safe(element, property)
+                })
+        })
 }
 
 fn development_ui_bool_property_is_patchable(element: &ViewElement, property: &str) -> bool {
@@ -3890,6 +3973,8 @@ fn development_ui_string_literals(
             "clip",
             "focusable",
             "autofocus",
+            "drag_translate",
+            "pinch_scale",
             "enabled",
             "primary",
             "accessibility_hidden",

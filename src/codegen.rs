@@ -17514,6 +17514,33 @@ fn emit_linux_gtk_application(
                 ));
             }
         }
+        if linux_ui_retains_gesture_transform_lifecycle(element, signatures) {
+            let provider = linux_ui_hot_transform_provider_c_name(element);
+            let translate_x = linux_ui_hot_transform_value_c_name(element, "translate_x");
+            let translate_y = linux_ui_hot_transform_value_c_name(element, "translate_y");
+            let rotate = linux_ui_hot_transform_value_c_name(element, "rotate");
+            let scale_x = linux_ui_hot_transform_value_c_name(element, "scale_x");
+            let scale_y = linux_ui_hot_transform_value_c_name(element, "scale_y");
+            let skew_x = linux_ui_hot_transform_value_c_name(element, "skew_x");
+            let skew_y = linux_ui_hot_transform_value_c_name(element, "skew_y");
+            let origin_x = linux_ui_hot_transform_value_c_name(element, "origin_x");
+            let origin_y = linux_ui_hot_transform_value_c_name(element, "origin_y");
+            let drag_enabled = ui_gesture_translate_enabled_c_name(&element.name);
+            let drag_x = ui_gesture_translate_x_c_name(&element.name);
+            let drag_y = ui_gesture_translate_y_c_name(&element.name);
+            let scale_enabled = ui_gesture_scale_enabled_c_name(&element.name);
+            let gesture_scale = ui_gesture_scale_c_name(&element.name);
+            let apply = linux_ui_hot_gesture_transform_apply_c_name(&element.name);
+            let css_format = c_string(&format!(
+                "#flux-ui-{} {{ transform: translate(%lldpx, %lldpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }}",
+                element.name
+            ));
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "static bool {drag_enabled} = false;\nstatic int64_t {drag_x} = INT64_C(0);\nstatic int64_t {drag_y} = INT64_C(0);\nstatic bool {scale_enabled} = false;\nstatic int64_t {gesture_scale} = INT64_C(100);\nstatic void {apply}(GtkWidget *widget) {{ if (widget == NULL) return; if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display(widget), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, (long long){translate_x} + (long long)({drag_enabled} ? {drag_x} : INT64_C(0)), (long long){translate_y} + (long long)({drag_enabled} ? {drag_y} : INT64_C(0)), {rotate}, ((double){scale_x} / 100.0) * ((double)({scale_enabled} ? {gesture_scale} : INT64_C(100)) / 100.0), ((double){scale_y} / 100.0) * ((double)({scale_enabled} ? {gesture_scale} : INT64_C(100)) / 100.0), {skew_x}, {skew_y}, {origin_x}, {origin_y}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }} }}\n"
+            ));
+            out.push_str("#endif\n");
+        }
         if element_has_dynamic_transform(element, signatures) {
             out.push_str(&format!(
                 "static GtkCssProvider *{} = NULL;\n",
@@ -18040,6 +18067,8 @@ fn emit_linux_gtk_application(
             " if (strcmp(name, {}) == 0 && strcmp(property, \"autofocus\") == 0 && bool_value_valid && bool_value && {widget} != NULL) {{{ensure_focusable} gtk_widget_grab_focus({widget}); }}",
             c_string(&element.name)
         ));
+        let retained_gesture_lifecycle =
+            linux_ui_retains_gesture_transform_lifecycle(element, signatures);
         if view_property(element, "drag_translate").is_some() {
             let enabled = ui_gesture_translate_enabled_c_name(&element.name);
             let translate_x = ui_gesture_translate_x_c_name(&element.name);
@@ -18048,12 +18077,29 @@ fn emit_linux_gtk_application(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_translate\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {{ {translate_x} = INT64_C(0); {translate_y} = INT64_C(0); }} flux__ui_refresh(); }}",
                 c_string(&element.name)
             ));
+        } else if retained_gesture_lifecycle {
+            let enabled = ui_gesture_translate_enabled_c_name(&element.name);
+            let translate_x = ui_gesture_translate_x_c_name(&element.name);
+            let translate_y = ui_gesture_translate_y_c_name(&element.name);
+            let apply = linux_ui_hot_gesture_transform_apply_c_name(&element.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"drag_translate\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {{ {translate_x} = INT64_C(0); {translate_y} = INT64_C(0); }} {apply}({widget}); }}",
+                c_string(&element.name)
+            ));
         }
         if view_property(element, "pinch_scale").is_some() {
             let enabled = ui_gesture_scale_enabled_c_name(&element.name);
             let scale = ui_gesture_scale_c_name(&element.name);
             out.push_str(&format!(
                 " if (strcmp(name, {}) == 0 && strcmp(property, \"pinch_scale\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {scale} = INT64_C(100); flux__ui_refresh(); }}",
+                c_string(&element.name)
+            ));
+        } else if retained_gesture_lifecycle {
+            let enabled = ui_gesture_scale_enabled_c_name(&element.name);
+            let scale = ui_gesture_scale_c_name(&element.name);
+            let apply = linux_ui_hot_gesture_transform_apply_c_name(&element.name);
+            out.push_str(&format!(
+                " if (strcmp(name, {}) == 0 && strcmp(property, \"pinch_scale\") == 0 && bool_value_valid && {widget} != NULL) {{ {enabled} = bool_value; if (!bool_value) {scale} = INT64_C(100); {apply}({widget}); }}",
                 c_string(&element.name)
             ));
         }
@@ -18294,9 +18340,16 @@ fn emit_linux_gtk_application(
                 "#flux-ui-{} {{ transform: translate(%dpx, %dpx) rotate(%ddeg) scale(%.2f, %.2f) skewX(%ddeg) skewY(%ddeg); transform-origin: %d%% %d%%; }}",
                 element.name
             ));
-            let apply = format!(
-                " if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {translate_x}, {translate_y}, {rotate}, ((double){scale_x} / 100.0), ((double){scale_y} / 100.0), {skew_x}, {skew_y}, {origin_x}, {origin_y}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }}"
-            );
+            let apply = if linux_ui_retains_gesture_transform_lifecycle(element, signatures) {
+                format!(
+                    " {}({widget});",
+                    linux_ui_hot_gesture_transform_apply_c_name(&element.name)
+                )
+            } else {
+                format!(
+                    " if ({provider} == NULL) {{ {provider} = gtk_css_provider_new(); if ({provider} != NULL) gtk_style_context_add_provider_for_display(gtk_widget_get_display({widget}), GTK_STYLE_PROVIDER({provider}), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); }} if ({provider} != NULL) {{ char *patch_css = g_strdup_printf({css_format}, {translate_x}, {translate_y}, {rotate}, ((double){scale_x} / 100.0), ((double){scale_y} / 100.0), {skew_x}, {skew_y}, {origin_x}, {origin_y}); if (patch_css != NULL) {{ gtk_css_provider_load_from_data({provider}, patch_css, -1); g_free(patch_css); }} }}"
+                )
+            };
             for (property_name, variable) in [
                 ("translate_x", &translate_x),
                 ("translate_y", &translate_y),
@@ -18861,7 +18914,9 @@ fn emit_linux_gtk_application(
         let drag_action = view_property(element, "on_drag");
         let has_drag_action = drag_action.is_some();
         let drag_translate = view_property(element, "drag_translate").is_some();
-        if has_drag_action || drag_translate {
+        let retained_gesture_lifecycle =
+            linux_ui_retains_gesture_transform_lifecycle(element, signatures);
+        if has_drag_action || drag_translate || retained_gesture_lifecycle {
             let callback = if let Some(action) = drag_action {
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
@@ -18888,13 +18943,28 @@ fn emit_linux_gtk_application(
                 } else {
                     format!("if ({enabled}) {{ {update} flux__ui_refresh(); }}")
                 }
+            } else if retained_gesture_lifecycle {
+                let enabled = ui_gesture_translate_enabled_c_name(&element.name);
+                let translate_x = ui_gesture_translate_x_c_name(&element.name);
+                let translate_y = ui_gesture_translate_y_c_name(&element.name);
+                let apply = linux_ui_hot_gesture_transform_apply_c_name(&element.name);
+                format!(
+                    "{callback}\n#ifdef FLUX_DEVELOPMENT_RELOAD\nif ({enabled}) {{ {translate_x} = (int64_t)offset_x; {translate_y} = (int64_t)offset_y; GtkWidget *hot_widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); {apply}(hot_widget); }}\n#endif\nflux__ui_refresh();"
+                )
             } else {
                 format!("{callback}flux__ui_refresh();")
             };
-            out.push_str(&format!(
+            let definition = format!(
                 "static void flux__ui_drag_{}(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer data) {{ (void)gesture; (void)data; {gesture_body} }}\n",
                 element.name,
-            ));
+            );
+            if !has_drag_action && !drag_translate && retained_gesture_lifecycle {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&definition);
+                out.push_str("#endif\n");
+            } else {
+                out.push_str(&definition);
+            }
         }
         if let Some(action) = view_property(element, "on_swipe") {
             let ExprKind::Var(function) = &action.value.kind else {
@@ -18912,7 +18982,7 @@ fn emit_linux_gtk_application(
         let scale_action = view_property(element, "on_scale");
         let has_scale_action = scale_action.is_some();
         let pinch_scale = view_property(element, "pinch_scale").is_some();
-        if has_scale_action || pinch_scale {
+        if has_scale_action || pinch_scale || retained_gesture_lifecycle {
             let callback = if let Some(action) = scale_action {
                 let ExprKind::Var(function) = &action.value.kind else {
                     return Err(diag(
@@ -18938,13 +19008,27 @@ fn emit_linux_gtk_application(
                 } else {
                     format!("if ({enabled}) {{ {update} flux__ui_refresh(); }}")
                 }
+            } else if retained_gesture_lifecycle {
+                let enabled = ui_gesture_scale_enabled_c_name(&element.name);
+                let gesture_scale = ui_gesture_scale_c_name(&element.name);
+                let apply = linux_ui_hot_gesture_transform_apply_c_name(&element.name);
+                format!(
+                    "{callback}\n#ifdef FLUX_DEVELOPMENT_RELOAD\nif ({enabled}) {{ {gesture_scale} = (int64_t)(scale * 100.0 + 0.5); GtkWidget *hot_widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)); {apply}(hot_widget); }}\n#endif\nflux__ui_refresh();"
+                )
             } else {
                 format!("{callback}flux__ui_refresh();")
             };
-            out.push_str(&format!(
+            let definition = format!(
                 "static void flux__ui_scale_{}(GtkGestureZoom *gesture, double scale, gpointer data) {{ (void)gesture; (void)data; {gesture_body} }}\n",
                 element.name,
-            ));
+            );
+            if !has_scale_action && !pinch_scale && retained_gesture_lifecycle {
+                out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+                out.push_str(&definition);
+                out.push_str("#endif\n");
+            } else {
+                out.push_str(&definition);
+            }
         }
         if let Some(action) = view_property(element, "on_key") {
             let ExprKind::Var(function) = &action.value.kind else {
@@ -20186,6 +20270,20 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
+        } else if linux_ui_retains_gesture_transform_lifecycle(element, signatures) {
+            let controller = format!("flux__drag_{}", element.name);
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_drag_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"drag-update\", G_CALLBACK(flux__ui_drag_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+            out.push_str("#endif\n");
         }
         if view_property(element, "on_swipe").is_some() {
             let controller = format!("flux__swipe_{}", element.name);
@@ -20214,6 +20312,20 @@ fn emit_linux_gtk_application(
             out.push_str(&format!(
                 "    gtk_widget_add_controller({variable}, {controller});\n"
             ));
+        } else if linux_ui_retains_gesture_transform_lifecycle(element, signatures) {
+            let controller = format!("flux__scale_{}", element.name);
+            out.push_str("#ifdef FLUX_DEVELOPMENT_RELOAD\n");
+            out.push_str(&format!(
+                "    GtkEventController *{controller} = GTK_EVENT_CONTROLLER(gtk_gesture_zoom_new());\n"
+            ));
+            out.push_str(&format!(
+                "    g_signal_connect({controller}, \"scale-changed\", G_CALLBACK(flux__ui_scale_{}), NULL);\n",
+                element.name
+            ));
+            out.push_str(&format!(
+                "    gtk_widget_add_controller({variable}, {controller});\n"
+            ));
+            out.push_str("#endif\n");
         }
         if view_property(element, "on_hover").is_some()
             || view_property(element, "on_leave").is_some()
@@ -23958,6 +24070,19 @@ fn ui_gesture_scale_enabled_c_name(name: &str) -> String {
 
 fn ui_gesture_scale_c_name(name: &str) -> String {
     format!("flux__gesture_scale_{name}")
+}
+
+fn linux_ui_retains_gesture_transform_lifecycle(
+    element: &crate::ast::ViewElement,
+    signatures: &Signatures,
+) -> bool {
+    view_property(element, "drag_translate").is_none()
+        && view_property(element, "pinch_scale").is_none()
+        && !element_has_dynamic_transform(element, signatures)
+}
+
+fn linux_ui_hot_gesture_transform_apply_c_name(name: &str) -> String {
+    format!("flux__ui_hot_gesture_transform_apply_{name}")
 }
 
 fn element_has_dynamic_transform(
