@@ -47958,6 +47958,79 @@ app Screen
 }
 
 #[test]
+fn development_ui_string_patch_hot_applies_button_size_declaration_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-button-size-lifecycle-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary Button.size lifecycle project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Screen {
+    grid columns: 1fr
+    grid rows: auto
+    Button action at 1,1
+        text: "Action"
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial Button.size lifecycle source should be writable");
+
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial Button.size lifecycle analysis should succeed");
+    let generated = first
+        .emit_c()
+        .expect("Button.size lifecycle fixture should lower for Linux");
+    assert!(generated.contains("strcmp(property, \"size\") == 0 && flux__ui_action != NULL"));
+    assert!(generated.contains(
+        "if (integer_value == 0) gtk_label_set_attributes(GTK_LABEL(button_label), NULL)"
+    ));
+
+    let entry = fs::canonicalize(entry).expect("Button.size lifecycle entry should canonicalize");
+    let sized = initial.replace(
+        "        text: \"Action\"\n",
+        "        text: \"Action\"\n        size: 18\n",
+    );
+    fs::write(&entry, &sized).expect("explicit Button.size should be writable");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("explicit Button.size analysis should succeed");
+    assert_eq!(second.development_abi(), first.development_abi());
+    assert_eq!(
+        second
+            .development_ui_string_patch_from(&first)
+            .expect("adding Button.size should hot-apply"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "size".to_string(),
+            value: "18".to_string(),
+        }]
+    );
+
+    fs::write(&entry, initial).expect("removed Button.size should be writable");
+    cache.invalidate_path(&entry);
+    let third = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("removed Button.size analysis should succeed");
+    assert_eq!(third.development_abi(), second.development_abi());
+    assert_eq!(
+        third
+            .development_ui_string_patch_from(&second)
+            .expect("removing Button.size should restore native theme sizing"),
+        vec![fluxc::project::DevelopmentUiStringPatch {
+            element: "action".to_string(),
+            property: "size".to_string(),
+            value: "0".to_string(),
+        }]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn development_ui_string_patch_restarts_for_text_input_text_with_change_handler() {
     let root = std::env::temp_dir().join(format!(
         "flux-development-text-input-change-handler-patch-{}",

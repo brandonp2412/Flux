@@ -2412,6 +2412,13 @@ fn development_ui_property_lifecycle_patch_value(
         }
         return Some(value.to_string());
     }
+    if property_name == "size" && element.kind == "Button" {
+        let value = development_ui_i64_literal_value(&property.value)?;
+        if !(1..=i64::from(i32::MAX)).contains(&value) {
+            return None;
+        }
+        return Some(value.to_string());
+    }
     if property_name == "max_width_chars"
         && element.kind == "Text"
         && !development_ui_element_has_property(element, "variant")
@@ -2610,6 +2617,9 @@ fn development_ui_property_lifecycle_default(
         && !development_ui_element_has_property(element, "variant")
     {
         return Some("16".to_string());
+    }
+    if property == "size" && element.kind == "Button" {
+        return Some("0".to_string());
     }
     if property == "max_width_chars"
         && element.kind == "Text"
