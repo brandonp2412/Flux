@@ -56489,6 +56489,37 @@ app Screen(onStart: started)
     assert!(android.contains("\"java/lang/Integer\""));
     assert!(android.contains("\"requestFocus\", \"()Z\""));
 
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        database.program(),
+        database.signatures(),
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable focus navigation should lower on Windows");
+    assert!(windows.contains(
+        "typedef struct { HWND current; HWND first; HWND last; HWND before; HWND after;"
+    ));
+    assert!(windows.contains("flux__windows_focus_eligible"));
+    assert!(windows.contains("GetWindow(flux__windows_active_window, GW_CHILD)"));
+    assert!(windows.contains("GetWindow(control, GW_HWNDNEXT)"));
+    assert!(windows.contains("GetPropA(control, \"flux-focus-scope\")"));
+    assert!(
+        windows.contains(
+            "SetPropA(flux__ui_first, \"flux-focus-scope\", (HANDLE)(INT_PTR)INT64_C(8))"
+        )
+    );
+    assert!(windows.contains("static inline void flux__focus_next_in(int64_t scope, bool wrap)"));
+    assert!(
+        windows.contains("static inline void flux__focus_previous_in(int64_t scope, bool wrap)")
+    );
+    assert!(windows.contains("static inline void flux__focus_first_in(int64_t scope)"));
+    assert!(windows.contains("static inline void flux__focus_last_in(int64_t scope)"));
+    assert!(windows.contains("static inline void flux__focus_next(bool wrap)"));
+    assert!(windows.contains("static inline void flux__focus_previous(bool wrap)"));
+    assert!(windows.contains("static inline void flux__focus_first(void)"));
+    assert!(windows.contains("static inline void flux__focus_last(void)"));
+    assert!(windows.contains("static inline void flux__focus_clear(void) { SetFocus(NULL); }"));
+
     let unused = r#"
 fn unused() -> void {
     focus.nextIn(7, true)

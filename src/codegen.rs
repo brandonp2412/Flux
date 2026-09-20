@@ -2604,7 +2604,8 @@ fn emit_runtime_prelude(
             || uses_file_dialog
             || uses_windows_message_box
             || uses_windows_open
-            || uses_windows_font_family)
+            || uses_windows_font_family
+            || runtime_usage.contains("flux__focus_"))
     {
         out.push_str("static HWND flux__windows_active_window = NULL;\n");
     }
@@ -3685,6 +3686,40 @@ fn emit_runtime_prelude(
             out.push_str(
                 "static inline void flux__focus_clear(void) { flux__android_clear_focus(); }\n",
             );
+        }
+    }
+    if uses_portable_focus && uses_windows {
+        out.push_str("typedef struct { HWND current; HWND first; HWND last; HWND before; HWND after; bool seen_current; int64_t scope; bool scoped; } FluxWindowsFocusScan;\n");
+        out.push_str("static bool flux__windows_focus_eligible(HWND control) { if (control == NULL || !IsWindowVisible(control) || !IsWindowEnabled(control)) return false; LONG_PTR style = GetWindowLongPtrA(control, GWL_STYLE); return (style & WS_TABSTOP) != 0; }\n");
+        out.push_str("static int64_t flux__windows_focus_scope(HWND control) { HANDLE raw = GetPropA(control, \"flux-focus-scope\"); return raw == NULL ? INT64_C(-1) : (int64_t)(INT_PTR)raw - INT64_C(1); }\n");
+        out.push_str("static void flux__windows_focus_scan(FluxWindowsFocusScan *scan) { if (scan == NULL || flux__windows_active_window == NULL) return; for (HWND control = GetWindow(flux__windows_active_window, GW_CHILD); control != NULL; control = GetWindow(control, GW_HWNDNEXT)) { bool is_current = control == scan->current; if (is_current) scan->seen_current = true; bool eligible = flux__windows_focus_eligible(control) && (!scan->scoped || flux__windows_focus_scope(control) == scan->scope); if (!eligible) continue; if (scan->first == NULL) scan->first = control; scan->last = control; if (!scan->seen_current) scan->before = control; else if (!is_current && scan->after == NULL) scan->after = control; } }\n");
+        out.push_str("static void flux__windows_focus_move(bool forward, bool wrap, bool scoped, int64_t scope, int edge) { if (flux__windows_active_window == NULL) return; if (scoped && (scope < 0 || scope > INT32_MAX)) return; FluxWindowsFocusScan scan = { .current = GetFocus(), .scope = scope, .scoped = scoped }; scan.seen_current = scan.current == NULL; flux__windows_focus_scan(&scan); HWND target = edge > 0 ? scan.first : edge < 0 ? scan.last : scan.current == NULL ? (forward ? scan.first : scan.last) : (forward ? scan.after : scan.before); if (target == NULL && wrap && edge == 0) target = forward ? scan.first : scan.last; if (target != NULL) SetFocus(target); }\n");
+        if uses_focus_next_in {
+            out.push_str("static inline void flux__focus_next_in(int64_t scope, bool wrap) { flux__windows_focus_move(true, wrap, true, scope, 0); }\n");
+        }
+        if uses_focus_previous_in {
+            out.push_str("static inline void flux__focus_previous_in(int64_t scope, bool wrap) { flux__windows_focus_move(false, wrap, true, scope, 0); }\n");
+        }
+        if uses_focus_first_in {
+            out.push_str("static inline void flux__focus_first_in(int64_t scope) { flux__windows_focus_move(true, false, true, scope, 1); }\n");
+        }
+        if uses_focus_last_in {
+            out.push_str("static inline void flux__focus_last_in(int64_t scope) { flux__windows_focus_move(false, false, true, scope, -1); }\n");
+        }
+        if uses_focus_next {
+            out.push_str("static inline void flux__focus_next(bool wrap) { flux__windows_focus_move(true, wrap, false, INT64_C(-1), 0); }\n");
+        }
+        if uses_focus_previous {
+            out.push_str("static inline void flux__focus_previous(bool wrap) { flux__windows_focus_move(false, wrap, false, INT64_C(-1), 0); }\n");
+        }
+        if uses_focus_first {
+            out.push_str("static inline void flux__focus_first(void) { flux__windows_focus_move(true, false, false, INT64_C(-1), 1); }\n");
+        }
+        if uses_focus_last {
+            out.push_str("static inline void flux__focus_last(void) { flux__windows_focus_move(false, false, false, INT64_C(-1), -1); }\n");
+        }
+        if uses_focus_clear {
+            out.push_str("static inline void flux__focus_clear(void) { SetFocus(NULL); }\n");
         }
     }
     if uses_portable_text_input_selection && uses_gtk {
@@ -15277,6 +15312,24 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             "0".to_string()
         };
         out.push_str(&format!("{variable} = CreateWindowExA(0, \"{class}\", {text}, {style}, {}, {}, {}, {}, flux__windows_active_window, (HMENU)(INT_PTR){id}, instance, NULL); if ({variable} == NULL) return 1;\n", x, y, cell_width, cell_height));
+        if let Some(property) = view_property(element, "focus_scope") {
+            let scope = static_expr_i64(&property.value, signatures).ok_or_else(|| {
+                diag(
+                    property.value.span,
+                    "focusScope must be a compile-time i64 value",
+                )
+            })?;
+            if !(0..=i64::from(i32::MAX)).contains(&scope) {
+                return Err(diag(
+                    property.value.span,
+                    "focusScope must be between 0 and 2147483647",
+                ));
+            }
+            out.push_str(&format!(
+                "if (!SetPropA({variable}, \"flux-focus-scope\", (HANDLE)(INT_PTR)INT64_C({}))) return 1;\n",
+                scope + 1
+            ));
+        }
         if view_property(element, "tooltip").is_some()
             || (element.kind == "TextInput"
                 && view_property(element, "validation_message").is_some())
