@@ -10670,6 +10670,7 @@ fn build_native_instrumented(
 fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     let mut libraries = Vec::new();
     if c_source.contains("CreateWindowExA(")
+        || c_source.contains("CreateWindowExW(")
         || c_source.contains("OpenClipboard(")
         || c_source.contains("SetMenu(")
         || c_source.contains("MessageBoxW(")
@@ -14381,27 +14382,27 @@ app OverlayDemo(title: "Overlay")
 
     #[test]
     fn windows_native_system_libraries_follow_reachable_platform_features() {
-        let basic = windows_native_system_libraries("CreateWindowExA(");
+        let basic = windows_native_system_libraries("CreateWindowExW(");
         assert_eq!(basic, vec!["-luser32"]);
-        let dpi_aware = windows_native_system_libraries("CreateWindowExA( GetDeviceCaps(");
+        let dpi_aware = windows_native_system_libraries("CreateWindowExW( GetDeviceCaps(");
         assert_eq!(dpi_aware, vec!["-luser32", "-lgdi32"]);
 
         let integrated = windows_native_system_libraries(
-            "CreateWindowExA( OpenClipboard( GetOpenFileNameW( GetSaveFileNameW( Shell_NotifyIconW( SHBrowseForFolderW( CoTaskMemFree(",
+            "CreateWindowExW( OpenClipboard( GetOpenFileNameW( GetSaveFileNameW( Shell_NotifyIconW( SHBrowseForFolderW( CoTaskMemFree(",
         );
         assert_eq!(
             integrated,
             vec!["-luser32", "-lcomdlg32", "-lshell32", "-lole32"]
         );
         let accessible =
-            windows_native_system_libraries("CreateWindowExA( GetDeviceCaps( CoCreateInstance(");
+            windows_native_system_libraries("CreateWindowExW( GetDeviceCaps( CoCreateInstance(");
         assert_eq!(accessible, vec!["-luser32", "-lgdi32", "-lole32"]);
 
         let drag_drop =
-            windows_native_system_libraries("CreateWindowExA( DoDragDrop( RegisterDragDrop(");
+            windows_native_system_libraries("CreateWindowExW( DoDragDrop( RegisterDragDrop(");
         assert_eq!(drag_drop, vec!["-luser32", "-lole32"]);
 
-        let tooltips = windows_native_system_libraries("CreateWindowExA( InitCommonControlsEx(");
+        let tooltips = windows_native_system_libraries("CreateWindowExW( InitCommonControlsEx(");
         assert_eq!(tooltips, vec!["-luser32", "-lcomctl32"]);
 
         assert_eq!(
