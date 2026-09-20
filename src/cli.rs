@@ -10685,7 +10685,11 @@ fn windows_native_system_libraries(c_source: &str) -> Vec<&'static str> {
     {
         libraries.push("-lshell32");
     }
-    if c_source.contains("CoTaskMemFree(") || c_source.contains("CoCreateInstance(") {
+    if c_source.contains("CoTaskMemFree(")
+        || c_source.contains("CoCreateInstance(")
+        || c_source.contains("DoDragDrop(")
+        || c_source.contains("RegisterDragDrop(")
+    {
         libraries.push("-lole32");
     }
     if c_source.contains("CredWriteW(")
@@ -14380,6 +14384,10 @@ app OverlayDemo(title: "Overlay")
         let accessible =
             windows_native_system_libraries("CreateWindowExA( GetDeviceCaps( CoCreateInstance(");
         assert_eq!(accessible, vec!["-luser32", "-lgdi32", "-lole32"]);
+
+        let drag_drop =
+            windows_native_system_libraries("CreateWindowExA( DoDragDrop( RegisterDragDrop(");
+        assert_eq!(drag_drop, vec!["-luser32", "-lole32"]);
 
         let tooltips = windows_native_system_libraries("CreateWindowExA( InitCommonControlsEx(");
         assert_eq!(tooltips, vec!["-luser32", "-lcomctl32"]);

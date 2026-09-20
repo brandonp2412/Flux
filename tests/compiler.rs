@@ -1942,6 +1942,10 @@ fn scaled(scalePercent: i64) -> void {
     print(scalePercent)
 }
 
+fn dropped(value: str) -> void {
+    print(value)
+}
+
 fn stopAfterStart() -> void {
     print(windows.secureStore("session", "secret"))
     print(windows.secureRead("session", secureValue))
@@ -1967,6 +1971,7 @@ view Screen {
         placeholder: "Email"
         validationState: "error"
         validationMessage: "Enter a valid email"
+        onDrop: dropped
     Button action at 3,1
         text: "Run"
         primary: true
@@ -1979,6 +1984,7 @@ view Screen {
     Image logo at 4,1
         source: "logo.bmp"
         fit: "cover"
+        dragText: "logo"
 }
 app Screen(title: "Windows syntax", onStart: stopAfterStart)
 "#;
@@ -54175,6 +54181,27 @@ app DragDrop
     assert!(android.contains("setOnDragListener"));
     assert!(android.contains("Java_app_flux_runtime_FluxActivity_nativeOnDrop"));
     assert!(android.contains("flux__fn_dropped(value); flux__ui_refresh();"));
+
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("portable text drag/drop should lower to Windows");
+    assert!(windows.contains("#include <ole2.h>"));
+    assert!(windows.contains("OleInitialize(NULL)"));
+    assert!(windows.contains("DoDragDrop(&data->iface, &source->iface, DROPEFFECT_COPY, &effect)"));
+    assert!(windows.contains("flux__win_begin_text_drag(\"horse-profile\")"));
+    assert!(windows.contains("RegisterDragDrop(control, &target->iface)"));
+    assert!(windows.contains("flux__win_drop_target_1"));
+    assert!(windows.contains(
+        "flux__win_register_drop_target(flux__ui_target, &flux__win_drop_target_1, flux__fn_dropped)"
+    ));
+    assert!(windows.contains("flux__win_revoke_drop_target(flux__ui_target)"));
+    assert!(windows.contains("WideCharToMultiByte("));
+    assert!(windows.contains("self->callback(utf8);"));
+    assert!(windows.contains("flux__win_ole_shutdown();"));
 
     let wrong_callback = r#"
 fn dropped(_value: i64) -> void {

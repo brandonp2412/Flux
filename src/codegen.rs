@@ -2527,6 +2527,9 @@ fn emit_runtime_prelude(
         if runtime_usage.contains("IAccPropServices") {
             out.push_str("#include <initguid.h>\n#include <oleacc.h>\n");
         }
+        if runtime_usage.contains("DoDragDrop(") || runtime_usage.contains("RegisterDragDrop(") {
+            out.push_str("#include <ole2.h>\n");
+        }
     }
     if uses_android {
         out.push_str("#include <android/native_activity.h>\n");
@@ -13594,6 +13597,496 @@ static void flux_size_constraint_set_max_height(GtkWidget *widget, int max_heigh
     );
 }
 
+fn emit_windows_text_drag_drop_runtime(out: &mut String) {
+    out.push_str(
+        r#"
+typedef struct FluxWinDataObject {
+    IDataObject iface;
+    LONG refs;
+    char *text;
+} FluxWinDataObject;
+
+typedef struct FluxWinDropSource {
+    IDropSource iface;
+    LONG refs;
+} FluxWinDropSource;
+
+typedef void (*FluxWinDropCallback)(const char *);
+
+typedef struct FluxWinDropTarget {
+    IDropTarget iface;
+    LONG refs;
+    bool accepts_text;
+    FluxWinDropCallback callback;
+} FluxWinDropTarget;
+
+static const IID flux__win_iid_iunknown = {0x00000000, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const IID flux__win_iid_idataobject = {0x0000010e, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const IID flux__win_iid_idropsource = {0x00000121, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const IID flux__win_iid_idroptarget = {0x00000122, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static bool flux__win_ole_initialized = false;
+
+static bool flux__win_iid_equal(REFIID left, const IID *right) {
+    return left != NULL && right != NULL && memcmp(left, right, sizeof(IID)) == 0;
+}
+
+static FORMATETC flux__win_text_format(void) {
+    FORMATETC format = {0};
+    format.cfFormat = CF_UNICODETEXT;
+    format.dwAspect = DVASPECT_CONTENT;
+    format.lindex = -1;
+    format.tymed = TYMED_HGLOBAL;
+    return format;
+}
+
+static bool flux__win_text_format_supported(const FORMATETC *format) {
+    return format != NULL
+        && format->cfFormat == CF_UNICODETEXT
+        && format->dwAspect == DVASPECT_CONTENT
+        && format->lindex == -1
+        && (format->tymed & TYMED_HGLOBAL) != 0;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_query_interface(
+    IDataObject *iface,
+    REFIID iid,
+    void **out
+) {
+    if (out == NULL) return E_POINTER;
+    *out = NULL;
+    if (!flux__win_iid_equal(iid, &flux__win_iid_iunknown)
+        && !flux__win_iid_equal(iid, &flux__win_iid_idataobject)) {
+        return E_NOINTERFACE;
+    }
+    *out = iface;
+    iface->lpVtbl->AddRef(iface);
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_data_add_ref(IDataObject *iface) {
+    FluxWinDataObject *self = (FluxWinDataObject *)iface;
+    return (ULONG)InterlockedIncrement(&self->refs);
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_data_release(IDataObject *iface) {
+    FluxWinDataObject *self = (FluxWinDataObject *)iface;
+    LONG refs = InterlockedDecrement(&self->refs);
+    if (refs == 0) {
+        free(self->text);
+        free(self);
+    }
+    return refs > 0 ? (ULONG)refs : 0;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_get_data(
+    IDataObject *iface,
+    FORMATETC *format,
+    STGMEDIUM *medium
+) {
+    if (medium == NULL) return E_POINTER;
+    memset(medium, 0, sizeof(*medium));
+    if (!flux__win_text_format_supported(format)) return DV_E_FORMATETC;
+    FluxWinDataObject *self = (FluxWinDataObject *)iface;
+    int wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, self->text, -1, NULL, 0);
+    if (wide_length <= 0) return DV_E_FORMATETC;
+    SIZE_T bytes = (SIZE_T)wide_length * sizeof(wchar_t);
+    HGLOBAL storage = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (storage == NULL) return E_OUTOFMEMORY;
+    wchar_t *wide = (wchar_t *)GlobalLock(storage);
+    if (wide == NULL) {
+        GlobalFree(storage);
+        return E_OUTOFMEMORY;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, self->text, -1, wide, wide_length) <= 0) {
+        GlobalUnlock(storage);
+        GlobalFree(storage);
+        return DV_E_FORMATETC;
+    }
+    GlobalUnlock(storage);
+    medium->tymed = TYMED_HGLOBAL;
+    medium->hGlobal = storage;
+    medium->pUnkForRelease = NULL;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_get_data_here(
+    IDataObject *iface,
+    FORMATETC *format,
+    STGMEDIUM *medium
+) {
+    (void)iface;
+    (void)format;
+    (void)medium;
+    return DATA_E_FORMATETC;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_query_get_data(
+    IDataObject *iface,
+    FORMATETC *format
+) {
+    (void)iface;
+    return flux__win_text_format_supported(format) ? S_OK : DV_E_FORMATETC;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_get_canonical_format(
+    IDataObject *iface,
+    FORMATETC *input,
+    FORMATETC *output
+) {
+    (void)iface;
+    (void)input;
+    if (output != NULL) output->ptd = NULL;
+    return DATA_S_SAMEFORMATETC;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_set_data(
+    IDataObject *iface,
+    FORMATETC *format,
+    STGMEDIUM *medium,
+    BOOL release
+) {
+    (void)iface;
+    (void)format;
+    (void)medium;
+    (void)release;
+    return E_NOTIMPL;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_enum_format(
+    IDataObject *iface,
+    DWORD direction,
+    IEnumFORMATETC **enumerator
+) {
+    (void)iface;
+    (void)direction;
+    if (enumerator != NULL) *enumerator = NULL;
+    return E_NOTIMPL;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_advise(
+    IDataObject *iface,
+    FORMATETC *format,
+    DWORD flags,
+    IAdviseSink *sink,
+    DWORD *connection
+) {
+    (void)iface;
+    (void)format;
+    (void)flags;
+    (void)sink;
+    if (connection != NULL) *connection = 0;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_unadvise(IDataObject *iface, DWORD connection) {
+    (void)iface;
+    (void)connection;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_data_enum_advise(
+    IDataObject *iface,
+    IEnumSTATDATA **enumerator
+) {
+    (void)iface;
+    if (enumerator != NULL) *enumerator = NULL;
+    return OLE_E_ADVISENOTSUPPORTED;
+}
+
+static const IDataObjectVtbl flux__win_data_vtable = {
+    flux__win_data_query_interface,
+    flux__win_data_add_ref,
+    flux__win_data_release,
+    flux__win_data_get_data,
+    flux__win_data_get_data_here,
+    flux__win_data_query_get_data,
+    flux__win_data_get_canonical_format,
+    flux__win_data_set_data,
+    flux__win_data_enum_format,
+    flux__win_data_advise,
+    flux__win_data_unadvise,
+    flux__win_data_enum_advise,
+};
+
+static FluxWinDataObject *flux__win_data_object_new(const char *text) {
+    size_t length = 0;
+    if (!flux__win_bounded_length(text, 1048576, &length)) return NULL;
+    FluxWinDataObject *object = (FluxWinDataObject *)calloc(1, sizeof(*object));
+    if (object == NULL) return NULL;
+    object->text = (char *)malloc(length + 1);
+    if (object->text == NULL) {
+        free(object);
+        return NULL;
+    }
+    memcpy(object->text, text, length + 1);
+    object->iface.lpVtbl = &flux__win_data_vtable;
+    object->refs = 1;
+    return object;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_source_query_interface(
+    IDropSource *iface,
+    REFIID iid,
+    void **out
+) {
+    if (out == NULL) return E_POINTER;
+    *out = NULL;
+    if (!flux__win_iid_equal(iid, &flux__win_iid_iunknown)
+        && !flux__win_iid_equal(iid, &flux__win_iid_idropsource)) {
+        return E_NOINTERFACE;
+    }
+    *out = iface;
+    iface->lpVtbl->AddRef(iface);
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_source_add_ref(IDropSource *iface) {
+    FluxWinDropSource *self = (FluxWinDropSource *)iface;
+    return (ULONG)InterlockedIncrement(&self->refs);
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_source_release(IDropSource *iface) {
+    FluxWinDropSource *self = (FluxWinDropSource *)iface;
+    LONG refs = InterlockedDecrement(&self->refs);
+    if (refs == 0) free(self);
+    return refs > 0 ? (ULONG)refs : 0;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_source_continue(
+    IDropSource *iface,
+    BOOL escape_pressed,
+    DWORD key_state
+) {
+    (void)iface;
+    if (escape_pressed) return DRAGDROP_S_CANCEL;
+    if ((key_state & MK_LBUTTON) == 0) return DRAGDROP_S_DROP;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_source_feedback(IDropSource *iface, DWORD effect) {
+    (void)iface;
+    (void)effect;
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+
+static const IDropSourceVtbl flux__win_source_vtable = {
+    flux__win_source_query_interface,
+    flux__win_source_add_ref,
+    flux__win_source_release,
+    flux__win_source_continue,
+    flux__win_source_feedback,
+};
+
+static FluxWinDropSource *flux__win_drop_source_new(void) {
+    FluxWinDropSource *source = (FluxWinDropSource *)calloc(1, sizeof(*source));
+    if (source == NULL) return NULL;
+    source->iface.lpVtbl = &flux__win_source_vtable;
+    source->refs = 1;
+    return source;
+}
+
+static void flux__win_begin_text_drag(const char *text) {
+    FluxWinDataObject *data = flux__win_data_object_new(text);
+    FluxWinDropSource *source = flux__win_drop_source_new();
+    if (data == NULL || source == NULL) {
+        if (data != NULL) data->iface.lpVtbl->Release(&data->iface);
+        if (source != NULL) source->iface.lpVtbl->Release(&source->iface);
+        return;
+    }
+    DWORD effect = DROPEFFECT_NONE;
+    (void)DoDragDrop(&data->iface, &source->iface, DROPEFFECT_COPY, &effect);
+    source->iface.lpVtbl->Release(&source->iface);
+    data->iface.lpVtbl->Release(&data->iface);
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_target_query_interface(
+    IDropTarget *iface,
+    REFIID iid,
+    void **out
+) {
+    if (out == NULL) return E_POINTER;
+    *out = NULL;
+    if (!flux__win_iid_equal(iid, &flux__win_iid_iunknown)
+        && !flux__win_iid_equal(iid, &flux__win_iid_idroptarget)) {
+        return E_NOINTERFACE;
+    }
+    *out = iface;
+    iface->lpVtbl->AddRef(iface);
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_target_add_ref(IDropTarget *iface) {
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    return (ULONG)InterlockedIncrement(&self->refs);
+}
+
+static ULONG STDMETHODCALLTYPE flux__win_target_release(IDropTarget *iface) {
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    LONG refs = InterlockedDecrement(&self->refs);
+    return refs > 0 ? (ULONG)refs : 0;
+}
+
+static DWORD flux__win_drop_effect(FluxWinDropTarget *self, DWORD allowed) {
+    return self->accepts_text && (allowed & DROPEFFECT_COPY) != 0
+        ? DROPEFFECT_COPY
+        : DROPEFFECT_NONE;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_target_drag_enter(
+    IDropTarget *iface,
+    IDataObject *data,
+    DWORD key_state,
+    POINTL point,
+    DWORD *effect
+) {
+    (void)key_state;
+    (void)point;
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    FORMATETC format = flux__win_text_format();
+    self->accepts_text = data != NULL
+        && SUCCEEDED(data->lpVtbl->QueryGetData(data, &format));
+    if (effect != NULL) *effect = flux__win_drop_effect(self, *effect);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_target_drag_over(
+    IDropTarget *iface,
+    DWORD key_state,
+    POINTL point,
+    DWORD *effect
+) {
+    (void)key_state;
+    (void)point;
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    if (effect != NULL) *effect = flux__win_drop_effect(self, *effect);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_target_drag_leave(IDropTarget *iface) {
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    self->accepts_text = false;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE flux__win_target_drop(
+    IDropTarget *iface,
+    IDataObject *data,
+    DWORD key_state,
+    POINTL point,
+    DWORD *effect
+) {
+    (void)key_state;
+    (void)point;
+    FluxWinDropTarget *self = (FluxWinDropTarget *)iface;
+    DWORD allowed = effect != NULL ? *effect : DROPEFFECT_NONE;
+    if (!self->accepts_text || self->callback == NULL || data == NULL) {
+        if (effect != NULL) *effect = DROPEFFECT_NONE;
+        self->accepts_text = false;
+        return S_OK;
+    }
+    FORMATETC format = flux__win_text_format();
+    STGMEDIUM medium = {0};
+    HRESULT result = data->lpVtbl->GetData(data, &format, &medium);
+    if (FAILED(result) || medium.tymed != TYMED_HGLOBAL || medium.hGlobal == NULL) {
+        if (SUCCEEDED(result)) ReleaseStgMedium(&medium);
+        if (effect != NULL) *effect = DROPEFFECT_NONE;
+        self->accepts_text = false;
+        return S_OK;
+    }
+    SIZE_T bytes = GlobalSize(medium.hGlobal);
+    wchar_t *wide = (wchar_t *)GlobalLock(medium.hGlobal);
+    bool delivered = false;
+    if (wide != NULL && bytes >= sizeof(wchar_t) && bytes <= 2097152) {
+        size_t units = bytes / sizeof(wchar_t);
+        size_t characters = 0;
+        while (characters < units && wide[characters] != L'\0') characters += 1;
+        if (characters < units && characters <= 524288) {
+            int required = WideCharToMultiByte(
+                CP_UTF8,
+                WC_ERR_INVALID_CHARS,
+                wide,
+                (int)characters,
+                NULL,
+                0,
+                NULL,
+                NULL
+            );
+            if (required >= 0 && required <= 1048576) {
+                char *utf8 = (char *)malloc((size_t)required + 1);
+                if (utf8 != NULL) {
+                    int converted = required == 0 ? 0 : WideCharToMultiByte(
+                        CP_UTF8,
+                        WC_ERR_INVALID_CHARS,
+                        wide,
+                        (int)characters,
+                        utf8,
+                        required,
+                        NULL,
+                        NULL
+                    );
+                    if (converted == required) {
+                        utf8[required] = '\0';
+                        self->callback(utf8);
+                        flux__win_refresh();
+                        delivered = true;
+                    }
+                    free(utf8);
+                }
+            }
+        }
+    }
+    if (wide != NULL) GlobalUnlock(medium.hGlobal);
+    ReleaseStgMedium(&medium);
+    self->accepts_text = false;
+    if (effect != NULL) *effect = delivered && (allowed & DROPEFFECT_COPY) != 0
+        ? DROPEFFECT_COPY
+        : DROPEFFECT_NONE;
+    return S_OK;
+}
+
+static const IDropTargetVtbl flux__win_target_vtable = {
+    flux__win_target_query_interface,
+    flux__win_target_add_ref,
+    flux__win_target_release,
+    flux__win_target_drag_enter,
+    flux__win_target_drag_over,
+    flux__win_target_drag_leave,
+    flux__win_target_drop,
+};
+
+static bool flux__win_register_drop_target(
+    HWND control,
+    FluxWinDropTarget *target,
+    FluxWinDropCallback callback
+) {
+    if (control == NULL || target == NULL || callback == NULL) return false;
+    memset(target, 0, sizeof(*target));
+    target->iface.lpVtbl = &flux__win_target_vtable;
+    target->refs = 1;
+    target->callback = callback;
+    return SUCCEEDED(RegisterDragDrop(control, &target->iface));
+}
+
+static void flux__win_revoke_drop_target(HWND control) {
+    if (control != NULL) (void)RevokeDragDrop(control);
+}
+
+static bool flux__win_ole_init(void) {
+    HRESULT result = OleInitialize(NULL);
+    if (FAILED(result)) return false;
+    flux__win_ole_initialized = true;
+    return true;
+}
+
+static void flux__win_ole_shutdown(void) {
+    if (!flux__win_ole_initialized) return;
+    OleUninitialize();
+    flux__win_ole_initialized = false;
+}
+"#,
+    );
+}
+
 fn emit_windows_native_application(
     out: &mut String,
     program: &Program,
@@ -13658,6 +14151,9 @@ fn emit_windows_native_application(
     });
     let uses_validation_states = view.elements.iter().any(|element| {
         element.kind == "TextInput" && view_property(element, "validation_state").is_some()
+    });
+    let uses_text_drag_drop = view.elements.iter().any(|element| {
+        view_property(element, "drag_text").is_some() || view_property(element, "on_drop").is_some()
     });
     if uses_input_scopes {
         for element in view
@@ -14171,6 +14667,16 @@ fn emit_windows_native_application(
     out.push_str(
         "static bool flux__win_refreshing = false;\nstatic void flux__win_refresh(void);\n",
     );
+    if uses_text_drag_drop {
+        emit_windows_text_drag_drop_runtime(out);
+        for (index, element) in view.elements.iter().enumerate() {
+            if view_property(element, "on_drop").is_some() {
+                out.push_str(&format!(
+                    "static FluxWinDropTarget flux__win_drop_target_{index} = {{0}};\n"
+                ));
+            }
+        }
+    }
     out.push_str("static void flux__win_set_text_if_changed(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = GetWindowTextLengthA(control); if (length < 0) return; char *current = (char *)malloc((size_t)length + 1); if (current == NULL) return; if (GetWindowTextA(control, current, length + 1) >= 0 && strcmp(current, text) != 0) { bool previous = flux__win_refreshing; flux__win_refreshing = true; SetWindowTextA(control, text); flux__win_refreshing = previous; } free(current); }\n");
     out.push_str("static void flux__win_set_cue(HWND control, const char *text) { if (control == NULL) return; if (text == NULL) text = \"\"; int length = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0); if (length <= 0) return; wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t)); if (wide == NULL) return; if (MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, length) > 0) SendMessageW(control, EM_SETCUEBANNER, TRUE, (LPARAM)wide); free(wide); }\n");
     if uses_validation_states {
@@ -14590,6 +15096,21 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
             format!("{}(); flux__win_refresh();", function_c_name(function))
         };
         out.push_str(&format!("static WNDPROC flux__win_long_press_orig_{index} = NULL;\nstatic bool flux__win_long_press_armed_{index} = false;\nstatic bool flux__win_long_press_consumed_{index} = false;\nstatic POINT flux__win_long_press_start_{index} = {{0}};\nstatic const UINT_PTR flux__win_long_press_timer_{index} = (UINT_PTR)(0xF100u + {index}u);\nstatic LRESULT CALLBACK flux__win_long_press_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); POINT point = {{ (int)(short)LOWORD(lparam), (int)(short)HIWORD(lparam) }}; ClientToScreen(hwnd, &point); flux__win_long_press_start_{index} = point; flux__win_long_press_armed_{index} = SetTimer(hwnd, flux__win_long_press_timer_{index}, GetDoubleClickTime(), NULL) != 0; return result; }} if (message == WM_MOUSEMOVE && flux__win_long_press_armed_{index}) {{ POINT point = {{0}}; if (GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} }} }} if (message == WM_TIMER && wparam == flux__win_long_press_timer_{index}) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); bool pressed = (GetKeyState(VK_LBUTTON) & 0x8000) != 0; POINT point = {{0}}; bool inside_threshold = false; if (pressed && GetCursorPos(&point)) {{ int dx = point.x - flux__win_long_press_start_{index}.x; int dy = point.y - flux__win_long_press_start_{index}.y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; inside_threshold = dx <= GetSystemMetrics(SM_CXDRAG) && dy <= GetSystemMetrics(SM_CYDRAG); }} if (flux__win_long_press_armed_{index} && inside_threshold) {{ flux__win_long_press_consumed_{index} = true; {event_body} }} flux__win_long_press_armed_{index} = false; return 0; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; LRESULT result = CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); return result; }} if (message == WM_NCDESTROY) {{ KillTimer(hwnd, flux__win_long_press_timer_{index}); flux__win_long_press_armed_{index} = false; }} return CallWindowProcA(flux__win_long_press_orig_{index}, hwnd, message, wparam, lparam); }}\n"));
+    }
+    for (index, element) in view.elements.iter().enumerate() {
+        let Some(property) = view_property(element, "drag_text") else {
+            continue;
+        };
+        let Some(text) = static_expr_str(&property.value, signatures) else {
+            return Err(diag(
+                property.value.span,
+                "dragText must be a compile-time string value",
+            ));
+        };
+        let payload = c_string(&text);
+        out.push_str(&format!(
+            "static WNDPROC flux__win_text_drag_orig_{index} = NULL;\nstatic bool flux__win_text_drag_tracking_{index} = false;\nstatic int flux__win_text_drag_start_x_{index} = 0;\nstatic int flux__win_text_drag_start_y_{index} = 0;\nstatic LRESULT CALLBACK flux__win_text_drag_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ if (message == WM_LBUTTONDOWN) {{ LRESULT result = CallWindowProcA(flux__win_text_drag_orig_{index}, hwnd, message, wparam, lparam); flux__win_text_drag_tracking_{index} = true; flux__win_text_drag_start_x_{index} = (int)(short)LOWORD(lparam); flux__win_text_drag_start_y_{index} = (int)(short)HIWORD(lparam); return result; }} if (message == WM_MOUSEMOVE && flux__win_text_drag_tracking_{index}) {{ LRESULT result = CallWindowProcA(flux__win_text_drag_orig_{index}, hwnd, message, wparam, lparam); if ((wparam & MK_LBUTTON) == 0) {{ flux__win_text_drag_tracking_{index} = false; return result; }} int dx = (int)(short)LOWORD(lparam) - flux__win_text_drag_start_x_{index}; int dy = (int)(short)HIWORD(lparam) - flux__win_text_drag_start_y_{index}; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; if (dx > GetSystemMetrics(SM_CXDRAG) || dy > GetSystemMetrics(SM_CYDRAG)) {{ flux__win_text_drag_tracking_{index} = false; if (GetCapture() == hwnd) ReleaseCapture(); flux__win_begin_text_drag({payload}); }} return result; }} if (message == WM_LBUTTONUP || message == WM_CAPTURECHANGED || message == WM_CANCELMODE) flux__win_text_drag_tracking_{index} = false; return CallWindowProcA(flux__win_text_drag_orig_{index}, hwnd, message, wparam, lparam); }}\n"
+        ));
     }
     for (index, element) in view.elements.iter().enumerate() {
         let Some(action) = view_property(element, "on_drag") else {
@@ -15214,15 +15735,29 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         String::new()
     };
-    let input_scope_close = if uses_input_scopes {
+    let input_scope_close = if uses_input_scopes || uses_text_drag_drop {
         let mut cleanup = String::from(" case WM_CLOSE: {");
-        for element in view.elements.iter().filter(|element| {
-            element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
-        }) {
-            cleanup.push_str(&format!(
-                " flux__win_clear_input_scope({});",
-                ui_widget_c_name(&element.name)
-            ));
+        if uses_input_scopes {
+            for element in view.elements.iter().filter(|element| {
+                element.kind == "TextInput" && view_property(element, "keyboard_type").is_some()
+            }) {
+                cleanup.push_str(&format!(
+                    " flux__win_clear_input_scope({});",
+                    ui_widget_c_name(&element.name)
+                ));
+            }
+        }
+        if uses_text_drag_drop {
+            for element in view
+                .elements
+                .iter()
+                .filter(|element| view_property(element, "on_drop").is_some())
+            {
+                cleanup.push_str(&format!(
+                    " flux__win_revoke_drop_target({});",
+                    ui_widget_c_name(&element.name)
+                ));
+            }
         }
         cleanup.push_str(" DestroyWindow(hwnd); return 0; }");
         cleanup
@@ -15248,7 +15783,12 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     } else {
         ""
     };
-    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
+    let ole_init = if uses_text_drag_drop {
+        " if (!flux__win_ole_init()) return 1;"
+    } else {
+        ""
+    };
+    out.push_str(&format!("static int flux__win_run(void) {{ flux__win_enable_dpi_awareness(); flux__win_set_application_id({});{accessibility_init}{tooltip_init}{input_scope_init}{ole_init} flux__win_dpi = flux__win_query_dpi(NULL); flux__ui_display_scale = ((int64_t)flux__win_dpi + INT64_C(48)) / INT64_C(96); HINSTANCE instance = GetModuleHandleA(NULL); WNDCLASSA wc = {{0}}; wc.lpfnWndProc = flux__win_window_proc; wc.hInstance = instance; wc.lpszClassName = \"FluxNativeWindow\"; wc.hCursor = LoadCursorA(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); if (!RegisterClassA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;\n", c_string(&application_id)));
     out.push_str(&format!("flux__windows_active_window = CreateWindowExA({window_ex_style}, wc.lpszClassName, {}, {window_style}, CW_USEDEFAULT, CW_USEDEFAULT, flux__win_scale(INT64_C({})), flux__win_scale(INT64_C({})), NULL, NULL, instance, NULL); if (flux__windows_active_window == NULL) return 1;\n", c_string(&title), width, height));
     if uses_tooltips {
         out.push_str("flux__win_tooltips = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, flux__windows_active_window, NULL, instance, NULL); if (flux__win_tooltips == NULL) return 1; SetWindowPos(flux__win_tooltips, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);\n");
@@ -15492,6 +16032,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         if view_property(element, "on_long_press").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_long_press_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_long_press_proc_{index}); if (flux__win_long_press_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
+        if view_property(element, "drag_text").is_some() {
+            out.push_str(&format!("SetLastError(0); flux__win_text_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_text_drag_proc_{index}); if (flux__win_text_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
+        }
         if view_property(element, "on_drag").is_some() {
             out.push_str(&format!("SetLastError(0); flux__win_drag_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_drag_proc_{index}); if (flux__win_drag_orig_{index} == NULL && GetLastError() != 0) return 1;\n"));
         }
@@ -15500,6 +16043,18 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
         }
         if view_property(element, "on_scale").is_some() {
             out.push_str(&format!(r#"SetLastError(0); flux__win_pinch_orig_{index} = (WNDPROC)(LONG_PTR)SetWindowLongPtrA({variable}, GWLP_WNDPROC, (LONG_PTR)flux__win_pinch_proc_{index}); if (flux__win_pinch_orig_{index} == NULL && GetLastError() != 0) return 1; GESTURECONFIG flux__win_zoom_config_{index} = {{ GID_ZOOM, GC_ZOOM, 0 }}; if (!SetGestureConfig({variable}, 0, 1, &flux__win_zoom_config_{index}, sizeof(flux__win_zoom_config_{index}))) {{ fputs("Flux runtime error: native Windows zoom gestures are unavailable\n", stderr); return 1; }} "#));
+        }
+        if let Some(action) = view_property(element, "on_drop") {
+            let ExprKind::Var(function) = &action.value.kind else {
+                return Err(diag(
+                    action.value.span,
+                    "bootstrap Windows onDrop requires a named fn(str) -> void callback",
+                ));
+            };
+            out.push_str(&format!(
+                "if (!flux__win_register_drop_target({variable}, &flux__win_drop_target_{index}, {})) return 1;\n",
+                function_c_name(function)
+            ));
         }
     }
     if let Some(first) = accessibility_order.first() {
@@ -15571,6 +16126,9 @@ static void flux__win_set_bitmap(HWND control, HBITMAP *current, const char *sou
     }
     if uses_input_scopes {
         out.push_str(" flux__win_input_scope_shutdown();");
+    }
+    if uses_text_drag_drop {
+        out.push_str(" flux__win_ole_shutdown();");
     }
     if uses_accessibility {
         out.push_str(" flux__win_accessibility_shutdown();");
