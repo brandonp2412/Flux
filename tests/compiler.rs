@@ -54511,6 +54511,31 @@ app Screen(id: "app.example.screen", resizable: false)
     assert!(generated.contains("gdk_set_allowed_backends(\"wayland,x11,*\")"));
     assert!(generated.contains("gtk_window_set_resizable(GTK_WINDOW(window), FALSE)"));
 
+    let program = fluxc::parser::parse(source).expect("application metadata should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("application metadata should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("application resizable metadata should lower to Windows");
+    assert!(windows.contains("(WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX))"));
+
+    let resizable = source.replace("resizable: false", "resizable: true");
+    let program = fluxc::parser::parse(&resizable).expect("resizable application should parse");
+    let signatures =
+        fluxc::typecheck::check(&program).expect("resizable application should typecheck");
+    let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &program,
+        &signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("resizable application should keep standard Windows frame");
+    assert!(windows.contains(", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT"));
+
     let invalid_id = r#"
 view Screen {
     grid columns: 1fr
