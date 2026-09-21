@@ -33983,6 +33983,7 @@ enum CfgAggregateConstantKind {
     Record(Vec<(Option<String>, CfgAggregateValue)>),
     Struct {
         name: String,
+        base: Option<CfgAggregateValue>,
         fields: Vec<(String, CfgAggregateValue)>,
     },
 }
@@ -34061,10 +34062,15 @@ fn cfg_literal_aggregate_value(
             )
         }
         crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
-            if base.is_none() && value.ownership.is_copy() =>
+            if value.ownership.is_copy() =>
         {
+            let base = match base {
+                Some(id) => Some(cfg_literal_aggregate_value(cfg, *id)?),
+                None => None,
+            };
             CfgAggregateConstantKind::Struct {
                 name: name.clone(),
+                base,
                 fields: fields
                     .iter()
                     .map(|(field, id)| {
@@ -34267,18 +34273,25 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Record),
             crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
-                if base.is_none() =>
+                if base.is_none() || value.ownership.is_copy() =>
             {
-                fields
-                    .iter()
-                    .map(|(field, id)| {
-                        Some((field.clone(), cfg_literal_aggregate_value(cfg, *id)?))
-                    })
-                    .collect::<Option<Vec<_>>>()
-                    .map(|fields| CfgAggregateConstantKind::Struct {
-                        name: name.clone(),
-                        fields,
-                    })
+                let base = match base {
+                    Some(id) => cfg_literal_aggregate_value(cfg, *id).map(Some),
+                    None => Some(None),
+                };
+                base.and_then(|base| {
+                    fields
+                        .iter()
+                        .map(|(field, id)| {
+                            Some((field.clone(), cfg_literal_aggregate_value(cfg, *id)?))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                        .map(|fields| CfgAggregateConstantKind::Struct {
+                            name: name.clone(),
+                            base,
+                            fields,
+                        })
+                })
             }
             _ => None,
         };
@@ -44869,24 +44882,42 @@ fn emit_cfg_aggregate_constant(
                 rendered.join(", ")
             ))
         }
-        (CfgAggregateConstantKind::Struct { name, fields }, Type::Named(expected_name))
+        (CfgAggregateConstantKind::Struct { name, base, fields }, Type::Named(expected_name))
             if name == expected_name =>
         {
             let definition = signatures.struct_type(name)?;
-            if fields.len() != definition.fields.len() {
-                return None;
+            if let Some(base) = base {
+                let struct_ty = Type::Named(name.clone());
+                let mut rendered = Vec::with_capacity(fields.len() + 1);
+                rendered.push(emit_cfg_aggregate_value(base, &struct_ty, env, signatures)?);
+                for (field_name, value) in fields {
+                    let field = definition.field(field_name)?;
+                    rendered.push(emit_cfg_aggregate_value(value, &field.ty, env, signatures)?);
+                }
+                Some(format!(
+                    "{}({})",
+                    struct_update_helper_name_from_names(
+                        name,
+                        fields.iter().map(|(field, _)| field.as_str()),
+                    ),
+                    rendered.join(", ")
+                ))
+            } else {
+                if fields.len() != definition.fields.len() {
+                    return None;
+                }
+                let mut rendered = Vec::with_capacity(fields.len());
+                for (field_name, value) in fields {
+                    let field = definition.field(field_name)?;
+                    let value = emit_cfg_aggregate_value(value, &field.ty, env, signatures)?;
+                    rendered.push(format!(".{} = {value}", field_c_name(field_name)));
+                }
+                Some(format!(
+                    "({}){{ {} }}",
+                    c_type(&expected, signatures),
+                    rendered.join(", ")
+                ))
             }
-            let mut rendered = Vec::with_capacity(fields.len());
-            for (field_name, value) in fields {
-                let field = definition.field(field_name)?;
-                let value = emit_cfg_aggregate_value(value, &field.ty, env, signatures)?;
-                rendered.push(format!(".{} = {value}", field_c_name(field_name)));
-            }
-            Some(format!(
-                "({}){{ {} }}",
-                c_type(&expected, signatures),
-                rendered.join(", ")
-            ))
         }
         _ => None,
     }
@@ -45433,7 +45464,7 @@ fn main() -> i64 {
             .aggregate_constants
             .get(&source_span_key(user_value.span))
             .expect("nested Copy struct should produce a direct aggregate fact");
-        let CfgAggregateConstantKind::Struct { name, fields } = &aggregate.kind else {
+        let CfgAggregateConstantKind::Struct { name, fields, .. } = &aggregate.kind else {
             panic!("User fact should remain a typed struct");
         };
         assert_eq!(name, "User");
@@ -45445,7 +45476,7 @@ fn main() -> i64 {
         let CfgAggregateValue::Aggregate(address) = address else {
             panic!("nested Address should remain an aggregate rather than an AST fallback");
         };
-        let CfgAggregateConstantKind::Struct { name, fields } = &address.kind else {
+        let CfgAggregateConstantKind::Struct { name, fields, .. } = &address.kind else {
             panic!("nested aggregate should retain the Address struct shape");
         };
         assert_eq!(name, "Address");
@@ -46100,6 +46131,10 @@ fn buildPair(left: i64, right: i64) -> Pair {
     return Pair { left: left + 1, right: right }
 }
 
+fn updatePair(base: Pair, value: i64) -> Pair {
+    return Pair { ..base, left: value + 1 }
+}
+
 fn buildList(left: i64, right: i64) -> i64 {
     let values: i64[] = [left + 1, right]
     return values.length
@@ -46119,6 +46154,8 @@ fn main() -> i64 {
         let env = HashMap::from([
             ("left".to_string(), Type::I64),
             ("right".to_string(), Type::I64),
+            ("base".to_string(), Type::Named("Pair".to_string())),
+            ("value".to_string(), Type::I64),
         ]);
 
         let pair_graph = database
@@ -46168,6 +46205,60 @@ fn main() -> i64 {
         assert!(pair_code.contains(&local_c_name("right")));
         assert!(pair_code.contains(&field_c_name("left")));
         assert!(pair_code.contains(&field_c_name("right")));
+
+        let update_graph = database
+            .control_flow_graph("updatePair")
+            .expect("update Pair CFG should exist");
+        let update_value = update_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral {
+                        name,
+                        base: Some(_),
+                        fields,
+                    } if name == "Pair" && fields.len() == 1
+                )
+            })
+            .expect("typed IR should retain the Pair update");
+        let update_facts = cfg_rewrite_facts(update_graph);
+        let update_aggregate = update_facts
+            .aggregate_constants
+            .get(&source_span_key(update_value.span))
+            .expect("Copy Pair update should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Struct {
+            base: Some(base),
+            fields,
+            ..
+        } = &update_aggregate.kind
+        else {
+            panic!("Pair update fact should retain its typed base");
+        };
+        assert!(matches!(base, CfgAggregateValue::Direct(_)));
+        assert!(matches!(
+            fields.as_slice(),
+            [(name, CfgAggregateValue::Direct(_))] if name == "left"
+        ));
+        let fake_update = Expr {
+            line: update_value.span.line,
+            span: update_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let update_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_update,
+            &Type::Named("Pair".to_string()),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &update_facts,
+        )
+        .expect("Copy struct update should emit entirely from typed IR");
+        assert!(update_code.contains("flux__update_Pair__left"));
+        assert!(update_code.contains(&local_c_name("base")));
+        assert!(update_code.contains(&local_c_name("value")));
+        assert!(update_code.contains("flux_add_i64"));
 
         let list_graph = database
             .control_flow_graph("buildList")
