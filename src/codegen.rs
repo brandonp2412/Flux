@@ -33990,6 +33990,7 @@ enum CfgAggregateConstantKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CfgAggregateValue {
     Scalar(ConstantValue),
+    Direct(CfgScalarExpr),
     Aggregate(Box<CfgAggregateConstant>),
 }
 
@@ -34072,7 +34073,7 @@ fn cfg_literal_aggregate_value(
                     .collect::<Option<Vec<_>>>()?,
             }
         }
-        _ => return None,
+        _ => return cfg_direct_scalar_expr(cfg, id).map(CfgAggregateValue::Direct),
     };
     Some(CfgAggregateValue::Aggregate(Box::new(
         CfgAggregateConstant {
@@ -44746,6 +44747,7 @@ fn emit_qualified_call(
 fn emit_cfg_aggregate_value(
     value: &CfgAggregateValue,
     expected: &Type,
+    env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<String> {
     match value {
@@ -44755,8 +44757,9 @@ fn emit_cfg_aggregate_value(
             Some(constant_c_value(constant))
         }
         CfgAggregateValue::Scalar(_) => None,
+        CfgAggregateValue::Direct(expr) => emit_cfg_scalar_expr(expr, expected, env, signatures),
         CfgAggregateValue::Aggregate(aggregate) => {
-            emit_cfg_aggregate_constant(aggregate, expected, signatures)
+            emit_cfg_aggregate_constant(aggregate, expected, env, signatures)
         }
     }
 }
@@ -44764,6 +44767,7 @@ fn emit_cfg_aggregate_value(
 fn emit_cfg_aggregate_constant(
     aggregate: &CfgAggregateConstant,
     expected: &Type,
+    env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
@@ -44785,7 +44789,7 @@ fn emit_cfg_aggregate_constant(
             }
             let rendered = values
                 .iter()
-                .map(|value| emit_cfg_aggregate_value(value, element, signatures))
+                .map(|value| emit_cfg_aggregate_value(value, element, env, signatures))
                 .collect::<Option<Vec<_>>>()?
                 .join(", ");
             Some(format!(
@@ -44853,7 +44857,7 @@ fn emit_cfg_aggregate_constant(
                 if name != &field.name {
                     return None;
                 }
-                let value = emit_cfg_aggregate_value(value, &field.ty, signatures)?;
+                let value = emit_cfg_aggregate_value(value, &field.ty, env, signatures)?;
                 rendered.push(format!(
                     ".{} = {value}",
                     record_field_c_name(field.name.as_deref(), index)
@@ -44875,7 +44879,7 @@ fn emit_cfg_aggregate_constant(
             let mut rendered = Vec::with_capacity(fields.len());
             for (field_name, value) in fields {
                 let field = definition.field(field_name)?;
-                let value = emit_cfg_aggregate_value(value, &field.ty, signatures)?;
+                let value = emit_cfg_aggregate_value(value, &field.ty, env, signatures)?;
                 rendered.push(format!(".{} = {value}", field_c_name(field_name)));
             }
             Some(format!(
@@ -45082,7 +45086,7 @@ fn emit_expr_for_expected_with_cfg_proofs(
         return Ok(constant_c_value(constant));
     }
     if let Some(aggregate) = rewrite_facts.aggregate_constants.get(&span)
-        && let Some(value) = emit_cfg_aggregate_constant(aggregate, expected, signatures)
+        && let Some(value) = emit_cfg_aggregate_constant(aggregate, expected, env, signatures)
     {
         return Ok(value);
     }
@@ -45431,7 +45435,7 @@ mod cfg_rewrite_fact_tests {
                 (ConstantValue::I64(4), ConstantValue::Bool(false)),
             ]),
         };
-        let rendered = emit_cfg_aggregate_constant(&map, &map.ty, &signatures)
+        let rendered = emit_cfg_aggregate_constant(&map, &map.ty, &HashMap::new(), &signatures)
             .expect("flat typed-IR map constant should emit directly");
         assert!(rendered.contains("INT64_C(3)"));
         assert!(rendered.contains("INT64_C(4)"));
@@ -45461,8 +45465,9 @@ mod cfg_rewrite_fact_tests {
                 ),
             ]),
         };
-        let rendered = emit_cfg_aggregate_constant(&record, &record_ty, &signatures)
-            .expect("flat typed-IR record constant should emit directly");
+        let rendered =
+            emit_cfg_aggregate_constant(&record, &record_ty, &HashMap::new(), &signatures)
+                .expect("flat typed-IR record constant should emit directly");
         assert!(rendered.contains("INT64_C(9)"));
         assert!(rendered.contains("true"));
 
@@ -45483,9 +45488,13 @@ mod cfg_rewrite_fact_tests {
                 nested_record,
             ))]),
         };
-        let rendered =
-            emit_cfg_aggregate_constant(&list_of_records, &list_of_records.ty, &signatures)
-                .expect("typed-IR list should render nested Copy record values");
+        let rendered = emit_cfg_aggregate_constant(
+            &list_of_records,
+            &list_of_records.ty,
+            &HashMap::new(),
+            &signatures,
+        )
+        .expect("typed-IR list should render nested Copy record values");
         assert!(rendered.contains("INT64_C(42)"));
 
         let inner_list_ty = Type::List(Box::new(Type::I64));
@@ -45501,8 +45510,13 @@ mod cfg_rewrite_fact_tests {
                 },
             ))]),
         };
-        let rendered = emit_cfg_aggregate_constant(&nested_lists, &nested_lists.ty, &signatures)
-            .expect("typed-IR nested list literals should render recursively");
+        let rendered = emit_cfg_aggregate_constant(
+            &nested_lists,
+            &nested_lists.ty,
+            &HashMap::new(),
+            &signatures,
+        )
+        .expect("typed-IR nested list literals should render recursively");
         assert!(rendered.contains("INT64_C(11)"));
         assert!(rendered.contains("INT64_C(12)"));
         assert!(rendered.contains("sizeof(struct flux__list)"));
@@ -45588,8 +45602,13 @@ fn main() -> i64 {
                 })),
             )]),
         };
-        let rendered = emit_cfg_aggregate_constant(&nested, &outer_ty, &Signatures::default())
-            .expect("nested Copy record should render recursively");
+        let rendered = emit_cfg_aggregate_constant(
+            &nested,
+            &outer_ty,
+            &HashMap::new(),
+            &Signatures::default(),
+        )
+        .expect("nested Copy record should render recursively");
         assert!(rendered.contains("INT64_C(42)"));
     }
 
@@ -46154,6 +46173,169 @@ fn main() -> i64 {
                 );
             }
         }
+    }
+
+    #[test]
+    fn dynamic_typed_ir_aggregate_values_bypass_checked_ast_children() {
+        let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn buildPair(left: i64, right: i64) -> Pair {
+    return Pair { left: left + 1, right: right }
+}
+
+fn buildList(left: i64, right: i64) -> i64 {
+    let values: i64[] = [left + 1, right]
+    return values.length
+}
+
+fn buildRecord(left: i64, right: i64) -> i64 {
+    let value: (left: i64, right: i64) = (left: left + 1, right: right)
+    return value.left + value.right
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("dynamic aggregate IR fixture should typecheck");
+        let env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+
+        let pair_graph = database
+            .control_flow_graph("buildPair")
+            .expect("pair CFG should exist");
+        let pair_value = pair_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral { name, base, .. }
+                        if name == "Pair" && base.is_none()
+                )
+            })
+            .expect("typed IR should retain the Pair literal");
+        let pair_facts = cfg_rewrite_facts(pair_graph);
+        let pair_aggregate = pair_facts
+            .aggregate_constants
+            .get(&source_span_key(pair_value.span))
+            .expect("dynamic Pair should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Struct { fields, .. } = &pair_aggregate.kind else {
+            panic!("Pair fact should remain a typed struct");
+        };
+        assert!(fields.iter().any(|(name, value)| {
+            name == "left" && matches!(value, CfgAggregateValue::Direct(_))
+        }));
+        assert!(fields.iter().any(|(name, value)| {
+            name == "right" && matches!(value, CfgAggregateValue::Direct(_))
+        }));
+        let fake_pair = Expr {
+            line: pair_value.span.line,
+            span: pair_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let pair_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_pair,
+            &Type::Named("Pair".to_string()),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &pair_facts,
+        )
+        .expect("dynamic Pair should emit entirely from typed IR");
+        assert!(pair_code.contains("flux_add_i64"));
+        assert!(pair_code.contains(&local_c_name("left")));
+        assert!(pair_code.contains(&local_c_name("right")));
+        assert!(pair_code.contains(&field_c_name("left")));
+        assert!(pair_code.contains(&field_c_name("right")));
+
+        let list_graph = database
+            .control_flow_graph("buildList")
+            .expect("list CFG should exist");
+        let list_value = list_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::List { items } if items.len() == 2))
+            .expect("typed IR should retain the list literal");
+        let list_facts = cfg_rewrite_facts(list_graph);
+        let list_aggregate = list_facts
+            .aggregate_constants
+            .get(&source_span_key(list_value.span))
+            .expect("dynamic list should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::List(items) = &list_aggregate.kind else {
+            panic!("list fact should remain a typed list");
+        };
+        assert!(
+            items
+                .iter()
+                .all(|value| matches!(value, CfgAggregateValue::Direct(_)))
+        );
+        let fake_list = Expr {
+            line: list_value.span.line,
+            span: list_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let list_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_list,
+            &Type::List(Box::new(Type::I64)),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &list_facts,
+        )
+        .expect("dynamic list should emit entirely from typed IR");
+        assert!(list_code.contains("flux_add_i64"));
+        assert!(list_code.contains(&local_c_name("left")));
+        assert!(list_code.contains(&local_c_name("right")));
+        assert!(list_code.contains("struct flux__list"));
+
+        let record_graph = database
+            .control_flow_graph("buildRecord")
+            .expect("record CFG should exist");
+        let record_value = record_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::RecordLiteral { fields } if fields.len() == 2))
+            .expect("typed IR should retain the record literal");
+        let record_facts = cfg_rewrite_facts(record_graph);
+        let record_aggregate = record_facts
+            .aggregate_constants
+            .get(&source_span_key(record_value.span))
+            .expect("dynamic record should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Record(fields) = &record_aggregate.kind else {
+            panic!("record fact should remain a typed record");
+        };
+        assert!(
+            fields
+                .iter()
+                .all(|(_, value)| matches!(value, CfgAggregateValue::Direct(_)))
+        );
+        let fake_record = Expr {
+            line: record_value.span.line,
+            span: record_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let record_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_record,
+            &record_value.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &record_facts,
+        )
+        .expect("dynamic record should emit entirely from typed IR");
+        assert!(record_code.contains("flux_add_i64"));
+        assert!(record_code.contains(&local_c_name("left")));
+        assert!(record_code.contains(&local_c_name("right")));
+        assert!(record_code.contains(&record_field_c_name(Some("left"), 0)));
+        assert!(record_code.contains(&record_field_c_name(Some("right"), 1)));
     }
 
     #[test]
