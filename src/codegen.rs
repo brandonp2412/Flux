@@ -33992,7 +33992,11 @@ enum CfgAggregateConstantKind {
 enum CfgAggregateValue {
     Scalar(ConstantValue),
     Direct(CfgScalarExpr),
-    UnitEnum { enum_name: String, variant: String },
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        payloads: Vec<CfgAggregateValue>,
+    },
     AbsentOptional,
     Aggregate(Box<CfgAggregateConstant>),
 }
@@ -34058,13 +34062,16 @@ fn cfg_literal_aggregate_value(
         name,
         arguments,
     } = &value.kind
-        && arguments.is_empty()
         && value.ownership.is_copy()
         && matches!(&value.ty, Type::Named(returned) if returned == namespace)
     {
-        return Some(CfgAggregateValue::UnitEnum {
+        return Some(CfgAggregateValue::EnumVariant {
             enum_name: namespace.clone(),
             variant: name.clone(),
+            payloads: arguments
+                .iter()
+                .map(|id| cfg_literal_aggregate_value(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
         });
     }
     let kind = match &value.kind {
@@ -44799,7 +44806,7 @@ fn emit_cfg_aggregate_value(
         let actual = match value {
             CfgAggregateValue::Scalar(constant) => signatures.canonical_type(&constant.ty()),
             CfgAggregateValue::Direct(expr) => signatures.canonical_type(&expr.ty),
-            CfgAggregateValue::UnitEnum { enum_name, .. } => Type::Named(enum_name.clone()),
+            CfgAggregateValue::EnumVariant { enum_name, .. } => Type::Named(enum_name.clone()),
             CfgAggregateValue::AbsentOptional => unreachable!(),
             CfgAggregateValue::Aggregate(aggregate) => signatures.canonical_type(&aggregate.ty),
         };
@@ -44820,17 +44827,29 @@ fn emit_cfg_aggregate_value(
         }
         CfgAggregateValue::Scalar(_) => None,
         CfgAggregateValue::Direct(expr) => emit_cfg_scalar_expr(expr, expected, env, signatures),
-        CfgAggregateValue::UnitEnum { enum_name, variant } => {
+        CfgAggregateValue::EnumVariant {
+            enum_name,
+            variant,
+            payloads,
+        } => {
             if signatures.canonical_type(expected) != Type::Named(enum_name.clone()) {
                 return None;
             }
             let definition = signatures.enum_type(enum_name)?;
             let variant_definition = definition.variant(variant)?;
-            if !variant_definition.payloads.is_empty() {
+            if variant_definition.payloads.len() != payloads.len() {
                 return None;
             }
+            let rendered = payloads
+                .iter()
+                .zip(&variant_definition.payloads)
+                .map(|(payload, expected)| {
+                    emit_cfg_aggregate_value(payload, expected, env, signatures)
+                })
+                .collect::<Option<Vec<_>>>()?
+                .join(", ");
             Some(format!(
-                "{}()",
+                "{}({rendered})",
                 enum_variant_helper_name(enum_name, variant)
             ))
         }
@@ -44882,9 +44901,12 @@ fn emit_cfg_aggregate_constant(
                     CfgAggregateValue::Scalar(constant) => {
                         format!("{}:{constant:?}", constant.ty().name())
                     }
-                    CfgAggregateValue::UnitEnum { enum_name, variant } => {
-                        format!("enum:{enum_name}.{variant}")
-                    }
+                    CfgAggregateValue::EnumVariant {
+                        enum_name,
+                        variant,
+                        payloads,
+                    } if payloads.is_empty() => format!("enum:{enum_name}.{variant}"),
+                    CfgAggregateValue::EnumVariant { .. } => return None,
                     CfgAggregateValue::AbsentOptional => "none".to_string(),
                     CfgAggregateValue::Direct(_) | CfgAggregateValue::Aggregate(_) => return None,
                 };
@@ -46216,6 +46238,8 @@ struct MaybePair {
 enum Choice {
     Ready
     Waiting
+    Count(i64)
+    PairValue(Pair)
 }
 
 fn buildPair(left: i64, right: i64) -> Pair {
@@ -46253,6 +46277,11 @@ fn buildSet() -> set<i64?> {
 
 fn buildEnumSet() -> set<Choice> {
     return {Choice.Ready(), Choice.Waiting(), Choice.Ready()}
+}
+
+fn buildEnumList(value: i64) -> i64 {
+    let values: Choice[] = [Choice.Count(value + 1), Choice.PairValue(Pair { left: value, right: value + 2 })]
+    return values.length
 }
 
 fn main() -> i64 {
@@ -46614,7 +46643,11 @@ fn main() -> i64 {
         };
         assert!(values.iter().all(|value| matches!(
             value,
-            CfgAggregateValue::UnitEnum { enum_name, .. } if enum_name == "Choice"
+            CfgAggregateValue::EnumVariant {
+                enum_name,
+                payloads,
+                ..
+            } if enum_name == "Choice" && payloads.is_empty()
         )));
         let fake_enum_set = Expr {
             line: enum_set_value.span.line,
@@ -46636,6 +46669,54 @@ fn main() -> i64 {
         assert!(enum_set_code.contains(&format!("{waiting}()")));
         assert_eq!(enum_set_code.matches(&format!("{ready}()")).count(), 1);
         assert!(enum_set_code.contains(".len = 2"));
+
+        let enum_list_graph = database
+            .control_flow_graph("buildEnumList")
+            .expect("payload-enum list CFG should exist");
+        let enum_list_value = enum_list_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::List { items } if items.len() == 2))
+            .expect("typed IR should retain the payload-enum list literal");
+        let enum_list_facts = cfg_rewrite_facts(enum_list_graph);
+        let enum_list_aggregate = enum_list_facts
+            .aggregate_constants
+            .get(&source_span_key(enum_list_value.span))
+            .expect("payload-enum list should produce a typed aggregate fact");
+        let CfgAggregateConstantKind::List(values) = &enum_list_aggregate.kind else {
+            panic!("payload-enum list fact should remain a typed list");
+        };
+        assert!(values.iter().all(|value| matches!(
+            value,
+            CfgAggregateValue::EnumVariant {
+                enum_name,
+                payloads,
+                ..
+            } if enum_name == "Choice" && payloads.len() == 1
+        )));
+        let fake_enum_list = Expr {
+            line: enum_list_value.span.line,
+            span: enum_list_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let enum_list_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_enum_list,
+            &Type::List(Box::new(Type::Named("Choice".to_string()))),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &enum_list_facts,
+        )
+        .expect("payload-enum list should emit entirely from typed IR");
+        let count = enum_variant_helper_name("Choice", "Count");
+        let pair_value = enum_variant_helper_name("Choice", "PairValue");
+        assert!(enum_list_code.contains(&format!("{count}(")));
+        assert!(enum_list_code.contains(&format!("{pair_value}(")));
+        assert!(enum_list_code.contains(&local_c_name("value")));
+        assert!(enum_list_code.contains("flux_add_i64"));
+        assert!(enum_list_code.contains(&field_c_name("left")));
+        assert!(enum_list_code.contains(&field_c_name("right")));
+        assert!(enum_list_code.contains(".len = 2"));
     }
 
     #[test]
