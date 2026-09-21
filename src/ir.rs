@@ -120,6 +120,7 @@ pub enum ControlFlowValueKind {
     Field {
         base: ControlFlowValueId,
         name: String,
+        optional: bool,
     },
     Match {
         value: ControlFlowValueId,
@@ -1492,10 +1493,15 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 mapped_function.encode_cache_value(bytes);
                 arguments.encode_cache_value(bytes);
             }
-            Self::Field { base, name } => {
-                20u8.encode_cache_value(bytes);
+            Self::Field {
+                base,
+                name,
+                optional,
+            } => {
+                27u8.encode_cache_value(bytes);
                 base.encode_cache_value(bytes);
                 name.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
             }
             Self::Match {
                 value,
@@ -1630,6 +1636,7 @@ impl PersistedIrCodec for ControlFlowValueKind {
             20 => Some(Self::Field {
                 base: ControlFlowValueId::decode_cache_value(reader)?,
                 name: String::decode_cache_value(reader)?,
+                optional: false,
             }),
             21 => Some(Self::Match {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
@@ -1656,6 +1663,11 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 right: ControlFlowValueId::decode_cache_value(reader)?,
             }),
             26 => Some(Self::Opaque),
+            27 => Some(Self::Field {
+                base: ControlFlowValueId::decode_cache_value(reader)?,
+                name: String::decode_cache_value(reader)?,
+                optional: bool::decode_cache_value(reader)?,
+            }),
             _ => None,
         }
     }
@@ -5224,11 +5236,17 @@ impl<'a> ControlFlowBuilder<'a> {
             {
                 ControlFlowValueKind::Literal
             }
-            ExprKind::Field { base, name, .. } => self.lower_scalar_expr(producer, base).map_or(
+            ExprKind::Field {
+                base,
+                name,
+                optional,
+                ..
+            } => self.lower_scalar_expr(producer, base).map_or(
                 ControlFlowValueKind::Opaque,
                 |base| ControlFlowValueKind::Field {
                     base,
                     name: name.clone(),
+                    optional: *optional,
                 },
             ),
             ExprKind::Match { value, arms } => {
@@ -5740,7 +5758,7 @@ impl<'a> ControlFlowBuilder<'a> {
         let mut current = value;
         while let Some(value) = self.values.iter().find(|value| value.id == current) {
             match &value.kind {
-                ControlFlowValueKind::Field { base, name } => {
+                ControlFlowValueKind::Field { base, name, .. } => {
                     projection.push(name.clone());
                     current = *base;
                 }
@@ -8596,6 +8614,50 @@ mod tests {
             super::ControlFlowGraph::decode_persisted(&truncated).is_none(),
             "truncated CFG payloads must be rejected"
         );
+    }
+
+    #[test]
+    fn field_values_preserve_optional_access_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"struct Point {
+    x: i64
+}
+
+fn direct(point: Point) -> i64 {
+    return point.x
+}
+
+fn optional(point: Point?) -> i64? {
+    return point?.x
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("field IR fixture should analyze");
+
+        for (function, expected_optional) in [("direct", false), ("optional", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("field CFG should exist");
+            let field = graph
+                .values()
+                .iter()
+                .find_map(|value| match &value.kind {
+                    super::ControlFlowValueKind::Field { optional, .. } => Some(*optional),
+                    _ => None,
+                })
+                .expect("typed IR should retain field projection");
+            assert_eq!(field, expected_optional);
+
+            let encoded = graph.encode_persisted();
+            let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+                .expect("field CFG should decode");
+            assert_eq!(&decoded, graph);
+        }
     }
 
     #[test]
