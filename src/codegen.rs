@@ -36178,6 +36178,8 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
@@ -39884,6 +39886,8 @@ fn emit_list_comprehension_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
@@ -39908,7 +39912,14 @@ fn emit_list_comprehension_binding(
             "list comprehension binding must have a list type",
         ));
     };
-    let source = emit_expr(iterable, env, signatures)?;
+    let source = emit_expr_for_expected_with_cfg_proofs(
+        iterable,
+        &iterable_ty,
+        env,
+        signatures,
+        proofs,
+        rewrite_facts,
+    )?;
     let source_name = format!("flux__list_source_{}", *temp_counter);
     *temp_counter += 1;
     let buffer_name = format!("flux__list_buffer_{}", *temp_counter);
@@ -39919,7 +39930,7 @@ fn emit_list_comprehension_binding(
     *temp_counter += 1;
     out.push_str(&format!(
         "{pad}struct flux__list {source_name} = {};\n",
-        source.code
+        source
     ));
     out.push_str(&format!(
         "{pad}{} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n",
@@ -39939,16 +39950,30 @@ fn emit_list_comprehension_binding(
     ));
     nested.insert(binding.clone(), (*input_element).clone());
     if let Some(condition) = condition {
-        let condition = emit_expr(condition, &nested, signatures)?;
+        let condition = emit_expr_for_expected_with_cfg_proofs(
+            condition,
+            &Type::Bool,
+            &nested,
+            signatures,
+            proofs,
+            rewrite_facts,
+        )?;
         out.push_str(&format!(
             "{pad}    if (!{}) continue;\n",
-            c_condition(&condition.code)
+            c_condition(&condition)
         ));
     }
-    let value = emit_expr(value, &nested, signatures)?;
+    let value = emit_expr_for_expected_with_cfg_proofs(
+        value,
+        output_element,
+        &nested,
+        signatures,
+        proofs,
+        rewrite_facts,
+    )?;
     out.push_str(&format!(
         "{pad}    {buffer_name}[{count_name}++] = {};\n",
-        value.code
+        value
     ));
     out.push_str(&format!("{pad}}}\n"));
     out.push_str(&format!(
@@ -45482,6 +45507,83 @@ mod cfg_rewrite_fact_tests {
         assert!(out.contains(&local_c_name("maybe")));
         assert!(out.contains(&local_c_name("enabled")));
         assert!(out.contains(&local_c_name("fallback")));
+        assert!(!out.contains("checked-ast-child"));
+    }
+
+    #[test]
+    fn list_comprehension_children_use_typed_ir_rewrite_facts() {
+        let source_id = SourceId::new(4244);
+        let iterable_span = SourceSpan::new(1, 12, 6).with_source(source_id);
+        let condition_span = SourceSpan::new(1, 24, 4).with_source(source_id);
+        let value_span = SourceSpan::new(1, 2, 4).with_source(source_id);
+        let unusable = |span| Expr {
+            line: 1,
+            span,
+            kind: ExprKind::Str("checked-ast-child".to_string()),
+        };
+        let comprehension = Expr {
+            line: 1,
+            span: SourceSpan::new(1, 1, 30).with_source(source_id),
+            kind: ExprKind::ListComprehension {
+                value: Box::new(unusable(value_span)),
+                binding: "item".to_string(),
+                binding_span: SourceSpan::new(1, 7, 4).with_source(source_id),
+                iterable: Box::new(Expr {
+                    line: 1,
+                    span: iterable_span,
+                    kind: ExprKind::Var("source".to_string()),
+                }),
+                condition: Some(Box::new(unusable(condition_span))),
+            },
+        };
+        let mut facts = CfgRewriteFacts::default();
+        facts.scalar_exprs.insert(
+            source_span_key(condition_span),
+            CfgScalarExpr {
+                ty: Type::Bool,
+                kind: CfgScalarExprKind::Name("enabled".to_string()),
+            },
+        );
+        facts.scalar_exprs.insert(
+            source_span_key(value_span),
+            CfgScalarExpr {
+                ty: Type::I64,
+                kind: CfgScalarExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Name("item".to_string()),
+                    }),
+                    right: Box::new(CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Constant(ConstantValue::I64(1)),
+                    }),
+                },
+            },
+        );
+        let mut env = HashMap::from([
+            ("source".to_string(), Type::List(Box::new(Type::I64))),
+            ("enabled".to_string(), Type::Bool),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("values", &Type::List(Box::new(Type::I64))),
+            &comprehension,
+            &mut env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("list comprehension children should emit from typed IR facts");
+
+        assert!(out.contains(&local_c_name("source")));
+        assert!(out.contains(&local_c_name("enabled")));
+        assert!(out.contains(&local_c_name("item")));
+        assert!(out.contains("flux_add_i64"));
         assert!(!out.contains("checked-ast-child"));
     }
 
