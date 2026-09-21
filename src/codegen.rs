@@ -33978,7 +33978,7 @@ enum CfgAggregateShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CfgAggregateConstantKind {
     List(Vec<CfgAggregateValue>),
-    Set(Vec<ConstantValue>),
+    Set(Vec<CfgAggregateValue>),
     Map(Vec<(ConstantValue, CfgAggregateValue)>),
     Record(Vec<(Option<String>, CfgAggregateValue)>),
     Struct {
@@ -34265,7 +34265,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(CfgAggregateConstantKind::List),
             crate::ir::ControlFlowValueKind::Set { items } => items
                 .iter()
-                .map(|id| scalar(*id))
+                .map(|id| cfg_literal_aggregate_value(cfg, *id))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Set),
             crate::ir::ControlFlowValueKind::Map { entries } => entries
@@ -44845,15 +44845,21 @@ fn emit_cfg_aggregate_constant(
             ))
         }
         (CfgAggregateConstantKind::Set(values), Type::Set(element)) => {
-            if values.iter().any(|value| !scalar_matches(value, element)) {
-                return None;
-            }
             let mut seen = HashSet::new();
-            let rendered = values
-                .iter()
-                .filter(|value| seen.insert(format!("{}:{value:?}", value.ty().name())))
-                .map(constant_c_value)
-                .collect::<Vec<_>>();
+            let mut rendered = Vec::with_capacity(values.len());
+            for value in values {
+                let key = match value {
+                    CfgAggregateValue::Scalar(constant) => {
+                        format!("{}:{constant:?}", constant.ty().name())
+                    }
+                    CfgAggregateValue::AbsentOptional => "none".to_string(),
+                    CfgAggregateValue::Direct(_) | CfgAggregateValue::Aggregate(_) => return None,
+                };
+                if !seen.insert(key) {
+                    continue;
+                }
+                rendered.push(emit_cfg_aggregate_value(value, element, env, signatures)?);
+            }
             let element_c = c_type(element, signatures);
             if rendered.is_empty() {
                 return Some(format!(
@@ -46203,6 +46209,10 @@ fn buildMap(value: i64) -> i64 {
     return 0
 }
 
+fn buildSet() -> set<i64?> {
+    return {1, none, 1, 2}
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -46502,6 +46512,47 @@ fn main() -> i64 {
         assert!(map_code.contains(&field_c_name("left")));
         assert!(map_code.contains(&field_c_name("right")));
         assert!(map_code.contains("struct flux__map"));
+
+        let set_graph = database
+            .control_flow_graph("buildSet")
+            .expect("optional set CFG should exist");
+        let set_value = set_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::Set { items } if items.len() == 4))
+            .expect("typed IR should retain the optional set literal");
+        let set_facts = cfg_rewrite_facts(set_graph);
+        let set_aggregate = set_facts
+            .aggregate_constants
+            .get(&source_span_key(set_value.span))
+            .expect("optional set should produce a typed aggregate fact");
+        let CfgAggregateConstantKind::Set(values) = &set_aggregate.kind else {
+            panic!("optional set fact should remain a typed set");
+        };
+        assert_eq!(values.len(), 4);
+        assert!(
+            values
+                .iter()
+                .any(|value| matches!(value, CfgAggregateValue::AbsentOptional))
+        );
+        let fake_set = Expr {
+            line: set_value.span.line,
+            span: set_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let set_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_set,
+            &Type::Set(Box::new(Type::Optional(Box::new(Type::I64)))),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &set_facts,
+        )
+        .expect("optional set should emit entirely from typed IR");
+        assert!(set_code.contains(".has_value = true"));
+        assert!(set_code.contains(".has_value = false"));
+        assert!(set_code.contains(".len = 3"));
+        assert!(!set_code.contains("INT64_C(1), INT64_C(1)"));
     }
 
     #[test]
