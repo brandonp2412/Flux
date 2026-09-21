@@ -34006,7 +34006,7 @@ struct CfgRewriteFacts {
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
 }
 
-fn cfg_copy_aggregate_value(
+fn cfg_literal_aggregate_value(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgAggregateValue> {
@@ -34014,24 +34014,34 @@ fn cfg_copy_aggregate_value(
         return Some(CfgAggregateValue::Scalar(constant.clone()));
     }
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+    if !cfg.is_value_reachable(id) {
         return None;
     }
     let kind = match &value.kind {
-        crate::ir::ControlFlowValueKind::RecordLiteral { fields } => {
+        crate::ir::ControlFlowValueKind::List { items } => CfgAggregateConstantKind::List(
+            items
+                .iter()
+                .map(|id| cfg_literal_aggregate_value(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        crate::ir::ControlFlowValueKind::RecordLiteral { fields } if value.ownership.is_copy() => {
             CfgAggregateConstantKind::Record(
                 fields
                     .iter()
-                    .map(|(name, id)| Some((name.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                    .map(|(name, id)| Some((name.clone(), cfg_literal_aggregate_value(cfg, *id)?)))
                     .collect::<Option<Vec<_>>>()?,
             )
         }
-        crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields } if base.is_none() => {
+        crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
+            if base.is_none() && value.ownership.is_copy() =>
+        {
             CfgAggregateConstantKind::Struct {
                 name: name.clone(),
                 fields: fields
                     .iter()
-                    .map(|(field, id)| Some((field.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                    .map(|(field, id)| {
+                        Some((field.clone(), cfg_literal_aggregate_value(cfg, *id)?))
+                    })
                     .collect::<Option<Vec<_>>>()?,
             }
         }
@@ -34124,7 +34134,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         let kind = match &value.kind {
             crate::ir::ControlFlowValueKind::List { items } => items
                 .iter()
-                .map(|id| cfg_copy_aggregate_value(cfg, *id))
+                .map(|id| cfg_literal_aggregate_value(cfg, *id))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::List),
             crate::ir::ControlFlowValueKind::Set { items } => items
@@ -34139,7 +34149,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(CfgAggregateConstantKind::Map),
             crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
                 .iter()
-                .map(|(name, id)| Some((name.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                .map(|(name, id)| Some((name.clone(), cfg_literal_aggregate_value(cfg, *id)?)))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Record),
             crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
@@ -34147,7 +34157,9 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
             {
                 fields
                     .iter()
-                    .map(|(field, id)| Some((field.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                    .map(|(field, id)| {
+                        Some((field.clone(), cfg_literal_aggregate_value(cfg, *id)?))
+                    })
                     .collect::<Option<Vec<_>>>()
                     .map(|fields| CfgAggregateConstantKind::Struct {
                         name: name.clone(),
@@ -45153,6 +45165,25 @@ mod cfg_rewrite_fact_tests {
             emit_cfg_aggregate_constant(&list_of_records, &list_of_records.ty, &signatures)
                 .expect("typed-IR list should render nested Copy record values");
         assert!(rendered.contains("INT64_C(42)"));
+
+        let inner_list_ty = Type::List(Box::new(Type::I64));
+        let nested_lists = CfgAggregateConstant {
+            ty: Type::List(Box::new(inner_list_ty.clone())),
+            kind: CfgAggregateConstantKind::List(vec![CfgAggregateValue::Aggregate(Box::new(
+                CfgAggregateConstant {
+                    ty: inner_list_ty,
+                    kind: CfgAggregateConstantKind::List(vec![
+                        CfgAggregateValue::Scalar(ConstantValue::I64(11)),
+                        CfgAggregateValue::Scalar(ConstantValue::I64(12)),
+                    ]),
+                },
+            ))]),
+        };
+        let rendered = emit_cfg_aggregate_constant(&nested_lists, &nested_lists.ty, &signatures)
+            .expect("typed-IR nested list literals should render recursively");
+        assert!(rendered.contains("INT64_C(11)"));
+        assert!(rendered.contains("INT64_C(12)"));
+        assert!(rendered.contains("sizeof(struct flux__list)"));
     }
 
     #[test]
