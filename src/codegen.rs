@@ -33992,6 +33992,7 @@ enum CfgAggregateConstantKind {
 enum CfgAggregateValue {
     Scalar(ConstantValue),
     Direct(CfgScalarExpr),
+    UnitEnum { enum_name: String, variant: String },
     AbsentOptional,
     Aggregate(Box<CfgAggregateConstant>),
 }
@@ -34051,6 +34052,20 @@ fn cfg_literal_aggregate_value(
         && matches!(&value.ty, Type::Optional(inner) if **inner == Type::Void)
     {
         return Some(CfgAggregateValue::AbsentOptional);
+    }
+    if let crate::ir::ControlFlowValueKind::QualifiedCall {
+        namespace,
+        name,
+        arguments,
+    } = &value.kind
+        && arguments.is_empty()
+        && value.ownership.is_copy()
+        && matches!(&value.ty, Type::Named(returned) if returned == namespace)
+    {
+        return Some(CfgAggregateValue::UnitEnum {
+            enum_name: namespace.clone(),
+            variant: name.clone(),
+        });
     }
     let kind = match &value.kind {
         crate::ir::ControlFlowValueKind::List { items } => CfgAggregateConstantKind::List(
@@ -44784,6 +44799,7 @@ fn emit_cfg_aggregate_value(
         let actual = match value {
             CfgAggregateValue::Scalar(constant) => signatures.canonical_type(&constant.ty()),
             CfgAggregateValue::Direct(expr) => signatures.canonical_type(&expr.ty),
+            CfgAggregateValue::UnitEnum { enum_name, .. } => Type::Named(enum_name.clone()),
             CfgAggregateValue::AbsentOptional => unreachable!(),
             CfgAggregateValue::Aggregate(aggregate) => signatures.canonical_type(&aggregate.ty),
         };
@@ -44804,6 +44820,20 @@ fn emit_cfg_aggregate_value(
         }
         CfgAggregateValue::Scalar(_) => None,
         CfgAggregateValue::Direct(expr) => emit_cfg_scalar_expr(expr, expected, env, signatures),
+        CfgAggregateValue::UnitEnum { enum_name, variant } => {
+            if signatures.canonical_type(expected) != Type::Named(enum_name.clone()) {
+                return None;
+            }
+            let definition = signatures.enum_type(enum_name)?;
+            let variant_definition = definition.variant(variant)?;
+            if !variant_definition.payloads.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "{}()",
+                enum_variant_helper_name(enum_name, variant)
+            ))
+        }
         CfgAggregateValue::AbsentOptional => None,
         CfgAggregateValue::Aggregate(aggregate) => {
             emit_cfg_aggregate_constant(aggregate, expected, env, signatures)
@@ -44851,6 +44881,9 @@ fn emit_cfg_aggregate_constant(
                 let key = match value {
                     CfgAggregateValue::Scalar(constant) => {
                         format!("{}:{constant:?}", constant.ty().name())
+                    }
+                    CfgAggregateValue::UnitEnum { enum_name, variant } => {
+                        format!("enum:{enum_name}.{variant}")
                     }
                     CfgAggregateValue::AbsentOptional => "none".to_string(),
                     CfgAggregateValue::Direct(_) | CfgAggregateValue::Aggregate(_) => return None,
@@ -46180,6 +46213,11 @@ struct MaybePair {
     missing: i64?
 }
 
+enum Choice {
+    Ready
+    Waiting
+}
+
 fn buildPair(left: i64, right: i64) -> Pair {
     return Pair { left: left + 1, right: right }
 }
@@ -46211,6 +46249,10 @@ fn buildMap(value: i64) -> i64 {
 
 fn buildSet() -> set<i64?> {
     return {1, none, 1, 2}
+}
+
+fn buildEnumSet() -> set<Choice> {
+    return {Choice.Ready(), Choice.Waiting(), Choice.Ready()}
 }
 
 fn main() -> i64 {
@@ -46553,6 +46595,47 @@ fn main() -> i64 {
         assert!(set_code.contains(".has_value = false"));
         assert!(set_code.contains(".len = 3"));
         assert!(!set_code.contains("INT64_C(1), INT64_C(1)"));
+
+        let enum_set_graph = database
+            .control_flow_graph("buildEnumSet")
+            .expect("unit-enum set CFG should exist");
+        let enum_set_value = enum_set_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::Set { items } if items.len() == 3))
+            .expect("typed IR should retain the unit-enum set literal");
+        let enum_set_facts = cfg_rewrite_facts(enum_set_graph);
+        let enum_set_aggregate = enum_set_facts
+            .aggregate_constants
+            .get(&source_span_key(enum_set_value.span))
+            .expect("unit-enum set should produce a typed aggregate fact");
+        let CfgAggregateConstantKind::Set(values) = &enum_set_aggregate.kind else {
+            panic!("unit-enum set fact should remain a typed set");
+        };
+        assert!(values.iter().all(|value| matches!(
+            value,
+            CfgAggregateValue::UnitEnum { enum_name, .. } if enum_name == "Choice"
+        )));
+        let fake_enum_set = Expr {
+            line: enum_set_value.span.line,
+            span: enum_set_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let enum_set_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_enum_set,
+            &Type::Set(Box::new(Type::Named("Choice".to_string()))),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &enum_set_facts,
+        )
+        .expect("unit-enum set should emit entirely from typed IR");
+        let ready = enum_variant_helper_name("Choice", "Ready");
+        let waiting = enum_variant_helper_name("Choice", "Waiting");
+        assert!(enum_set_code.contains(&format!("{ready}()")));
+        assert!(enum_set_code.contains(&format!("{waiting}()")));
+        assert_eq!(enum_set_code.matches(&format!("{ready}()")).count(), 1);
+        assert!(enum_set_code.contains(".len = 2"));
     }
 
     #[test]
