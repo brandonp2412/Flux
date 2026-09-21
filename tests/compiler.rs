@@ -27320,6 +27320,33 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_set_and_record_aggregate_shapes() {
+    let source = r#"
+fn main() -> i64 {
+    let input: i64 = 5
+    let values: set<i64> = {6, 7}
+    let record: (left: i64, right: i64) = (left: input + 3, right: input + 4)
+    print(values.count)
+    print(record.right)
+    return 0
+}
+"#;
+
+    check_source(source).expect("set and record aggregate fixture should typecheck");
+    let generated = compile_to_c(source).expect("set and record aggregate fixture should compile");
+    for value in [6, 7, 8, 9] {
+        assert!(
+            generated.contains(&format!("INT64_C({value})")),
+            "typed-IR aggregate lowering should retain propagated scalar child {value}"
+        );
+    }
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input"),
+        "set and record aggregate lowering should not rebuild propagated children from the AST"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_constants_at_multi_value_boundaries() {
     let source = r#"
 fn pair(value: i64) -> (i64, error) {

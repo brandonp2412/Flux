@@ -24947,7 +24947,7 @@ fn async_release_prototype(function: &Function) -> String {
 
 #[derive(Clone)]
 struct AsyncContinuationPlan {
-    cfg_constant_values: HashMap<(u32, usize, usize, usize), ConstantValue>,
+    cfg_rewrite_facts: CfgRewriteFacts,
     locals: Vec<(String, Type)>,
     resume_locals: Vec<(String, Type)>,
     mutable: HashSet<String>,
@@ -26372,7 +26372,7 @@ fn async_continuation_plan(
     }
 
     Some(AsyncContinuationPlan {
-        cfg_constant_values: HashMap::new(),
+        cfg_rewrite_facts: CfgRewriteFacts::default(),
         locals: locals.into_iter().collect(),
         resume_locals: resume_locals.into_iter().collect(),
         mutable,
@@ -26681,12 +26681,19 @@ fn emit_lambda_body_with_cfg(
         span: body.span,
     };
     let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
-    let constants = cfg_constant_values(&cfg);
+    let rewrite_facts = cfg_rewrite_facts(&cfg);
     let proofs = cfg_checked_i64_proofs(&cfg);
     if let Some(expected) = expected {
-        emit_expr_for_expected_with_cfg_proofs(body, expected, env, signatures, &proofs, &constants)
+        emit_expr_for_expected_with_cfg_proofs(
+            body,
+            expected,
+            env,
+            signatures,
+            &proofs,
+            &rewrite_facts,
+        )
     } else {
-        let rewritten = substitute_nested_ir_constant_arguments(body, &constants);
+        let rewritten = substitute_nested_ir_constant_arguments(body, &rewrite_facts);
         Ok(emit_expr(&rewritten, env, signatures)?.code)
     }
 }
@@ -29995,7 +30002,7 @@ fn emit_async_suspend_expr(
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
     let rewritten_await =
-        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_constant_values);
+        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts);
     let (callee, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
         diag(
             await_expr.span,
@@ -32517,7 +32524,7 @@ fn emit_async_match_arm_bindings(
     signatures: &Signatures,
     env: &mut HashMap<String, Type>,
     checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
-    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    cfg_rewrite_facts: &CfgRewriteFacts,
 ) -> Result<Vec<String>, Diagnostic> {
     let definition = signatures.enum_type(&arm.enum_name).ok_or_else(|| {
         diag(
@@ -32589,7 +32596,7 @@ fn emit_async_match_arm_bindings(
             env,
             signatures,
             checked_i64_cfg_proofs,
-            cfg_constant_values,
+            cfg_rewrite_facts,
         )?;
         conditions.push(c_condition(&guard));
     }
@@ -32675,7 +32682,7 @@ fn emit_async_match_continuation_function(
                 &outer_env,
                 signatures,
                 context.checked_i64_cfg_proofs,
-                context.cfg_constant_values,
+                context.cfg_rewrite_facts,
             )?,
             ty: value_ty,
         }
@@ -32729,7 +32736,7 @@ fn emit_async_match_continuation_function(
                 signatures,
                 &mut arm_env,
                 state_context.checked_i64_cfg_proofs,
-                state_context.cfg_constant_values,
+                state_context.cfg_rewrite_facts,
             )?;
             let guarded = !conditions.is_empty();
             if guarded {
@@ -33048,7 +33055,7 @@ fn emit_async_list_match_continuation_function(
             &outer_env,
             signatures,
             context.checked_i64_cfg_proofs,
-            context.cfg_constant_values,
+            context.cfg_rewrite_facts,
         )?,
         ty: value_ty,
     };
@@ -33092,7 +33099,7 @@ fn emit_async_list_match_continuation_function(
                 &arm_env,
                 signatures,
                 context.checked_i64_cfg_proofs,
-                context.cfg_constant_values,
+                context.cfg_rewrite_facts,
             )?;
             out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
             true
@@ -33962,11 +33969,21 @@ fn cfg_checked_i64_proofs(
         .collect()
 }
 
-fn cfg_constant_values(
-    cfg: &crate::ir::ControlFlowGraph,
-) -> HashMap<(u32, usize, usize, usize), ConstantValue> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgAggregateShape {
+    Set(Vec<(u32, usize, usize, usize)>),
+    Record(Vec<(Option<String>, (u32, usize, usize, usize))>),
+}
+
+#[derive(Debug, Clone, Default)]
+struct CfgRewriteFacts {
+    constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
+    aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
+}
+
+fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
     let mut constants = HashMap::new();
-    let mut ambiguous = HashSet::new();
+    let mut ambiguous_constants = HashSet::new();
     // Consume constants from the typed value graph, not only from name reads.
     // A propagated scalar value is safe to inline here because the IR constant
     // pass records its complete expression under Flux's checked semantics.
@@ -33979,19 +33996,63 @@ fn cfg_constant_values(
             .map(|constant| (value, constant))
     }) {
         let span = source_span_key(value.span);
-        if ambiguous.contains(&span) {
+        if ambiguous_constants.contains(&span) {
             continue;
         }
         if let Some(existing) = constants.get(&span) {
             if existing != constant {
                 constants.remove(&span);
-                ambiguous.insert(span);
+                ambiguous_constants.insert(span);
             }
         } else {
             constants.insert(span, constant.clone());
         }
     }
-    constants
+
+    let mut aggregates = HashMap::new();
+    let mut ambiguous_aggregates = HashSet::new();
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_value_reachable(value.id))
+    {
+        let shape = match &value.kind {
+            crate::ir::ControlFlowValueKind::Set { items } => items
+                .iter()
+                .map(|id| cfg.value(*id).map(|item| source_span_key(item.span)))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateShape::Set),
+            crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
+                .iter()
+                .map(|(name, id)| {
+                    cfg.value(*id)
+                        .map(|field| (name.clone(), source_span_key(field.span)))
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateShape::Record),
+            _ => None,
+        };
+        let Some(shape) = shape else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_aggregates.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = aggregates.get(&span) {
+            if existing != &shape {
+                aggregates.remove(&span);
+                ambiguous_aggregates.insert(span);
+            }
+        } else {
+            aggregates.insert(span, shape);
+        }
+    }
+
+    CfgRewriteFacts {
+        constants,
+        aggregates,
+    }
 }
 
 fn emit_function(
@@ -34126,7 +34187,7 @@ fn emit_function(
         })
         .collect::<HashMap<_, _>>();
     let checked_i64_cfg_proofs = cfg_checked_i64_proofs(cfg);
-    let cfg_constant_values = cfg_constant_values(cfg);
+    let cfg_rewrite_facts = cfg_rewrite_facts(cfg);
     let block_context = BlockEmitContext {
         current_function: function,
         source_paths,
@@ -34138,14 +34199,14 @@ fn emit_function(
         dead_non_escaping_let_binding_spans: &dead_non_escaping_let_binding_spans,
         dead_definition_names: &dead_definition_names,
         checked_i64_cfg_proofs: &checked_i64_cfg_proofs,
-        cfg_constant_values: &cfg_constant_values,
+        cfg_rewrite_facts: &cfg_rewrite_facts,
         async_state_machine: false,
         async_loop_control: None,
     };
     if function.asynchronous
         && let Some(mut plan) = async_continuation_plan(function, signatures)
     {
-        plan.cfg_constant_values = cfg_constant_values.clone();
+        plan.cfg_rewrite_facts = cfg_rewrite_facts.clone();
         emit_source_line(out, function.span, source_paths);
         emit_async_continuation_function(
             out,
@@ -34209,7 +34270,7 @@ struct BlockEmitContext<'a> {
     dead_non_escaping_let_binding_spans: &'a HashSet<(u32, usize, usize, usize)>,
     dead_definition_names: &'a HashMap<(u32, usize, usize, usize), HashSet<String>>,
     checked_i64_cfg_proofs: &'a HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
-    cfg_constant_values: &'a HashMap<(u32, usize, usize, usize), ConstantValue>,
+    cfg_rewrite_facts: &'a CfgRewriteFacts,
     async_state_machine: bool,
     async_loop_control: Option<AsyncLoopControlContext<'a>>,
 }
@@ -35627,7 +35688,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
@@ -35659,7 +35720,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}(void)({value});\n"));
                 continue;
@@ -35812,7 +35873,7 @@ fn emit_block(
                     signatures,
                     temp_counter,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
@@ -35823,7 +35884,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
@@ -35846,7 +35907,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
@@ -35862,7 +35923,7 @@ fn emit_block(
                             env,
                             signatures,
                             context.checked_i64_cfg_proofs,
-                            context.cfg_constant_values,
+                            context.cfg_rewrite_facts,
                         )?,
                         ty: expr_type,
                     };
@@ -35894,7 +35955,7 @@ fn emit_block(
                     }
                 } else {
                     let (value, tag, actuals) =
-                        emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
+                        emit_multi_expr(expr, env, signatures, context.cfg_rewrite_facts)?;
                     let temp = format!("flux__multi_assign_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -35930,7 +35991,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: expr_type,
                 };
@@ -36009,7 +36070,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: expr_type,
                 };
@@ -36043,7 +36104,7 @@ fn emit_block(
                 ..
             } => {
                 let (value, tag, _) =
-                    emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
+                    emit_multi_expr(expr, env, signatures, context.cfg_rewrite_facts)?;
                 let temp = format!("flux__multi_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -36098,7 +36159,7 @@ fn emit_block(
                             env,
                             signatures,
                             context.checked_i64_cfg_proofs,
-                            context.cfg_constant_values,
+                            context.cfg_rewrite_facts,
                         )?,
                         ty: expr_type,
                     };
@@ -36142,7 +36203,7 @@ fn emit_block(
                     }
                 } else {
                     let (value, tag, actuals) =
-                        emit_multi_expr(expr, env, signatures, context.cfg_constant_values)?;
+                        emit_multi_expr(expr, env, signatures, context.cfg_rewrite_facts)?;
                     let temp = format!("flux__multi_pattern_{}", *temp_counter);
                     *temp_counter += 1;
                     out.push_str(&format!("{pad}struct {tag} {temp} = {value};\n"));
@@ -36203,7 +36264,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: expr_type,
                 };
@@ -36282,7 +36343,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: expr_type,
                 };
@@ -36332,7 +36393,7 @@ fn emit_block(
                 if values.len() == 1 && context.current_function.returns.len() > 1 =>
             {
                 let (value, source_tag, _) =
-                    emit_multi_expr(&values[0], env, signatures, context.cfg_constant_values)?;
+                    emit_multi_expr(&values[0], env, signatures, context.cfg_rewrite_facts)?;
                 let source_temp = format!("flux__forward_{}", *temp_counter);
                 *temp_counter += 1;
                 let return_tag = multi_return_struct_name(&context.current_function.name);
@@ -36379,7 +36440,7 @@ fn emit_block(
                     signatures,
                     temp_counter,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 if context.async_state_machine {
                     out.push_str(&format!(
@@ -36400,7 +36461,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 if context.async_state_machine {
                     out.push_str(&format!(
@@ -36426,7 +36487,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?;
                     out.push_str(&format!("{pad}{temp}.v{index} = {value};\n"));
                 }
@@ -36486,7 +36547,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}{};\n", value));
             }
@@ -36503,7 +36564,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: expr_type,
                 };
@@ -36517,7 +36578,7 @@ fn emit_block(
                             env,
                             signatures,
                             context.checked_i64_cfg_proofs,
-                            context.cfg_constant_values,
+                            context.cfg_rewrite_facts,
                         )?;
                         let helper = match value.ty {
                             Type::I64 => "flux_redirect_i64",
@@ -36583,7 +36644,7 @@ fn emit_block(
                             env,
                             signatures,
                             context.checked_i64_cfg_proofs,
-                            context.cfg_constant_values,
+                            context.cfg_rewrite_facts,
                         )?,
                         ty: optional_type,
                     };
@@ -36727,7 +36788,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?;
                     out.push_str(&format!("{pad}if {} {{\n", c_condition(&cond)));
                     let mut then_env = env.clone();
@@ -36775,7 +36836,7 @@ fn emit_block(
                     env,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}while {} {{\n", c_condition(&cond)));
                 let mut nested = env.clone();
@@ -36819,7 +36880,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: Type::I64,
                 };
@@ -36830,7 +36891,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: Type::I64,
                 };
@@ -36889,7 +36950,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: iterable_type,
                 };
@@ -36994,7 +37055,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: value_ty,
                 };
@@ -37098,7 +37159,7 @@ fn emit_block(
                                 &nested,
                                 signatures,
                                 context.checked_i64_cfg_proofs,
-                                context.cfg_constant_values,
+                                context.cfg_rewrite_facts,
                             )?;
                             pattern_conditions.push(c_condition(&guard));
                         }
@@ -37148,7 +37209,7 @@ fn emit_block(
                         env,
                         signatures,
                         context.checked_i64_cfg_proofs,
-                        context.cfg_constant_values,
+                        context.cfg_rewrite_facts,
                     )?,
                     ty: value_ty,
                 };
@@ -37249,7 +37310,7 @@ fn emit_block(
                                 &nested,
                                 signatures,
                                 context.checked_i64_cfg_proofs,
-                                context.cfg_constant_values,
+                                context.cfg_rewrite_facts,
                             )?;
                             out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
                             out.push_str(&format!("{pad}        {matched} = true;\n"));
@@ -37332,7 +37393,7 @@ fn emit_map_match(
                     &nested,
                     signatures,
                     context.checked_i64_cfg_proofs,
-                    context.cfg_constant_values,
+                    context.cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
@@ -37379,7 +37440,7 @@ fn emit_map_match(
                 env,
                 signatures,
                 context.checked_i64_cfg_proofs,
-                context.cfg_constant_values,
+                context.cfg_rewrite_facts,
             )?;
             let found = format!("flux__map_key_found_{}", *temp_counter);
             *temp_counter += 1;
@@ -37432,7 +37493,7 @@ fn emit_map_match(
                 &nested,
                 signatures,
                 context.checked_i64_cfg_proofs,
-                context.cfg_constant_values,
+                context.cfg_rewrite_facts,
             )?;
             out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard)));
             out.push_str(&format!("{pad}            {matched} = true;\n"));
@@ -37554,7 +37615,7 @@ fn emit_match_expr_into(
     signatures: &Signatures,
     temp_counter: &mut usize,
     checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
-    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    cfg_rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(), Diagnostic> {
     if matches!(expr.kind, ExprKind::ListMatch { .. }) {
         return emit_list_match_expr_into(
@@ -37566,7 +37627,7 @@ fn emit_match_expr_into(
             signatures,
             temp_counter,
             checked_i64_cfg_proofs,
-            cfg_constant_values,
+            cfg_rewrite_facts,
         );
     }
     let ExprKind::Match { value, arms } = &expr.kind else {
@@ -37583,7 +37644,7 @@ fn emit_match_expr_into(
             env,
             signatures,
             checked_i64_cfg_proofs,
-            cfg_constant_values,
+            cfg_rewrite_facts,
         )?,
         ty: value_ty,
     };
@@ -37683,7 +37744,7 @@ fn emit_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 pattern_conditions.push(c_condition(&guard));
             }
@@ -37695,7 +37756,7 @@ fn emit_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}            {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}            break;\n"));
@@ -37710,7 +37771,7 @@ fn emit_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}                {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}                break;\n"));
@@ -37733,7 +37794,7 @@ fn emit_list_match_expr_into(
     signatures: &Signatures,
     temp_counter: &mut usize,
     checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
-    cfg_constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    cfg_rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(), Diagnostic> {
     let ExprKind::ListMatch { value, arms } = &expr.kind else {
         return Err(diag(
@@ -37749,7 +37810,7 @@ fn emit_list_match_expr_into(
             env,
             signatures,
             checked_i64_cfg_proofs,
-            cfg_constant_values,
+            cfg_rewrite_facts,
         )?,
         ty: value_ty,
     };
@@ -37796,7 +37857,7 @@ fn emit_list_match_expr_into(
                 &nested,
                 signatures,
                 checked_i64_cfg_proofs,
-                cfg_constant_values,
+                cfg_rewrite_facts,
             )?;
             out.push_str(&format!("{pad}    {target} = {};\n", arm_value));
             out.push_str(&format!("{pad}}}\n"));
@@ -37828,7 +37889,7 @@ fn emit_list_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
                 let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
@@ -37838,7 +37899,7 @@ fn emit_list_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}        {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
@@ -37851,7 +37912,7 @@ fn emit_list_match_expr_into(
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
-                    cfg_constant_values,
+                    cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}    {target} = {};\n", arm_value));
                 out.push_str(&format!("{pad}    {matched} = true;\n"));
@@ -44409,9 +44470,9 @@ fn emit_expr_for_expected_with_cfg_proofs(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
-    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Result<String, Diagnostic> {
-    if let Some(constant) = constant_values.get(&source_span_key(expr.span))
+    if let Some(constant) = rewrite_facts.constants.get(&source_span_key(expr.span))
         && constant.ty() == signatures.canonical_type(expected)
     {
         return Ok(constant_c_value(constant));
@@ -44433,20 +44494,14 @@ fn emit_expr_for_expected_with_cfg_proofs(
             }
         });
     }
-    let rewritten = substitute_direct_ir_constant_arguments(expr, constant_values);
+    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     emit_expr_for_expected(&rewritten, expected, env, signatures)
 }
 
-fn substitute_direct_ir_constant_arguments(
-    expr: &Expr,
-    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
-) -> Expr {
-    fn rewrite(
-        argument: &Expr,
-        constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
-    ) -> Expr {
-        let Some(constant) = constant_values.get(&source_span_key(argument.span)) else {
-            return rewrite_children(argument, constant_values);
+fn substitute_direct_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> Expr {
+    fn rewrite(argument: &Expr, rewrite_facts: &CfgRewriteFacts) -> Expr {
+        let Some(constant) = rewrite_facts.constants.get(&source_span_key(argument.span)) else {
+            return rewrite_children(argument, rewrite_facts);
         };
         Expr {
             line: argument.line,
@@ -44459,12 +44514,55 @@ fn substitute_direct_ir_constant_arguments(
         }
     }
 
-    fn rewrite_children(
-        expr: &Expr,
-        constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
-    ) -> Expr {
+    fn rewrite_children(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> Expr {
         let mut rewritten = expr.clone();
-        let child = |value: &Expr| rewrite(value, constant_values);
+
+        if let Some(shape) = rewrite_facts.aggregates.get(&source_span_key(expr.span)) {
+            match (shape, &mut rewritten.kind) {
+                (CfgAggregateShape::Set(item_spans), ExprKind::Set(items))
+                    if item_spans.len() == items.len() =>
+                {
+                    let mut remaining = items.clone();
+                    let mut ordered = Vec::with_capacity(remaining.len());
+                    let mut matched = true;
+                    for span in item_spans {
+                        let Some(index) = remaining
+                            .iter()
+                            .position(|item| source_span_key(item.span) == *span)
+                        else {
+                            matched = false;
+                            break;
+                        };
+                        ordered.push(remaining.remove(index));
+                    }
+                    if matched && remaining.is_empty() {
+                        *items = ordered;
+                    }
+                }
+                (CfgAggregateShape::Record(ir_fields), ExprKind::RecordLiteral { fields })
+                    if ir_fields.len() == fields.len() =>
+                {
+                    let mut remaining = fields.clone();
+                    let mut ordered = Vec::with_capacity(remaining.len());
+                    let mut matched = true;
+                    for (name, span) in ir_fields {
+                        let Some(index) = remaining.iter().position(|field| {
+                            field.name == *name && source_span_key(field.value.span) == *span
+                        }) else {
+                            matched = false;
+                            break;
+                        };
+                        ordered.push(remaining.remove(index));
+                    }
+                    if matched && remaining.is_empty() {
+                        *fields = ordered;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let child = |value: &Expr| rewrite(value, rewrite_facts);
         match &mut rewritten.kind {
             ExprKind::Await(value)
             | ExprKind::ListSpread { value, .. }
@@ -44601,27 +44699,124 @@ fn substitute_direct_ir_constant_arguments(
         rewritten
     }
 
-    rewrite_children(expr, constant_values)
+    rewrite_children(expr, rewrite_facts)
 }
 
-fn substitute_nested_ir_constant_arguments(
-    expr: &Expr,
-    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
-) -> Expr {
+#[cfg(test)]
+mod cfg_rewrite_fact_tests {
+    use super::*;
+
+    fn int_expr(value: i64, line: usize, column: usize) -> Expr {
+        Expr {
+            line,
+            span: SourceSpan::new(line, column, 1).with_source(SourceId::new(4242)),
+            kind: ExprKind::Int(value),
+        }
+    }
+
+    #[test]
+    fn typed_ir_aggregate_shapes_drive_set_and_record_rewrite_order() {
+        let first = int_expr(1, 1, 3);
+        let second = int_expr(2, 1, 6);
+        let set_span = SourceSpan::new(1, 1, 8).with_source(SourceId::new(4242));
+        let set = Expr {
+            line: 1,
+            span: set_span,
+            kind: ExprKind::Set(vec![first.clone(), second.clone()]),
+        };
+        let mut set_facts = CfgRewriteFacts::default();
+        set_facts.aggregates.insert(
+            source_span_key(set_span),
+            CfgAggregateShape::Set(vec![
+                source_span_key(second.span),
+                source_span_key(first.span),
+            ]),
+        );
+        let rewritten_set = substitute_direct_ir_constant_arguments(&set, &set_facts);
+        let ExprKind::Set(items) = rewritten_set.kind else {
+            panic!("set rewrite should preserve the set expression shape");
+        };
+        assert!(matches!(items[0].kind, ExprKind::Int(2)));
+        assert!(matches!(items[1].kind, ExprKind::Int(1)));
+
+        let left = crate::ast::RecordLiteralField {
+            name: Some("left".to_string()),
+            name_span: Some(SourceSpan::new(2, 2, 4).with_source(SourceId::new(4242))),
+            value: int_expr(10, 2, 8),
+        };
+        let right = crate::ast::RecordLiteralField {
+            name: Some("right".to_string()),
+            name_span: Some(SourceSpan::new(2, 12, 5).with_source(SourceId::new(4242))),
+            value: int_expr(20, 2, 19),
+        };
+        let record_span = SourceSpan::new(2, 1, 21).with_source(SourceId::new(4242));
+        let record = Expr {
+            line: 2,
+            span: record_span,
+            kind: ExprKind::RecordLiteral {
+                fields: vec![left.clone(), right.clone()],
+            },
+        };
+        let mut record_facts = CfgRewriteFacts::default();
+        record_facts.aggregates.insert(
+            source_span_key(record_span),
+            CfgAggregateShape::Record(vec![
+                (right.name.clone(), source_span_key(right.value.span)),
+                (left.name.clone(), source_span_key(left.value.span)),
+            ]),
+        );
+        let rewritten_record = substitute_direct_ir_constant_arguments(&record, &record_facts);
+        let ExprKind::RecordLiteral { fields } = rewritten_record.kind else {
+            panic!("record rewrite should preserve the record expression shape");
+        };
+        assert_eq!(fields[0].name.as_deref(), Some("right"));
+        assert_eq!(fields[1].name.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn unusable_typed_ir_aggregate_shape_falls_back_to_checked_ast_order() {
+        let first = int_expr(1, 3, 3);
+        let second = int_expr(2, 3, 6);
+        let set_span = SourceSpan::new(3, 1, 8).with_source(SourceId::new(4242));
+        let set = Expr {
+            line: 3,
+            span: set_span,
+            kind: ExprKind::Set(vec![first, second]),
+        };
+        let mut facts = CfgRewriteFacts::default();
+        facts.aggregates.insert(
+            source_span_key(set_span),
+            CfgAggregateShape::Set(vec![
+                source_span_key(SourceSpan::new(99, 1, 1).with_source(SourceId::new(4242))),
+                source_span_key(SourceSpan::new(99, 2, 1).with_source(SourceId::new(4242))),
+            ]),
+        );
+
+        let rewritten = substitute_direct_ir_constant_arguments(&set, &facts);
+        let ExprKind::Set(items) = rewritten.kind else {
+            panic!("fallback should preserve the original set");
+        };
+        assert!(matches!(items[0].kind, ExprKind::Int(1)));
+        assert!(matches!(items[1].kind, ExprKind::Int(2)));
+    }
+}
+
+fn substitute_nested_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> Expr {
     // Expression statements have no expected result type, but their root can
     // still be a pure value already proven by normalized typed IR.  Consume
     // that fact before walking children so discarded expressions use the same
     // backend boundary as bindings, assignments, and returns.  The direct
     // helper preserves the original span while replacing only compiler-known
     // scalar constants; effectful and ownership-sensitive roots are unchanged.
-    if constant_values.contains_key(&source_span_key(expr.span)) {
-        return substitute_direct_ir_constant_arguments(expr, constant_values);
+    let span = source_span_key(expr.span);
+    if rewrite_facts.constants.contains_key(&span) || rewrite_facts.aggregates.contains_key(&span) {
+        return substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     }
     let mut rewritten = expr.clone();
-    let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, constant_values);
+    let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, rewrite_facts);
     match &mut rewritten.kind {
         ExprKind::Await(awaited) => {
-            **awaited = substitute_nested_ir_constant_arguments(awaited, constant_values);
+            **awaited = substitute_nested_ir_constant_arguments(awaited, rewrite_facts);
         }
         ExprKind::Call {
             args, named_args, ..
@@ -44852,14 +45047,14 @@ fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
-    constant_values: &HashMap<(u32, usize, usize, usize), ConstantValue>,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
     // Multi-value boundaries used to bypass the typed-IR constant consumer
     // even though ordinary scalar call boundaries already used it. Rewrite
     // the complete value tree once here so destructuring and return forwarding
     // receive the same proven constants without changing their evaluation
     // shape or ownership-sensitive fallback behavior.
-    let rewritten = substitute_nested_ir_constant_arguments(expr, constant_values);
+    let rewritten = substitute_nested_ir_constant_arguments(expr, rewrite_facts);
     let expr = &rewritten;
     match &expr.kind {
         ExprKind::ShellCall { name, args, .. } => {
@@ -44872,7 +45067,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures, constant_values)
+            emit_multi_expr(&call, env, signatures, rewrite_facts)
         }
         ExprKind::Pipe {
             input, name, args, ..
@@ -44889,7 +45084,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures, constant_values)
+            emit_multi_expr(&call, env, signatures, rewrite_facts)
         }
         ExprKind::Await(awaited) => {
             let ExprKind::Call {
