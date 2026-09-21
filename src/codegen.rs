@@ -34075,6 +34075,11 @@ enum CfgScalarExprKind {
         end: Option<Box<CfgScalarExpr>>,
         step: Option<Box<CfgScalarExpr>>,
     },
+    InterfacePack {
+        interface: String,
+        target: String,
+        value: Box<CfgScalarExpr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34363,6 +34368,21 @@ fn cfg_direct_scalar_expr(
             index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
             optional: *optional,
         },
+        crate::ir::ControlFlowValueKind::InterfacePack {
+            interface,
+            target,
+            value: packed,
+        } => {
+            let packed_value = cfg.value(*packed)?;
+            if !matches!(&packed_value.ty, Type::Named(name) if name == target) {
+                return None;
+            }
+            CfgScalarExprKind::InterfacePack {
+                interface: interface.clone(),
+                target: target.clone(),
+                value: Box::new(cfg_direct_scalar_expr(cfg, *packed)?),
+            }
+        }
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
             if matches!(
                 op,
@@ -45400,6 +45420,18 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             end: end.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
             step: step.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
         },
+        CfgScalarExprKind::InterfacePack {
+            interface,
+            target,
+            value,
+        } => {
+            debug_assert!(matches!(&value.ty, Type::Named(name) if name == target));
+            ExprKind::Call {
+                name: interface.clone(),
+                args: vec![cfg_scalar_expr_as_ast(value)],
+                named_args: Vec::new(),
+            }
+        }
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -47470,6 +47502,87 @@ fn main() -> i64 {
             assert!(emitted.contains(expected_fragment));
             assert!(!emitted.contains(fake_text));
         }
+    }
+
+    #[test]
+    fn concrete_interface_packs_lower_from_typed_ir() {
+        let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn applyOffset(receiver: Offset, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Offset {
+    apply: applyOffset
+}
+
+fn pack(offset: Offset) -> Tool {
+    return Tool(offset)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("interface-pack IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pack")
+            .expect("interface-pack CFG should exist");
+        let packed = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::InterfacePack { .. }
+                )
+            })
+            .expect("typed IR should retain the concrete interface pack");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(packed.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::InterfacePack {
+                    interface,
+                    target,
+                    ..
+                },
+                ..
+            }) if interface == "Tool" && target == "Offset"
+        ));
+
+        let fake = Expr {
+            line: packed.span.line,
+            span: packed.span,
+            kind: ExprKind::Str("checked-ast-interface-pack".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Named("Tool".to_string()),
+            &HashMap::from([("offset".to_string(), Type::Named("Offset".to_string()))]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("concrete interface pack should emit from typed IR");
+
+        assert_eq!(
+            emitted,
+            format!(
+                "{}({})",
+                interface_pack_helper_name("Tool", "Offset"),
+                local_c_name("offset")
+            )
+        );
+        assert!(!emitted.contains("checked-ast-interface-pack"));
     }
 
     #[test]
