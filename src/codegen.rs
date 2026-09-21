@@ -34012,6 +34012,11 @@ enum CfgScalarExprKind {
         left: Box<CfgScalarExpr>,
         right: Box<CfgScalarExpr>,
     },
+    Field {
+        base: Box<CfgScalarExpr>,
+        name: String,
+        optional: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34123,6 +34128,15 @@ fn cfg_direct_scalar_expr(
                 operand: Box::new(cfg_direct_scalar_expr(cfg, *operand)?),
             }
         }
+        crate::ir::ControlFlowValueKind::Field {
+            base,
+            name,
+            optional,
+        } => CfgScalarExprKind::Field {
+            base: Box::new(cfg_direct_scalar_expr(cfg, *base)?),
+            name: name.clone(),
+            optional: *optional,
+        },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
             if matches!(
                 op,
@@ -44893,14 +44907,115 @@ fn emit_cfg_scalar_expr(
         }
         CfgScalarExprKind::Constant(_) => None,
         CfgScalarExprKind::Name(name)
-            if matches!(ty, Type::I64 | Type::Bool | Type::Str)
-                && env
-                    .get(name)
-                    .is_some_and(|local| signatures.canonical_type(local) == ty) =>
+            if env
+                .get(name)
+                .is_some_and(|local| signatures.canonical_type(local) == ty) =>
         {
             Some(local_c_name(name))
         }
         CfgScalarExprKind::Name(_) => None,
+        CfgScalarExprKind::Field {
+            base,
+            name,
+            optional,
+        } => {
+            let base_ty = signatures.canonical_type(&base.ty);
+            let base = emit_cfg_scalar_expr(base, &base.ty, env, signatures)?;
+            if *optional {
+                let Type::Optional(inner) = &base_ty else {
+                    return None;
+                };
+                let inner_ty = signatures.canonical_type(inner);
+                let Type::Named(struct_name) = &inner_ty else {
+                    return None;
+                };
+                let definition = signatures.struct_type(struct_name)?;
+                let field = definition.field(name)?;
+                let field_ty = signatures.canonical_type(&field.ty);
+                let result_ty = if matches!(field_ty, Type::Optional(_)) {
+                    field_ty.clone()
+                } else {
+                    Type::Optional(Box::new(field_ty.clone()))
+                };
+                if result_ty != ty {
+                    return None;
+                }
+                let result_c = c_type(&ty, signatures);
+                let base_c = c_type(&base_ty, signatures);
+                let field_code =
+                    format!("flux__optional_access_value.value.{}", field_c_name(name));
+                let present = if matches!(field_ty, Type::Optional(_)) {
+                    field_code
+                } else {
+                    format!("({result_c}){{ .has_value = true, .value = {field_code} }}")
+                };
+                Some(format!(
+                    "__extension__ ({{ {base_c} flux__optional_access_value = {base}; flux__optional_access_value.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})"
+                ))
+            } else {
+                match base_ty {
+                    Type::Named(ref struct_name) => {
+                        let definition = signatures.struct_type(struct_name)?;
+                        let field = definition.field(name)?;
+                        if signatures.canonical_type(&field.ty) != ty {
+                            return None;
+                        }
+                        Some(format!("({base}).{}", field_c_name(name)))
+                    }
+                    Type::Record(ref fields) => {
+                        let index = if let Ok(index) = name.parse::<usize>() {
+                            index
+                        } else {
+                            fields
+                                .iter()
+                                .position(|field| field.name.as_deref() == Some(name.as_str()))?
+                        };
+                        let field = fields.get(index)?;
+                        if signatures.canonical_type(&field.ty) != ty {
+                            return None;
+                        }
+                        Some(format!(
+                            "({base}).{}",
+                            record_field_c_name(field.name.as_deref(), index)
+                        ))
+                    }
+                    Type::List(ref element) => {
+                        let element_ty = signatures.canonical_type(element);
+                        let element_c = c_type(&element_ty, signatures);
+                        match crate::builtin_names::list_member_impl(name) {
+                            "length" if ty == Type::I64 => Some(format!("({base}).len")),
+                            "isEmpty" if ty == Type::Bool => Some(format!("(({base}).len == 0)")),
+                            "isNotEmpty" if ty == Type::Bool => {
+                                Some(format!("(({base}).len != 0)"))
+                            }
+                            "first" if ty == element_ty => Some(format!(
+                                "(*(({element_c} *)flux_list_at({base}, INT64_C(0), sizeof({element_c}))))"
+                            )),
+                            "last" if ty == element_ty => Some(format!(
+                                "(*(({element_c} *)flux_list_at({base}, INT64_C(-1), sizeof({element_c}))))"
+                            )),
+                            "single" if ty == element_ty => {
+                                Some(format!("(*(({element_c} *)flux_list_single({base})))"))
+                            }
+                            _ => None,
+                        }
+                    }
+                    Type::Set(_) => match name.as_str() {
+                        "count" if ty == Type::I64 => Some(format!("({base}).len")),
+                        "empty" if ty == Type::Bool => Some(format!("(({base}).len == 0)")),
+                        "nonempty" if ty == Type::Bool => Some(format!("(({base}).len != 0)")),
+                        _ => None,
+                    },
+                    Type::Map(_, _) => match name.as_str() {
+                        "count" if ty == Type::I64 => Some(format!("({base}).keys.len")),
+                        "empty" if ty == Type::Bool => Some(format!("(({base}).keys.len == 0)")),
+                        "nonempty" if ty == Type::Bool => Some(format!("(({base}).keys.len != 0)")),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+        }
         CfgScalarExprKind::Unary { op, operand } => {
             let operand_ty = signatures.canonical_type(&operand.ty);
             let operand = emit_cfg_scalar_expr(operand, &operand.ty, env, signatures)?;
@@ -45961,6 +46076,84 @@ fn main() -> i64 {
         )
         .expect("dynamic negation should emit from typed IR");
         assert_eq!(emitted, format!("flux_neg_i64({})", local_c_name("value")));
+    }
+
+    #[test]
+    fn direct_typed_ir_field_projections_bypass_checked_ast_rebuild() {
+        let source = r#"
+struct Point {
+    x: i64
+}
+
+fn direct(point: Point) -> i64 {
+    return point.x
+}
+
+fn optional(point: Point?) -> i64? {
+    return point?.x
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("field projection IR fixture should typecheck");
+
+        for (function, expected_optional) in [("direct", false), ("optional", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("field projection CFG should exist");
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Field { optional, .. }
+                            if optional == expected_optional
+                    )
+                })
+                .expect("typed IR should retain the field projection");
+            let facts = cfg_rewrite_facts(graph);
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Int(0),
+            };
+            let point_ty = Type::Named("Point".to_string());
+            let expected = if expected_optional {
+                Type::Optional(Box::new(Type::I64))
+            } else {
+                Type::I64
+            };
+            let parameter_ty = if expected_optional {
+                Type::Optional(Box::new(point_ty))
+            } else {
+                point_ty
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &HashMap::from([("point".to_string(), parameter_ty)]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic field projection should emit from typed IR");
+
+            assert!(emitted.contains(&local_c_name("point")));
+            assert!(emitted.contains(&field_c_name("x")));
+            if expected_optional {
+                assert!(emitted.contains("flux__optional_access_value"));
+                assert!(emitted.contains(".has_value"));
+            } else {
+                assert_eq!(
+                    emitted,
+                    format!("({}).{}", local_c_name("point"), field_c_name("x"))
+                );
+            }
+        }
     }
 
     #[test]
