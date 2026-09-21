@@ -15261,7 +15261,7 @@ fn main() -> i64 {
     assert!(generated.contains("flux_list_take("));
     assert!(generated.contains("flux__list_build_capacity_"));
     assert!(generated.contains("flux__list_build_source_"));
-    assert!(generated.contains("flux__list_build_condition_"));
+    assert!(!generated.contains("flux__list_build_condition_"));
     assert!(generated.contains("Flux runtime error: constructed list is too large"));
     assert!(generated.contains("Flux runtime error: list count must be non-negative"));
     assert!(generated.contains("flux_list_any_bool"));

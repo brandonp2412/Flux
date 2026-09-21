@@ -33970,7 +33970,46 @@ fn cfg_checked_i64_proofs(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgListItemShape {
+    Value((u32, usize, usize, usize)),
+    Spread {
+        span: (u32, usize, usize, usize),
+        value: (u32, usize, usize, usize),
+        optional: bool,
+    },
+    Optional {
+        span: (u32, usize, usize, usize),
+        value: (u32, usize, usize, usize),
+    },
+    Conditional {
+        span: (u32, usize, usize, usize),
+        condition: (u32, usize, usize, usize),
+        binding: Option<String>,
+        value: (u32, usize, usize, usize),
+        else_value: Option<(u32, usize, usize, usize)>,
+    },
+}
+
+impl CfgListItemShape {
+    fn span(&self) -> (u32, usize, usize, usize) {
+        match self {
+            Self::Value(span)
+            | Self::Spread { span, .. }
+            | Self::Optional { span, .. }
+            | Self::Conditional { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CfgAggregateShape {
+    List(Vec<CfgListItemShape>),
+    ListComprehension {
+        binding: String,
+        iterable: (u32, usize, usize, usize),
+        value: (u32, usize, usize, usize),
+        condition: Option<(u32, usize, usize, usize)>,
+    },
     Set(Vec<(u32, usize, usize, usize)>),
     Record(Vec<(Option<String>, (u32, usize, usize, usize))>),
 }
@@ -34203,6 +34242,45 @@ fn cfg_direct_scalar_expr(
     })
 }
 
+fn cfg_list_item_shape(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgListItemShape> {
+    let item = cfg.value(id)?;
+    let span = source_span_key(item.span);
+    match &item.kind {
+        crate::ir::ControlFlowValueKind::ListSpread { value, optional } => {
+            Some(CfgListItemShape::Spread {
+                span,
+                value: source_span_key(cfg.value(*value)?.span),
+                optional: *optional,
+            })
+        }
+        crate::ir::ControlFlowValueKind::ListOptional { value } => {
+            Some(CfgListItemShape::Optional {
+                span,
+                value: source_span_key(cfg.value(*value)?.span),
+            })
+        }
+        crate::ir::ControlFlowValueKind::ListIf {
+            condition,
+            binding,
+            value,
+            else_value,
+        } => Some(CfgListItemShape::Conditional {
+            span,
+            condition: source_span_key(cfg.value(*condition)?.span),
+            binding: binding.clone(),
+            value: source_span_key(cfg.value(*value)?.span),
+            else_value: match else_value {
+                Some(id) => Some(source_span_key(cfg.value(*id)?.span)),
+                None => None,
+            },
+        }),
+        _ => Some(CfgListItemShape::Value(span)),
+    }
+}
+
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
     let mut constants = HashMap::new();
     let mut ambiguous_constants = HashSet::new();
@@ -34239,6 +34317,27 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         .filter(|value| cfg.is_value_reachable(value.id))
     {
         let shape = match &value.kind {
+            crate::ir::ControlFlowValueKind::List { items } => items
+                .iter()
+                .map(|id| cfg_list_item_shape(cfg, *id))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateShape::List),
+            crate::ir::ControlFlowValueKind::ListComprehension {
+                binding,
+                iterable,
+                value,
+                condition,
+            } => (|| {
+                Some(CfgAggregateShape::ListComprehension {
+                    binding: binding.clone(),
+                    iterable: source_span_key(cfg.value(*iterable)?.span),
+                    value: source_span_key(cfg.value(*value)?.span),
+                    condition: match condition {
+                        Some(id) => Some(source_span_key(cfg.value(*id)?.span)),
+                        None => None,
+                    },
+                })
+            })(),
             crate::ir::ControlFlowValueKind::Set { items } => items
                 .iter()
                 .map(|id| cfg.value(*id).map(|item| source_span_key(item.span)))
@@ -39589,7 +39688,8 @@ fn emit_list_builder_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let ExprKind::List(items) = &expr.kind else {
+    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
+    let ExprKind::List(items) = &rewritten.kind else {
         unreachable!()
     };
     let result_ty = signatures.canonical_type(declared_ty);
@@ -39891,13 +39991,14 @@ fn emit_list_comprehension_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     let ExprKind::ListComprehension {
         value,
         binding,
         iterable,
         condition,
         ..
-    } = &expr.kind
+    } = &rewritten.kind
     else {
         unreachable!()
     };
@@ -45225,6 +45326,112 @@ fn substitute_direct_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewri
 
         if let Some(shape) = rewrite_facts.aggregates.get(&source_span_key(expr.span)) {
             match (shape, &mut rewritten.kind) {
+                (CfgAggregateShape::List(ir_items), ExprKind::List(items))
+                    if ir_items.len() == items.len() =>
+                {
+                    let mut remaining = items.clone();
+                    let mut ordered = Vec::with_capacity(remaining.len());
+                    let mut matched = true;
+                    for shape in ir_items {
+                        let Some(index) = remaining
+                            .iter()
+                            .position(|item| source_span_key(item.span) == shape.span())
+                        else {
+                            matched = false;
+                            break;
+                        };
+                        let mut item = remaining.remove(index);
+                        let item_matches = match (shape, &mut item.kind) {
+                            (CfgListItemShape::Value(_), kind) => !matches!(
+                                kind,
+                                ExprKind::ListSpread { .. }
+                                    | ExprKind::ListOptional { .. }
+                                    | ExprKind::ListIf { .. }
+                            ),
+                            (
+                                CfgListItemShape::Spread {
+                                    value: ir_value,
+                                    optional: ir_optional,
+                                    ..
+                                },
+                                ExprKind::ListSpread {
+                                    value, optional, ..
+                                },
+                            ) if source_span_key(value.span) == *ir_value => {
+                                *optional = *ir_optional;
+                                true
+                            }
+                            (
+                                CfgListItemShape::Optional {
+                                    value: ir_value, ..
+                                },
+                                ExprKind::ListOptional { value, .. },
+                            ) => source_span_key(value.span) == *ir_value,
+                            (
+                                CfgListItemShape::Conditional {
+                                    condition: ir_condition,
+                                    binding: ir_binding,
+                                    value: ir_value,
+                                    else_value: ir_else_value,
+                                    ..
+                                },
+                                ExprKind::ListIf {
+                                    condition,
+                                    binding,
+                                    value,
+                                    else_value,
+                                    ..
+                                },
+                            ) if source_span_key(condition.span) == *ir_condition
+                                && source_span_key(value.span) == *ir_value
+                                && else_value
+                                    .as_deref()
+                                    .map(|value| source_span_key(value.span))
+                                    == *ir_else_value
+                                && binding.is_some() == ir_binding.is_some() =>
+                            {
+                                if let (Some(ir_binding), Some(binding)) =
+                                    (ir_binding, binding.as_mut())
+                                {
+                                    binding.name = ir_binding.clone();
+                                }
+                                true
+                            }
+                            _ => false,
+                        };
+                        if !item_matches {
+                            matched = false;
+                            break;
+                        }
+                        ordered.push(item);
+                    }
+                    if matched && remaining.is_empty() {
+                        *items = ordered;
+                    }
+                }
+                (
+                    CfgAggregateShape::ListComprehension {
+                        binding: ir_binding,
+                        iterable: ir_iterable,
+                        value: ir_value,
+                        condition: ir_condition,
+                    },
+                    ExprKind::ListComprehension {
+                        binding,
+                        iterable,
+                        value,
+                        condition,
+                        ..
+                    },
+                ) if source_span_key(iterable.span) == *ir_iterable
+                    && source_span_key(value.span) == *ir_value
+                    && condition
+                        .as_deref()
+                        .map(|condition| source_span_key(condition.span))
+                        == *ir_condition =>
+                {
+                    *binding = ir_binding.clone();
+                }
                 (CfgAggregateShape::Set(item_spans), ExprKind::Set(items))
                     if item_spans.len() == items.len() =>
                 {
@@ -45421,6 +45628,77 @@ mod cfg_rewrite_fact_tests {
     }
 
     #[test]
+    fn normalized_ir_produces_list_control_backend_shapes() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"fn main() -> i64 {
+    let present: i64[]? = [1, 2]
+    let values: i64[] = [...?present, if true: 3 else: 4]
+    let source: i64[] = [1, 2]
+    let mapped: i64[] = [item + 1 for item in source if item > 1]
+    return values.length + mapped.length
+}
+"#,
+            SourceId::new(4245),
+        )
+        .expect("list-control backend fixture should analyze");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+
+        let list = graph
+            .values()
+            .iter()
+            .find(|value| {
+                let crate::ir::ControlFlowValueKind::List { items } = &value.kind else {
+                    return false;
+                };
+                items.iter().any(|id| {
+                    graph.value(*id).is_some_and(|item| {
+                        matches!(
+                            item.kind,
+                            crate::ir::ControlFlowValueKind::ListSpread { .. }
+                                | crate::ir::ControlFlowValueKind::ListIf { .. }
+                        )
+                    })
+                })
+            })
+            .expect("controlled list should have a typed IR root");
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(list.span))
+            .expect("controlled list should produce a backend shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("controlled list should use a list backend shape");
+        };
+        assert!(
+            items
+                .iter()
+                .any(|item| { matches!(item, CfgListItemShape::Spread { optional: true, .. }) })
+        );
+        assert!(
+            items.iter().any(|item| {
+                matches!(item, CfgListItemShape::Conditional { binding: None, .. })
+            })
+        );
+
+        let comprehension = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListComprehension { .. }
+                )
+            })
+            .expect("comprehension should have a typed IR root");
+        assert!(matches!(
+            facts.aggregates.get(&source_span_key(comprehension.span)),
+            Some(CfgAggregateShape::ListComprehension { binding, .. }) if binding == "item"
+        ));
+    }
+
+    #[test]
     fn list_builder_children_use_typed_ir_rewrite_facts() {
         let source = SourceId::new(4243);
         let scalar_span = SourceSpan::new(1, 2, 4).with_source(source);
@@ -45429,7 +45707,10 @@ mod cfg_rewrite_fact_tests {
         let condition_span = SourceSpan::new(1, 16, 4).with_source(source);
         let then_span = SourceSpan::new(1, 24, 4).with_source(source);
         let else_span = SourceSpan::new(1, 32, 4).with_source(source);
-        let list_span = SourceSpan::new(1, 1, 40).with_source(source);
+        let conditional_span = SourceSpan::new(1, 15, 22).with_source(source);
+        let spread_value_span = SourceSpan::new(1, 42, 9).with_source(source);
+        let spread_item_span = SourceSpan::new(1, 39, 12).with_source(source);
+        let list_span = SourceSpan::new(1, 1, 52).with_source(source);
         let unusable = |span| Expr {
             line: 1,
             span,
@@ -45450,7 +45731,7 @@ mod cfg_rewrite_fact_tests {
                 },
                 Expr {
                     line: 1,
-                    span: SourceSpan::new(1, 15, 22).with_source(source),
+                    span: conditional_span,
                     kind: ExprKind::ListIf {
                         condition: Box::new(unusable(condition_span)),
                         binding: None,
@@ -45458,6 +45739,15 @@ mod cfg_rewrite_fact_tests {
                         else_value: Some(Box::new(unusable(else_span))),
                         if_span: SourceSpan::new(1, 15, 2).with_source(source),
                         else_span: Some(SourceSpan::new(1, 29, 4).with_source(source)),
+                    },
+                },
+                Expr {
+                    line: 1,
+                    span: spread_item_span,
+                    kind: ExprKind::ListSpread {
+                        value: Box::new(unusable(spread_value_span)),
+                        spread_span: SourceSpan::new(1, 39, 3).with_source(source),
+                        optional: false,
                     },
                 },
             ]),
@@ -45473,6 +45763,11 @@ mod cfg_rewrite_fact_tests {
             (condition_span, Type::Bool, "enabled"),
             (then_span, Type::I64, "value"),
             (else_span, Type::I64, "fallback"),
+            (
+                spread_value_span,
+                Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+                "maybeList",
+            ),
         ] {
             facts.scalar_exprs.insert(
                 source_span_key(span),
@@ -45482,11 +45777,37 @@ mod cfg_rewrite_fact_tests {
                 },
             );
         }
+        facts.aggregates.insert(
+            source_span_key(list_span),
+            CfgAggregateShape::List(vec![
+                CfgListItemShape::Value(source_span_key(scalar_span)),
+                CfgListItemShape::Optional {
+                    span: source_span_key(optional_item_span),
+                    value: source_span_key(optional_value_span),
+                },
+                CfgListItemShape::Conditional {
+                    span: source_span_key(conditional_span),
+                    condition: source_span_key(condition_span),
+                    binding: None,
+                    value: source_span_key(then_span),
+                    else_value: Some(source_span_key(else_span)),
+                },
+                CfgListItemShape::Spread {
+                    span: source_span_key(spread_item_span),
+                    value: source_span_key(spread_value_span),
+                    optional: true,
+                },
+            ]),
+        );
         let mut env = HashMap::from([
             ("value".to_string(), Type::I64),
             ("maybe".to_string(), Type::Optional(Box::new(Type::I64))),
             ("enabled".to_string(), Type::Bool),
             ("fallback".to_string(), Type::I64),
+            (
+                "maybeList".to_string(),
+                Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+            ),
         ]);
         let mut out = String::new();
         let mut temp_counter = 0;
@@ -45507,6 +45828,7 @@ mod cfg_rewrite_fact_tests {
         assert!(out.contains(&local_c_name("maybe")));
         assert!(out.contains(&local_c_name("enabled")));
         assert!(out.contains(&local_c_name("fallback")));
+        assert!(out.contains(&local_c_name("maybeList")));
         assert!(!out.contains("checked-ast-child"));
     }
 
@@ -45516,6 +45838,7 @@ mod cfg_rewrite_fact_tests {
         let iterable_span = SourceSpan::new(1, 12, 6).with_source(source_id);
         let condition_span = SourceSpan::new(1, 24, 4).with_source(source_id);
         let value_span = SourceSpan::new(1, 2, 4).with_source(source_id);
+        let comprehension_span = SourceSpan::new(1, 1, 30).with_source(source_id);
         let unusable = |span| Expr {
             line: 1,
             span,
@@ -45523,10 +45846,10 @@ mod cfg_rewrite_fact_tests {
         };
         let comprehension = Expr {
             line: 1,
-            span: SourceSpan::new(1, 1, 30).with_source(source_id),
+            span: comprehension_span,
             kind: ExprKind::ListComprehension {
                 value: Box::new(unusable(value_span)),
-                binding: "item".to_string(),
+                binding: "checkedAstBinding".to_string(),
                 binding_span: SourceSpan::new(1, 7, 4).with_source(source_id),
                 iterable: Box::new(Expr {
                     line: 1,
@@ -45537,6 +45860,15 @@ mod cfg_rewrite_fact_tests {
             },
         };
         let mut facts = CfgRewriteFacts::default();
+        facts.aggregates.insert(
+            source_span_key(comprehension_span),
+            CfgAggregateShape::ListComprehension {
+                binding: "item".to_string(),
+                iterable: source_span_key(iterable_span),
+                value: source_span_key(value_span),
+                condition: Some(source_span_key(condition_span)),
+            },
+        );
         facts.scalar_exprs.insert(
             source_span_key(condition_span),
             CfgScalarExpr {
@@ -45583,6 +45915,7 @@ mod cfg_rewrite_fact_tests {
         assert!(out.contains(&local_c_name("source")));
         assert!(out.contains(&local_c_name("enabled")));
         assert!(out.contains(&local_c_name("item")));
+        assert!(!out.contains(&local_c_name("checkedAstBinding")));
         assert!(out.contains("flux_add_i64"));
         assert!(!out.contains("checked-ast-child"));
     }
