@@ -34036,6 +34036,11 @@ enum CfgAggregateValue {
         variant: String,
         payloads: Vec<CfgAggregateValue>,
     },
+    InterfacePack {
+        interface: String,
+        target: String,
+        value: Box<CfgAggregateValue>,
+    },
     AbsentOptional,
     Aggregate(Box<CfgAggregateConstant>),
 }
@@ -34111,6 +34116,21 @@ fn cfg_literal_aggregate_value(
         && matches!(&value.ty, Type::Optional(inner) if **inner == Type::Void)
     {
         return Some(CfgAggregateValue::AbsentOptional);
+    }
+    if let crate::ir::ControlFlowValueKind::InterfacePack {
+        interface,
+        target,
+        value: packed,
+    } = &value.kind
+        && value.ownership.is_copy()
+        && matches!(&value.ty, Type::Named(returned) if returned == interface)
+        && matches!(cfg.value(*packed).map(|value| &value.ty), Some(Type::Named(name)) if name == target)
+    {
+        return Some(CfgAggregateValue::InterfacePack {
+            interface: interface.clone(),
+            target: target.clone(),
+            value: Box::new(cfg_literal_aggregate_value(cfg, *packed)?),
+        });
     }
     if let crate::ir::ControlFlowValueKind::QualifiedCall {
         namespace,
@@ -45169,6 +45189,7 @@ fn emit_cfg_aggregate_value(
             CfgAggregateValue::Scalar(constant) => signatures.canonical_type(&constant.ty()),
             CfgAggregateValue::Direct(expr) => signatures.canonical_type(&expr.ty),
             CfgAggregateValue::EnumVariant { enum_name, .. } => Type::Named(enum_name.clone()),
+            CfgAggregateValue::InterfacePack { interface, .. } => Type::Named(interface.clone()),
             CfgAggregateValue::AbsentOptional => unreachable!(),
             CfgAggregateValue::Aggregate(aggregate) => signatures.canonical_type(&aggregate.ty),
         };
@@ -45213,6 +45234,24 @@ fn emit_cfg_aggregate_value(
             Some(format!(
                 "{}({rendered})",
                 enum_variant_helper_name(enum_name, variant)
+            ))
+        }
+        CfgAggregateValue::InterfacePack {
+            interface,
+            target,
+            value,
+        } => {
+            if signatures.canonical_type(expected) != Type::Named(interface.clone())
+                || signatures.interface(interface).is_none()
+                || signatures.implementation(interface, target).is_none()
+            {
+                return None;
+            }
+            let rendered =
+                emit_cfg_aggregate_value(value, &Type::Named(target.clone()), env, signatures)?;
+            Some(format!(
+                "{}({rendered})",
+                interface_pack_helper_name(interface, target)
             ))
         }
         CfgAggregateValue::AbsentOptional => None,
@@ -45268,7 +45307,8 @@ fn emit_cfg_aggregate_constant(
                         variant,
                         payloads,
                     } if payloads.is_empty() => format!("enum:{enum_name}.{variant}"),
-                    CfgAggregateValue::EnumVariant { .. } => return None,
+                    CfgAggregateValue::EnumVariant { .. }
+                    | CfgAggregateValue::InterfacePack { .. } => return None,
                     CfgAggregateValue::AbsentOptional => "none".to_string(),
                     CfgAggregateValue::Direct(_) | CfgAggregateValue::Aggregate(_) => return None,
                 };
@@ -47583,6 +47623,84 @@ fn main() -> i64 {
             )
         );
         assert!(!emitted.contains("checked-ast-interface-pack"));
+    }
+
+    #[test]
+    fn aggregate_interface_packs_lower_from_typed_ir() {
+        let source = r#"
+interface Tool {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn applyOffset(receiver: Offset, value: i64) -> i64 {
+    return receiver.amount + value
+}
+
+impl Tool for Offset {
+    apply: applyOffset
+}
+
+fn build(amount: i64) -> i64 {
+    let tools: Tool[] = [Tool(Offset { amount: amount + 1 })]
+    return tools.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("aggregate interface-pack IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("build")
+            .expect("aggregate interface-pack CFG should exist");
+        let list = graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::List { .. }))
+            .expect("typed IR should retain the interface-value list");
+        let facts = cfg_rewrite_facts(graph);
+        let aggregate = facts
+            .aggregate_constants
+            .get(&source_span_key(list.span))
+            .expect("interface-value list should have typed aggregate facts");
+        let CfgAggregateConstantKind::List(values) = &aggregate.kind else {
+            panic!("expected list aggregate facts");
+        };
+        assert!(matches!(
+            values.as_slice(),
+            [CfgAggregateValue::InterfacePack {
+                interface,
+                target,
+                value,
+            }] if interface == "Tool"
+                && target == "Offset"
+                && matches!(value.as_ref(), CfgAggregateValue::Aggregate(_))
+        ));
+
+        let fake = Expr {
+            line: list.span.line,
+            span: list.span,
+            kind: ExprKind::Str("checked-ast-aggregate-interface-pack".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::List(Box::new(Type::Named("Tool".to_string()))),
+            &HashMap::from([("amount".to_string(), Type::I64)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("aggregate interface pack should emit from typed IR");
+
+        assert!(emitted.contains(&interface_pack_helper_name("Tool", "Offset")));
+        assert!(emitted.contains(&struct_c_name("Offset")));
+        assert!(emitted.contains(&local_c_name("amount")));
+        assert!(!emitted.contains("checked-ast-aggregate-interface-pack"));
     }
 
     #[test]
