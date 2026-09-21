@@ -34085,6 +34085,10 @@ enum CfgScalarExprKind {
         target: String,
         value: Box<CfgScalarExpr>,
     },
+    Call {
+        callee: String,
+        arguments: Vec<CfgScalarExpr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34317,6 +34321,33 @@ fn cfg_borrowed_collection_field_base(
     })
 }
 
+fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
+    match &expr.kind {
+        CfgScalarExprKind::Call { .. } => true,
+        CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
+        CfgScalarExprKind::Binary { left, right, .. } => {
+            cfg_scalar_expr_contains_call(left) || cfg_scalar_expr_contains_call(right)
+        }
+        CfgScalarExprKind::Field { base, .. } => cfg_scalar_expr_contains_call(base),
+        CfgScalarExprKind::Index { base, index, .. } => {
+            cfg_scalar_expr_contains_call(base) || cfg_scalar_expr_contains_call(index)
+        }
+        CfgScalarExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            cfg_scalar_expr_contains_call(base)
+                || start.as_deref().is_some_and(cfg_scalar_expr_contains_call)
+                || end.as_deref().is_some_and(cfg_scalar_expr_contains_call)
+                || step.as_deref().is_some_and(cfg_scalar_expr_contains_call)
+        }
+        CfgScalarExprKind::InterfacePack { value, .. } => cfg_scalar_expr_contains_call(value),
+        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => false,
+    }
+}
+
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34403,6 +34434,13 @@ fn cfg_direct_scalar_expr(
                 value: Box::new(cfg_direct_scalar_expr(cfg, *packed)?),
             }
         }
+        crate::ir::ControlFlowValueKind::Call { callee, arguments } => CfgScalarExprKind::Call {
+            callee: callee.clone(),
+            arguments: arguments
+                .iter()
+                .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
             if matches!(
                 op,
@@ -34420,10 +34458,17 @@ fn cfg_direct_scalar_expr(
                     | BinOp::Ge
             ) =>
         {
+            let left = cfg_direct_scalar_expr(cfg, *left)?;
+            let right = cfg_direct_scalar_expr(cfg, *right)?;
+            if matches!(op, BinOp::And | BinOp::Or)
+                && (cfg_scalar_expr_contains_call(&left) || cfg_scalar_expr_contains_call(&right))
+            {
+                return None;
+            }
             CfgScalarExprKind::Binary {
                 op: *op,
-                left: Box::new(cfg_direct_scalar_expr(cfg, *left)?),
-                right: Box::new(cfg_direct_scalar_expr(cfg, *right)?),
+                left: Box::new(left),
+                right: Box::new(right),
             }
         }
         _ => return None,
@@ -45472,6 +45517,11 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 named_args: Vec::new(),
             }
         }
+        CfgScalarExprKind::Call { callee, arguments } => ExprKind::Call {
+            name: callee.clone(),
+            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            named_args: Vec::new(),
+        },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -45489,6 +45539,59 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
     }
 }
 
+fn cfg_scalar_expr_calls_are_positional(expr: &CfgScalarExpr, signatures: &Signatures) -> bool {
+    match &expr.kind {
+        CfgScalarExprKind::Call { callee, arguments } => {
+            let implementation = crate::builtin_names::global_impl(callee);
+            let Some(signature) = signatures.get(implementation) else {
+                return false;
+            };
+            signature
+                .param_details
+                .iter()
+                .all(|param| !param.named_only)
+                && arguments
+                    .iter()
+                    .all(|argument| cfg_scalar_expr_calls_are_positional(argument, signatures))
+        }
+        CfgScalarExprKind::Unary { operand, .. } => {
+            cfg_scalar_expr_calls_are_positional(operand, signatures)
+        }
+        CfgScalarExprKind::Binary { left, right, .. } => {
+            cfg_scalar_expr_calls_are_positional(left, signatures)
+                && cfg_scalar_expr_calls_are_positional(right, signatures)
+        }
+        CfgScalarExprKind::Field { base, .. } => {
+            cfg_scalar_expr_calls_are_positional(base, signatures)
+        }
+        CfgScalarExprKind::Index { base, index, .. } => {
+            cfg_scalar_expr_calls_are_positional(base, signatures)
+                && cfg_scalar_expr_calls_are_positional(index, signatures)
+        }
+        CfgScalarExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            cfg_scalar_expr_calls_are_positional(base, signatures)
+                && start
+                    .as_deref()
+                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
+                && end
+                    .as_deref()
+                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
+                && step
+                    .as_deref()
+                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
+        }
+        CfgScalarExprKind::InterfacePack { value, .. } => {
+            cfg_scalar_expr_calls_are_positional(value, signatures)
+        }
+        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
+    }
+}
+
 fn emit_cfg_scalar_expr(
     expr: &CfgScalarExpr,
     expected: &Type,
@@ -45497,7 +45600,7 @@ fn emit_cfg_scalar_expr(
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
     let ty = signatures.canonical_type(&expr.ty);
-    if ty != expected {
+    if ty != expected || !cfg_scalar_expr_calls_are_positional(expr, signatures) {
         return None;
     }
     let synthetic = cfg_scalar_expr_as_ast(expr);
@@ -47701,6 +47804,172 @@ fn main() -> i64 {
         assert!(emitted.contains(&struct_c_name("Offset")));
         assert!(emitted.contains(&local_c_name("amount")));
         assert!(!emitted.contains("checked-ast-aggregate-interface-pack"));
+    }
+
+    #[test]
+    fn direct_typed_ir_calls_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn scale(value: i64, factor: i64 = 2) -> i64 {
+    return value * factor
+}
+
+fn named(value: i64, *, adjust: i64) -> i64 {
+    return value + adjust
+}
+
+fn direct(left: i64, right: i64) -> i64 {
+    return add(left, right)
+}
+
+fn defaulted(value: i64) -> i64 {
+    return scale(value)
+}
+
+fn nested(left: i64, right: i64) -> i64 {
+    return add(left, right) + scale(left)
+}
+
+fn namedCall(value: i64) -> i64 {
+    return named(value, adjust: 3)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct-call IR fixture should typecheck");
+
+        for (function, callee, env) in [
+            (
+                "direct",
+                "add",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "defaulted",
+                "scale",
+                HashMap::from([("value".to_string(), Type::I64)]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("direct-call CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call {
+                            callee: value_callee,
+                            ..
+                        } if value_callee == callee
+                    )
+                })
+                .expect("typed IR should retain the direct call");
+            let facts = cfg_rewrite_facts(graph);
+            assert!(matches!(
+                facts.scalar_exprs.get(&source_span_key(call.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Call {
+                        callee: value_callee,
+                        ..
+                    },
+                    ..
+                }) if value_callee == callee
+            ));
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str("checked-ast-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("direct call should emit from typed IR");
+
+            assert!(emitted.contains(&format!("{}(", function_c_name(callee))));
+            assert!(!emitted.contains("checked-ast-call"));
+            if callee == "scale" {
+                assert!(emitted.contains("INT64_C(2)"));
+            }
+        }
+
+        let nested = database
+            .control_flow_graph("nested")
+            .expect("nested-call CFG should exist");
+        let root = nested
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Add, .. }
+                ) && value.ty == Type::I64
+            })
+            .expect("nested call should retain the binary typed-IR root");
+        let facts = cfg_rewrite_facts(nested);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("nested calls should reconstruct through typed IR");
+        assert!(matches!(scalar.kind, CfgScalarExprKind::Binary { .. }));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([
+                ("left".to_string(), Type::I64),
+                ("right".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+        )
+        .expect("nested direct calls should emit from typed IR");
+        assert!(emitted.contains(&format!("{}(", function_c_name("add"))));
+        assert!(emitted.contains(&format!("{}(", function_c_name("scale"))));
+
+        let named = database
+            .control_flow_graph("namedCall")
+            .expect("named-call CFG should exist");
+        let call = named
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if callee == "named"
+                )
+            })
+            .expect("named call should retain typed IR");
+        let facts = cfg_rewrite_facts(named);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("named call should still have reconstructable value facts");
+        assert!(
+            emit_cfg_scalar_expr(
+                scalar,
+                &Type::I64,
+                &HashMap::from([("value".to_string(), Type::I64)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "named-only calls must retain checked-AST lowering until argument names are in IR"
+        );
     }
 
     #[test]
