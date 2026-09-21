@@ -44892,6 +44892,42 @@ fn emit_cfg_aggregate_constant(
     }
 }
 
+fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
+    let span = SourceSpan::new(1, 1, 1);
+    let kind = match &expr.kind {
+        CfgScalarExprKind::Constant(constant) => match constant {
+            ConstantValue::I64(value) => ExprKind::Int(*value),
+            ConstantValue::Bool(value) => ExprKind::Bool(*value),
+            ConstantValue::Str(value) => ExprKind::Str(value.clone()),
+        },
+        CfgScalarExprKind::Name(name) => ExprKind::Var(name.clone()),
+        CfgScalarExprKind::Field {
+            base,
+            name,
+            optional,
+        } => ExprKind::Field {
+            base: Box::new(cfg_scalar_expr_as_ast(base)),
+            name: name.clone(),
+            name_span: span,
+            optional: *optional,
+        },
+        CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
+            op: *op,
+            expr: Box::new(cfg_scalar_expr_as_ast(operand)),
+        },
+        CfgScalarExprKind::Binary { op, left, right } => ExprKind::Binary {
+            left: Box::new(cfg_scalar_expr_as_ast(left)),
+            op: *op,
+            right: Box::new(cfg_scalar_expr_as_ast(right)),
+        },
+    };
+    Expr {
+        line: span.line,
+        span,
+        kind,
+    }
+}
+
 fn emit_cfg_scalar_expr(
     expr: &CfgScalarExpr,
     expected: &Type,
@@ -44903,172 +44939,8 @@ fn emit_cfg_scalar_expr(
     if ty != expected {
         return None;
     }
-    match &expr.kind {
-        CfgScalarExprKind::Constant(constant)
-            if signatures.canonical_type(&constant.ty()) == ty =>
-        {
-            Some(constant_c_value(constant))
-        }
-        CfgScalarExprKind::Constant(_) => None,
-        CfgScalarExprKind::Name(name)
-            if env
-                .get(name)
-                .is_some_and(|local| signatures.canonical_type(local) == ty) =>
-        {
-            Some(local_c_name(name))
-        }
-        CfgScalarExprKind::Name(_) => None,
-        CfgScalarExprKind::Field {
-            base,
-            name,
-            optional,
-        } => {
-            let base_ty = signatures.canonical_type(&base.ty);
-            let base = emit_cfg_scalar_expr(base, &base.ty, env, signatures)?;
-            if *optional {
-                let Type::Optional(inner) = &base_ty else {
-                    return None;
-                };
-                let inner_ty = signatures.canonical_type(inner);
-                let Type::Named(struct_name) = &inner_ty else {
-                    return None;
-                };
-                let definition = signatures.struct_type(struct_name)?;
-                let field = definition.field(name)?;
-                let field_ty = signatures.canonical_type(&field.ty);
-                let result_ty = if matches!(field_ty, Type::Optional(_)) {
-                    field_ty.clone()
-                } else {
-                    Type::Optional(Box::new(field_ty.clone()))
-                };
-                if result_ty != ty {
-                    return None;
-                }
-                let result_c = c_type(&ty, signatures);
-                let base_c = c_type(&base_ty, signatures);
-                let field_code =
-                    format!("flux__optional_access_value.value.{}", field_c_name(name));
-                let present = if matches!(field_ty, Type::Optional(_)) {
-                    field_code
-                } else {
-                    format!("({result_c}){{ .has_value = true, .value = {field_code} }}")
-                };
-                Some(format!(
-                    "__extension__ ({{ {base_c} flux__optional_access_value = {base}; flux__optional_access_value.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})"
-                ))
-            } else {
-                match base_ty {
-                    Type::Named(ref struct_name) => {
-                        let definition = signatures.struct_type(struct_name)?;
-                        let field = definition.field(name)?;
-                        if signatures.canonical_type(&field.ty) != ty {
-                            return None;
-                        }
-                        Some(format!("({base}).{}", field_c_name(name)))
-                    }
-                    Type::Record(ref fields) => {
-                        let index = if let Ok(index) = name.parse::<usize>() {
-                            index
-                        } else {
-                            fields
-                                .iter()
-                                .position(|field| field.name.as_deref() == Some(name.as_str()))?
-                        };
-                        let field = fields.get(index)?;
-                        if signatures.canonical_type(&field.ty) != ty {
-                            return None;
-                        }
-                        Some(format!(
-                            "({base}).{}",
-                            record_field_c_name(field.name.as_deref(), index)
-                        ))
-                    }
-                    Type::List(ref element) => {
-                        let element_ty = signatures.canonical_type(element);
-                        let element_c = c_type(&element_ty, signatures);
-                        match crate::builtin_names::list_member_impl(name) {
-                            "length" if ty == Type::I64 => Some(format!("({base}).len")),
-                            "isEmpty" if ty == Type::Bool => Some(format!("(({base}).len == 0)")),
-                            "isNotEmpty" if ty == Type::Bool => {
-                                Some(format!("(({base}).len != 0)"))
-                            }
-                            "first" if ty == element_ty => Some(format!(
-                                "(*(({element_c} *)flux_list_at({base}, INT64_C(0), sizeof({element_c}))))"
-                            )),
-                            "last" if ty == element_ty => Some(format!(
-                                "(*(({element_c} *)flux_list_at({base}, INT64_C(-1), sizeof({element_c}))))"
-                            )),
-                            "single" if ty == element_ty => {
-                                Some(format!("(*(({element_c} *)flux_list_single({base})))"))
-                            }
-                            _ => None,
-                        }
-                    }
-                    Type::Set(_) => match name.as_str() {
-                        "count" if ty == Type::I64 => Some(format!("({base}).len")),
-                        "empty" if ty == Type::Bool => Some(format!("(({base}).len == 0)")),
-                        "nonempty" if ty == Type::Bool => Some(format!("(({base}).len != 0)")),
-                        _ => None,
-                    },
-                    Type::Map(_, _) => match name.as_str() {
-                        "count" if ty == Type::I64 => Some(format!("({base}).keys.len")),
-                        "empty" if ty == Type::Bool => Some(format!("(({base}).keys.len == 0)")),
-                        "nonempty" if ty == Type::Bool => Some(format!("(({base}).keys.len != 0)")),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }
-        }
-        CfgScalarExprKind::Unary { op, operand } => {
-            let operand_ty = signatures.canonical_type(&operand.ty);
-            let operand = emit_cfg_scalar_expr(operand, &operand.ty, env, signatures)?;
-            match (op, &ty, operand_ty) {
-                (UnaryOp::Neg, Type::I64, Type::I64) => Some(format!("flux_neg_i64({operand})")),
-                (UnaryOp::Not, Type::Bool, Type::Bool) => Some(format!("(!{operand})")),
-                _ => None,
-            }
-        }
-        CfgScalarExprKind::Binary { op, left, right } => {
-            let left_ty = signatures.canonical_type(&left.ty);
-            let right_ty = signatures.canonical_type(&right.ty);
-            if left_ty != right_ty {
-                return None;
-            }
-            let left = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
-            let right = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
-            match (op, ty, left_ty) {
-                (BinOp::Add, Type::I64, Type::I64) => {
-                    Some(format!("flux_add_i64({left}, {right})"))
-                }
-                (BinOp::Sub, Type::I64, Type::I64) => {
-                    Some(format!("flux_sub_i64({left}, {right})"))
-                }
-                (BinOp::Mul, Type::I64, Type::I64) => {
-                    Some(format!("flux_mul_i64({left}, {right})"))
-                }
-                (BinOp::Div, Type::I64, Type::I64) => {
-                    Some(format!("flux_div_i64({left}, {right})"))
-                }
-                (BinOp::Eq, Type::Bool, Type::Str) => {
-                    Some(format!("(strcmp({left}, {right}) == 0)"))
-                }
-                (BinOp::Ne, Type::Bool, Type::Str) => {
-                    Some(format!("(strcmp({left}, {right}) != 0)"))
-                }
-                (BinOp::And | BinOp::Or, Type::Bool, Type::Bool) => {
-                    Some(format!("({left} {} {right})", c_operator(*op)))
-                }
-                (BinOp::Eq | BinOp::Ne, Type::Bool, Type::I64 | Type::Bool) => {
-                    Some(format!("({left} {} {right})", c_operator(*op)))
-                }
-                (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Bool, Type::I64) => {
-                    Some(format!("({left} {} {right})", c_operator(*op)))
-                }
-                _ => None,
-            }
-        }
-    }
+    let synthetic = cfg_scalar_expr_as_ast(expr);
+    emit_expr_for_expected(&synthetic, &ty, env, signatures).ok()
 }
 
 fn emit_expr_for_expected_with_cfg_proofs(
@@ -45639,6 +45511,12 @@ fn multiply(left: i64, right: i64) -> i64 {
 fn divide(left: i64, right: i64) -> i64 {
     return left / right
 }
+fn addIdentity(value: i64) -> i64 {
+    return value + 0
+}
+fn booleanIdentity(value: bool) -> bool {
+    return value && true
+}
 fn nestedArithmetic(left: i64, right: i64, factor: i64) -> i64 {
     return (left + right) * factor
 }
@@ -45822,6 +45700,41 @@ fn main() -> i64 {
                     local_c_name("right")
                 )
             );
+        }
+
+        for (function, expected_ty, parameter_ty, fake_kind) in [
+            ("addIdentity", Type::I64, Type::I64, ExprKind::Int(99)),
+            (
+                "booleanIdentity",
+                Type::Bool,
+                Type::Bool,
+                ExprKind::Bool(false),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("identity CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Binary { .. }))
+                .expect("typed IR should retain the identity expression");
+            let facts = cfg_rewrite_facts(graph);
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: fake_kind,
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &HashMap::from([("value".to_string(), parameter_ty)]),
+                &Signatures::default(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("typed IR identity should emit independently of source AST children");
+            assert_eq!(emitted, local_c_name("value"));
         }
 
         let nested_arithmetic = database
