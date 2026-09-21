@@ -18,7 +18,7 @@ const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
 const PROJECT_TYPED_IR_SOURCE_INDEX_VERSION: &str = "flux-project-typed-ir-source-v1";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
-const PROJECT_ANALYSIS_SNAPSHOT_VERSION: &str = "flux-project-analysis-v2";
+const PROJECT_ANALYSIS_SNAPSHOT_VERSION: &str = "flux-project-analysis-v3";
 const PROJECT_ANALYSIS_SNAPSHOT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 #[cfg(test)]
@@ -1691,8 +1691,8 @@ impl ProjectAnalysisCache {
                 typecheck::check_changed_functions_with_signatures(
                     &report.program,
                     &signatures,
-                    &changes.changed_sources,
                     &changes.changed_functions,
+                    &changes.changed_views,
                 )?;
             }
             ProjectAnalysis {
@@ -2035,6 +2035,7 @@ struct ProjectAnalysisSnapshotModule {
 struct ProjectAnalysisSnapshotChanges {
     changed_sources: HashSet<SourceId>,
     changed_functions: HashSet<(SourceId, String)>,
+    changed_views: HashSet<(SourceId, String)>,
 }
 
 fn project_analysis_snapshot_path(target: &Path) -> PathBuf {
@@ -2045,7 +2046,7 @@ fn project_analysis_snapshot_path(target: &Path) -> PathBuf {
     };
     root.join(".flux")
         .join("analysis-cache")
-        .join("analysis-v2.manifest")
+        .join("analysis-v3.manifest")
 }
 
 fn project_analysis_snapshot_context(
@@ -2154,6 +2155,42 @@ fn project_analysis_snapshot_functions(
     Some(functions)
 }
 
+fn project_analysis_snapshot_views(
+    program: &Program,
+    sources: &[ProjectSource],
+) -> Option<BTreeMap<(u64, String), (SourceId, u64)>> {
+    let source_paths = sources
+        .iter()
+        .map(|source| (source.source_id, source.path.to_string_lossy().into_owned()))
+        .collect::<HashMap<_, _>>();
+    let source_keys = sources
+        .iter()
+        .map(|source| {
+            (
+                source.source_id,
+                project_analysis_snapshot_module_key(source),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut views = BTreeMap::new();
+    for view in &program.views {
+        let source_id = view.name_span.source_id;
+        let module_key = *source_keys.get(&source_id)?;
+        let source_identity =
+            stable_bytes_hash(codegen::view_codegen_cache_identity(view, &source_paths).as_bytes());
+        if views
+            .insert(
+                (module_key, view.name.clone()),
+                (source_id, source_identity),
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(views)
+}
+
 fn read_project_analysis_snapshot_changes(
     target: &Path,
     program: &Program,
@@ -2191,8 +2228,10 @@ fn read_project_analysis_snapshot_changes(
 
     let current_modules = project_analysis_snapshot_modules(program, signatures, sources)?;
     let current_functions = project_analysis_snapshot_functions(program, sources)?;
+    let current_views = project_analysis_snapshot_views(program, sources)?;
     let mut persisted_modules = BTreeMap::new();
     let mut persisted_functions = BTreeMap::new();
+    let mut persisted_views = BTreeMap::new();
     for line in lines {
         let mut fields = line.split('\t');
         match fields.next()? {
@@ -2238,11 +2277,33 @@ fn read_project_analysis_snapshot_changes(
                     return None;
                 }
             }
+            "view" => {
+                let module_key = fields.next()?;
+                let view_name = fields.next()?.to_string();
+                let source_identity = fields.next()?;
+                if fields.next().is_some()
+                    || module_key.len() != 16
+                    || !module_key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || source_identity.len() != 16
+                    || !source_identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return None;
+                }
+                let module_key = u64::from_str_radix(module_key, 16).ok()?;
+                let source_identity = u64::from_str_radix(source_identity, 16).ok()?;
+                if persisted_views
+                    .insert((module_key, view_name), source_identity)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
             _ => return None,
         }
     }
     if persisted_modules.len() != current_modules.len()
         || persisted_functions.len() != current_functions.len()
+        || persisted_views.len() != current_views.len()
     {
         return None;
     }
@@ -2268,9 +2329,20 @@ fn read_project_analysis_snapshot_changes(
         }
     }
 
+    let mut changed_views = HashSet::new();
+    for ((module_key, view_name), (source_id, source_identity)) in current_views {
+        let previous_identity = persisted_views
+            .get(&(module_key, view_name.clone()))
+            .copied()?;
+        if changed_sources.contains(&source_id) && previous_identity != source_identity {
+            changed_views.insert((source_id, view_name));
+        }
+    }
+
     Some(ProjectAnalysisSnapshotChanges {
         changed_sources,
         changed_functions,
+        changed_views,
     })
 }
 
@@ -2291,6 +2363,9 @@ fn store_project_analysis_snapshot(
     else {
         return;
     };
+    let Some(views) = project_analysis_snapshot_views(&analysis.program, &analysis.sources) else {
+        return;
+    };
     let context = project_analysis_snapshot_context(
         target,
         &analysis.sources,
@@ -2308,6 +2383,11 @@ fn store_project_analysis_snapshot(
     for ((module_key, function_name), (_, source_identity)) in functions {
         payload.push_str(&format!(
             "function\t{module_key:016x}\t{function_name}\t{source_identity:016x}\n"
+        ));
+    }
+    for ((module_key, view_name), (_, source_identity)) in views {
+        payload.push_str(&format!(
+            "view\t{module_key:016x}\t{view_name}\t{source_identity:016x}\n"
         ));
     }
     if payload.len() as u64 > PROJECT_ANALYSIS_SNAPSHOT_MAX_BYTES {
@@ -9569,6 +9649,14 @@ mod tests {
 fn unchangedSibling() -> i64 {
     return 9
 }
+
+view DemoPanel {
+    grid columns: 1fr
+    grid rows: auto
+
+    Text label at 1,1
+        text: \"stable\"
+}
 ",
         )
         .expect("dependency should be writable");
@@ -9595,7 +9683,7 @@ fn main() -> i64 {
             )
             .expect("initial cached codegen should succeed");
         assert!(
-            root.join(".flux/analysis-cache/analysis-v2.manifest")
+            root.join(".flux/analysis-cache/analysis-v3.manifest")
                 .is_file(),
             "successful disk-backed analysis should publish a durable semantic snapshot"
         );
@@ -9627,11 +9715,20 @@ fn main() -> i64 {
 fn unchangedSibling() -> i64 {
     return 9
 }
+
+view DemoPanel {
+    grid columns: 1fr
+    grid rows: auto
+
+    Text label at 1,1
+        text: \"stable\"
+}
 ",
         )
         .expect("body-only edit should be writable");
 
         crate::typecheck::reset_function_body_check_count();
+        crate::typecheck::reset_view_validation_count();
         let mut resumed = super::ProjectAnalysisCache::default();
         let incremental = resumed
             .analyze_with_overlays(&entry, &HashMap::new())
@@ -9643,6 +9740,11 @@ fn unchangedSibling() -> i64 {
             crate::typecheck::function_body_check_count(),
             1,
             "cold durable reuse should type-check only the edited function body",
+        );
+        assert_eq!(
+            crate::typecheck::view_validation_count(),
+            0,
+            "a function-only edit in a mixed module should skip unchanged view validation",
         );
         assert_eq!(
             resumed.last_outcome(),
@@ -9660,6 +9762,58 @@ fn unchangedSibling() -> i64 {
                 .emit_c_for_target(crate::codegen::NativeTarget::Linux)
                 .expect("fresh codegen should succeed"),
             "cold durable semantic reuse must preserve fresh-analysis codegen parity"
+        );
+
+        fs::write(
+            &dependency,
+            "pub fn value() -> i64 {
+    return 2
+}
+
+fn unchangedSibling() -> i64 {
+    return 9
+}
+
+view DemoPanel {
+    grid columns: 1fr
+    grid rows: auto
+    grid overlay: true
+
+    Text label at 1,1
+        text: \"stable\"
+}
+",
+        )
+        .expect("view-only edit should be writable");
+
+        crate::typecheck::reset_function_body_check_count();
+        crate::typecheck::reset_view_validation_count();
+        let mut view_changed = super::ProjectAnalysisCache::default();
+        let view_incremental = view_changed
+            .analyze_with_overlays(&entry, &HashMap::new())
+            .expect("cold view-only edit should analyze");
+        assert_eq!(view_changed.incremental_typecheck_stats().full_runs, 0);
+        assert_eq!(view_changed.incremental_typecheck_stats().runs, 1);
+        assert_eq!(
+            crate::typecheck::function_body_check_count(),
+            0,
+            "view-only durable reuse should not type-check unchanged function bodies",
+        );
+        assert_eq!(
+            crate::typecheck::view_validation_count(),
+            1,
+            "a changed view must still trigger semantic view validation",
+        );
+        let view_fresh =
+            super::analyze(&entry).expect("fresh changed-view analysis should succeed");
+        assert_eq!(
+            view_incremental
+                .emit_c_for_target(crate::codegen::NativeTarget::Linux)
+                .expect("incremental changed-view codegen should succeed"),
+            view_fresh
+                .emit_c_for_target(crate::codegen::NativeTarget::Linux)
+                .expect("fresh changed-view codegen should succeed"),
+            "durable changed-view analysis must preserve fresh-analysis codegen parity"
         );
 
         let _ = fs::remove_dir_all(root);
@@ -9684,7 +9838,7 @@ fn unchangedSibling() -> i64 {
             .analyze_with_overlays(&entry, &HashMap::new())
             .expect("initial project should analyze");
 
-        let snapshot = root.join(".flux/analysis-cache/analysis-v2.manifest");
+        let snapshot = root.join(".flux/analysis-cache/analysis-v3.manifest");
         fs::write(&snapshot, "corrupt semantic snapshot")
             .expect("semantic snapshot should be corruptible for the regression");
 

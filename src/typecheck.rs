@@ -13,6 +13,8 @@ use crate::ir::ControlFlowGraph;
 thread_local! {
     static TYPECHECK_FUNCTION_BODY_CHECKS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    static TYPECHECK_VIEW_VALIDATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -23,6 +25,16 @@ pub(crate) fn reset_function_body_check_count() {
 #[cfg(test)]
 pub(crate) fn function_body_check_count() -> usize {
     TYPECHECK_FUNCTION_BODY_CHECKS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_view_validation_count() {
+    TYPECHECK_VIEW_VALIDATIONS.with(|checks| checks.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn view_validation_count() -> usize {
+    TYPECHECK_VIEW_VALIDATIONS.with(std::cell::Cell::get)
 }
 
 /// The native multi-socket readiness helpers use a bounded stack descriptor
@@ -400,20 +412,21 @@ pub fn check_all_with_package_constants(
     program: &Program,
     package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
 ) -> Result<Signatures, Vec<Diagnostic>> {
-    check_all_with_package_constants_mode(program, package_constants, true)
+    check_all_with_package_constants_mode(program, package_constants, true, true)
 }
 
 pub(crate) fn collect_signatures_with_package_constants(
     program: &Program,
     package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
 ) -> Result<Signatures, Vec<Diagnostic>> {
-    check_all_with_package_constants_mode(program, package_constants, false)
+    check_all_with_package_constants_mode(program, package_constants, false, false)
 }
 
 fn check_all_with_package_constants_mode(
     program: &Program,
     package_constants: &HashMap<SourceId, BTreeMap<String, ConstantValue>>,
     check_function_bodies: bool,
+    check_views: bool,
 ) -> Result<Signatures, Vec<Diagnostic>> {
     let package_constants = package_constants
         .iter()
@@ -1272,7 +1285,9 @@ fn check_all_with_package_constants_mode(
         );
     }
 
-    validate_views(program, &signatures, &mut diagnostics);
+    if check_views {
+        validate_views(program, &signatures, &mut diagnostics);
+    }
     validate_routes(program, &signatures, &mut diagnostics);
 
     if let Some(application) = &program.application {
@@ -1530,16 +1545,12 @@ pub(crate) fn check_changed_sources_with_signatures(
 pub(crate) fn check_changed_functions_with_signatures(
     program: &Program,
     signatures: &Signatures,
-    changed_sources: &HashSet<SourceId>,
     changed_functions: &HashSet<(SourceId, String)>,
+    changed_views: &HashSet<(SourceId, String)>,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
-    if program
-        .views
-        .iter()
-        .any(|view| changed_sources.contains(&view.name_span.source_id))
-    {
+    if !changed_views.is_empty() {
         validate_views(program, signatures, &mut diagnostics);
     }
 
@@ -2110,6 +2121,8 @@ fn validate_routes(program: &Program, signatures: &Signatures, diagnostics: &mut
 }
 
 fn validate_views(program: &Program, signatures: &Signatures, diagnostics: &mut Vec<Diagnostic>) {
+    #[cfg(test)]
+    TYPECHECK_VIEW_VALIDATIONS.with(|checks| checks.set(checks.get() + 1));
     let mut view_defs = HashMap::new();
     for view in &program.views {
         if view_element_kind_is_builtin(&view.name) {

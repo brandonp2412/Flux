@@ -2189,6 +2189,97 @@ fn runtime_codegen_identifier_relevant(identifier: &str) -> bool {
         || PREFIXES.iter().any(|prefix| identifier.starts_with(prefix))
 }
 
+pub(crate) fn view_codegen_cache_identity(
+    view: &crate::ast::ViewDef,
+    source_paths: &HashMap<SourceId, String>,
+) -> String {
+    let source_path = source_paths
+        .get(&view.keyword_span.source_id)
+        .map(String::as_str)
+        .unwrap_or_default();
+    let params = view
+        .params
+        .iter()
+        .map(|param| {
+            (
+                param.name.as_str(),
+                &param.ty,
+                param.named_only,
+                param
+                    .default
+                    .as_ref()
+                    .map(|default| crate::formatter::format_expr(default, 0)),
+            )
+        })
+        .collect::<Vec<_>>();
+    let states = view
+        .states
+        .iter()
+        .map(|state| {
+            (
+                state.name.as_str(),
+                &state.ty,
+                crate::formatter::format_expr(&state.initial, 0),
+            )
+        })
+        .collect::<Vec<_>>();
+    let derived = view
+        .derived
+        .iter()
+        .map(|derived| {
+            (
+                derived.name.as_str(),
+                &derived.ty,
+                crate::formatter::format_expr(&derived.value, 0),
+            )
+        })
+        .collect::<Vec<_>>();
+    let elements = view
+        .elements
+        .iter()
+        .map(|element| {
+            let properties = element
+                .properties
+                .iter()
+                .map(|property| {
+                    (
+                        property.name.as_str(),
+                        crate::formatter::format_expr(&property.value, 0),
+                        property.transition.as_ref().map(|transition| {
+                            (transition.state.as_str(), transition.event_value.as_deref())
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                element.kind.as_str(),
+                element.name.as_str(),
+                element.row,
+                element.column,
+                element.row_span,
+                element.column_span,
+                properties,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!(
+        "view=({:?},{:?},{:?},{params:?},{states:?},{derived:?},{:?},{elements:?})",
+        source_path,
+        view.public,
+        view.name,
+        (
+            &view.grid.columns,
+            &view.grid.rows,
+            view.grid.flow,
+            view.grid.gap.unwrap_or(12),
+            view.grid.padding.unwrap_or(20),
+            view.grid.scroll,
+            view.grid.overlay,
+        ),
+    )
+}
+
 fn application_codegen_cache_identity(
     program: &Program,
     target: NativeTarget,
