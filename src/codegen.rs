@@ -34204,7 +34204,10 @@ fn cfg_borrowed_index_base(
     if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
         return None;
     }
-    let indexable = matches!(&value.ty, Type::List(_) | Type::Map(_, _))
+    if matches!(&value.ty, Type::List(_)) {
+        return cfg_borrowed_list_base(cfg, id);
+    }
+    let indexable = matches!(&value.ty, Type::Map(_, _))
         || matches!(&value.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Map(_, _)));
     if !indexable {
         return None;
@@ -34232,15 +34235,34 @@ fn cfg_borrowed_list_base(
     {
         return None;
     }
-    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
-        return None;
+    let kind = match &value.kind {
+        crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+            if !definitions.is_empty() =>
+        {
+            CfgScalarExprKind::Name(name.clone())
+        }
+        crate::ir::ControlFlowValueKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            let direct_bound = |id: &Option<crate::ir::ControlFlowValueId>| match id {
+                Some(id) => Some(Some(Box::new(cfg_direct_scalar_expr(cfg, *id)?))),
+                None => Some(None),
+            };
+            CfgScalarExprKind::Slice {
+                base: Box::new(cfg_borrowed_list_base(cfg, *base)?),
+                start: direct_bound(start)?,
+                end: direct_bound(end)?,
+                step: direct_bound(step)?,
+            }
+        }
+        _ => return None,
     };
-    if definitions.is_empty() {
-        return None;
-    }
     Some(CfgScalarExpr {
         ty: value.ty.clone(),
-        kind: CfgScalarExprKind::Name(name.clone()),
+        kind,
     })
 }
 
@@ -47203,6 +47225,101 @@ fn main() -> i64 {
                 .contains_key(&source_span_key(slice.span)),
             "borrowed temporary list bases should retain checked-AST slice lowering"
         );
+    }
+
+    #[test]
+    fn nested_borrowed_list_projections_lower_from_typed_ir() {
+        let source = r#"
+fn nestedIndex(values: i64[], start: i64, at: i64) -> i64 {
+    return values[start:][at]
+}
+
+fn nestedSlice(values: i64[], start: i64, end: i64) -> i64 {
+    let view: i64[] = values[start:][0:end]
+    return view.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested borrowed projection IR fixture should typecheck");
+
+        let index_graph = database
+            .control_flow_graph("nestedIndex")
+            .expect("nested index CFG should exist");
+        let index_facts = cfg_rewrite_facts(index_graph);
+        let outer_index = index_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    index_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Index { base, .. },
+                        ..
+                    }) if matches!(base.kind, CfgScalarExprKind::Slice { .. })
+                )
+            })
+            .expect("nested index should retain a slice base in typed IR");
+        let fake_index = Expr {
+            line: outer_index.span.line,
+            span: outer_index.span,
+            kind: ExprKind::Str("checked-ast-nested-index".to_string()),
+        };
+        let env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+            ("at".to_string(), Type::I64),
+        ]);
+        let emitted_index = emit_expr_for_expected_with_cfg_proofs(
+            &fake_index,
+            &Type::I64,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &index_facts,
+        )
+        .expect("nested borrowed index should emit from typed IR");
+        assert!(emitted_index.contains("flux_list_slice("));
+        assert!(emitted_index.contains("flux_list_at("));
+        assert!(!emitted_index.contains("checked-ast-nested-index"));
+
+        let slice_graph = database
+            .control_flow_graph("nestedSlice")
+            .expect("nested slice CFG should exist");
+        let slice_facts = cfg_rewrite_facts(slice_graph);
+        let outer_slice = slice_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    slice_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Slice { base, .. },
+                        ..
+                    }) if matches!(base.kind, CfgScalarExprKind::Slice { .. })
+                )
+            })
+            .expect("nested slice should retain its borrowed slice base in typed IR");
+        let fake_slice = Expr {
+            line: outer_slice.span.line,
+            span: outer_slice.span,
+            kind: ExprKind::Str("checked-ast-nested-slice".to_string()),
+        };
+        let emitted_slice = emit_expr_for_expected_with_cfg_proofs(
+            &fake_slice,
+            &Type::List(Box::new(Type::I64)),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &slice_facts,
+        )
+        .expect("nested borrowed slice should emit from typed IR");
+        assert_eq!(emitted_slice.matches("flux_list_slice(").count(), 2);
+        assert!(!emitted_slice.contains("checked-ast-nested-slice"));
     }
 
     #[test]
