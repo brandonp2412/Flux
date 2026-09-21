@@ -34266,6 +34266,32 @@ fn cfg_borrowed_list_base(
     })
 }
 
+fn cfg_borrowed_collection_field_base(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+        return None;
+    }
+    if matches!(&value.ty, Type::List(_)) {
+        return cfg_borrowed_list_base(cfg, id);
+    }
+    if !matches!(&value.ty, Type::Set(_) | Type::Map(_, _)) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
+        return None;
+    };
+    if definitions.is_empty() {
+        return None;
+    }
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind: CfgScalarExprKind::Name(name.clone()),
+    })
+}
+
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34315,11 +34341,19 @@ fn cfg_direct_scalar_expr(
             base,
             name,
             optional,
-        } => CfgScalarExprKind::Field {
-            base: Box::new(cfg_direct_scalar_expr(cfg, *base)?),
-            name: name.clone(),
-            optional: *optional,
-        },
+        } => {
+            let base_value = cfg.value(*base)?;
+            let base = if base_value.ownership.is_borrow() {
+                cfg_borrowed_collection_field_base(cfg, *base)?
+            } else {
+                cfg_direct_scalar_expr(cfg, *base)?
+            };
+            CfgScalarExprKind::Field {
+                base: Box::new(base),
+                name: name.clone(),
+                optional: *optional,
+            }
+        }
         crate::ir::ControlFlowValueKind::Index {
             base,
             index,
@@ -47320,6 +47354,122 @@ fn main() -> i64 {
         .expect("nested borrowed slice should emit from typed IR");
         assert_eq!(emitted_slice.matches("flux_list_slice(").count(), 2);
         assert!(!emitted_slice.contains("checked-ast-nested-slice"));
+    }
+
+    #[test]
+    fn borrowed_collection_properties_lower_from_typed_ir() {
+        let source = r#"
+fn listCount(values: i64[], start: i64) -> i64 {
+    let view: i64[] = values[start:]
+    return view.count
+}
+
+fn mapCount(values: map<str, i64>) -> i64 {
+    return values.count
+}
+
+fn setNonempty(values: set<i64>) -> bool {
+    return values.nonempty
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("borrowed collection property fixture should typecheck");
+
+        let list_graph = database
+            .control_flow_graph("listCount")
+            .expect("list property CFG should exist");
+        let list_facts = cfg_rewrite_facts(list_graph);
+        let list_field = list_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    list_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Field { base, .. },
+                        ..
+                    }) if matches!(base.kind, CfgScalarExprKind::Name(_))
+                )
+            })
+            .expect("list property should retain the borrowed named base in typed IR");
+        let fake_list = Expr {
+            line: list_field.span.line,
+            span: list_field.span,
+            kind: ExprKind::Str("checked-ast-list-property".to_string()),
+        };
+        let list_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_list,
+            &Type::I64,
+            &HashMap::from([
+                ("values".to_string(), Type::List(Box::new(Type::I64))),
+                ("view".to_string(), Type::List(Box::new(Type::I64))),
+                ("start".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &list_facts,
+        )
+        .expect("borrowed list property should emit from typed IR");
+        assert!(list_emitted.contains(".len"), "{list_emitted}");
+        assert!(!list_emitted.contains("checked-ast-list-property"));
+
+        for (function, expected, expected_fragment, fake_text, env) in [
+            (
+                "mapCount",
+                Type::I64,
+                ".keys.len",
+                "checked-ast-map-property",
+                HashMap::from([(
+                    "values".to_string(),
+                    Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                )]),
+            ),
+            (
+                "setNonempty",
+                Type::Bool,
+                ".len != 0",
+                "checked-ast-set-property",
+                HashMap::from([("values".to_string(), Type::Set(Box::new(Type::I64)))]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("collection property CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Field { .. },
+                            ..
+                        })
+                    )
+                })
+                .expect("collection property should have direct typed-IR lowering");
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Str(fake_text.to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("borrowed collection property should emit from typed IR");
+            assert!(emitted.contains(expected_fragment));
+            assert!(!emitted.contains(fake_text));
+        }
     }
 
     #[test]
