@@ -27358,6 +27358,36 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_consumes_nested_copy_aggregate_values() {
+    let source = r#"
+struct Inner {
+    value: i64
+}
+struct Outer {
+    inner: Inner
+    ready: bool
+}
+
+fn main() -> i64 {
+    let input: i64 = 5
+    let outer: Outer = Outer { inner: Inner { value: input + 2 }, ready: input == 5 }
+    print(outer.inner.value)
+    return 0
+}
+"#;
+
+    check_source(source).expect("nested Copy aggregate fixture should typecheck");
+    let generated =
+        compile_to_c(source).expect("nested Copy aggregate fixture should compile to native C");
+    assert!(generated.contains("INT64_C(7)"));
+    assert!(generated.contains(".flux__field_ready = true"));
+    assert!(
+        !generated.contains("flux_add_i64(flux__local_input"),
+        "nested Copy aggregate lowering should consume propagated typed-IR children"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_constants_at_multi_value_boundaries() {
     let source = r#"
 fn pair(value: i64) -> (i64, error) {

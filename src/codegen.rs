@@ -33980,11 +33980,17 @@ enum CfgAggregateConstantKind {
     List(Vec<ConstantValue>),
     Set(Vec<ConstantValue>),
     Map(Vec<(ConstantValue, ConstantValue)>),
-    Record(Vec<(Option<String>, ConstantValue)>),
+    Record(Vec<(Option<String>, CfgAggregateValue)>),
     Struct {
         name: String,
-        fields: Vec<(String, ConstantValue)>,
+        fields: Vec<(String, CfgAggregateValue)>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgAggregateValue {
+    Scalar(ConstantValue),
+    Aggregate(Box<CfgAggregateConstant>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33998,6 +34004,45 @@ struct CfgRewriteFacts {
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
+}
+
+fn cfg_copy_aggregate_value(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgAggregateValue> {
+    if let Some(constant) = cfg.proven_scalar_constant(id) {
+        return Some(CfgAggregateValue::Scalar(constant.clone()));
+    }
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+        return None;
+    }
+    let kind = match &value.kind {
+        crate::ir::ControlFlowValueKind::RecordLiteral { fields } => {
+            CfgAggregateConstantKind::Record(
+                fields
+                    .iter()
+                    .map(|(name, id)| Some((name.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                    .collect::<Option<Vec<_>>>()?,
+            )
+        }
+        crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields } if base.is_none() => {
+            CfgAggregateConstantKind::Struct {
+                name: name.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(field, id)| Some((field.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
+                    .collect::<Option<Vec<_>>>()?,
+            }
+        }
+        _ => return None,
+    };
+    Some(CfgAggregateValue::Aggregate(Box::new(
+        CfgAggregateConstant {
+            ty: value.ty.clone(),
+            kind,
+        },
+    )))
 }
 
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
@@ -34094,7 +34139,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(CfgAggregateConstantKind::Map),
             crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
                 .iter()
-                .map(|(name, id)| Some((name.clone(), scalar(*id)?)))
+                .map(|(name, id)| Some((name.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Record),
             crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
@@ -34102,7 +34147,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
             {
                 fields
                     .iter()
-                    .map(|(field, id)| Some((field.clone(), scalar(*id)?)))
+                    .map(|(field, id)| Some((field.clone(), cfg_copy_aggregate_value(cfg, *id)?)))
                     .collect::<Option<Vec<_>>>()
                     .map(|fields| CfgAggregateConstantKind::Struct {
                         name: name.clone(),
@@ -44548,6 +44593,24 @@ fn emit_qualified_call(
     ))
 }
 
+fn emit_cfg_aggregate_value(
+    value: &CfgAggregateValue,
+    expected: &Type,
+    signatures: &Signatures,
+) -> Option<String> {
+    match value {
+        CfgAggregateValue::Scalar(constant)
+            if signatures.canonical_type(&constant.ty()) == signatures.canonical_type(expected) =>
+        {
+            Some(constant_c_value(constant))
+        }
+        CfgAggregateValue::Scalar(_) => None,
+        CfgAggregateValue::Aggregate(aggregate) => {
+            emit_cfg_aggregate_constant(aggregate, expected, signatures)
+        }
+    }
+}
+
 fn emit_cfg_aggregate_constant(
     aggregate: &CfgAggregateConstant,
     expected: &Type,
@@ -44640,13 +44703,13 @@ fn emit_cfg_aggregate_constant(
             }
             let mut rendered = Vec::with_capacity(values.len());
             for (index, ((name, value), field)) in values.iter().zip(fields).enumerate() {
-                if name != &field.name || !scalar_matches(value, &field.ty) {
+                if name != &field.name {
                     return None;
                 }
+                let value = emit_cfg_aggregate_value(value, &field.ty, signatures)?;
                 rendered.push(format!(
-                    ".{} = {}",
-                    record_field_c_name(field.name.as_deref(), index),
-                    constant_c_value(value)
+                    ".{} = {value}",
+                    record_field_c_name(field.name.as_deref(), index)
                 ));
             }
             Some(format!(
@@ -44665,14 +44728,8 @@ fn emit_cfg_aggregate_constant(
             let mut rendered = Vec::with_capacity(fields.len());
             for (field_name, value) in fields {
                 let field = definition.field(field_name)?;
-                if !scalar_matches(value, &field.ty) {
-                    return None;
-                }
-                rendered.push(format!(
-                    ".{} = {}",
-                    field_c_name(field_name),
-                    constant_c_value(value)
-                ));
+                let value = emit_cfg_aggregate_value(value, &field.ty, signatures)?;
+                rendered.push(format!(".{} = {value}", field_c_name(field_name)));
             }
             Some(format!(
                 "({}){{ {} }}",
@@ -45063,14 +45120,105 @@ mod cfg_rewrite_fact_tests {
         let record = CfgAggregateConstant {
             ty: record_ty.clone(),
             kind: CfgAggregateConstantKind::Record(vec![
-                (Some("left".to_string()), ConstantValue::I64(9)),
-                (Some("right".to_string()), ConstantValue::Bool(true)),
+                (
+                    Some("left".to_string()),
+                    CfgAggregateValue::Scalar(ConstantValue::I64(9)),
+                ),
+                (
+                    Some("right".to_string()),
+                    CfgAggregateValue::Scalar(ConstantValue::Bool(true)),
+                ),
             ]),
         };
         let rendered = emit_cfg_aggregate_constant(&record, &record_ty, &signatures)
             .expect("flat typed-IR record constant should emit directly");
         assert!(rendered.contains("INT64_C(9)"));
         assert!(rendered.contains("true"));
+    }
+
+    #[test]
+    fn nested_copy_aggregate_facts_and_renderer_preserve_typed_ir_tree() {
+        let source = r#"
+struct Address {
+    city: str
+    number: i64
+}
+struct User {
+    name: str
+    address: Address
+}
+fn main() -> i64 {
+    let input: i64 = 5
+    let user: User = User { name: "Ada", address: Address { city: "Auckland", number: input + 2 } }
+    print(user.address.number)
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested Copy aggregate fixture should typecheck");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist");
+        let user_value = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral { name, base, .. }
+                        if name == "User" && base.is_none()
+                )
+            })
+            .expect("typed IR should retain the User literal");
+        let facts = cfg_rewrite_facts(graph);
+        let aggregate = facts
+            .aggregate_constants
+            .get(&source_span_key(user_value.span))
+            .expect("nested Copy struct should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Struct { name, fields } = &aggregate.kind else {
+            panic!("User fact should remain a typed struct");
+        };
+        assert_eq!(name, "User");
+        let address = fields
+            .iter()
+            .find(|(field, _)| field == "address")
+            .map(|(_, value)| value)
+            .expect("User aggregate should retain its address field");
+        let CfgAggregateValue::Aggregate(address) = address else {
+            panic!("nested Address should remain an aggregate rather than an AST fallback");
+        };
+        let CfgAggregateConstantKind::Struct { name, fields } = &address.kind else {
+            panic!("nested aggregate should retain the Address struct shape");
+        };
+        assert_eq!(name, "Address");
+        assert!(fields.iter().any(|(field, value)| {
+            field == "number" && matches!(value, CfgAggregateValue::Scalar(ConstantValue::I64(7)))
+        }));
+
+        let inner_ty = Type::Record(vec![crate::ast::RecordTypeField {
+            name: Some("value".to_string()),
+            ty: Type::I64,
+        }]);
+        let outer_ty = Type::Record(vec![crate::ast::RecordTypeField {
+            name: Some("inner".to_string()),
+            ty: inner_ty.clone(),
+        }]);
+        let nested = CfgAggregateConstant {
+            ty: outer_ty.clone(),
+            kind: CfgAggregateConstantKind::Record(vec![(
+                Some("inner".to_string()),
+                CfgAggregateValue::Aggregate(Box::new(CfgAggregateConstant {
+                    ty: inner_ty,
+                    kind: CfgAggregateConstantKind::Record(vec![(
+                        Some("value".to_string()),
+                        CfgAggregateValue::Scalar(ConstantValue::I64(42)),
+                    )]),
+                })),
+            )]),
+        };
+        let rendered = emit_cfg_aggregate_constant(&nested, &outer_ty, &Signatures::default())
+            .expect("nested Copy record should render recursively");
+        assert!(rendered.contains("INT64_C(42)"));
     }
 
     #[test]
