@@ -33979,7 +33979,7 @@ enum CfgAggregateShape {
 enum CfgAggregateConstantKind {
     List(Vec<CfgAggregateValue>),
     Set(Vec<ConstantValue>),
-    Map(Vec<(ConstantValue, ConstantValue)>),
+    Map(Vec<(ConstantValue, CfgAggregateValue)>),
     Record(Vec<(Option<String>, CfgAggregateValue)>),
     Struct {
         name: String,
@@ -34264,7 +34264,9 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(CfgAggregateConstantKind::Set),
             crate::ir::ControlFlowValueKind::Map { entries } => entries
                 .iter()
-                .map(|(key, value)| Some((scalar(*key)?, scalar(*value)?)))
+                .map(|(key, value)| {
+                    Some((scalar(*key)?, cfg_literal_aggregate_value(cfg, *value)?))
+                })
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Map),
             crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
@@ -44833,9 +44835,10 @@ fn emit_cfg_aggregate_constant(
             ))
         }
         (CfgAggregateConstantKind::Map(entries), Type::Map(key, value)) => {
-            if entries.iter().any(|(entry_key, entry_value)| {
-                !scalar_matches(entry_key, key) || !scalar_matches(entry_value, value)
-            }) {
+            if entries
+                .iter()
+                .any(|(entry_key, _)| !scalar_matches(entry_key, key))
+            {
                 return None;
             }
             let key_c = c_type(key, signatures);
@@ -44852,8 +44855,8 @@ fn emit_cfg_aggregate_constant(
                 .join(", ");
             let values = entries
                 .iter()
-                .map(|(_, value)| constant_c_value(value))
-                .collect::<Vec<_>>()
+                .map(|(_, value_expr)| emit_cfg_aggregate_value(value_expr, value, env, signatures))
+                .collect::<Option<Vec<_>>>()?
                 .join(", ");
             Some(format!(
                 "((struct flux__map){{ .keys = (struct flux__list){{ .data = (void *)({key_c}[]){{ {keys} }}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *)({value_c}[]){{ {values} }}, .len = {}, .stride = sizeof({value_c}) }} }})",
@@ -45334,8 +45337,14 @@ mod cfg_rewrite_fact_tests {
         let map = CfgAggregateConstant {
             ty: Type::Map(Box::new(Type::I64), Box::new(Type::Bool)),
             kind: CfgAggregateConstantKind::Map(vec![
-                (ConstantValue::I64(3), ConstantValue::Bool(true)),
-                (ConstantValue::I64(4), ConstantValue::Bool(false)),
+                (
+                    ConstantValue::I64(3),
+                    CfgAggregateValue::Scalar(ConstantValue::Bool(true)),
+                ),
+                (
+                    ConstantValue::I64(4),
+                    CfgAggregateValue::Scalar(ConstantValue::Bool(false)),
+                ),
             ]),
         };
         let rendered = emit_cfg_aggregate_constant(&map, &map.ty, &HashMap::new(), &signatures)
@@ -46145,6 +46154,13 @@ fn buildRecord(left: i64, right: i64) -> i64 {
     return value.left + value.right
 }
 
+fn buildMap(value: i64) -> i64 {
+    let values: map<str, Pair> = {"answer": Pair { left: value + 1, right: value }}
+    for _key, entry in values:
+        return entry.left + entry.right
+    return 0
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -46340,6 +46356,57 @@ fn main() -> i64 {
         assert!(record_code.contains(&local_c_name("right")));
         assert!(record_code.contains(&record_field_c_name(Some("left"), 0)));
         assert!(record_code.contains(&record_field_c_name(Some("right"), 1)));
+
+        let map_graph = database
+            .control_flow_graph("buildMap")
+            .expect("map CFG should exist");
+        let map_value = map_graph
+            .values()
+            .iter()
+            .find(|value| matches!(&value.kind, crate::ir::ControlFlowValueKind::Map { entries } if entries.len() == 1))
+            .expect("typed IR should retain the map literal");
+        let map_facts = cfg_rewrite_facts(map_graph);
+        let map_aggregate = map_facts
+            .aggregate_constants
+            .get(&source_span_key(map_value.span))
+            .expect("dynamic map should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Map(entries) = &map_aggregate.kind else {
+            panic!("map fact should remain a typed map");
+        };
+        let [(_, CfgAggregateValue::Aggregate(pair))] = entries.as_slice() else {
+            panic!("map value should retain its typed Pair aggregate");
+        };
+        let CfgAggregateConstantKind::Struct { fields, .. } = &pair.kind else {
+            panic!("map Pair value should remain a typed struct");
+        };
+        assert!(
+            fields
+                .iter()
+                .all(|(_, value)| matches!(value, CfgAggregateValue::Direct(_)))
+        );
+        let fake_map = Expr {
+            line: map_value.span.line,
+            span: map_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let map_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_map,
+            &Type::Map(
+                Box::new(Type::Str),
+                Box::new(Type::Named("Pair".to_string())),
+            ),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &map_facts,
+        )
+        .expect("dynamic Copy aggregate map should emit entirely from typed IR");
+        assert!(map_code.contains("answer"));
+        assert!(map_code.contains(&local_c_name("value")));
+        assert!(map_code.contains("flux_add_i64"));
+        assert!(map_code.contains(&field_c_name("left")));
+        assert!(map_code.contains(&field_c_name("right")));
+        assert!(map_code.contains("struct flux__map"));
     }
 
     #[test]
