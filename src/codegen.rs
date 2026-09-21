@@ -34130,6 +34130,8 @@ fn cfg_direct_scalar_expr(
                     | BinOp::Sub
                     | BinOp::Mul
                     | BinOp::Div
+                    | BinOp::And
+                    | BinOp::Or
                     | BinOp::Eq
                     | BinOp::Ne
                     | BinOp::Lt
@@ -44935,6 +44937,9 @@ fn emit_cfg_scalar_expr(
                 (BinOp::Ne, Type::Bool, Type::Str) => {
                     Some(format!("(strcmp({left}, {right}) != 0)"))
                 }
+                (BinOp::And | BinOp::Or, Type::Bool, Type::Bool) => {
+                    Some(format!("({left} {} {right})", c_operator(*op)))
+                }
                 (BinOp::Eq | BinOp::Ne, Type::Bool, Type::I64 | Type::Bool) => {
                     Some(format!("({left} {} {right})", c_operator(*op)))
                 }
@@ -45509,6 +45514,21 @@ fn nestedComparison(left: i64, right: i64, limit: i64) -> bool {
 fn nestedNegation(value: i64, offset: i64) -> i64 {
     return -(value + offset)
 }
+fn both(left: bool, right: bool) -> bool {
+    return left && right
+}
+fn either(left: bool, right: bool) -> bool {
+    return left || right
+}
+fn nestedLogic(left: bool, right: bool, other: bool) -> bool {
+    return (left && right) || other
+}
+fn passthrough(value: bool) -> bool {
+    return value
+}
+fn guardedCall(left: bool) -> bool {
+    return left && passthrough(left)
+}
 fn negate(value: i64) -> i64 {
     return -value
 }
@@ -45795,6 +45815,118 @@ fn main() -> i64 {
                 local_c_name("value"),
                 local_c_name("offset")
             )
+        );
+
+        for (function, op, expected) in [
+            (
+                "both",
+                BinOp::And,
+                format!("({} && {})", local_c_name("left"), local_c_name("right")),
+            ),
+            (
+                "either",
+                BinOp::Or,
+                format!("({} || {})", local_c_name("left"), local_c_name("right")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("short-circuit CFG should exist");
+            let boolean = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: actual,
+                            ..
+                        } if actual == op
+                    )
+                })
+                .expect("typed IR should retain the dynamic short-circuit value");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_boolean = Expr {
+                line: boolean.span.line,
+                span: boolean.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_boolean,
+                &Type::Bool,
+                &HashMap::from([
+                    ("left".to_string(), Type::Bool),
+                    ("right".to_string(), Type::Bool),
+                ]),
+                &Signatures::default(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic short-circuit boolean should emit from typed IR");
+            assert_eq!(emitted, expected);
+        }
+
+        let nested_logic = database
+            .control_flow_graph("nestedLogic")
+            .expect("nested logic CFG should exist");
+        let nested_logic_root = nested_logic
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Or, .. }
+                )
+            })
+            .expect("typed IR should retain the nested logic root");
+        let nested_logic_facts = cfg_rewrite_facts(nested_logic);
+        let fake_nested_logic = Expr {
+            line: nested_logic_root.span.line,
+            span: nested_logic_root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted_nested_logic = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_logic,
+            &Type::Bool,
+            &HashMap::from([
+                ("left".to_string(), Type::Bool),
+                ("right".to_string(), Type::Bool),
+                ("other".to_string(), Type::Bool),
+            ]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &nested_logic_facts,
+        )
+        .expect("nested short-circuit boolean should emit from typed IR");
+        assert_eq!(
+            emitted_nested_logic,
+            format!(
+                "(({} && {}) || {})",
+                local_c_name("left"),
+                local_c_name("right"),
+                local_c_name("other")
+            )
+        );
+
+        let guarded_call = database
+            .control_flow_graph("guardedCall")
+            .expect("guarded call CFG should exist");
+        let guarded_call_root = guarded_call
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::And, .. }
+                )
+            })
+            .expect("typed IR should retain the guarded call");
+        let guarded_call_facts = cfg_rewrite_facts(guarded_call);
+        assert!(
+            !guarded_call_facts
+                .scalar_exprs
+                .contains_key(&source_span_key(guarded_call_root.span)),
+            "a short-circuit RHS call must retain the checked-AST fallback"
         );
 
         let negate = database
