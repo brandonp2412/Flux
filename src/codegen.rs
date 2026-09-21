@@ -33992,6 +33992,7 @@ enum CfgAggregateConstantKind {
 enum CfgAggregateValue {
     Scalar(ConstantValue),
     Direct(CfgScalarExpr),
+    AbsentOptional,
     Aggregate(Box<CfgAggregateConstant>),
 }
 
@@ -34045,6 +34046,11 @@ fn cfg_literal_aggregate_value(
     let value = cfg.value(id)?;
     if !cfg.is_value_reachable(id) {
         return None;
+    }
+    if matches!(&value.kind, crate::ir::ControlFlowValueKind::Literal)
+        && matches!(&value.ty, Type::Optional(inner) if **inner == Type::Void)
+    {
+        return Some(CfgAggregateValue::AbsentOptional);
     }
     let kind = match &value.kind {
         crate::ir::ControlFlowValueKind::List { items } => CfgAggregateConstantKind::List(
@@ -44766,10 +44772,19 @@ fn emit_cfg_aggregate_value(
     signatures: &Signatures,
 ) -> Option<String> {
     let canonical_expected = signatures.canonical_type(expected);
+    if matches!(value, CfgAggregateValue::AbsentOptional) {
+        return matches!(canonical_expected, Type::Optional(_)).then(|| {
+            format!(
+                "({}){{ .has_value = false }}",
+                c_type(&canonical_expected, signatures)
+            )
+        });
+    }
     if let Type::Optional(inner) = &canonical_expected {
         let actual = match value {
             CfgAggregateValue::Scalar(constant) => signatures.canonical_type(&constant.ty()),
             CfgAggregateValue::Direct(expr) => signatures.canonical_type(&expr.ty),
+            CfgAggregateValue::AbsentOptional => unreachable!(),
             CfgAggregateValue::Aggregate(aggregate) => signatures.canonical_type(&aggregate.ty),
         };
         if actual == signatures.canonical_type(inner) {
@@ -44789,6 +44804,7 @@ fn emit_cfg_aggregate_value(
         }
         CfgAggregateValue::Scalar(_) => None,
         CfgAggregateValue::Direct(expr) => emit_cfg_scalar_expr(expr, expected, env, signatures),
+        CfgAggregateValue::AbsentOptional => None,
         CfgAggregateValue::Aggregate(aggregate) => {
             emit_cfg_aggregate_constant(aggregate, expected, env, signatures)
         }
@@ -46155,6 +46171,7 @@ struct Pair {
 struct MaybePair {
     left: i64?
     right: i64?
+    missing: i64?
 }
 
 fn buildPair(left: i64, right: i64) -> Pair {
@@ -46176,7 +46193,7 @@ fn buildRecord(left: i64, right: i64) -> i64 {
 }
 
 fn buildMaybePair(value: i64) -> MaybePair {
-    return MaybePair { left: value + 1, right: value }
+    return MaybePair { left: value + 1, right: value, missing: none }
 }
 
 fn buildMap(value: i64) -> i64 {
@@ -46404,11 +46421,15 @@ fn main() -> i64 {
         let CfgAggregateConstantKind::Struct { fields, .. } = &maybe_aggregate.kind else {
             panic!("optional-field Pair fact should remain a typed struct");
         };
-        assert!(
-            fields
-                .iter()
-                .all(|(_, value)| matches!(value, CfgAggregateValue::Direct(_)))
-        );
+        assert!(fields.iter().any(|(name, value)| {
+            name == "left" && matches!(value, CfgAggregateValue::Direct(_))
+        }));
+        assert!(fields.iter().any(|(name, value)| {
+            name == "right" && matches!(value, CfgAggregateValue::Direct(_))
+        }));
+        assert!(fields.iter().any(|(name, value)| {
+            name == "missing" && matches!(value, CfgAggregateValue::AbsentOptional)
+        }));
         let fake_maybe = Expr {
             line: maybe_value.span.line,
             span: maybe_value.span,
@@ -46424,6 +46445,7 @@ fn main() -> i64 {
         )
         .expect("present optional fields should emit entirely from typed IR");
         assert!(maybe_code.contains(".has_value = true"));
+        assert!(maybe_code.contains(".has_value = false"));
         assert!(maybe_code.contains(".value ="));
         assert!(maybe_code.contains(&local_c_name("value")));
         assert!(maybe_code.contains("flux_add_i64"));
