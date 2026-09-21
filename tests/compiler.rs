@@ -27320,21 +27320,32 @@ fn main() -> i64 {
 }
 
 #[test]
-fn typed_ir_backend_consumes_set_and_record_aggregate_shapes() {
+fn typed_ir_backend_consumes_flat_aggregate_values() {
     let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
 fn main() -> i64 {
     let input: i64 = 5
-    let values: set<i64> = {6, 7}
-    let record: (left: i64, right: i64) = (left: input + 3, right: input + 4)
+    let list: i64[] = [input + 1, input + 2]
+    let values: set<i64> = {8, 9}
+    let mapping: map<i64, i64> = map{1: 10, 2: 11}
+    let record: (left: i64, right: i64) = (left: input + 7, right: input + 8)
+    let pair: Pair = Pair { left: input + 9, right: input + 10 }
+    print(list.count)
     print(values.count)
+    print(mapping.count)
     print(record.right)
+    print(pair.right)
     return 0
 }
 "#;
 
-    check_source(source).expect("set and record aggregate fixture should typecheck");
-    let generated = compile_to_c(source).expect("set and record aggregate fixture should compile");
-    for value in [6, 7, 8, 9] {
+    check_source(source).expect("flat aggregate fixture should typecheck");
+    let generated = compile_to_c(source).expect("flat aggregate fixture should compile");
+    for value in 6..=15 {
         assert!(
             generated.contains(&format!("INT64_C({value})")),
             "typed-IR aggregate lowering should retain propagated scalar child {value}"
@@ -27342,7 +27353,7 @@ fn main() -> i64 {
     }
     assert!(
         !generated.contains("flux_add_i64(flux__local_input"),
-        "set and record aggregate lowering should not rebuild propagated children from the AST"
+        "flat aggregate lowering should not rebuild propagated children from the checked AST"
     );
 }
 

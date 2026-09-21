@@ -33975,10 +33975,29 @@ enum CfgAggregateShape {
     Record(Vec<(Option<String>, (u32, usize, usize, usize))>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgAggregateConstantKind {
+    List(Vec<ConstantValue>),
+    Set(Vec<ConstantValue>),
+    Map(Vec<(ConstantValue, ConstantValue)>),
+    Record(Vec<(Option<String>, ConstantValue)>),
+    Struct {
+        name: String,
+        fields: Vec<(String, ConstantValue)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CfgAggregateConstant {
+    ty: Type,
+    kind: CfgAggregateConstantKind,
+}
+
 #[derive(Debug, Clone, Default)]
 struct CfgRewriteFacts {
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
+    aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
 }
 
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
@@ -34049,9 +34068,74 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    let mut aggregate_constants = HashMap::new();
+    let mut ambiguous_aggregate_constants = HashSet::new();
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_value_reachable(value.id))
+    {
+        let scalar = |id| cfg.proven_scalar_constant(id).cloned();
+        let kind = match &value.kind {
+            crate::ir::ControlFlowValueKind::List { items } => items
+                .iter()
+                .map(|id| scalar(*id))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateConstantKind::List),
+            crate::ir::ControlFlowValueKind::Set { items } => items
+                .iter()
+                .map(|id| scalar(*id))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateConstantKind::Set),
+            crate::ir::ControlFlowValueKind::Map { entries } => entries
+                .iter()
+                .map(|(key, value)| Some((scalar(*key)?, scalar(*value)?)))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateConstantKind::Map),
+            crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
+                .iter()
+                .map(|(name, id)| Some((name.clone(), scalar(*id)?)))
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateConstantKind::Record),
+            crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields }
+                if base.is_none() =>
+            {
+                fields
+                    .iter()
+                    .map(|(field, id)| Some((field.clone(), scalar(*id)?)))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|fields| CfgAggregateConstantKind::Struct {
+                        name: name.clone(),
+                        fields,
+                    })
+            }
+            _ => None,
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        let aggregate = CfgAggregateConstant {
+            ty: value.ty.clone(),
+            kind,
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_aggregate_constants.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = aggregate_constants.get(&span) {
+            if existing != &aggregate {
+                aggregate_constants.remove(&span);
+                ambiguous_aggregate_constants.insert(span);
+            }
+        } else {
+            aggregate_constants.insert(span, aggregate);
+        }
+    }
+
     CfgRewriteFacts {
         constants,
         aggregates,
+        aggregate_constants,
     }
 }
 
@@ -44464,6 +44548,142 @@ fn emit_qualified_call(
     ))
 }
 
+fn emit_cfg_aggregate_constant(
+    aggregate: &CfgAggregateConstant,
+    expected: &Type,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    if signatures.canonical_type(&aggregate.ty) != expected {
+        return None;
+    }
+
+    let scalar_matches = |constant: &ConstantValue, ty: &Type| {
+        signatures.canonical_type(&constant.ty()) == signatures.canonical_type(ty)
+    };
+
+    match (&aggregate.kind, &expected) {
+        (CfgAggregateConstantKind::List(values), Type::List(element)) => {
+            if values.iter().any(|value| !scalar_matches(value, element)) {
+                return None;
+            }
+            let element_c = c_type(element, signatures);
+            if values.is_empty() {
+                return Some(format!(
+                    "((struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({element_c}) }})"
+                ));
+            }
+            let rendered = values
+                .iter()
+                .map(constant_c_value)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "((struct flux__list){{ .data = (void *)({element_c}[]){{ {rendered} }}, .len = {}, .stride = sizeof({element_c}) }})",
+                values.len()
+            ))
+        }
+        (CfgAggregateConstantKind::Set(values), Type::Set(element)) => {
+            if values.iter().any(|value| !scalar_matches(value, element)) {
+                return None;
+            }
+            let mut seen = HashSet::new();
+            let rendered = values
+                .iter()
+                .filter(|value| seen.insert(format!("{}:{value:?}", value.ty().name())))
+                .map(constant_c_value)
+                .collect::<Vec<_>>();
+            let element_c = c_type(element, signatures);
+            if rendered.is_empty() {
+                return Some(format!(
+                    "((struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({element_c}) }})"
+                ));
+            }
+            Some(format!(
+                "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {}, .stride = sizeof({element_c}) }})",
+                rendered.join(", "),
+                rendered.len()
+            ))
+        }
+        (CfgAggregateConstantKind::Map(entries), Type::Map(key, value)) => {
+            if entries.iter().any(|(entry_key, entry_value)| {
+                !scalar_matches(entry_key, key) || !scalar_matches(entry_value, value)
+            }) {
+                return None;
+            }
+            let key_c = c_type(key, signatures);
+            let value_c = c_type(value, signatures);
+            if entries.is_empty() {
+                return Some(format!(
+                    "((struct flux__map){{ .keys = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({value_c}) }} }})"
+                ));
+            }
+            let keys = entries
+                .iter()
+                .map(|(key, _)| constant_c_value(key))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let values = entries
+                .iter()
+                .map(|(_, value)| constant_c_value(value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "((struct flux__map){{ .keys = (struct flux__list){{ .data = (void *)({key_c}[]){{ {keys} }}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *)({value_c}[]){{ {values} }}, .len = {}, .stride = sizeof({value_c}) }} }})",
+                entries.len(),
+                entries.len()
+            ))
+        }
+        (CfgAggregateConstantKind::Record(values), Type::Record(fields)) => {
+            if values.len() != fields.len() {
+                return None;
+            }
+            let mut rendered = Vec::with_capacity(values.len());
+            for (index, ((name, value), field)) in values.iter().zip(fields).enumerate() {
+                if name != &field.name || !scalar_matches(value, &field.ty) {
+                    return None;
+                }
+                rendered.push(format!(
+                    ".{} = {}",
+                    record_field_c_name(field.name.as_deref(), index),
+                    constant_c_value(value)
+                ));
+            }
+            Some(format!(
+                "({}){{ {} }}",
+                c_type(&expected, signatures),
+                rendered.join(", ")
+            ))
+        }
+        (CfgAggregateConstantKind::Struct { name, fields }, Type::Named(expected_name))
+            if name == expected_name =>
+        {
+            let definition = signatures.struct_type(name)?;
+            if fields.len() != definition.fields.len() {
+                return None;
+            }
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (field_name, value) in fields {
+                let field = definition.field(field_name)?;
+                if !scalar_matches(value, &field.ty) {
+                    return None;
+                }
+                rendered.push(format!(
+                    ".{} = {}",
+                    field_c_name(field_name),
+                    constant_c_value(value)
+                ));
+            }
+            Some(format!(
+                "({}){{ {} }}",
+                c_type(&expected, signatures),
+                rendered.join(", ")
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn emit_expr_for_expected_with_cfg_proofs(
     expr: &Expr,
     expected: &Type,
@@ -44472,10 +44692,16 @@ fn emit_expr_for_expected_with_cfg_proofs(
     proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Result<String, Diagnostic> {
-    if let Some(constant) = rewrite_facts.constants.get(&source_span_key(expr.span))
+    let span = source_span_key(expr.span);
+    if let Some(constant) = rewrite_facts.constants.get(&span)
         && constant.ty() == signatures.canonical_type(expected)
     {
         return Ok(constant_c_value(constant));
+    }
+    if let Some(aggregate) = rewrite_facts.aggregate_constants.get(&span)
+        && let Some(value) = emit_cfg_aggregate_constant(aggregate, expected, signatures)
+    {
+        return Ok(value);
     }
     if signatures.canonical_type(expected) == Type::I64
         && let Some(proof) = proofs.get(&source_span_key(expr.span))
@@ -44771,6 +44997,80 @@ mod cfg_rewrite_fact_tests {
         };
         assert_eq!(fields[0].name.as_deref(), Some("right"));
         assert_eq!(fields[1].name.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn flat_typed_ir_aggregate_constants_bypass_ast_child_rebuilds() {
+        let first = int_expr(1, 4, 3);
+        let second = int_expr(2, 4, 6);
+        let list_span = SourceSpan::new(4, 1, 8).with_source(SourceId::new(4242));
+        let list = Expr {
+            line: 4,
+            span: list_span,
+            kind: ExprKind::List(vec![first, second]),
+        };
+        let expected = Type::List(Box::new(Type::I64));
+        let mut facts = CfgRewriteFacts::default();
+        facts.aggregate_constants.insert(
+            source_span_key(list_span),
+            CfgAggregateConstant {
+                ty: expected.clone(),
+                kind: CfgAggregateConstantKind::List(vec![
+                    ConstantValue::I64(7),
+                    ConstantValue::I64(8),
+                ]),
+            },
+        );
+        let signatures = Signatures::default();
+        let generated = emit_expr_for_expected_with_cfg_proofs(
+            &list,
+            &expected,
+            &HashMap::new(),
+            &signatures,
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("typed-IR aggregate constant should emit directly");
+        assert!(generated.contains("INT64_C(7)"));
+        assert!(generated.contains("INT64_C(8)"));
+        assert!(!generated.contains("INT64_C(1)"));
+        assert!(!generated.contains("INT64_C(2)"));
+
+        let map = CfgAggregateConstant {
+            ty: Type::Map(Box::new(Type::I64), Box::new(Type::Bool)),
+            kind: CfgAggregateConstantKind::Map(vec![
+                (ConstantValue::I64(3), ConstantValue::Bool(true)),
+                (ConstantValue::I64(4), ConstantValue::Bool(false)),
+            ]),
+        };
+        let rendered = emit_cfg_aggregate_constant(&map, &map.ty, &signatures)
+            .expect("flat typed-IR map constant should emit directly");
+        assert!(rendered.contains("INT64_C(3)"));
+        assert!(rendered.contains("INT64_C(4)"));
+        assert!(rendered.contains("true"));
+        assert!(rendered.contains("false"));
+
+        let record_ty = Type::Record(vec![
+            crate::ast::RecordTypeField {
+                name: Some("left".to_string()),
+                ty: Type::I64,
+            },
+            crate::ast::RecordTypeField {
+                name: Some("right".to_string()),
+                ty: Type::Bool,
+            },
+        ]);
+        let record = CfgAggregateConstant {
+            ty: record_ty.clone(),
+            kind: CfgAggregateConstantKind::Record(vec![
+                (Some("left".to_string()), ConstantValue::I64(9)),
+                (Some("right".to_string()), ConstantValue::Bool(true)),
+            ]),
+        };
+        let rendered = emit_cfg_aggregate_constant(&record, &record_ty, &signatures)
+            .expect("flat typed-IR record constant should emit directly");
+        assert!(rendered.contains("INT64_C(9)"));
+        assert!(rendered.contains("true"));
     }
 
     #[test]
