@@ -34094,6 +34094,11 @@ enum CfgScalarExprKind {
         callee: String,
         arguments: Vec<(Option<String>, CfgScalarExpr)>,
     },
+    QualifiedCall {
+        namespace: String,
+        name: String,
+        arguments: Vec<CfgScalarExpr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34328,7 +34333,9 @@ fn cfg_borrowed_collection_field_base(
 
 fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
     match &expr.kind {
-        CfgScalarExprKind::Call { .. } | CfgScalarExprKind::NamedCall { .. } => true,
+        CfgScalarExprKind::Call { .. }
+        | CfgScalarExprKind::NamedCall { .. }
+        | CfgScalarExprKind::QualifiedCall { .. } => true,
         CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
         CfgScalarExprKind::Binary { left, right, .. } => {
             cfg_scalar_expr_contains_call(left) || cfg_scalar_expr_contains_call(right)
@@ -34457,6 +34464,18 @@ fn cfg_direct_scalar_expr(
                 .cloned()
                 .zip(arguments.iter().copied())
                 .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
+                .collect::<Option<Vec<_>>>()?,
+        },
+        crate::ir::ControlFlowValueKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } => CfgScalarExprKind::QualifiedCall {
+            namespace: namespace.clone(),
+            name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(|id| cfg_direct_scalar_expr(cfg, *id))
                 .collect::<Option<Vec<_>>>()?,
         },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
@@ -45561,6 +45580,18 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 named_args,
             }
         }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } => ExprKind::QualifiedCall {
+            namespace: namespace.clone(),
+            namespace_span: span,
+            name: name.clone(),
+            name_span: span,
+            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            named_args: Vec::new(),
+        },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -45603,6 +45634,9 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                     cfg_scalar_expr_calls_are_reconstructable(argument, signatures)
                 })
         }
+        CfgScalarExprKind::QualifiedCall { arguments, .. } => arguments
+            .iter()
+            .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
         CfgScalarExprKind::Unary { operand, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(operand, signatures)
         }
@@ -47886,6 +47920,10 @@ fn namedCall(value: i64) -> i64 {
     return named(value, adjust: 3)
 }
 
+fn qualifiedCall(value: i64) -> i64 {
+    return time.utcYear(value)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -48028,6 +48066,44 @@ fn main() -> i64 {
                 function_c_name("named"),
                 local_c_name("value")
             )
+        );
+
+        let qualified = database
+            .control_flow_graph("qualifiedCall")
+            .expect("qualified-call CFG should exist");
+        let call = qualified
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "time" && name == "utcYear"
+                )
+            })
+            .expect("qualified call should retain typed IR");
+        let facts = cfg_rewrite_facts(qualified);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("qualified call should have reconstructable value facts");
+        assert!(matches!(
+            scalar.kind,
+            CfgScalarExprKind::QualifiedCall { .. }
+        ));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+        )
+        .expect("qualified call should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!("flux__time_utc_part({}, 0)", local_c_name("value"))
         );
     }
 
