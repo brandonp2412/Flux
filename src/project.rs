@@ -14,7 +14,7 @@ const PROJECT_FUNCTION_CODEGEN_CACHE_VERSION: &str = "flux-project-function-code
 const COMPILER_SOURCE_FINGERPRINT: &str = env!("FLUX_COMPILER_SOURCE_FINGERPRINT");
 const PROJECT_FUNCTION_CODEGEN_CACHE_LIMIT: usize = 8;
 const PROJECT_FUNCTION_CODEGEN_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
-const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v4";
+const PROJECT_TYPED_IR_CACHE_VERSION: &str = "flux-project-typed-ir-v5";
 const PROJECT_TYPED_IR_SOURCE_INDEX_VERSION: &str = "flux-project-typed-ir-source-v1";
 const PROJECT_TYPED_IR_CACHE_LIMIT: usize = 8;
 const PROJECT_TYPED_IR_FUNCTION_CACHE_LIMIT: usize = 8;
@@ -10055,9 +10055,9 @@ fn main() -> i64 {
             .path();
         let ir_manifest =
             fs::read_to_string(ir_path).expect("typed IR manifest should be readable");
-        assert!(ir_manifest.starts_with("flux-project-typed-ir-v4:"));
+        assert!(ir_manifest.starts_with("flux-project-typed-ir-v5:"));
         assert!(
-            ir_manifest.contains("\nflux-project-typed-ir-v4\nlinux\nfunction\thelper\tmodule=")
+            ir_manifest.contains("\nflux-project-typed-ir-v5\nlinux\nfunction\thelper\tmodule=")
         );
         assert!(
             ir_manifest.contains("function\tmain\tmodule=") && ir_manifest.contains("\tshape=")

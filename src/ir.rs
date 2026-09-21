@@ -72,12 +72,14 @@ pub enum ControlFlowValueKind {
     },
     ListSpread {
         value: ControlFlowValueId,
+        optional: bool,
     },
     ListOptional {
         value: ControlFlowValueId,
     },
     ListIf {
         condition: ControlFlowValueId,
+        binding: Option<String>,
         value: ControlFlowValueId,
         else_value: Option<ControlFlowValueId>,
     },
@@ -93,6 +95,7 @@ pub enum ControlFlowValueKind {
         step: Option<ControlFlowValueId>,
     },
     ListComprehension {
+        binding: String,
         iterable: ControlFlowValueId,
         value: ControlFlowValueId,
         condition: Option<ControlFlowValueId>,
@@ -1409,9 +1412,10 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 9u8.encode_cache_value(bytes);
                 entries.encode_cache_value(bytes);
             }
-            Self::ListSpread { value } => {
+            Self::ListSpread { value, optional } => {
                 10u8.encode_cache_value(bytes);
                 value.encode_cache_value(bytes);
+                optional.encode_cache_value(bytes);
             }
             Self::ListOptional { value } => {
                 11u8.encode_cache_value(bytes);
@@ -1419,11 +1423,13 @@ impl PersistedIrCodec for ControlFlowValueKind {
             }
             Self::ListIf {
                 condition,
+                binding,
                 value,
                 else_value,
             } => {
                 12u8.encode_cache_value(bytes);
                 condition.encode_cache_value(bytes);
+                binding.encode_cache_value(bytes);
                 value.encode_cache_value(bytes);
                 else_value.encode_cache_value(bytes);
             }
@@ -1450,11 +1456,13 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 step.encode_cache_value(bytes);
             }
             Self::ListComprehension {
+                binding,
                 iterable,
                 value,
                 condition,
             } => {
                 15u8.encode_cache_value(bytes);
+                binding.encode_cache_value(bytes);
                 iterable.encode_cache_value(bytes);
                 value.encode_cache_value(bytes);
                 condition.encode_cache_value(bytes);
@@ -1588,12 +1596,14 @@ impl PersistedIrCodec for ControlFlowValueKind {
             }),
             10 => Some(Self::ListSpread {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
+                optional: bool::decode_cache_value(reader)?,
             }),
             11 => Some(Self::ListOptional {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
             }),
             12 => Some(Self::ListIf {
                 condition: ControlFlowValueId::decode_cache_value(reader)?,
+                binding: Option::<String>::decode_cache_value(reader)?,
                 value: ControlFlowValueId::decode_cache_value(reader)?,
                 else_value: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
             }),
@@ -1609,6 +1619,7 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 step: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
             }),
             15 => Some(Self::ListComprehension {
+                binding: String::decode_cache_value(reader)?,
                 iterable: ControlFlowValueId::decode_cache_value(reader)?,
                 value: ControlFlowValueId::decode_cache_value(reader)?,
                 condition: Option::<ControlFlowValueId>::decode_cache_value(reader)?,
@@ -2446,7 +2457,7 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
         ControlFlowValueKind::NameRead { .. } => true,
         ControlFlowValueKind::AnonymousFunction { body }
         | ControlFlowValueKind::Await { value: body }
-        | ControlFlowValueKind::ListSpread { value: body }
+        | ControlFlowValueKind::ListSpread { value: body, .. }
         | ControlFlowValueKind::ListOptional { value: body } => valid(*body),
         ControlFlowValueKind::Call { arguments, .. }
         | ControlFlowValueKind::QualifiedCall { arguments, .. } => valid_values(arguments),
@@ -2466,6 +2477,7 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
             condition,
             value,
             else_value,
+            ..
         } => valid(*condition) && valid(*value) && valid_option(else_value),
         ControlFlowValueKind::Index { base, index, .. } => valid(*base) && valid(*index),
         ControlFlowValueKind::Slice {
@@ -2478,6 +2490,7 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
             iterable,
             value,
             condition,
+            ..
         } => valid(*iterable) && valid(*value) && valid_option(condition),
         ControlFlowValueKind::StructLiteral { base, fields, .. } => {
             valid_option(base) && fields.iter().all(|(_, value)| valid(*value))
@@ -2930,7 +2943,7 @@ impl ControlFlowGraph {
                 | ControlFlowValueKind::InterfaceDispatch { .. }
                 | ControlFlowValueKind::Opaque => ControlFlowValueEffect::MayEffect,
                 ControlFlowValueKind::InterfacePack { value, .. }
-                | ControlFlowValueKind::ListSpread { value }
+                | ControlFlowValueKind::ListSpread { value, .. }
                 | ControlFlowValueKind::ListOptional { value }
                 | ControlFlowValueKind::Field { base: value, .. }
                 | ControlFlowValueKind::Unary { operand: value, .. } => {
@@ -2957,6 +2970,7 @@ impl ControlFlowGraph {
                     condition,
                     value,
                     else_value,
+                    ..
                 } => all_pure(
                     graph,
                     std::iter::once(*condition)
@@ -2992,6 +3006,7 @@ impl ControlFlowGraph {
                     iterable,
                     value,
                     condition,
+                    ..
                 } => all_pure(
                     graph,
                     std::iter::once(*iterable)
@@ -3682,7 +3697,7 @@ impl ControlFlowGraph {
                     .iter()
                     .any(|item| self.value_depends_on_borrow_source(*item, source, visiting))
             }
-            ControlFlowValueKind::ListSpread { value } => {
+            ControlFlowValueKind::ListSpread { value, .. } => {
                 self.value_depends_on_borrow_source(*value, source, visiting)
             }
             ControlFlowValueKind::ListIf {
@@ -3768,7 +3783,7 @@ impl ControlFlowGraph {
                     .iter()
                     .any(|item| self.value_depends_on_borrow_source(*item, source, visiting))
             }
-            ControlFlowValueKind::ListSpread { value } => {
+            ControlFlowValueKind::ListSpread { value, .. } => {
                 self.value_depends_on_borrow_source(*value, source, visiting)
             }
             ControlFlowValueKind::ListIf {
@@ -3884,7 +3899,7 @@ impl ControlFlowGraph {
                     visit(*item);
                 }
             }
-            ControlFlowValueKind::ListSpread { value } => visit(*value),
+            ControlFlowValueKind::ListSpread { value, .. } => visit(*value),
             ControlFlowValueKind::ListIf {
                 value, else_value, ..
             } => {
@@ -5030,11 +5045,15 @@ impl<'a> ControlFlowBuilder<'a> {
                     })
                     .collect(),
             },
-            ExprKind::ListSpread { value, .. } => self
-                .lower_scalar_expr(producer, value)
-                .map_or(ControlFlowValueKind::Opaque, |value| {
-                    ControlFlowValueKind::ListSpread { value }
-                }),
+            ExprKind::ListSpread {
+                value, optional, ..
+            } => self.lower_scalar_expr(producer, value).map_or(
+                ControlFlowValueKind::Opaque,
+                |value| ControlFlowValueKind::ListSpread {
+                    value,
+                    optional: *optional,
+                },
+            ),
             ExprKind::ListOptional { value, .. } => self
                 .lower_scalar_expr(producer, value)
                 .map_or(ControlFlowValueKind::Opaque, |value| {
@@ -5074,6 +5093,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 match (condition_value, value) {
                     (Some(condition), Some(value)) => ControlFlowValueKind::ListIf {
                         condition,
+                        binding: binding.as_ref().map(|binding| binding.name.clone()),
                         value,
                         else_value,
                     },
@@ -5147,6 +5167,7 @@ impl<'a> ControlFlowBuilder<'a> {
                 self.scoped_definition_stack.pop();
                 match (iterable_value, value) {
                     (Some(iterable), Some(value)) => ControlFlowValueKind::ListComprehension {
+                        binding: binding.clone(),
                         iterable,
                         value,
                         condition,
@@ -6067,6 +6088,7 @@ fn collect_call_argument_definitions(
             condition,
             value,
             else_value,
+            ..
         } => {
             let known_condition = values
                 .get(condition.0)
@@ -6092,7 +6114,7 @@ fn collect_call_argument_definitions(
         ControlFlowValueKind::ListComprehension { value, .. } => {
             collect_call_argument_definitions(*value, values, visited, definitions);
         }
-        ControlFlowValueKind::ListSpread { value }
+        ControlFlowValueKind::ListSpread { value, .. }
         | ControlFlowValueKind::ListOptional { value }
         | ControlFlowValueKind::Field { base: value, .. }
         | ControlFlowValueKind::Index { base: value, .. }
@@ -6855,7 +6877,7 @@ fn collect_value_uses(
                 }
             }
             ControlFlowValueKind::InterfacePack { value: packed, .. }
-            | ControlFlowValueKind::ListSpread { value: packed }
+            | ControlFlowValueKind::ListSpread { value: packed, .. }
             | ControlFlowValueKind::ListOptional { value: packed }
             | ControlFlowValueKind::Field { base: packed, .. } => {
                 push_value_use(&mut uses, value.id, *packed, ControlFlowValueUseKind::Eager);
@@ -6880,6 +6902,7 @@ fn collect_value_uses(
                 condition,
                 value: then_value,
                 else_value,
+                ..
             } => {
                 push_value_use(
                     &mut uses,
@@ -6949,6 +6972,7 @@ fn collect_value_uses(
                 iterable,
                 value: body,
                 condition,
+                ..
             } => {
                 push_value_use(
                     &mut uses,
@@ -7390,12 +7414,13 @@ fn ir_value_is_discardable(
         ControlFlowValueKind::Map { entries } => entries
             .iter()
             .all(|(key, value)| child(*key, visiting) && child(*value, visiting)),
-        ControlFlowValueKind::ListSpread { value }
+        ControlFlowValueKind::ListSpread { value, .. }
         | ControlFlowValueKind::ListOptional { value } => child(*value, visiting),
         ControlFlowValueKind::ListIf {
             condition,
             value,
             else_value,
+            ..
         } => {
             child(*condition, visiting)
                 && child(*value, visiting)
@@ -8658,6 +8683,60 @@ fn main() -> i64 {
                 .expect("field CFG should decode");
             assert_eq!(&decoded, graph);
         }
+    }
+
+    #[test]
+    fn list_control_values_preserve_codegen_metadata_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"fn maybe(flag: bool) -> i64? {
+    if flag:
+        return 7
+    return none
+}
+
+fn main() -> i64 {
+    let present: i64[]? = [1, 2]
+    let spread: i64[] = [...?present]
+    let guarded: i64[] = [if let value = maybe(true): value else: 0]
+    let source: i64[] = [1, 2, 3]
+    let mapped: i64[] = [value * 2 for value in source if value > 1]
+    return spread.length + guarded.length + mapped.length
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("list-control IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist");
+
+        assert!(graph.values().iter().any(|value| {
+            matches!(
+                &value.kind,
+                super::ControlFlowValueKind::ListSpread { optional: true, .. }
+            )
+        }));
+        assert!(graph.values().iter().any(|value| {
+            matches!(
+                &value.kind,
+                super::ControlFlowValueKind::ListIf {
+                    binding: Some(binding),
+                    ..
+                } if binding == "value"
+            )
+        }));
+        assert!(graph.values().iter().any(|value| {
+            matches!(
+                &value.kind,
+                super::ControlFlowValueKind::ListComprehension { binding, .. }
+                    if binding == "value"
+            )
+        }));
+
+        let encoded = graph.encode_persisted();
+        let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+            .expect("list-control CFG should decode");
+        assert_eq!(&decoded, graph);
     }
 
     #[test]

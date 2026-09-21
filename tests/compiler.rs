@@ -32599,6 +32599,7 @@ fn main() -> i64 {
         .expect("list control item should have typed IR");
     let ControlFlowValueKind::ListIf {
         condition,
+        binding: None,
         value,
         else_value: Some(else_value),
     } = list_if.kind
@@ -32954,6 +32955,7 @@ fn main() -> i64 {
         .find(|value| matches!(value.kind, ControlFlowValueKind::ListComprehension { .. }))
         .expect("list comprehension should have a typed IR root");
     let ControlFlowValueKind::ListComprehension {
+        binding,
         iterable,
         value,
         condition,
@@ -32961,6 +32963,7 @@ fn main() -> i64 {
     else {
         unreachable!();
     };
+    assert_eq!(binding, "value");
     assert!(matches!(
         graph.value(*iterable).map(|value| &value.kind),
         Some(ControlFlowValueKind::NameRead { name, .. }) if name == "values"
