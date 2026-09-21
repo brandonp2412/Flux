@@ -51,6 +51,11 @@ pub enum ControlFlowValueKind {
         callee: String,
         arguments: Vec<ControlFlowValueId>,
     },
+    NamedCall {
+        callee: String,
+        arguments: Vec<ControlFlowValueId>,
+        argument_names: Vec<Option<String>>,
+    },
     OptionalCascadeCall {
         optional: ControlFlowValueId,
         callee: String,
@@ -1380,6 +1385,16 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 callee.encode_cache_value(bytes);
                 arguments.encode_cache_value(bytes);
             }
+            Self::NamedCall {
+                callee,
+                arguments,
+                argument_names,
+            } => {
+                28u8.encode_cache_value(bytes);
+                callee.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+                argument_names.encode_cache_value(bytes);
+            }
             Self::OptionalCascadeCall {
                 optional,
                 callee,
@@ -1678,6 +1693,11 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 base: ControlFlowValueId::decode_cache_value(reader)?,
                 name: String::decode_cache_value(reader)?,
                 optional: bool::decode_cache_value(reader)?,
+            }),
+            28 => Some(Self::NamedCall {
+                callee: String::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+                argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
             }),
             _ => None,
         }
@@ -2461,6 +2481,11 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
         | ControlFlowValueKind::ListOptional { value: body } => valid(*body),
         ControlFlowValueKind::Call { arguments, .. }
         | ControlFlowValueKind::QualifiedCall { arguments, .. } => valid_values(arguments),
+        ControlFlowValueKind::NamedCall {
+            arguments,
+            argument_names,
+            ..
+        } => arguments.len() == argument_names.len() && valid_values(arguments),
         ControlFlowValueKind::OptionalCascadeCall {
             optional,
             arguments,
@@ -2938,6 +2963,7 @@ impl ControlFlowGraph {
                 }
                 ControlFlowValueKind::Await { .. }
                 | ControlFlowValueKind::Call { .. }
+                | ControlFlowValueKind::NamedCall { .. }
                 | ControlFlowValueKind::OptionalCascadeCall { .. }
                 | ControlFlowValueKind::QualifiedCall { .. }
                 | ControlFlowValueKind::InterfaceDispatch { .. }
@@ -3101,6 +3127,7 @@ impl ControlFlowGraph {
             .filter(|value| self.is_value_reachable(value.id))
             .flat_map(|value| match &value.kind {
                 ControlFlowValueKind::Call { callee, .. }
+                | ControlFlowValueKind::NamedCall { callee, .. }
                 | ControlFlowValueKind::OptionalCascadeCall { callee, .. } => {
                     std::iter::once(callee.clone()).collect::<BTreeSet<_>>()
                 }
@@ -3721,21 +3748,25 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(
-                    crate::builtin_names::global_impl(callee),
-                    "take" | "skip" | "chunked"
-                ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(
+                crate::builtin_names::global_impl(callee),
+                "take" | "skip" | "chunked"
+            ) =>
             {
                 arguments.first().is_some_and(|argument| {
                     self.value_depends_on_borrow_source(*argument, source, visiting)
                 })
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
-                    && matches!(
-                        crate::builtin_names::global_impl(callee),
-                        "filter" | "where" | "flatten" | "concat"
-                    ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                && matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "filter" | "where" | "flatten" | "concat"
+                ) =>
             {
                 let retained = if crate::builtin_names::global_impl(callee) == "concat" {
                     arguments.iter().take(2)
@@ -3813,21 +3844,25 @@ impl ControlFlowGraph {
                 self.value_depends_on_borrow_source(*base, source, visiting)
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(
-                    crate::builtin_names::global_impl(callee),
-                    "take" | "skip" | "chunked"
-                ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(
+                crate::builtin_names::global_impl(callee),
+                "take" | "skip" | "chunked"
+            ) =>
             {
                 arguments.first().is_some_and(|argument| {
                     self.value_depends_on_borrow_source(*argument, source, visiting)
                 })
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
-                    && matches!(
-                        crate::builtin_names::global_impl(callee),
-                        "filter" | "where" | "flatten" | "concat"
-                    ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                && matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "filter" | "where" | "flatten" | "concat"
+                ) =>
             {
                 let retained = if crate::builtin_names::global_impl(callee) == "concat" {
                     arguments.iter().take(2)
@@ -3932,21 +3967,25 @@ impl ControlFlowGraph {
                 visit(*base);
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(
-                    crate::builtin_names::global_impl(callee),
-                    "take" | "skip" | "chunked"
-                ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(
+                crate::builtin_names::global_impl(callee),
+                "take" | "skip" | "chunked"
+            ) =>
             {
                 if let Some(argument) = arguments.first() {
                     visit(*argument);
                 }
             }
             ControlFlowValueKind::Call { callee, arguments }
-                if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
-                    && matches!(
-                        crate::builtin_names::global_impl(callee),
-                        "filter" | "where" | "flatten" | "concat"
-                    ) =>
+            | ControlFlowValueKind::NamedCall {
+                callee, arguments, ..
+            } if matches!(&value.ty, Type::List(element) if matches!(element.as_ref(), Type::List(_)))
+                && matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "filter" | "where" | "flatten" | "concat"
+                ) =>
             {
                 let retained = if crate::builtin_names::global_impl(callee) == "concat" {
                     arguments.iter().take(2)
@@ -4989,10 +5028,22 @@ impl<'a> ControlFlowBuilder<'a> {
                             value,
                         },
                     )
-                } else {
+                } else if named_args.is_empty() {
                     ControlFlowValueKind::Call {
                         callee: name.clone(),
                         arguments,
+                    }
+                } else {
+                    let mut argument_names = vec![None; args.len()];
+                    argument_names.extend(
+                        named_args
+                            .iter()
+                            .map(|argument| Some(argument.name.clone())),
+                    );
+                    ControlFlowValueKind::NamedCall {
+                        callee: name.clone(),
+                        arguments,
+                        argument_names,
                     }
                 }
             }
@@ -5662,9 +5713,10 @@ impl<'a> ControlFlowBuilder<'a> {
             .filter(|value| value.producer == node)
             .filter_map(|value| {
                 let (callee, arguments) = match &value.kind {
-                    ControlFlowValueKind::Call { callee, arguments } => {
-                        (callee.clone(), arguments.clone())
-                    }
+                    ControlFlowValueKind::Call { callee, arguments }
+                    | ControlFlowValueKind::NamedCall {
+                        callee, arguments, ..
+                    } => (callee.clone(), arguments.clone()),
                     ControlFlowValueKind::QualifiedCall {
                         namespace,
                         name,
@@ -6121,7 +6173,10 @@ fn collect_call_argument_definitions(
         | ControlFlowValueKind::Slice { base: value, .. } => {
             collect_call_argument_definitions(*value, values, visited, definitions);
         }
-        ControlFlowValueKind::Call { callee, arguments } => {
+        ControlFlowValueKind::Call { callee, arguments }
+        | ControlFlowValueKind::NamedCall {
+            callee, arguments, ..
+        } => {
             let count = if matches!(crate::builtin_names::global_impl(callee), "concat") {
                 2
             } else {
@@ -6840,6 +6895,7 @@ fn collect_value_uses(
                 );
             }
             ControlFlowValueKind::Call { arguments, .. }
+            | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
                 for argument in arguments {
@@ -7497,6 +7553,7 @@ fn compute_escaping_values(
     {
         match &value.kind {
             ControlFlowValueKind::Call { arguments, .. }
+            | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
                 pending.extend(arguments.iter().copied());
@@ -8639,6 +8696,44 @@ mod tests {
             super::ControlFlowGraph::decode_persisted(&truncated).is_none(),
             "truncated CFG payloads must be rejected"
         );
+    }
+
+    #[test]
+    fn named_call_values_preserve_argument_names_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"fn adjust(value: i64, *, amount: i64) -> i64 {
+    return value + amount
+}
+
+fn main() -> i64 {
+    return adjust(2, amount: 3)
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("named-call IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist");
+
+        let argument_names = graph
+            .values()
+            .iter()
+            .find_map(|value| match &value.kind {
+                super::ControlFlowValueKind::NamedCall {
+                    callee,
+                    argument_names,
+                    ..
+                } if callee == "adjust" => Some(argument_names.clone()),
+                _ => None,
+            })
+            .expect("named call should retain argument names");
+        assert_eq!(argument_names, vec![None, Some("amount".to_string())]);
+
+        let encoded = graph.encode_persisted();
+        let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+            .expect("named-call CFG should decode");
+        assert_eq!(&decoded, graph);
     }
 
     #[test]

@@ -28206,6 +28206,7 @@ fn collect_function_reachability_from_ir(
                 direct_functions.insert(name.clone());
             }
             crate::ir::ControlFlowValueKind::Call { callee, .. }
+            | crate::ir::ControlFlowValueKind::NamedCall { callee, .. }
             | crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
                 if known_functions.contains(callee) =>
             {
@@ -34089,6 +34090,10 @@ enum CfgScalarExprKind {
         callee: String,
         arguments: Vec<CfgScalarExpr>,
     },
+    NamedCall {
+        callee: String,
+        arguments: Vec<(Option<String>, CfgScalarExpr)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34323,7 +34328,7 @@ fn cfg_borrowed_collection_field_base(
 
 fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
     match &expr.kind {
-        CfgScalarExprKind::Call { .. } => true,
+        CfgScalarExprKind::Call { .. } | CfgScalarExprKind::NamedCall { .. } => true,
         CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
         CfgScalarExprKind::Binary { left, right, .. } => {
             cfg_scalar_expr_contains_call(left) || cfg_scalar_expr_contains_call(right)
@@ -34439,6 +34444,19 @@ fn cfg_direct_scalar_expr(
             arguments: arguments
                 .iter()
                 .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        },
+        crate::ir::ControlFlowValueKind::NamedCall {
+            callee,
+            arguments,
+            argument_names,
+        } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedCall {
+            callee: callee.clone(),
+            arguments: argument_names
+                .iter()
+                .cloned()
+                .zip(arguments.iter().copied())
+                .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
                 .collect::<Option<Vec<_>>>()?,
         },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
@@ -45522,6 +45540,27 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
             named_args: Vec::new(),
         },
+        CfgScalarExprKind::NamedCall { callee, arguments } => {
+            let mut args = Vec::new();
+            let mut named_args = Vec::new();
+            for (name, value) in arguments {
+                let value = cfg_scalar_expr_as_ast(value);
+                if let Some(name) = name {
+                    named_args.push(NamedArg {
+                        name: name.clone(),
+                        name_span: span,
+                        value,
+                    });
+                } else {
+                    args.push(value);
+                }
+            }
+            ExprKind::Call {
+                name: callee.clone(),
+                args,
+                named_args,
+            }
+        }
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -45539,7 +45578,10 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
     }
 }
 
-fn cfg_scalar_expr_calls_are_positional(expr: &CfgScalarExpr, signatures: &Signatures) -> bool {
+fn cfg_scalar_expr_calls_are_reconstructable(
+    expr: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> bool {
     match &expr.kind {
         CfgScalarExprKind::Call { callee, arguments } => {
             let implementation = crate::builtin_names::global_impl(callee);
@@ -45552,21 +45594,28 @@ fn cfg_scalar_expr_calls_are_positional(expr: &CfgScalarExpr, signatures: &Signa
                 .all(|param| !param.named_only)
                 && arguments
                     .iter()
-                    .all(|argument| cfg_scalar_expr_calls_are_positional(argument, signatures))
+                    .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures))
+        }
+        CfgScalarExprKind::NamedCall { callee, arguments } => {
+            let implementation = crate::builtin_names::global_impl(callee);
+            signatures.get(implementation).is_some()
+                && arguments.iter().all(|(_, argument)| {
+                    cfg_scalar_expr_calls_are_reconstructable(argument, signatures)
+                })
         }
         CfgScalarExprKind::Unary { operand, .. } => {
-            cfg_scalar_expr_calls_are_positional(operand, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(operand, signatures)
         }
         CfgScalarExprKind::Binary { left, right, .. } => {
-            cfg_scalar_expr_calls_are_positional(left, signatures)
-                && cfg_scalar_expr_calls_are_positional(right, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(left, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(right, signatures)
         }
         CfgScalarExprKind::Field { base, .. } => {
-            cfg_scalar_expr_calls_are_positional(base, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
         }
         CfgScalarExprKind::Index { base, index, .. } => {
-            cfg_scalar_expr_calls_are_positional(base, signatures)
-                && cfg_scalar_expr_calls_are_positional(index, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(index, signatures)
         }
         CfgScalarExprKind::Slice {
             base,
@@ -45574,19 +45623,19 @@ fn cfg_scalar_expr_calls_are_positional(expr: &CfgScalarExpr, signatures: &Signa
             end,
             step,
         } => {
-            cfg_scalar_expr_calls_are_positional(base, signatures)
-                && start
-                    .as_deref()
-                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
-                && end
-                    .as_deref()
-                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
-                && step
-                    .as_deref()
-                    .is_none_or(|value| cfg_scalar_expr_calls_are_positional(value, signatures))
+            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
+                && start.as_deref().is_none_or(|value| {
+                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                })
+                && end.as_deref().is_none_or(|value| {
+                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                })
+                && step.as_deref().is_none_or(|value| {
+                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                })
         }
         CfgScalarExprKind::InterfacePack { value, .. } => {
-            cfg_scalar_expr_calls_are_positional(value, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(value, signatures)
         }
         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
     }
@@ -45600,7 +45649,7 @@ fn emit_cfg_scalar_expr(
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
     let ty = signatures.canonical_type(&expr.ty);
-    if ty != expected || !cfg_scalar_expr_calls_are_positional(expr, signatures) {
+    if ty != expected || !cfg_scalar_expr_calls_are_reconstructable(expr, signatures) {
         return None;
     }
     let synthetic = cfg_scalar_expr_as_ast(expr);
@@ -47950,25 +47999,35 @@ fn main() -> i64 {
             .find(|value| {
                 matches!(
                     &value.kind,
-                    crate::ir::ControlFlowValueKind::Call { callee, .. }
-                        if callee == "named"
+                    crate::ir::ControlFlowValueKind::NamedCall {
+                        callee,
+                        argument_names,
+                        ..
+                    } if callee == "named"
+                        && argument_names == &[None, Some("adjust".to_string())]
                 )
             })
-            .expect("named call should retain typed IR");
+            .expect("named call should retain typed IR argument names");
         let facts = cfg_rewrite_facts(named);
         let scalar = facts
             .scalar_exprs
             .get(&source_span_key(call.span))
-            .expect("named call should still have reconstructable value facts");
-        assert!(
-            emit_cfg_scalar_expr(
-                scalar,
-                &Type::I64,
-                &HashMap::from([("value".to_string(), Type::I64)]),
-                database.signatures(),
+            .expect("named call should have reconstructable value facts");
+        assert!(matches!(scalar.kind, CfgScalarExprKind::NamedCall { .. }));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+        )
+        .expect("named-only call should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!(
+                "{}({}, INT64_C(3))",
+                function_c_name("named"),
+                local_c_name("value")
             )
-            .is_none(),
-            "named-only calls must retain checked-AST lowering until argument names are in IR"
         );
     }
 
