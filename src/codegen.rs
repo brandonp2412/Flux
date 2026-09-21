@@ -34187,7 +34187,7 @@ fn cfg_scalar_leaf(
     })
 }
 
-fn cfg_borrowed_list_leaf(
+fn cfg_borrowed_index_base(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgScalarExpr> {
@@ -34195,9 +34195,9 @@ fn cfg_borrowed_list_leaf(
     if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
         return None;
     }
-    let list_like = matches!(&value.ty, Type::List(_))
-        || matches!(&value.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)));
-    if !list_like {
+    let indexable = matches!(&value.ty, Type::List(_) | Type::Map(_, _))
+        || matches!(&value.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_) | Type::Map(_, _)));
+    if !indexable {
         return None;
     }
     let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
@@ -34246,7 +34246,7 @@ fn cfg_direct_scalar_expr(
             index,
             optional,
         } => CfgScalarExprKind::Index {
-            base: Box::new(cfg_borrowed_list_leaf(cfg, *base)?),
+            base: Box::new(cfg_borrowed_index_base(cfg, *base)?),
             index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
             optional: *optional,
         },
@@ -46956,6 +46956,103 @@ fn main() -> i64 {
                 .scalar_exprs
                 .contains_key(&source_span_key(index.span)),
             "borrowed temporary list bases should retain checked-AST lowering"
+        );
+    }
+
+    #[test]
+    fn direct_typed_ir_map_indexes_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn direct(values: map<str, i64>, key: str) -> i64? {
+    return values[key]
+}
+
+fn optional(values: map<str, i64>?, key: str) -> i64? {
+    return values?[key]
+}
+
+fn temporary(key: str) -> i64? {
+    return {"one": 1}[key]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("map index IR fixture should typecheck");
+
+        for (function, expected_optional_base) in [("direct", false), ("optional", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("map index CFG should exist");
+            let index = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Index { optional, .. }
+                            if optional == expected_optional_base
+                    )
+                })
+                .expect("typed IR should retain the map index");
+            let facts = cfg_rewrite_facts(graph);
+            assert!(matches!(
+                facts.scalar_exprs.get(&source_span_key(index.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Index { optional, .. },
+                    ..
+                }) if *optional == expected_optional_base
+            ));
+
+            let fake = Expr {
+                line: index.span.line,
+                span: index.span,
+                kind: ExprKind::Str("checked-ast-map-index".to_string()),
+            };
+            let map_ty = Type::Map(Box::new(Type::Str), Box::new(Type::I64));
+            let values_ty = if expected_optional_base {
+                Type::Optional(Box::new(map_ty))
+            } else {
+                map_ty
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Optional(Box::new(Type::I64)),
+                &HashMap::from([
+                    ("values".to_string(), values_ty),
+                    ("key".to_string(), Type::Str),
+                ]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic map index should emit from typed IR");
+
+            assert!(emitted.contains(&local_c_name("values")));
+            assert!(emitted.contains(&local_c_name("key")));
+            assert!(emitted.contains("flux__map_index_"));
+            assert!(emitted.contains("strcmp("));
+            assert!(!emitted.contains("checked-ast-map-index"));
+            if expected_optional_base {
+                assert!(emitted.contains(".has_value &&"));
+            }
+        }
+
+        let temporary = database
+            .control_flow_graph("temporary")
+            .expect("temporary map index CFG should exist");
+        let index = temporary
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
+            .expect("temporary map index should have typed IR");
+        let facts = cfg_rewrite_facts(temporary);
+        assert!(
+            !facts
+                .scalar_exprs
+                .contains_key(&source_span_key(index.span)),
+            "borrowed temporary map bases should retain checked-AST lowering"
         );
     }
 
