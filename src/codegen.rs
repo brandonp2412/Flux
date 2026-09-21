@@ -33977,9 +33977,9 @@ enum CfgAggregateShape {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CfgAggregateConstantKind {
-    List(Vec<ConstantValue>),
+    List(Vec<CfgAggregateValue>),
     Set(Vec<ConstantValue>),
-    Map(Vec<(ConstantValue, ConstantValue)>),
+    Map(Vec<(ConstantValue, CfgAggregateValue)>),
     Record(Vec<(Option<String>, CfgAggregateValue)>),
     Struct {
         name: String,
@@ -34124,7 +34124,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         let kind = match &value.kind {
             crate::ir::ControlFlowValueKind::List { items } => items
                 .iter()
-                .map(|id| scalar(*id))
+                .map(|id| cfg_copy_aggregate_value(cfg, *id))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::List),
             crate::ir::ControlFlowValueKind::Set { items } => items
@@ -34134,7 +34134,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(CfgAggregateConstantKind::Set),
             crate::ir::ControlFlowValueKind::Map { entries } => entries
                 .iter()
-                .map(|(key, value)| Some((scalar(*key)?, scalar(*value)?)))
+                .map(|(key, value)| Some((scalar(*key)?, cfg_copy_aggregate_value(cfg, *value)?)))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateConstantKind::Map),
             crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
@@ -44627,9 +44627,6 @@ fn emit_cfg_aggregate_constant(
 
     match (&aggregate.kind, &expected) {
         (CfgAggregateConstantKind::List(values), Type::List(element)) => {
-            if values.iter().any(|value| !scalar_matches(value, element)) {
-                return None;
-            }
             let element_c = c_type(element, signatures);
             if values.is_empty() {
                 return Some(format!(
@@ -44638,8 +44635,8 @@ fn emit_cfg_aggregate_constant(
             }
             let rendered = values
                 .iter()
-                .map(constant_c_value)
-                .collect::<Vec<_>>()
+                .map(|value| emit_cfg_aggregate_value(value, element, signatures))
+                .collect::<Option<Vec<_>>>()?
                 .join(", ");
             Some(format!(
                 "((struct flux__list){{ .data = (void *)({element_c}[]){{ {rendered} }}, .len = {}, .stride = sizeof({element_c}) }})",
@@ -44669,9 +44666,10 @@ fn emit_cfg_aggregate_constant(
             ))
         }
         (CfgAggregateConstantKind::Map(entries), Type::Map(key, value)) => {
-            if entries.iter().any(|(entry_key, entry_value)| {
-                !scalar_matches(entry_key, key) || !scalar_matches(entry_value, value)
-            }) {
+            if entries
+                .iter()
+                .any(|(entry_key, _)| !scalar_matches(entry_key, key))
+            {
                 return None;
             }
             let key_c = c_type(key, signatures);
@@ -44688,8 +44686,8 @@ fn emit_cfg_aggregate_constant(
                 .join(", ");
             let values = entries
                 .iter()
-                .map(|(_, value)| constant_c_value(value))
-                .collect::<Vec<_>>()
+                .map(|(_, entry_value)| emit_cfg_aggregate_value(entry_value, value, signatures))
+                .collect::<Option<Vec<_>>>()?
                 .join(", ");
             Some(format!(
                 "((struct flux__map){{ .keys = (struct flux__list){{ .data = (void *)({key_c}[]){{ {keys} }}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *)({value_c}[]){{ {values} }}, .len = {}, .stride = sizeof({value_c}) }} }})",
@@ -45073,8 +45071,8 @@ mod cfg_rewrite_fact_tests {
             CfgAggregateConstant {
                 ty: expected.clone(),
                 kind: CfgAggregateConstantKind::List(vec![
-                    ConstantValue::I64(7),
-                    ConstantValue::I64(8),
+                    CfgAggregateValue::Scalar(ConstantValue::I64(7)),
+                    CfgAggregateValue::Scalar(ConstantValue::I64(8)),
                 ]),
             },
         );
@@ -45096,8 +45094,14 @@ mod cfg_rewrite_fact_tests {
         let map = CfgAggregateConstant {
             ty: Type::Map(Box::new(Type::I64), Box::new(Type::Bool)),
             kind: CfgAggregateConstantKind::Map(vec![
-                (ConstantValue::I64(3), ConstantValue::Bool(true)),
-                (ConstantValue::I64(4), ConstantValue::Bool(false)),
+                (
+                    ConstantValue::I64(3),
+                    CfgAggregateValue::Scalar(ConstantValue::Bool(true)),
+                ),
+                (
+                    ConstantValue::I64(4),
+                    CfgAggregateValue::Scalar(ConstantValue::Bool(false)),
+                ),
             ]),
         };
         let rendered = emit_cfg_aggregate_constant(&map, &map.ty, &signatures)
@@ -45134,6 +45138,41 @@ mod cfg_rewrite_fact_tests {
             .expect("flat typed-IR record constant should emit directly");
         assert!(rendered.contains("INT64_C(9)"));
         assert!(rendered.contains("true"));
+
+        let nested_record_ty = Type::Record(vec![crate::ast::RecordTypeField {
+            name: Some("value".to_string()),
+            ty: Type::I64,
+        }]);
+        let nested_record = CfgAggregateConstant {
+            ty: nested_record_ty.clone(),
+            kind: CfgAggregateConstantKind::Record(vec![(
+                Some("value".to_string()),
+                CfgAggregateValue::Scalar(ConstantValue::I64(42)),
+            )]),
+        };
+        let list_of_records = CfgAggregateConstant {
+            ty: Type::List(Box::new(nested_record_ty.clone())),
+            kind: CfgAggregateConstantKind::List(vec![CfgAggregateValue::Aggregate(Box::new(
+                nested_record.clone(),
+            ))]),
+        };
+        let rendered =
+            emit_cfg_aggregate_constant(&list_of_records, &list_of_records.ty, &signatures)
+                .expect("typed-IR list should render nested Copy record values");
+        assert!(rendered.contains("INT64_C(42)"));
+
+        let map_to_records = CfgAggregateConstant {
+            ty: Type::Map(Box::new(Type::I64), Box::new(nested_record_ty)),
+            kind: CfgAggregateConstantKind::Map(vec![(
+                ConstantValue::I64(7),
+                CfgAggregateValue::Aggregate(Box::new(nested_record)),
+            )]),
+        };
+        let rendered =
+            emit_cfg_aggregate_constant(&map_to_records, &map_to_records.ty, &signatures)
+                .expect("typed-IR map should render nested Copy record values");
+        assert!(rendered.contains("INT64_C(7)"));
+        assert!(rendered.contains("INT64_C(42)"));
     }
 
     #[test]
