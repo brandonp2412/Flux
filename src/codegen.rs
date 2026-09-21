@@ -34064,6 +34064,11 @@ enum CfgScalarExprKind {
         name: String,
         optional: bool,
     },
+    Index {
+        base: Box<CfgScalarExpr>,
+        index: Box<CfgScalarExpr>,
+        optional: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34182,6 +34187,31 @@ fn cfg_scalar_leaf(
     })
 }
 
+fn cfg_borrowed_list_leaf(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+        return None;
+    }
+    let list_like = matches!(&value.ty, Type::List(_))
+        || matches!(&value.ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::List(_)));
+    if !list_like {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
+        return None;
+    };
+    if definitions.is_empty() {
+        return None;
+    }
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind: CfgScalarExprKind::Name(name.clone()),
+    })
+}
+
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34209,6 +34239,15 @@ fn cfg_direct_scalar_expr(
         } => CfgScalarExprKind::Field {
             base: Box::new(cfg_direct_scalar_expr(cfg, *base)?),
             name: name.clone(),
+            optional: *optional,
+        },
+        crate::ir::ControlFlowValueKind::Index {
+            base,
+            index,
+            optional,
+        } => CfgScalarExprKind::Index {
+            base: Box::new(cfg_borrowed_list_leaf(cfg, *base)?),
+            index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
             optional: *optional,
         },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
@@ -45228,6 +45267,15 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             name_span: span,
             optional: *optional,
         },
+        CfgScalarExprKind::Index {
+            base,
+            index,
+            optional,
+        } => ExprKind::Index {
+            base: Box::new(cfg_scalar_expr_as_ast(base)),
+            index: Box::new(cfg_scalar_expr_as_ast(index)),
+            optional: *optional,
+        },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -46808,6 +46856,107 @@ fn main() -> i64 {
                 );
             }
         }
+    }
+
+    #[test]
+    fn direct_typed_ir_list_indexes_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn direct(values: i64[], at: i64) -> i64 {
+    return values[at]
+}
+
+fn optional(values: i64[]?, at: i64) -> i64? {
+    return values?[at]
+}
+
+fn temporary(at: i64) -> i64 {
+    return [1, 2][at]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list index IR fixture should typecheck");
+
+        for (function, expected_optional) in [("direct", false), ("optional", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("list index CFG should exist");
+            let index = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Index { optional, .. }
+                            if optional == expected_optional
+                    )
+                })
+                .expect("typed IR should retain the list index");
+            let facts = cfg_rewrite_facts(graph);
+            assert!(matches!(
+                facts.scalar_exprs.get(&source_span_key(index.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Index { optional, .. },
+                    ..
+                }) if *optional == expected_optional
+            ));
+
+            let fake = Expr {
+                line: index.span.line,
+                span: index.span,
+                kind: ExprKind::Str("checked-ast-index".to_string()),
+            };
+            let list_ty = Type::List(Box::new(Type::I64));
+            let expected = if expected_optional {
+                Type::Optional(Box::new(Type::I64))
+            } else {
+                Type::I64
+            };
+            let values_ty = if expected_optional {
+                Type::Optional(Box::new(list_ty))
+            } else {
+                list_ty
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &HashMap::from([
+                    ("values".to_string(), values_ty),
+                    ("at".to_string(), Type::I64),
+                ]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic list index should emit from typed IR");
+
+            assert!(emitted.contains(&local_c_name("values")));
+            assert!(emitted.contains(&local_c_name("at")));
+            assert!(emitted.contains("flux_list_at("));
+            assert!(!emitted.contains("checked-ast-index"));
+            if expected_optional {
+                assert!(emitted.contains("flux__optional_index_base.has_value"));
+            }
+        }
+
+        let temporary = database
+            .control_flow_graph("temporary")
+            .expect("temporary list index CFG should exist");
+        let index = temporary
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
+            .expect("temporary list index should have typed IR");
+        let facts = cfg_rewrite_facts(temporary);
+        assert!(
+            !facts
+                .scalar_exprs
+                .contains_key(&source_span_key(index.span)),
+            "borrowed temporary list bases should retain checked-AST lowering"
+        );
     }
 
     #[test]
