@@ -36163,6 +36163,8 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.checked_i64_cfg_proofs,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
@@ -39580,6 +39582,8 @@ fn emit_list_builder_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
@@ -39610,9 +39614,21 @@ fn emit_list_builder_binding(
             ExprKind::ListSpread {
                 value, optional, ..
             } => {
-                let spread = emit_expr(value, env, signatures)?;
+                let spread_ty = if *optional {
+                    Type::Optional(Box::new(Type::List(element.clone())))
+                } else {
+                    Type::List(element.clone())
+                };
+                let spread = emit_expr_for_expected_with_cfg_proofs(
+                    value,
+                    &spread_ty,
+                    env,
+                    signatures,
+                    proofs,
+                    rewrite_facts,
+                )?;
                 if *optional {
-                    let optional_ty = signatures.canonical_type(&spread.ty);
+                    let optional_ty = signatures.canonical_type(&spread_ty);
                     let Type::Optional(inner) = &optional_ty else {
                         return Err(diag(
                             value.span,
@@ -39629,7 +39645,7 @@ fn emit_list_builder_binding(
                     *temp_counter += 1;
                     out.push_str(&format!(
                         "{pad}{} {source_name} = {};\n{pad}if ({source_name}.has_value) {{ if (SIZE_MAX - {capacity_name} < {source_name}.value.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} {capacity_name} += {source_name}.value.len; }}\n",
-                        c_type(&optional_ty, signatures), spread.code
+                        c_type(&optional_ty, signatures), spread
                     ));
                     buffered_items.push(BufferedListItem::OptionalSpread(source_name));
                 } else {
@@ -39637,7 +39653,7 @@ fn emit_list_builder_binding(
                     *temp_counter += 1;
                     out.push_str(&format!(
                         "{pad}struct flux__list {source_name} = {};\n",
-                        spread.code
+                        spread
                     ));
                     out.push_str(&format!(
                         "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
@@ -39646,8 +39662,16 @@ fn emit_list_builder_binding(
                 }
             }
             ExprKind::ListOptional { value, .. } => {
-                let optional = emit_expr(value, env, signatures)?;
-                let optional_ty = signatures.canonical_type(&optional.ty);
+                let optional_ty = Type::Optional(element.clone());
+                let optional = emit_expr_for_expected_with_cfg_proofs(
+                    value,
+                    &optional_ty,
+                    env,
+                    signatures,
+                    proofs,
+                    rewrite_facts,
+                )?;
+                let optional_ty = signatures.canonical_type(&optional_ty);
                 let Type::Optional(inner) = &optional_ty else {
                     return Err(diag(
                         value.span,
@@ -39664,7 +39688,7 @@ fn emit_list_builder_binding(
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}{} {optional_name} = {};\n{pad}if ({optional_name}.has_value) {{ if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} ++{capacity_name}; }}\n",
-                    c_type(&optional_ty, signatures), optional.code
+                    c_type(&optional_ty, signatures), optional
                 ));
                 buffered_items.push(BufferedListItem::Optional(optional_name));
             }
@@ -39685,25 +39709,44 @@ fn emit_list_builder_binding(
                         else_value.as_deref()
                     };
                     if let Some(selected) = selected {
-                        let selected = emit_expr(selected, env, signatures)?;
+                        let selected = emit_expr_for_expected_with_cfg_proofs(
+                            selected,
+                            element,
+                            env,
+                            signatures,
+                            proofs,
+                            rewrite_facts,
+                        )?;
                         let value_name = format!("flux__list_build_value_{}", *temp_counter);
                         *temp_counter += 1;
                         out.push_str(&format!(
                             "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
-                            selected.code
+                            selected
                         ));
                         buffered_items.push(BufferedListItem::Scalar(value_name));
                     }
                     continue;
                 }
-                let condition_expr = emit_expr(condition, env, signatures)?;
+                let condition_ty = if binding.is_some() {
+                    type_of_expr(condition, env, signatures)?
+                } else {
+                    Type::Bool
+                };
+                let condition_expr = emit_expr_for_expected_with_cfg_proofs(
+                    condition,
+                    &condition_ty,
+                    env,
+                    signatures,
+                    proofs,
+                    rewrite_facts,
+                )?;
                 let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
                 *temp_counter += 1;
                 let value_name = format!("flux__list_build_value_{}", *temp_counter);
                 *temp_counter += 1;
                 let mut guarded_env = env.clone();
                 if let Some(binding) = binding {
-                    let optional_ty = signatures.canonical_type(&condition_expr.ty);
+                    let optional_ty = signatures.canonical_type(&condition_ty);
                     let Type::Optional(inner) = &optional_ty else {
                         return Err(diag(
                             condition.span,
@@ -39714,7 +39757,7 @@ fn emit_list_builder_binding(
                     *temp_counter += 1;
                     out.push_str(&format!(
                         "{pad}{} {optional_name} = {};\n{pad}bool {condition_name} = {optional_name}.has_value;\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n",
-                        c_type(&optional_ty, signatures), condition_expr.code
+                        c_type(&optional_ty, signatures), condition_expr
                     ));
                     if binding.name != "_" {
                         out.push_str(&format!(
@@ -39727,21 +39770,35 @@ fn emit_list_builder_binding(
                 } else {
                     out.push_str(&format!(
                         "{pad}bool {condition_name} = {};\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n",
-                        condition_expr.code
+                        condition_expr
                     ));
                 }
-                let then_value = emit_expr(value, &guarded_env, signatures)?;
-                out.push_str(&format!("{pad}    {value_name} = {};\n", then_value.code));
+                let then_value = emit_expr_for_expected_with_cfg_proofs(
+                    value,
+                    element,
+                    &guarded_env,
+                    signatures,
+                    proofs,
+                    rewrite_facts,
+                )?;
+                out.push_str(&format!("{pad}    {value_name} = {};\n", then_value));
                 if else_value.is_none() {
                     out.push_str(&format!(
                         "{pad}    if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}    ++{capacity_name};\n"
                     ));
                 }
                 if let Some(else_value) = else_value {
-                    let else_value = emit_expr(else_value, env, signatures)?;
+                    let else_value = emit_expr_for_expected_with_cfg_proofs(
+                        else_value,
+                        element,
+                        env,
+                        signatures,
+                        proofs,
+                        rewrite_facts,
+                    )?;
                     out.push_str(&format!(
                         "{pad}}} else {{\n{pad}    {value_name} = {};\n{pad}}}\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
-                        else_value.code
+                        else_value
                     ));
                 } else {
                     out.push_str(&format!("{pad}}}\n"));
@@ -39753,12 +39810,19 @@ fn emit_list_builder_binding(
                 });
             }
             _ => {
-                let value = emit_expr(item, env, signatures)?;
+                let value = emit_expr_for_expected_with_cfg_proofs(
+                    item,
+                    element,
+                    env,
+                    signatures,
+                    proofs,
+                    rewrite_facts,
+                )?;
                 let value_name = format!("flux__list_build_value_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}{element_c} {value_name} = {};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n",
-                    value.code
+                    value
                 ));
                 buffered_items.push(BufferedListItem::Scalar(value_name));
             }
@@ -45329,6 +45393,96 @@ mod cfg_rewrite_fact_tests {
             span: SourceSpan::new(line, column, 1).with_source(SourceId::new(4242)),
             kind: ExprKind::Int(value),
         }
+    }
+
+    #[test]
+    fn list_builder_children_use_typed_ir_rewrite_facts() {
+        let source = SourceId::new(4243);
+        let scalar_span = SourceSpan::new(1, 2, 4).with_source(source);
+        let optional_value_span = SourceSpan::new(1, 8, 5).with_source(source);
+        let optional_item_span = SourceSpan::new(1, 8, 6).with_source(source);
+        let condition_span = SourceSpan::new(1, 16, 4).with_source(source);
+        let then_span = SourceSpan::new(1, 24, 4).with_source(source);
+        let else_span = SourceSpan::new(1, 32, 4).with_source(source);
+        let list_span = SourceSpan::new(1, 1, 40).with_source(source);
+        let unusable = |span| Expr {
+            line: 1,
+            span,
+            kind: ExprKind::Str("checked-ast-child".to_string()),
+        };
+        let list = Expr {
+            line: 1,
+            span: list_span,
+            kind: ExprKind::List(vec![
+                unusable(scalar_span),
+                Expr {
+                    line: 1,
+                    span: optional_item_span,
+                    kind: ExprKind::ListOptional {
+                        value: Box::new(unusable(optional_value_span)),
+                        question_span: SourceSpan::new(1, 13, 1).with_source(source),
+                    },
+                },
+                Expr {
+                    line: 1,
+                    span: SourceSpan::new(1, 15, 22).with_source(source),
+                    kind: ExprKind::ListIf {
+                        condition: Box::new(unusable(condition_span)),
+                        binding: None,
+                        value: Box::new(unusable(then_span)),
+                        else_value: Some(Box::new(unusable(else_span))),
+                        if_span: SourceSpan::new(1, 15, 2).with_source(source),
+                        else_span: Some(SourceSpan::new(1, 29, 4).with_source(source)),
+                    },
+                },
+            ]),
+        };
+        let mut facts = CfgRewriteFacts::default();
+        for (span, ty, name) in [
+            (scalar_span, Type::I64, "value"),
+            (
+                optional_value_span,
+                Type::Optional(Box::new(Type::I64)),
+                "maybe",
+            ),
+            (condition_span, Type::Bool, "enabled"),
+            (then_span, Type::I64, "value"),
+            (else_span, Type::I64, "fallback"),
+        ] {
+            facts.scalar_exprs.insert(
+                source_span_key(span),
+                CfgScalarExpr {
+                    ty,
+                    kind: CfgScalarExprKind::Name(name.to_string()),
+                },
+            );
+        }
+        let mut env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("maybe".to_string(), Type::Optional(Box::new(Type::I64))),
+            ("enabled".to_string(), Type::Bool),
+            ("fallback".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("values", &Type::List(Box::new(Type::I64))),
+            &list,
+            &mut env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("list builder children should emit from typed IR facts");
+
+        assert!(out.contains(&local_c_name("value")));
+        assert!(out.contains(&local_c_name("maybe")));
+        assert!(out.contains(&local_c_name("enabled")));
+        assert!(out.contains(&local_c_name("fallback")));
+        assert!(!out.contains("checked-ast-child"));
     }
 
     #[test]
