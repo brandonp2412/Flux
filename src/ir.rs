@@ -2834,10 +2834,11 @@ impl ControlFlowGraph {
                 ControlFlowValueKind::Literal => true,
                 ControlFlowValueKind::NameRead { definitions, .. } => {
                     !definitions.is_empty()
-                        && definitions.iter().all(|definition| {
-                            graph
+                        && definitions.iter().all(|definition| match definition {
+                            ControlFlowDefinitionId::Parameter(_) => true,
+                            _ => graph
                                 .definition_value(*definition)
-                                .is_some_and(|value| visit(graph, value, visiting))
+                                .is_some_and(|value| visit(graph, value, visiting)),
                         })
                 }
                 ControlFlowValueKind::Unary { operand, .. } => visit(graph, *operand, visiting),
@@ -7593,9 +7594,20 @@ fn propagate_definition_constants(
             .iter()
             .map(|value| value.constant.clone())
             .collect::<Vec<_>>();
+        let name_reads = values
+            .iter()
+            .map(|value| match &value.kind {
+                ControlFlowValueKind::NameRead { name, definitions } if !definitions.is_empty() => {
+                    Some((name.clone(), definitions.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut changed = false;
         for value in values.iter_mut().filter(|value| value.constant.is_none()) {
-            if let Some(constant) = propagated_ir_constant(value, &constants, definition_values) {
+            if let Some(constant) =
+                propagated_ir_constant(value, &constants, definition_values, &name_reads)
+            {
                 value.constant = Some(constant);
                 changed = true;
             }
@@ -7606,10 +7618,25 @@ fn propagate_definition_constants(
     }
 }
 
+fn same_definition_scoped_name_read(
+    left: ControlFlowValueId,
+    right: ControlFlowValueId,
+    name_reads: &[Option<(String, Vec<ControlFlowDefinitionId>)>],
+) -> bool {
+    matches!(
+        (name_reads.get(left.0), name_reads.get(right.0)),
+        (
+            Some(Some((left_name, left_definitions))),
+            Some(Some((right_name, right_definitions)))
+        ) if left_name == right_name && left_definitions == right_definitions
+    )
+}
+
 fn propagated_ir_constant(
     value: &ControlFlowValue,
     constants: &[Option<ConstantValue>],
     definition_values: &BTreeMap<ControlFlowDefinitionId, ControlFlowValueId>,
+    name_reads: &[Option<(String, Vec<ControlFlowDefinitionId>)>],
 ) -> Option<ConstantValue> {
     match &value.kind {
         ControlFlowValueKind::NameRead { definitions, .. } => {
@@ -7641,6 +7668,20 @@ fn propagated_ir_constant(
             }
         }
         ControlFlowValueKind::Binary { op, left, right } => {
+            // Keep reflexive scalar comparison proofs in normalized IR instead of
+            // relying on a backend AST reduction. Definition identity matters
+            // here: same-spelled shadowed bindings are not interchangeable.
+            if same_definition_scoped_name_read(*left, *right, name_reads) {
+                match op {
+                    BinOp::Eq | BinOp::Le | BinOp::Ge => {
+                        return Some(ConstantValue::Bool(true));
+                    }
+                    BinOp::Ne | BinOp::Lt | BinOp::Gt => {
+                        return Some(ConstantValue::Bool(false));
+                    }
+                    _ => {}
+                }
+            }
             let left_constant = constants.get(left.0)?.clone();
             // A short-circuiting left operand can determine the result even
             // when the right operand is dynamic.  Keep this proof in the
@@ -8555,6 +8596,84 @@ mod tests {
             super::ControlFlowGraph::decode_persisted(&truncated).is_none(),
             "truncated CFG payloads must be rejected"
         );
+    }
+
+    #[test]
+    fn scalar_comparison_constants_use_definition_identity() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"fn lessSelf(value: i64) -> bool {
+    return value < value
+}
+
+fn equalTextSelf(value: str) -> bool {
+    return value == value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("scalar identity fixture should analyze");
+
+        let less = database
+            .control_flow_graph("lessSelf")
+            .expect("lessSelf CFG should exist");
+        let less_value = less
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    super::ControlFlowValueKind::Binary {
+                        op: crate::ast::BinOp::Lt,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain the comparison");
+        assert_eq!(
+            less.proven_scalar_constant(less_value.id),
+            Some(&crate::typecheck::ConstantValue::Bool(false))
+        );
+
+        let equal = database
+            .control_flow_graph("equalTextSelf")
+            .expect("equalTextSelf CFG should exist");
+        let equal_value = equal
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    super::ControlFlowValueKind::Binary {
+                        op: crate::ast::BinOp::Eq,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain the equality");
+        assert_eq!(
+            equal.proven_scalar_constant(equal_value.id),
+            Some(&crate::typecheck::ConstantValue::Bool(true))
+        );
+
+        let same_name_different_definitions = vec![
+            Some((
+                "value".to_string(),
+                vec![super::ControlFlowDefinitionId::Parameter(0)],
+            )),
+            Some((
+                "value".to_string(),
+                vec![super::ControlFlowDefinitionId::Parameter(1)],
+            )),
+        ];
+        assert!(!super::same_definition_scoped_name_read(
+            super::ControlFlowValueId(0),
+            super::ControlFlowValueId(1),
+            &same_name_different_definitions,
+        ));
     }
 
     #[test]
