@@ -34124,7 +34124,10 @@ fn cfg_direct_scalar_expr(
             }
         }
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
-            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) =>
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) =>
         {
             CfgScalarExprKind::Binary {
                 op: *op,
@@ -44899,12 +44902,22 @@ fn emit_cfg_scalar_expr(
         CfgScalarExprKind::Binary { op, left, right } => {
             let left_ty = signatures.canonical_type(&left.ty);
             let right_ty = signatures.canonical_type(&right.ty);
-            if ty != Type::Bool || left_ty != Type::I64 || right_ty != Type::I64 {
+            if ty != Type::Bool || left_ty != right_ty {
                 return None;
             }
             let left = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
             let right = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
-            Some(format!("({left} {} {right})", c_operator(*op)))
+            match (op, left_ty) {
+                (BinOp::Eq, Type::Str) => Some(format!("(strcmp({left}, {right}) == 0)")),
+                (BinOp::Ne, Type::Str) => Some(format!("(strcmp({left}, {right}) != 0)")),
+                (BinOp::Eq | BinOp::Ne, Type::I64 | Type::Bool) => {
+                    Some(format!("({left} {} {right})", c_operator(*op)))
+                }
+                (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::I64) => {
+                    Some(format!("({left} {} {right})", c_operator(*op)))
+                }
+                _ => None,
+            }
         }
     }
 }
@@ -45441,6 +45454,15 @@ fn main() -> i64 {
 fn less(value: i64, limit: i64) -> bool {
     return value < limit
 }
+fn equalInt(left: i64, right: i64) -> bool {
+    return left == right
+}
+fn equalBool(left: bool, right: bool) -> bool {
+    return left != right
+}
+fn equalText(left: str, right: str) -> bool {
+    return left == right
+}
 fn negate(value: i64) -> i64 {
     return -value
 }
@@ -45487,6 +45509,70 @@ fn main() -> i64 {
             emitted,
             format!("({} < {})", local_c_name("value"), local_c_name("limit"))
         );
+
+        for (function, op, expected) in [
+            (
+                "equalInt",
+                BinOp::Eq,
+                format!("({} == {})", local_c_name("left"), local_c_name("right")),
+            ),
+            (
+                "equalBool",
+                BinOp::Ne,
+                format!("({} != {})", local_c_name("left"), local_c_name("right")),
+            ),
+            (
+                "equalText",
+                BinOp::Eq,
+                format!(
+                    "(strcmp({}, {}) == 0)",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("equality CFG should exist");
+            let comparison = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: actual,
+                            ..
+                        } if actual == op
+                    )
+                })
+                .expect("typed IR should retain the dynamic equality");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_comparison = Expr {
+                line: comparison.span.line,
+                span: comparison.span,
+                kind: ExprKind::Bool(false),
+            };
+            let parameter_ty = match function {
+                "equalInt" => Type::I64,
+                "equalBool" => Type::Bool,
+                "equalText" => Type::Str,
+                _ => unreachable!(),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_comparison,
+                &Type::Bool,
+                &HashMap::from([
+                    ("left".to_string(), parameter_ty.clone()),
+                    ("right".to_string(), parameter_ty),
+                ]),
+                &Signatures::default(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic equality should emit from typed IR");
+            assert_eq!(emitted, expected);
+        }
 
         let negate = database
             .control_flow_graph("negate")
