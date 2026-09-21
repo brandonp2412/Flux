@@ -46192,8 +46192,8 @@ fn buildRecord(left: i64, right: i64) -> i64 {
     return value.left + value.right
 }
 
-fn buildMaybePair(value: i64) -> MaybePair {
-    return MaybePair { left: value + 1, right: value, missing: none }
+fn buildMaybePair(value: i64, wrapped: i64?) -> MaybePair {
+    return MaybePair { left: value + 1, right: wrapped, missing: none }
 }
 
 fn buildMap(value: i64) -> i64 {
@@ -46214,6 +46214,7 @@ fn main() -> i64 {
             ("right".to_string(), Type::I64),
             ("base".to_string(), Type::Named("Pair".to_string())),
             ("value".to_string(), Type::I64),
+            ("wrapped".to_string(), Type::Optional(Box::new(Type::I64))),
         ]);
 
         let pair_graph = database
@@ -46448,6 +46449,7 @@ fn main() -> i64 {
         assert!(maybe_code.contains(".has_value = false"));
         assert!(maybe_code.contains(".value ="));
         assert!(maybe_code.contains(&local_c_name("value")));
+        assert!(maybe_code.contains(&local_c_name("wrapped")));
         assert!(maybe_code.contains("flux_add_i64"));
 
         let map_graph = database
