@@ -34123,13 +34123,27 @@ fn cfg_direct_scalar_expr(
                 operand: Box::new(cfg_scalar_leaf(cfg, *operand)?),
             }
         }
-        crate::ir::ControlFlowValueKind::Binary { op, left, right }
-            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) =>
-        {
+        crate::ir::ControlFlowValueKind::Binary { op, left, right } => {
+            let left = cfg_scalar_leaf(cfg, *left)?;
+            let right = cfg_scalar_leaf(cfg, *right)?;
+            let direct_dynamic_pair = matches!(
+                (&left.kind, &right.kind),
+                (CfgScalarExprKind::Name(left), CfgScalarExprKind::Name(right))
+                    if left != right
+            );
+            if !matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                && !(direct_dynamic_pair
+                    && matches!(
+                        op,
+                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Eq | BinOp::Ne
+                    ))
+            {
+                return None;
+            }
             CfgScalarExprKind::Binary {
                 op: *op,
-                left: Box::new(cfg_scalar_leaf(cfg, *left)?),
-                right: Box::new(cfg_scalar_leaf(cfg, *right)?),
+                left: Box::new(left),
+                right: Box::new(right),
             }
         }
         _ => return None,
@@ -44899,12 +44913,43 @@ fn emit_cfg_scalar_expr(
         CfgScalarExprKind::Binary { op, left, right } => {
             let left_ty = signatures.canonical_type(&left.ty);
             let right_ty = signatures.canonical_type(&right.ty);
-            if ty != Type::Bool || left_ty != Type::I64 || right_ty != Type::I64 {
-                return None;
+            let left_code = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
+            let right_code = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
+            match op {
+                BinOp::Add if ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+                    Some(format!("flux_add_i64({left_code}, {right_code})"))
+                }
+                BinOp::Sub if ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+                    Some(format!("flux_sub_i64({left_code}, {right_code})"))
+                }
+                BinOp::Mul if ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+                    Some(format!("flux_mul_i64({left_code}, {right_code})"))
+                }
+                BinOp::Div if ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+                    Some(format!("flux_div_i64({left_code}, {right_code})"))
+                }
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                    if ty == Type::Bool && left_ty == Type::I64 && right_ty == Type::I64 =>
+                {
+                    Some(format!("({left_code} {} {right_code})", c_operator(*op)))
+                }
+                BinOp::Eq | BinOp::Ne
+                    if ty == Type::Bool && left_ty == right_ty && left_ty == Type::Str =>
+                {
+                    let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+                    Some(format!(
+                        "(strcmp({left_code}, {right_code}) {comparator} 0)"
+                    ))
+                }
+                BinOp::Eq | BinOp::Ne
+                    if ty == Type::Bool
+                        && left_ty == right_ty
+                        && matches!(left_ty, Type::I64 | Type::Bool) =>
+                {
+                    Some(format!("({left_code} {} {right_code})", c_operator(*op)))
+                }
+                _ => None,
             }
-            let left = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
-            let right = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
-            Some(format!("({left} {} {right})", c_operator(*op)))
         }
     }
 }
