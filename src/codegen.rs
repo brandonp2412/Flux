@@ -34099,6 +34099,11 @@ enum CfgScalarExprKind {
         name: String,
         arguments: Vec<CfgScalarExpr>,
     },
+    OptionalCascadeCall {
+        optional: Box<CfgScalarExpr>,
+        callee: String,
+        arguments: Vec<CfgScalarExpr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34335,7 +34340,8 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
     match &expr.kind {
         CfgScalarExprKind::Call { .. }
         | CfgScalarExprKind::NamedCall { .. }
-        | CfgScalarExprKind::QualifiedCall { .. } => true,
+        | CfgScalarExprKind::QualifiedCall { .. }
+        | CfgScalarExprKind::OptionalCascadeCall { .. } => true,
         CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
         CfgScalarExprKind::Binary { left, right, .. } => {
             cfg_scalar_expr_contains_call(left) || cfg_scalar_expr_contains_call(right)
@@ -34486,6 +34492,18 @@ fn cfg_direct_scalar_expr(
         } => CfgScalarExprKind::QualifiedCall {
             namespace: interface.clone(),
             name: capability.clone(),
+            arguments: arguments
+                .iter()
+                .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        },
+        crate::ir::ControlFlowValueKind::OptionalCascadeCall {
+            optional,
+            callee,
+            arguments,
+        } => CfgScalarExprKind::OptionalCascadeCall {
+            optional: Box::new(cfg_direct_scalar_expr(cfg, *optional)?),
+            callee: callee.clone(),
             arguments: arguments
                 .iter()
                 .map(|id| cfg_direct_scalar_expr(cfg, *id))
@@ -45605,6 +45623,17 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
             named_args: Vec::new(),
         },
+        CfgScalarExprKind::OptionalCascadeCall {
+            optional,
+            callee,
+            arguments,
+        } => ExprKind::Pipe {
+            input: Box::new(cfg_scalar_expr_as_ast(optional)),
+            name: callee.clone(),
+            name_span: span,
+            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            optional: true,
+        },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -45650,6 +45679,18 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         CfgScalarExprKind::QualifiedCall { arguments, .. } => arguments
             .iter()
             .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
+        CfgScalarExprKind::OptionalCascadeCall {
+            optional,
+            callee,
+            arguments,
+        } => {
+            let implementation = crate::builtin_names::global_impl(callee);
+            signatures.get(implementation).is_some()
+                && cfg_scalar_expr_calls_are_reconstructable(optional, signatures)
+                && arguments
+                    .iter()
+                    .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures))
+        }
         CfgScalarExprKind::Unary { operand, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(operand, signatures)
         }
@@ -47937,6 +47978,10 @@ fn qualifiedCall(value: i64) -> i64 {
     return time.utcYear(value)
 }
 
+fn optionalCall(value: i64?) -> i64? {
+    return value ?.. add(1)
+}
+
 interface Measure {
     fn apply(value: i64) -> i64
 }
@@ -48138,6 +48183,41 @@ fn main() -> i64 {
             emitted,
             format!("flux__time_utc_part({}, 0)", local_c_name("value"))
         );
+
+        let optional = database
+            .control_flow_graph("optionalCall")
+            .expect("optional-cascade CFG should exist");
+        let call = optional
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall {
+                        callee,
+                        ..
+                    } if callee == "add"
+                )
+            })
+            .expect("optional cascade should retain typed IR");
+        let facts = cfg_rewrite_facts(optional);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("optional cascade should have reconstructable value facts");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::OptionalCascadeCall { callee, .. } if callee == "add"
+        ));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::Optional(Box::new(Type::I64)),
+            &HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]),
+            database.signatures(),
+        )
+        .expect("optional cascade should emit from typed IR");
+        assert!(emitted.contains("flux__optional_cascade_input_"));
+        assert!(emitted.contains(&function_c_name("add")));
 
         let interface = database
             .control_flow_graph("interfaceCall")
