@@ -34069,6 +34069,12 @@ enum CfgScalarExprKind {
         index: Box<CfgScalarExpr>,
         optional: bool,
     },
+    Slice {
+        base: Box<CfgScalarExpr>,
+        start: Option<Box<CfgScalarExpr>>,
+        end: Option<Box<CfgScalarExpr>>,
+        step: Option<Box<CfgScalarExpr>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34151,7 +34157,10 @@ fn cfg_literal_aggregate_value(
                     .collect::<Option<Vec<_>>>()?,
             }
         }
-        _ => return cfg_direct_scalar_expr(cfg, id).map(CfgAggregateValue::Direct),
+        _ if value.ownership.is_copy() => {
+            return cfg_direct_scalar_expr(cfg, id).map(CfgAggregateValue::Direct);
+        }
+        _ => return None,
     };
     Some(CfgAggregateValue::Aggregate(Box::new(
         CfgAggregateConstant {
@@ -34212,6 +34221,29 @@ fn cfg_borrowed_index_base(
     })
 }
 
+fn cfg_borrowed_list_base(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id)
+        || !value.ownership.is_borrow()
+        || !matches!(&value.ty, Type::List(_))
+    {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
+        return None;
+    };
+    if definitions.is_empty() {
+        return None;
+    }
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind: CfgScalarExprKind::Name(name.clone()),
+    })
+}
+
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34220,7 +34252,32 @@ fn cfg_direct_scalar_expr(
         return Some(leaf);
     }
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    if let crate::ir::ControlFlowValueKind::Slice {
+        base,
+        start,
+        end,
+        step,
+    } = &value.kind
+        && value.ownership.is_borrow()
+    {
+        let direct_bound = |id: &Option<crate::ir::ControlFlowValueId>| match id {
+            Some(id) => Some(Some(Box::new(cfg_direct_scalar_expr(cfg, *id)?))),
+            None => Some(None),
+        };
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Slice {
+                base: Box::new(cfg_borrowed_list_base(cfg, *base)?),
+                start: direct_bound(start)?,
+                end: direct_bound(end)?,
+                step: direct_bound(step)?,
+            },
+        });
+    }
+    if !value.ownership.is_copy() {
         return None;
     }
     let kind = match &value.kind {
@@ -45276,6 +45333,17 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             index: Box::new(cfg_scalar_expr_as_ast(index)),
             optional: *optional,
         },
+        CfgScalarExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => ExprKind::Slice {
+            base: Box::new(cfg_scalar_expr_as_ast(base)),
+            start: start.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
+            end: end.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
+            step: step.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
+        },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
             expr: Box::new(cfg_scalar_expr_as_ast(operand)),
@@ -47053,6 +47121,87 @@ fn main() -> i64 {
                 .scalar_exprs
                 .contains_key(&source_span_key(index.span)),
             "borrowed temporary map bases should retain checked-AST lowering"
+        );
+    }
+
+    #[test]
+    fn direct_typed_ir_list_slices_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn direct(values: i64[], start: i64, end: i64, step: i64) -> i64 {
+    let view: i64[] = values[start:end:step]
+    return view.length
+}
+
+fn temporary(start: i64, end: i64) -> i64 {
+    let view: i64[] = [1, 2, 3][start:end]
+    return view.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list slice IR fixture should typecheck");
+
+        let graph = database
+            .control_flow_graph("direct")
+            .expect("list slice CFG should exist");
+        let slice = graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
+            .expect("typed IR should retain the list slice");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(slice.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Slice { .. },
+                ..
+            })
+        ));
+
+        let fake = Expr {
+            line: slice.span.line,
+            span: slice.span,
+            kind: ExprKind::Str("checked-ast-slice".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::List(Box::new(Type::I64)),
+            &HashMap::from([
+                ("values".to_string(), Type::List(Box::new(Type::I64))),
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+                ("step".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("dynamic list slice should emit from typed IR");
+
+        assert!(emitted.contains("flux_list_slice("));
+        assert!(emitted.contains(&local_c_name("values")));
+        assert!(emitted.contains(&local_c_name("start")));
+        assert!(emitted.contains(&local_c_name("end")));
+        assert!(emitted.contains(&local_c_name("step")));
+        assert!(!emitted.contains("checked-ast-slice"));
+
+        let temporary = database
+            .control_flow_graph("temporary")
+            .expect("temporary list slice CFG should exist");
+        let slice = temporary
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
+            .expect("temporary list slice should have typed IR");
+        let facts = cfg_rewrite_facts(temporary);
+        assert!(
+            !facts
+                .scalar_exprs
+                .contains_key(&source_span_key(slice.span)),
+            "borrowed temporary list bases should retain checked-AST slice lowering"
         );
     }
 
