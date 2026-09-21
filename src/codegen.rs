@@ -44765,6 +44765,22 @@ fn emit_cfg_aggregate_value(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<String> {
+    let canonical_expected = signatures.canonical_type(expected);
+    if let Type::Optional(inner) = &canonical_expected {
+        let actual = match value {
+            CfgAggregateValue::Scalar(constant) => signatures.canonical_type(&constant.ty()),
+            CfgAggregateValue::Direct(expr) => signatures.canonical_type(&expr.ty),
+            CfgAggregateValue::Aggregate(aggregate) => signatures.canonical_type(&aggregate.ty),
+        };
+        if actual == signatures.canonical_type(inner) {
+            let rendered = emit_cfg_aggregate_value(value, inner, env, signatures)?;
+            return Some(format!(
+                "({}){{ .has_value = true, .value = {rendered} }}",
+                c_type(&canonical_expected, signatures)
+            ));
+        }
+    }
+
     match value {
         CfgAggregateValue::Scalar(constant)
             if signatures.canonical_type(&constant.ty()) == signatures.canonical_type(expected) =>
@@ -46136,6 +46152,11 @@ struct Pair {
     right: i64
 }
 
+struct MaybePair {
+    left: i64?
+    right: i64?
+}
+
 fn buildPair(left: i64, right: i64) -> Pair {
     return Pair { left: left + 1, right: right }
 }
@@ -46152,6 +46173,10 @@ fn buildList(left: i64, right: i64) -> i64 {
 fn buildRecord(left: i64, right: i64) -> i64 {
     let value: (left: i64, right: i64) = (left: left + 1, right: right)
     return value.left + value.right
+}
+
+fn buildMaybePair(value: i64) -> MaybePair {
+    return MaybePair { left: value + 1, right: value }
 }
 
 fn buildMap(value: i64) -> i64 {
@@ -46356,6 +46381,52 @@ fn main() -> i64 {
         assert!(record_code.contains(&local_c_name("right")));
         assert!(record_code.contains(&record_field_c_name(Some("left"), 0)));
         assert!(record_code.contains(&record_field_c_name(Some("right"), 1)));
+
+        let maybe_graph = database
+            .control_flow_graph("buildMaybePair")
+            .expect("optional Pair CFG should exist");
+        let maybe_value = maybe_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral { name, .. }
+                        if name == "MaybePair"
+                )
+            })
+            .expect("typed IR should retain the optional-field Pair literal");
+        let maybe_facts = cfg_rewrite_facts(maybe_graph);
+        let maybe_aggregate = maybe_facts
+            .aggregate_constants
+            .get(&source_span_key(maybe_value.span))
+            .expect("optional-field Pair should produce a direct aggregate fact");
+        let CfgAggregateConstantKind::Struct { fields, .. } = &maybe_aggregate.kind else {
+            panic!("optional-field Pair fact should remain a typed struct");
+        };
+        assert!(
+            fields
+                .iter()
+                .all(|(_, value)| matches!(value, CfgAggregateValue::Direct(_)))
+        );
+        let fake_maybe = Expr {
+            line: maybe_value.span.line,
+            span: maybe_value.span,
+            kind: ExprKind::Int(0),
+        };
+        let maybe_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_maybe,
+            &Type::Named("MaybePair".to_string()),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &maybe_facts,
+        )
+        .expect("present optional fields should emit entirely from typed IR");
+        assert!(maybe_code.contains(".has_value = true"));
+        assert!(maybe_code.contains(".value ="));
+        assert!(maybe_code.contains(&local_c_name("value")));
+        assert!(maybe_code.contains("flux_add_i64"));
 
         let map_graph = database
             .control_flow_graph("buildMap")
