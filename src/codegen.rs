@@ -33999,11 +33999,33 @@ struct CfgAggregateConstant {
     kind: CfgAggregateConstantKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgScalarExprKind {
+    Name(String),
+    Constant(ConstantValue),
+    Unary {
+        op: UnaryOp,
+        operand: Box<CfgScalarExpr>,
+    },
+    Binary {
+        op: BinOp,
+        left: Box<CfgScalarExpr>,
+        right: Box<CfgScalarExpr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CfgScalarExpr {
+    ty: Type,
+    kind: CfgScalarExprKind,
+}
+
 #[derive(Debug, Clone, Default)]
 struct CfgRewriteFacts {
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
+    scalar_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
 }
 
 fn cfg_literal_aggregate_value(
@@ -34053,6 +34075,69 @@ fn cfg_literal_aggregate_value(
             kind,
         },
     )))
+}
+
+fn cfg_scalar_leaf(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+        return None;
+    }
+    if let Some(constant) = cfg.proven_scalar_constant(id) {
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Constant(constant.clone()),
+        });
+    }
+    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
+        return None;
+    };
+    if definitions.is_empty() {
+        return None;
+    }
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind: CfgScalarExprKind::Name(name.clone()),
+    })
+}
+
+fn cfg_direct_scalar_expr(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    if let Some(leaf) = cfg_scalar_leaf(cfg, id) {
+        return Some(leaf);
+    }
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+        return None;
+    }
+    let kind = match &value.kind {
+        crate::ir::ControlFlowValueKind::Unary { op, operand }
+            if matches!(op, UnaryOp::Neg | UnaryOp::Not) =>
+        {
+            CfgScalarExprKind::Unary {
+                op: *op,
+                operand: Box::new(cfg_scalar_leaf(cfg, *operand)?),
+            }
+        }
+        crate::ir::ControlFlowValueKind::Binary { op, left, right }
+            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) =>
+        {
+            CfgScalarExprKind::Binary {
+                op: *op,
+                left: Box::new(cfg_scalar_leaf(cfg, *left)?),
+                right: Box::new(cfg_scalar_leaf(cfg, *right)?),
+            }
+        }
+        _ => return None,
+    };
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind,
+    })
 }
 
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
@@ -34189,10 +34274,35 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    let mut scalar_exprs = HashMap::new();
+    let mut ambiguous_scalar_exprs = HashSet::new();
+    for value in cfg
+        .values()
+        .iter()
+        .filter(|value| cfg.is_value_reachable(value.id))
+    {
+        let Some(scalar) = cfg_direct_scalar_expr(cfg, value.id) else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_scalar_exprs.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = scalar_exprs.get(&span) {
+            if existing != &scalar {
+                scalar_exprs.remove(&span);
+                ambiguous_scalar_exprs.insert(span);
+            }
+        } else {
+            scalar_exprs.insert(span, scalar);
+        }
+    }
+
     CfgRewriteFacts {
         constants,
         aggregates,
         aggregate_constants,
+        scalar_exprs,
     }
 }
 
@@ -44750,6 +44860,55 @@ fn emit_cfg_aggregate_constant(
     }
 }
 
+fn emit_cfg_scalar_expr(
+    expr: &CfgScalarExpr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    let ty = signatures.canonical_type(&expr.ty);
+    if ty != expected {
+        return None;
+    }
+    match &expr.kind {
+        CfgScalarExprKind::Constant(constant)
+            if signatures.canonical_type(&constant.ty()) == ty =>
+        {
+            Some(constant_c_value(constant))
+        }
+        CfgScalarExprKind::Constant(_) => None,
+        CfgScalarExprKind::Name(name)
+            if matches!(ty, Type::I64 | Type::Bool | Type::Str)
+                && env
+                    .get(name)
+                    .is_some_and(|local| signatures.canonical_type(local) == ty) =>
+        {
+            Some(local_c_name(name))
+        }
+        CfgScalarExprKind::Name(_) => None,
+        CfgScalarExprKind::Unary { op, operand } => {
+            let operand_ty = signatures.canonical_type(&operand.ty);
+            let operand = emit_cfg_scalar_expr(operand, &operand.ty, env, signatures)?;
+            match (op, &ty, operand_ty) {
+                (UnaryOp::Neg, Type::I64, Type::I64) => Some(format!("flux_neg_i64({operand})")),
+                (UnaryOp::Not, Type::Bool, Type::Bool) => Some(format!("(!{operand})")),
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::Binary { op, left, right } => {
+            let left_ty = signatures.canonical_type(&left.ty);
+            let right_ty = signatures.canonical_type(&right.ty);
+            if ty != Type::Bool || left_ty != Type::I64 || right_ty != Type::I64 {
+                return None;
+            }
+            let left = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
+            let right = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
+            Some(format!("({left} {} {right})", c_operator(*op)))
+        }
+    }
+}
+
 fn emit_expr_for_expected_with_cfg_proofs(
     expr: &Expr,
     expected: &Type,
@@ -44785,6 +44944,11 @@ fn emit_expr_for_expected_with_cfg_proofs(
                 format!("flux_div_nonzero_i64({}, {})", left.code, right.code)
             }
         });
+    }
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span)
+        && let Some(value) = emit_cfg_scalar_expr(scalar, expected, env, signatures)
+    {
+        return Ok(value);
     }
     let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     emit_expr_for_expected(&rewritten, expected, env, signatures)
@@ -45269,6 +45433,93 @@ fn main() -> i64 {
         let rendered = emit_cfg_aggregate_constant(&nested, &outer_ty, &Signatures::default())
             .expect("nested Copy record should render recursively");
         assert!(rendered.contains("INT64_C(42)"));
+    }
+
+    #[test]
+    fn direct_typed_ir_scalar_structure_bypasses_checked_ast_rebuild() {
+        let source = r#"
+fn less(value: i64, limit: i64) -> bool {
+    return value < limit
+}
+fn negate(value: i64) -> i64 {
+    return -value
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct scalar IR fixture should typecheck");
+
+        let less = database
+            .control_flow_graph("less")
+            .expect("less CFG should exist");
+        let comparison = less
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Lt, .. }
+                )
+            })
+            .expect("typed IR should retain the dynamic comparison");
+        let less_facts = cfg_rewrite_facts(less);
+        let fake_comparison = Expr {
+            line: comparison.span.line,
+            span: comparison.span,
+            kind: ExprKind::Bool(false),
+        };
+        let env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("limit".to_string(), Type::I64),
+        ]);
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_comparison,
+            &Type::Bool,
+            &env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &less_facts,
+        )
+        .expect("dynamic comparison should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!("({} < {})", local_c_name("value"), local_c_name("limit"))
+        );
+
+        let negate = database
+            .control_flow_graph("negate")
+            .expect("negate CFG should exist");
+        let negation = negate
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Unary {
+                        op: UnaryOp::Neg,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain checked negation");
+        let negate_facts = cfg_rewrite_facts(negate);
+        let fake_negation = Expr {
+            line: negation.span.line,
+            span: negation.span,
+            kind: ExprKind::Int(123),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_negation,
+            &Type::I64,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &negate_facts,
+        )
+        .expect("dynamic negation should emit from typed IR");
+        assert_eq!(emitted, format!("flux_neg_i64({})", local_c_name("value")));
     }
 
     #[test]
