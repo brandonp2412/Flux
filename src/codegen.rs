@@ -34478,6 +34478,19 @@ fn cfg_direct_scalar_expr(
                 .map(|id| cfg_direct_scalar_expr(cfg, *id))
                 .collect::<Option<Vec<_>>>()?,
         },
+        crate::ir::ControlFlowValueKind::InterfaceDispatch {
+            interface,
+            capability,
+            arguments,
+            ..
+        } => CfgScalarExprKind::QualifiedCall {
+            namespace: interface.clone(),
+            name: capability.clone(),
+            arguments: arguments
+                .iter()
+                .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        },
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
             if matches!(
                 op,
@@ -47924,6 +47937,26 @@ fn qualifiedCall(value: i64) -> i64 {
     return time.utcYear(value)
 }
 
+interface Measure {
+    fn apply(value: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn offsetApply(offset: Offset, value: i64) -> i64 {
+    return offset.amount + value
+}
+
+impl Measure for Offset {
+    apply: offsetApply
+}
+
+fn interfaceCall(offset: Offset, value: i64) -> i64 {
+    return Measure.apply(offset, value)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -48104,6 +48137,59 @@ fn main() -> i64 {
         assert_eq!(
             emitted,
             format!("flux__time_utc_part({}, 0)", local_c_name("value"))
+        );
+
+        let interface = database
+            .control_flow_graph("interfaceCall")
+            .expect("interface-call CFG should exist");
+        let call = interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "apply"
+                        && mapped_function.as_deref() == Some("offsetApply")
+                )
+            })
+            .expect("interface dispatch should retain typed IR");
+        let facts = cfg_rewrite_facts(interface);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("interface dispatch should have reconstructable value facts");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::QualifiedCall {
+                namespace,
+                name,
+                ..
+            } if namespace == "Measure" && name == "apply"
+        ));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([
+                ("offset".to_string(), Type::Named("Offset".to_string())),
+                ("value".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+        )
+        .expect("interface dispatch should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!(
+                "{}({}, {})",
+                function_c_name("offsetApply"),
+                local_c_name("offset"),
+                local_c_name("value")
+            )
         );
     }
 
