@@ -34126,7 +34126,16 @@ fn cfg_direct_scalar_expr(
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
             if matches!(
                 op,
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
             ) =>
         {
             CfgScalarExprKind::Binary {
@@ -44902,18 +44911,34 @@ fn emit_cfg_scalar_expr(
         CfgScalarExprKind::Binary { op, left, right } => {
             let left_ty = signatures.canonical_type(&left.ty);
             let right_ty = signatures.canonical_type(&right.ty);
-            if ty != Type::Bool || left_ty != right_ty {
+            if left_ty != right_ty {
                 return None;
             }
             let left = emit_cfg_scalar_expr(left, &left.ty, env, signatures)?;
             let right = emit_cfg_scalar_expr(right, &right.ty, env, signatures)?;
-            match (op, left_ty) {
-                (BinOp::Eq, Type::Str) => Some(format!("(strcmp({left}, {right}) == 0)")),
-                (BinOp::Ne, Type::Str) => Some(format!("(strcmp({left}, {right}) != 0)")),
-                (BinOp::Eq | BinOp::Ne, Type::I64 | Type::Bool) => {
+            match (op, ty, left_ty) {
+                (BinOp::Add, Type::I64, Type::I64) => {
+                    Some(format!("flux_add_i64({left}, {right})"))
+                }
+                (BinOp::Sub, Type::I64, Type::I64) => {
+                    Some(format!("flux_sub_i64({left}, {right})"))
+                }
+                (BinOp::Mul, Type::I64, Type::I64) => {
+                    Some(format!("flux_mul_i64({left}, {right})"))
+                }
+                (BinOp::Div, Type::I64, Type::I64) => {
+                    Some(format!("flux_div_i64({left}, {right})"))
+                }
+                (BinOp::Eq, Type::Bool, Type::Str) => {
+                    Some(format!("(strcmp({left}, {right}) == 0)"))
+                }
+                (BinOp::Ne, Type::Bool, Type::Str) => {
+                    Some(format!("(strcmp({left}, {right}) != 0)"))
+                }
+                (BinOp::Eq | BinOp::Ne, Type::Bool, Type::I64 | Type::Bool) => {
                     Some(format!("({left} {} {right})", c_operator(*op)))
                 }
-                (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::I64) => {
+                (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, Type::Bool, Type::I64) => {
                     Some(format!("({left} {} {right})", c_operator(*op)))
                 }
                 _ => None,
@@ -45463,6 +45488,18 @@ fn equalBool(left: bool, right: bool) -> bool {
 fn equalText(left: str, right: str) -> bool {
     return left == right
 }
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+fn subtract(left: i64, right: i64) -> i64 {
+    return left - right
+}
+fn multiply(left: i64, right: i64) -> i64 {
+    return left * right
+}
+fn divide(left: i64, right: i64) -> i64 {
+    return left / right
+}
 fn negate(value: i64) -> i64 {
     return -value
 }
@@ -45572,6 +45609,56 @@ fn main() -> i64 {
             )
             .expect("dynamic equality should emit from typed IR");
             assert_eq!(emitted, expected);
+        }
+
+        for (function, op, helper) in [
+            ("add", BinOp::Add, "flux_add_i64"),
+            ("subtract", BinOp::Sub, "flux_sub_i64"),
+            ("multiply", BinOp::Mul, "flux_mul_i64"),
+            ("divide", BinOp::Div, "flux_div_i64"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("arithmetic CFG should exist");
+            let arithmetic = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: actual,
+                            ..
+                        } if actual == op
+                    )
+                })
+                .expect("typed IR should retain the dynamic arithmetic");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_arithmetic = Expr {
+                line: arithmetic.span.line,
+                span: arithmetic.span,
+                kind: ExprKind::Int(0),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_arithmetic,
+                &Type::I64,
+                &HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                &Signatures::default(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic arithmetic should emit from typed IR");
+            assert_eq!(
+                emitted,
+                format!(
+                    "{helper}({}, {})",
+                    local_c_name("left"),
+                    local_c_name("right")
+                )
+            );
         }
 
         let negate = database
