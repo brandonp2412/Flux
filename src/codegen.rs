@@ -34120,7 +34120,7 @@ fn cfg_direct_scalar_expr(
         {
             CfgScalarExprKind::Unary {
                 op: *op,
-                operand: Box::new(cfg_scalar_leaf(cfg, *operand)?),
+                operand: Box::new(cfg_direct_scalar_expr(cfg, *operand)?),
             }
         }
         crate::ir::ControlFlowValueKind::Binary { op, left, right }
@@ -34140,8 +34140,8 @@ fn cfg_direct_scalar_expr(
         {
             CfgScalarExprKind::Binary {
                 op: *op,
-                left: Box::new(cfg_scalar_leaf(cfg, *left)?),
-                right: Box::new(cfg_scalar_leaf(cfg, *right)?),
+                left: Box::new(cfg_direct_scalar_expr(cfg, *left)?),
+                right: Box::new(cfg_direct_scalar_expr(cfg, *right)?),
             }
         }
         _ => return None,
@@ -45500,6 +45500,15 @@ fn multiply(left: i64, right: i64) -> i64 {
 fn divide(left: i64, right: i64) -> i64 {
     return left / right
 }
+fn nestedArithmetic(left: i64, right: i64, factor: i64) -> i64 {
+    return (left + right) * factor
+}
+fn nestedComparison(left: i64, right: i64, limit: i64) -> bool {
+    return left + right < limit
+}
+fn nestedNegation(value: i64, offset: i64) -> i64 {
+    return -(value + offset)
+}
 fn negate(value: i64) -> i64 {
     return -value
 }
@@ -45660,6 +45669,133 @@ fn main() -> i64 {
                 )
             );
         }
+
+        let nested_arithmetic = database
+            .control_flow_graph("nestedArithmetic")
+            .expect("nested arithmetic CFG should exist");
+        let nested_arithmetic_root = nested_arithmetic
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Mul, .. }
+                )
+            })
+            .expect("typed IR should retain the nested arithmetic root");
+        let nested_arithmetic_facts = cfg_rewrite_facts(nested_arithmetic);
+        let fake_nested_arithmetic = Expr {
+            line: nested_arithmetic_root.span.line,
+            span: nested_arithmetic_root.span,
+            kind: ExprKind::Int(0),
+        };
+        let emitted_nested_arithmetic = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_arithmetic,
+            &Type::I64,
+            &HashMap::from([
+                ("left".to_string(), Type::I64),
+                ("right".to_string(), Type::I64),
+                ("factor".to_string(), Type::I64),
+            ]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &nested_arithmetic_facts,
+        )
+        .expect("nested arithmetic should emit from typed IR");
+        assert_eq!(
+            emitted_nested_arithmetic,
+            format!(
+                "flux_mul_i64(flux_add_i64({}, {}), {})",
+                local_c_name("left"),
+                local_c_name("right"),
+                local_c_name("factor")
+            )
+        );
+
+        let nested_comparison = database
+            .control_flow_graph("nestedComparison")
+            .expect("nested comparison CFG should exist");
+        let nested_comparison_root = nested_comparison
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Lt, .. }
+                )
+            })
+            .expect("typed IR should retain the nested comparison root");
+        let nested_comparison_facts = cfg_rewrite_facts(nested_comparison);
+        let fake_nested_comparison = Expr {
+            line: nested_comparison_root.span.line,
+            span: nested_comparison_root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted_nested_comparison = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_comparison,
+            &Type::Bool,
+            &HashMap::from([
+                ("left".to_string(), Type::I64),
+                ("right".to_string(), Type::I64),
+                ("limit".to_string(), Type::I64),
+            ]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &nested_comparison_facts,
+        )
+        .expect("nested comparison should emit from typed IR");
+        assert_eq!(
+            emitted_nested_comparison,
+            format!(
+                "(flux_add_i64({}, {}) < {})",
+                local_c_name("left"),
+                local_c_name("right"),
+                local_c_name("limit")
+            )
+        );
+
+        let nested_negation = database
+            .control_flow_graph("nestedNegation")
+            .expect("nested negation CFG should exist");
+        let nested_negation_root = nested_negation
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Unary {
+                        op: UnaryOp::Neg,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain the nested negation root");
+        let nested_negation_facts = cfg_rewrite_facts(nested_negation);
+        let fake_nested_negation = Expr {
+            line: nested_negation_root.span.line,
+            span: nested_negation_root.span,
+            kind: ExprKind::Int(0),
+        };
+        let emitted_nested_negation = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_negation,
+            &Type::I64,
+            &HashMap::from([
+                ("value".to_string(), Type::I64),
+                ("offset".to_string(), Type::I64),
+            ]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &nested_negation_facts,
+        )
+        .expect("nested negation should emit from typed IR");
+        assert_eq!(
+            emitted_nested_negation,
+            format!(
+                "flux_neg_i64(flux_add_i64({}, {}))",
+                local_c_name("value"),
+                local_c_name("offset")
+            )
+        );
 
         let negate = database
             .control_flow_graph("negate")
