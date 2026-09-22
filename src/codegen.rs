@@ -50773,6 +50773,152 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn shell_pipeline_and_interpolation_roots_lower_from_typed_ir_without_ast_shape() {
+        let source = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn scale(value: i64, factor: i64) -> i64 {
+    return value * factor
+}
+
+fn shell(value: i64) -> i64 {
+    return increment value
+}
+
+fn pipeline(value: i64) -> i64 {
+    return increment value | scale 5
+}
+
+fn interpolated(value: str) -> str {
+    return "${value}"
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("shell/pipeline typed-IR fixture should typecheck");
+
+        for (function, callee, env, expected_fragment) in [
+            (
+                "shell",
+                "increment",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "{}({})",
+                    function_c_name("increment"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "pipeline",
+                "scale",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("{}(", function_c_name("scale")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("shell/pipeline CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call {
+                            callee: value_callee,
+                            ..
+                        } if value_callee == callee
+                    )
+                })
+                .expect("typed IR should canonicalize the source call root");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("canonical call root should reconstruct from typed IR");
+            assert!(matches!(
+                &scalar.kind,
+                CfgScalarExprKind::Call {
+                    callee: value_callee,
+                    ..
+                } if value_callee == callee
+            ));
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-syntax-root".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("canonical shell/pipeline root should emit from typed IR");
+
+            assert!(emitted.contains(&expected_fragment), "{emitted}");
+            assert!(!emitted.contains("checked-ast-syntax-root"));
+            if function == "pipeline" {
+                assert!(emitted.contains(&format!(
+                    "{}({})",
+                    function_c_name("increment"),
+                    local_c_name("value")
+                )));
+                assert!(emitted.contains("INT64_C(5)"));
+            }
+        }
+
+        let graph = database
+            .control_flow_graph("interpolated")
+            .expect("interpolation CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.ty == Type::Str
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::NameRead { name, .. } if name == "value"
+                    )
+            })
+            .expect("single-binding interpolation should canonicalize to a typed name read");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .map(|scalar| &scalar.kind),
+            Some(CfgScalarExprKind::Name(name)) if name == "value"
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-interpolation-root".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Str,
+            &HashMap::from([("value".to_string(), Type::Str)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("single-binding interpolation should emit from typed IR");
+
+        assert_eq!(emitted, local_c_name("value"));
+        assert!(!emitted.contains("checked-ast-interpolation-root"));
+    }
+
+    #[test]
     fn direct_typed_ir_calls_bypass_checked_ast_rebuild() {
         let source = r#"
 fn add(left: i64, right: i64) -> i64 {
