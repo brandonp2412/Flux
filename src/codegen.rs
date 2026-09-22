@@ -37052,7 +37052,7 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
-                if match_binding_needs_specialized_lowering(
+                if match_expr_needs_specialized_lowering(
                     expr,
                     env,
                     signatures,
@@ -37616,9 +37616,11 @@ fn emit_block(
             }
             StmtKind::Return(values)
                 if values.len() == 1
-                    && matches!(
-                        values[0].kind,
-                        ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                    && match_expr_needs_specialized_lowering(
+                        &values[0],
+                        env,
+                        signatures,
+                        context.cfg_rewrite_facts,
                     ) =>
             {
                 let result_ty = type_of_expr(&values[0], env, signatures)?;
@@ -38803,7 +38805,7 @@ fn emit_list_match_pattern_bindings(
     Ok(())
 }
 
-fn match_binding_needs_specialized_lowering(
+fn match_expr_needs_specialized_lowering(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
@@ -50749,7 +50751,7 @@ fn main() -> i64 {
             ("choice".to_string(), Type::Named("Choice".to_string())),
             ("floor".to_string(), Type::I64),
         ]);
-        assert!(match_binding_needs_specialized_lowering(
+        assert!(match_expr_needs_specialized_lowering(
             &fake,
             &env,
             database.signatures(),
@@ -50823,7 +50825,7 @@ fn main() -> i64 {
             ("values".to_string(), Type::List(Box::new(Type::I64))),
             ("floor".to_string(), Type::I64),
         ]);
-        assert!(match_binding_needs_specialized_lowering(
+        assert!(match_expr_needs_specialized_lowering(
             &fake,
             &env,
             database.signatures(),
