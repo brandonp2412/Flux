@@ -48722,6 +48722,90 @@ fn emit_cfg_scalar_expr_direct(
                 .unwrap_or_else(|| function_c_name(implementation));
             Some(format!("{callee}({})", rendered.join(", ")))
         }
+        CfgScalarExprKind::OptionalCascadeCall {
+            optional,
+            callee,
+            arguments,
+        } if matches!(optional.kind, CfgScalarExprKind::Name(_)) && !env.contains_key(callee) => {
+            let Type::Optional(input_inner) = signatures.canonical_type(&optional.ty) else {
+                return None;
+            };
+            if input_inner == Box::new(Type::Void) || !signatures.is_copy_type(&input_inner) {
+                return None;
+            }
+            let Type::Optional(result_inner) = &ty else {
+                return None;
+            };
+            if !signatures.is_copy_type(result_inner) {
+                return None;
+            }
+
+            let implementation = crate::builtin_names::global_impl(callee);
+            if matches!(
+                implementation,
+                "bind"
+                    | "contains"
+                    | "any"
+                    | "every"
+                    | "take"
+                    | "skip"
+                    | "chunked"
+                    | "sorted"
+                    | "flatten"
+                    | "distinct"
+                    | "concat"
+                    | "map"
+                    | "filter"
+                    | "where"
+                    | "fold"
+                    | "reduce"
+                    | "print"
+                    | "drop"
+                    | "error"
+            ) || signatures.interface(implementation).is_some()
+            {
+                return None;
+            }
+            let signature = signatures.get(implementation)?;
+            if signature.asynchronous
+                || signature.params.len() != arguments.len() + 1
+                || signature.param_details.len() != signature.params.len()
+                || signature.returns.len() != 1
+                || signature.param_details.iter().any(|param| param.named_only)
+                || signatures.canonical_type(&signature.params[0]) != *input_inner
+                || signatures.canonical_type(&signature.returns[0]) != **result_inner
+            {
+                return None;
+            }
+
+            let optional_code = emit_cfg_scalar_expr_direct(optional, env, signatures)?;
+            let mut rendered = Vec::with_capacity(arguments.len() + 1);
+            rendered.push("flux__optional_cascade_value_direct".to_string());
+            for (argument, parameter) in arguments.iter().zip(&signature.params[1..]) {
+                let parameter = signatures.canonical_type(parameter);
+                if !matches!(
+                    argument.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                ) || signatures.canonical_type(&argument.ty) != parameter
+                    || !signatures.is_copy_type(&parameter)
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            let callee = signature
+                .foreign_symbol
+                .clone()
+                .unwrap_or_else(|| function_c_name(implementation));
+            let optional_c = c_type(&Type::Optional(input_inner.clone()), signatures);
+            let input_c = c_type(&input_inner, signatures);
+            let result_c = c_type(&ty, signatures);
+            let result_value = format!("{callee}({})", rendered.join(", "));
+            Some(format!(
+                "__extension__ ({{ {optional_c} flux__optional_cascade_input_direct = {optional_code}; {result_c} flux__optional_cascade_result_direct = ({result_c}){{ .has_value = false }}; if (flux__optional_cascade_input_direct.has_value) {{ {input_c} flux__optional_cascade_value_direct = flux__optional_cascade_input_direct.value; flux__optional_cascade_result_direct = ({result_c}){{ .has_value = true, .value = {result_value} }}; }} flux__optional_cascade_result_direct; }})"
+            ))
+        }
         CfgScalarExprKind::Field {
             base,
             name,
@@ -54940,10 +55024,48 @@ fn main() -> i64 {
             &scalar.kind,
             CfgScalarExprKind::OptionalCascadeCall { callee, .. } if callee == "add"
         ));
+        let optional_env =
+            HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]);
+        let direct_optional =
+            emit_cfg_scalar_expr_direct(scalar, &optional_env, database.signatures())
+                .expect("exact Copy optional cascade should emit directly from typed IR");
+        assert!(
+            direct_optional.contains("flux__optional_cascade_input_direct"),
+            "{direct_optional}"
+        );
+        assert!(
+            direct_optional.contains(&function_c_name("add")),
+            "{direct_optional}"
+        );
+        assert!(
+            direct_optional.contains(&local_c_name("value")),
+            "{direct_optional}"
+        );
+
+        let CfgScalarExprKind::OptionalCascadeCall {
+            optional: optional_input,
+            ..
+        } = &scalar.kind
+        else {
+            unreachable!();
+        };
+        let defaulted = CfgScalarExpr {
+            ty: Type::Optional(Box::new(Type::I64)),
+            kind: CfgScalarExprKind::OptionalCascadeCall {
+                optional: optional_input.clone(),
+                callee: "scale".to_string(),
+                arguments: Vec::new(),
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(&defaulted, &optional_env, database.signatures()).is_none(),
+            "optional cascades requiring default-argument synthesis should retain the AST bridge"
+        );
+
         let emitted = emit_cfg_scalar_expr(
             scalar,
             &Type::Optional(Box::new(Type::I64)),
-            &HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]),
+            &optional_env,
             database.signatures(),
         )
         .expect("optional cascade should emit from typed IR");
