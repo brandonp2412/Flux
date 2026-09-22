@@ -35226,7 +35226,7 @@ fn cfg_direct_list_match_expr(
     }
 
     Some(CfgListMatchExpr {
-        value: cfg_borrowed_list_base(cfg, *value)?,
+        value: cfg_borrowed_collection_field_base(cfg, *value)?,
         arms: lowered_arms,
     })
 }
@@ -39385,10 +39385,26 @@ fn emit_list_match_expr_into(
         )?,
         ty: value_ty,
     };
+    if let Type::Map(key, mapped_value) = &emitted_value.ty {
+        return emit_map_match_expr_into(
+            out,
+            target,
+            depth,
+            &emitted_value.code,
+            key,
+            mapped_value,
+            arms,
+            env,
+            signatures,
+            temp_counter,
+            checked_i64_cfg_proofs,
+            cfg_rewrite_facts,
+        );
+    }
     let Type::List(element) = &emitted_value.ty else {
         return Err(diag(
             value.span,
-            "list match expression code generation requires a list value",
+            "collection match expression code generation requires a list or map value",
         ));
     };
     let temp = format!("flux__list_match_{}", *temp_counter);
@@ -39490,6 +39506,251 @@ fn emit_list_match_expr_into(
             }
             out.push_str(&format!("{pad}}}\n"));
         }
+    }
+    Ok(())
+}
+
+fn emit_map_match_expr_into(
+    out: &mut String,
+    target: &str,
+    depth: usize,
+    source_code: &str,
+    key_ty: &Type,
+    value_ty: &Type,
+    arms: &[crate::ast::ListMatchExprArm],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+    checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
+    cfg_rewrite_facts: &CfgRewriteFacts,
+) -> Result<(), Diagnostic> {
+    let pad = "    ".repeat(depth);
+    let map_name = format!("flux__map_match_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__map {map_name} = {source_code};
+"
+    ));
+    let matched = format!("flux__map_match_done_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}bool {matched} = false;
+"
+    ));
+    let key_c = c_type(key_ty, signatures);
+    let value_c = c_type(value_ty, signatures);
+
+    for arm in arms {
+        let ListMatchPattern::Map { entries, .. } = &arm.pattern else {
+            if !matches!(arm.pattern, ListMatchPattern::Wildcard { .. }) {
+                return Err(diag(
+                    arm.span,
+                    "map match expression requires map patterns or '_'",
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}if (!{matched}) {{
+"
+            ));
+            let nested = env.clone();
+            if let Some(guard) = &arm.guard {
+                let guard = emit_expr_for_expected_with_cfg_proofs(
+                    guard,
+                    &Type::Bool,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_rewrite_facts,
+                )?;
+                out.push_str(&format!(
+                    "{pad}    if ({}) {{
+",
+                    c_condition(&guard)
+                ));
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_rewrite_facts,
+                )?;
+                out.push_str(&format!(
+                    "{pad}        {target} = {arm_value};
+"
+                ));
+                out.push_str(&format!(
+                    "{pad}        {matched} = true;
+"
+                ));
+                out.push_str(&format!(
+                    "{pad}    }}
+"
+                ));
+            } else {
+                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+                let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                    &arm.value,
+                    &arm_ty,
+                    &nested,
+                    signatures,
+                    checked_i64_cfg_proofs,
+                    cfg_rewrite_facts,
+                )?;
+                out.push_str(&format!(
+                    "{pad}    {target} = {arm_value};
+"
+                ));
+                out.push_str(&format!(
+                    "{pad}    {matched} = true;
+"
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}}}
+"
+            ));
+            continue;
+        };
+
+        let arm_match = format!("flux__map_arm_match_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}if (!{matched}) {{
+{pad}    bool {arm_match} = true;
+"
+        ));
+        let mut binding_temps = Vec::new();
+        for entry in entries {
+            let key_code = emit_expr_for_expected_with_cfg_proofs(
+                &entry.key,
+                key_ty,
+                env,
+                signatures,
+                checked_i64_cfg_proofs,
+                cfg_rewrite_facts,
+            )?;
+            let found = format!("flux__map_key_found_{}", *temp_counter);
+            *temp_counter += 1;
+            let value_temp = format!("flux__map_value_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!(
+                "{pad}    bool {found} = false;
+"
+            ));
+            if entry.binding.name != "_" {
+                out.push_str(&format!(
+                    "{pad}    {value_c} {value_temp} = ({value_c}){{0}};
+"
+                ));
+                binding_temps.push((entry.binding.name.clone(), value_temp.clone()));
+            }
+            let equal = if *key_ty == Type::Str {
+                format!(
+                    "strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0"
+                )
+            } else {
+                format!(
+                    "(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})"
+                )
+            };
+            out.push_str(&format!(
+                "{pad}    for (size_t flux__map_index = 0; flux__map_index < {map_name}.keys.len; ++flux__map_index) {{
+"
+            ));
+            out.push_str(&format!(
+                "{pad}        if ({equal}) {{
+{pad}            {found} = true;
+"
+            ));
+            if entry.binding.name != "_" {
+                out.push_str(&format!(
+                    "{pad}            {value_temp} = *(({value_c} *)flux_list_at_unchecked({map_name}.values, flux__map_index, sizeof({value_c})));
+"
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}            break;
+{pad}        }}
+{pad}    }}
+{pad}    if (!{found}) {arm_match} = false;
+"
+            ));
+        }
+
+        out.push_str(&format!(
+            "{pad}    if ({arm_match}) {{
+"
+        ));
+        let mut nested = env.clone();
+        for (name, temp) in binding_temps {
+            out.push_str(&format!(
+                "{pad}        {value_c} {} = {temp};
+",
+                local_c_name(&name)
+            ));
+            nested.insert(name, value_ty.clone());
+        }
+        if let Some(guard) = &arm.guard {
+            let guard = emit_expr_for_expected_with_cfg_proofs(
+                guard,
+                &Type::Bool,
+                &nested,
+                signatures,
+                checked_i64_cfg_proofs,
+                cfg_rewrite_facts,
+            )?;
+            out.push_str(&format!(
+                "{pad}        if ({}) {{
+",
+                c_condition(&guard)
+            ));
+            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+            let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                &arm.value,
+                &arm_ty,
+                &nested,
+                signatures,
+                checked_i64_cfg_proofs,
+                cfg_rewrite_facts,
+            )?;
+            out.push_str(&format!(
+                "{pad}            {target} = {arm_value};
+"
+            ));
+            out.push_str(&format!(
+                "{pad}            {matched} = true;
+"
+            ));
+            out.push_str(&format!(
+                "{pad}        }}
+"
+            ));
+        } else {
+            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
+            let arm_value = emit_expr_for_expected_with_cfg_proofs(
+                &arm.value,
+                &arm_ty,
+                &nested,
+                signatures,
+                checked_i64_cfg_proofs,
+                cfg_rewrite_facts,
+            )?;
+            out.push_str(&format!(
+                "{pad}        {target} = {arm_value};
+"
+            ));
+            out.push_str(&format!(
+                "{pad}        {matched} = true;
+"
+            ));
+        }
+        out.push_str(&format!(
+            "{pad}    }}
+{pad}}}
+"
+        ));
     }
     Ok(())
 }
@@ -52508,6 +52769,88 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("first")));
         assert!(out.contains(&local_c_name("body")));
         assert!(!out.contains("checked-ast-list-match"));
+    }
+
+    #[test]
+    fn dynamic_typed_ir_map_matches_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn choose(values: map<str, i64>, floor: i64) -> i64 {
+    return match values:
+        {"one": value} if value > floor: value + floor
+        _: floor
+}
+
+fn main() -> i64 {
+    return choose({"one": 7}, 3)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("map match IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("choose")
+            .expect("choose CFG should exist");
+        let matched = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListMatch { .. }
+                )
+            })
+            .expect("typed IR should retain the map-match root");
+        let facts = cfg_rewrite_facts(graph);
+        let map_match_expr = facts
+            .list_match_exprs
+            .get(&source_span_key(matched.span))
+            .expect("map match should have reconstructable typed-IR facts");
+        assert!(matches!(
+            map_match_expr.arms.first().map(|arm| &arm.pattern),
+            Some(crate::ir::ControlFlowListMatchPattern::Map { entries })
+                if entries.len() == 1
+                    && entries[0].binding == "value"
+                    && entries[0].key == ConstantValue::Str("one".to_string())
+        ));
+        assert!(matches!(map_match_expr.value.ty, Type::Map(_, _)));
+
+        let fake = Expr {
+            line: matched.span.line,
+            span: matched.span,
+            kind: ExprKind::Str("checked-ast-map-match".to_string()),
+        };
+        let env = HashMap::from([
+            (
+                "values".to_string(),
+                Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+            ),
+            ("floor".to_string(), Type::I64),
+        ]);
+        assert!(match_expr_needs_specialized_lowering(
+            &fake,
+            &env,
+            database.signatures(),
+            &facts,
+        ));
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_match_expr_into(
+            &mut out,
+            &fake,
+            "flux__typed_map_match_result",
+            1,
+            &env,
+            database.signatures(),
+            &mut temp_counter,
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("map match should emit from typed IR");
+
+        assert!(out.contains("flux__map_match_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("floor")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(!out.contains("checked-ast-map-match"), "{out}");
     }
 
     #[test]

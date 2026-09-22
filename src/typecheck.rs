@@ -7585,11 +7585,18 @@ pub fn type_of_expr(
         }
         ExprKind::ListMatch { value, arms } => {
             let value_ty = signatures.canonical_type(&type_of_expr(value, env, signatures)?);
-            let Type::List(element_ty) = value_ty else {
-                return Err(diag(
-                    value.span,
-                    &format!("list match requires a list value, got {}", value_ty.name()),
-                ));
+            let (element_ty, map_key_ty) = match &value_ty {
+                Type::List(element) => ((**element).clone(), None),
+                Type::Map(key, value) => ((**value).clone(), Some((**key).clone())),
+                actual => {
+                    return Err(diag(
+                        value.span,
+                        &format!(
+                            "collection match requires a list or map value, got {}",
+                            actual.name()
+                        ),
+                    ));
+                }
             };
             let patterns = arms
                 .iter()
@@ -7598,6 +7605,26 @@ pub fn type_of_expr(
             validate_list_match_coverage(&patterns, expr.span)?;
             let mut result_ty: Option<Type> = None;
             for arm in arms {
+                if let ListMatchPattern::Map { entries, .. } = &arm.pattern {
+                    let Some(key_ty) = &map_key_ty else {
+                        return Err(diag(
+                            list_match_pattern_span(&arm.pattern),
+                            "map match pattern requires a map value",
+                        ));
+                    };
+                    let mut diagnostics = Vec::new();
+                    validate_map_match_pattern(entries, key_ty, signatures, &mut diagnostics);
+                    if let Some(diagnostic) = diagnostics.into_iter().next() {
+                        return Err(diagnostic);
+                    }
+                } else if map_key_ty.is_some()
+                    && !matches!(arm.pattern, ListMatchPattern::Wildcard { .. })
+                {
+                    return Err(diag(
+                        list_match_pattern_span(&arm.pattern),
+                        "map match values require '{key: binding}' or '_:' patterns",
+                    ));
+                }
                 let mut nested = env.clone();
                 bind_list_match_pattern(&arm.pattern, &element_ty, &mut nested)?;
                 if let Some(guard) = &arm.guard {

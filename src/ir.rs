@@ -6226,31 +6226,44 @@ impl<'a> ControlFlowBuilder<'a> {
         value: &Expr,
         pattern: &crate::ast::ListMatchPattern,
     ) -> Vec<ControlFlowDefinition> {
-        let Some(Type::List(element)) = self.scalar_expression_type(value) else {
+        let Some(collection_ty) = self.scalar_expression_type(value) else {
             return Vec::new();
         };
-        let crate::ast::ListMatchPattern::List { bindings, rest, .. } = pattern else {
-            return Vec::new();
-        };
-        let mut definitions = bindings
-            .iter()
-            .filter(|binding| binding.name != "_")
-            .map(|binding| ControlFlowDefinition {
-                name: binding.name.clone(),
-                ty: (*element).clone(),
-                span: binding.span,
-            })
-            .collect::<Vec<_>>();
-        if let Some(rest) = rest
-            && rest.binding.name != "_"
-        {
-            definitions.push(ControlFlowDefinition {
-                name: rest.binding.name.clone(),
-                ty: Type::List(element),
-                span: rest.binding.span,
-            });
+        match (collection_ty, pattern) {
+            (Type::List(element), crate::ast::ListMatchPattern::List { bindings, rest, .. }) => {
+                let mut definitions = bindings
+                    .iter()
+                    .filter(|binding| binding.name != "_")
+                    .map(|binding| ControlFlowDefinition {
+                        name: binding.name.clone(),
+                        ty: (*element).clone(),
+                        span: binding.span,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(rest) = rest
+                    && rest.binding.name != "_"
+                {
+                    definitions.push(ControlFlowDefinition {
+                        name: rest.binding.name.clone(),
+                        ty: Type::List(element),
+                        span: rest.binding.span,
+                    });
+                }
+                definitions
+            }
+            (Type::Map(_, mapped_value), crate::ast::ListMatchPattern::Map { entries, .. }) => {
+                entries
+                    .iter()
+                    .filter(|entry| entry.binding.name != "_")
+                    .map(|entry| ControlFlowDefinition {
+                        name: entry.binding.name.clone(),
+                        ty: (*mapped_value).clone(),
+                        span: entry.binding.span,
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
         }
-        definitions
     }
 
     fn ownership_for_expr(&self, node: ControlFlowNodeId, expr: &Expr) -> ControlFlowOwnership {
@@ -7268,7 +7281,7 @@ fn record_expr_types(
             let element_ty = typecheck::type_of_expr(value, env, signatures)
                 .ok()
                 .and_then(|ty| match signatures.canonical_type(&ty) {
-                    Type::List(element) => Some(*element),
+                    Type::List(element) | Type::Map(_, element) => Some(*element),
                     _ => None,
                 });
             for arm in arms {
@@ -7369,21 +7382,30 @@ fn bind_list_match_pattern(
     element_ty: &Type,
     env: &mut HashMap<String, Type>,
 ) {
-    let crate::ast::ListMatchPattern::List { bindings, rest, .. } = pattern else {
-        return;
-    };
-    for binding in bindings {
-        if binding.name != "_" {
-            env.insert(binding.name.clone(), element_ty.clone());
+    match pattern {
+        crate::ast::ListMatchPattern::List { bindings, rest, .. } => {
+            for binding in bindings {
+                if binding.name != "_" {
+                    env.insert(binding.name.clone(), element_ty.clone());
+                }
+            }
+            if let Some(rest) = rest
+                && rest.binding.name != "_"
+            {
+                env.insert(
+                    rest.binding.name.clone(),
+                    Type::List(Box::new(element_ty.clone())),
+                );
+            }
         }
-    }
-    if let Some(rest) = rest
-        && rest.binding.name != "_"
-    {
-        env.insert(
-            rest.binding.name.clone(),
-            Type::List(Box::new(element_ty.clone())),
-        );
+        crate::ast::ListMatchPattern::Map { entries, .. } => {
+            for entry in entries {
+                if entry.binding.name != "_" {
+                    env.insert(entry.binding.name.clone(), element_ty.clone());
+                }
+            }
+        }
+        crate::ast::ListMatchPattern::Wildcard { .. } => {}
     }
 }
 

@@ -72074,6 +72074,77 @@ fn main() -> i64 {
 }
 
 #[test]
+fn map_match_expressions_are_typed_native_and_exhaustive() {
+    let source = r#"
+fn choose(values: map<str, i64>, floor: i64) -> i64 {
+    return match values:
+        {"one": value} if value > floor: value
+        {"two": value}: value + 1
+        _: floor
+}
+
+fn main() -> i64 {
+    let values: map<str, i64> = {"one": 7, "two": 2}
+    print(choose(values, 3))
+    return 0
+}
+"#;
+
+    check_source(source).expect("map match expression should typecheck");
+    let generated = compile_to_c(source).expect("map match expression should lower natively");
+    assert!(generated.contains("flux__map_match_"));
+    assert!(generated.contains("flux__map_arm_match_"));
+    assert!(generated.contains("flux_list_at_unchecked"));
+    assert!(generated.contains("strcmp("));
+
+    let formatted =
+        fluxc::formatter::format_source(source).expect("map match expression should format");
+    assert!(formatted.contains(r#"{"one": value} if value > floor: value"#));
+    assert!(formatted.contains(r#"{"two": value}: value + 1"#));
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-map-match-expression-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("map match expression temp directory should be writable");
+    let c_path = root.join("map_match_expression.c");
+    let exe_path = root.join("map_match_expression");
+    fs::write(&c_path, generated).expect("generated map match C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile map match expression C");
+    assert!(
+        compile.status.success(),
+        "map match expression C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("map match expression program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
+    let _ = fs::remove_dir_all(&root);
+
+    let missing_fallback = r#"
+fn choose(values: map<i64, i64>) -> i64 {
+    return match values:
+        {1: value}: value
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let error = check_source(missing_fallback).expect_err("map match expressions need a fallback");
+    assert!(error.message.contains("non-exhaustive map match"));
+}
+
+#[test]
 fn map_indexing_returns_optional_values_and_uses_linear_key_lookup() {
     let source = r#"
 fn main() -> i64 {
