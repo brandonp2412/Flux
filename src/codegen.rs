@@ -48498,6 +48498,78 @@ fn emit_cfg_scalar_expr_direct(
                 "flux_list_slice({base}, {has_start}, {start}, {has_end}, {end}, {step}, sizeof({element_c}))"
             ))
         }
+        CfgScalarExprKind::NamedCall { callee, arguments } if !env.contains_key(callee) => {
+            let implementation = crate::builtin_names::global_impl(callee);
+            if matches!(
+                implementation,
+                "bind"
+                    | "contains"
+                    | "any"
+                    | "every"
+                    | "take"
+                    | "skip"
+                    | "chunked"
+                    | "sorted"
+                    | "flatten"
+                    | "distinct"
+                    | "concat"
+                    | "map"
+                    | "filter"
+                    | "where"
+                    | "fold"
+                    | "reduce"
+                    | "print"
+                    | "drop"
+                    | "error"
+            ) || signatures.interface(implementation).is_some()
+            {
+                return None;
+            }
+            let signature = signatures.get(implementation)?;
+            if signature.asynchronous
+                || signature.param_details.len() != arguments.len()
+                || signature.returns.len() != 1
+                || signatures.canonical_type(&signature.returns[0]) != ty
+                || !signatures.is_copy_type(&ty)
+            {
+                return None;
+            }
+
+            let positional = arguments
+                .iter()
+                .filter_map(|(name, argument)| name.is_none().then_some(argument))
+                .collect::<Vec<_>>();
+            let mut positional_index = 0usize;
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for parameter in &signature.param_details {
+                let argument = if !parameter.named_only && positional_index < positional.len() {
+                    let argument = positional[positional_index];
+                    positional_index += 1;
+                    argument
+                } else {
+                    arguments.iter().find_map(|(name, argument)| {
+                        (name.as_deref() == Some(parameter.name.as_str())).then_some(argument)
+                    })?
+                };
+                let parameter_ty = signatures.canonical_type(&parameter.ty);
+                if !matches!(argument.kind, CfgScalarExprKind::Name(_))
+                    || signatures.canonical_type(&argument.ty) != parameter_ty
+                    || !signatures.is_copy_type(&parameter_ty)
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+            if positional_index != positional.len() {
+                return None;
+            }
+
+            let callee = signature
+                .foreign_symbol
+                .clone()
+                .unwrap_or_else(|| function_c_name(implementation));
+            Some(format!("{callee}({})", rendered.join(", ")))
+        }
         CfgScalarExprKind::Field {
             base,
             name,
@@ -54302,8 +54374,8 @@ fn nested(left: i64, right: i64) -> i64 {
     return add(left, right) + scale(left)
 }
 
-fn namedCall(value: i64) -> i64 {
-    return named(value, adjust: 3)
+fn namedCall(value: i64, adjust: i64) -> i64 {
+    return named(value, adjust: adjust)
 }
 
 fn functionValueCall(transform: fn(i64) -> i64, value: i64) -> i64 {
@@ -54586,19 +54658,30 @@ fn main() -> i64 {
             .get(&source_span_key(call.span))
             .expect("named call should have reconstructable value facts");
         assert!(matches!(scalar.kind, CfgScalarExprKind::NamedCall { .. }));
-        let emitted = emit_cfg_scalar_expr(
-            scalar,
-            &Type::I64,
-            &HashMap::from([("value".to_string(), Type::I64)]),
-            database.signatures(),
-        )
-        .expect("named-only call should emit from typed IR");
+        let named_env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("adjust".to_string(), Type::I64),
+        ]);
+        let direct_named = emit_cfg_scalar_expr_direct(scalar, &named_env, database.signatures())
+            .expect("fully supplied Copy named call should emit directly from typed IR");
+        assert_eq!(
+            direct_named,
+            format!(
+                "{}({}, {})",
+                function_c_name("named"),
+                local_c_name("value"),
+                local_c_name("adjust")
+            )
+        );
+        let emitted = emit_cfg_scalar_expr(scalar, &Type::I64, &named_env, database.signatures())
+            .expect("named-only call should emit from typed IR");
         assert_eq!(
             emitted,
             format!(
-                "{}({}, INT64_C(3))",
+                "{}({}, {})",
                 function_c_name("named"),
-                local_c_name("value")
+                local_c_name("value"),
+                local_c_name("adjust")
             )
         );
 
