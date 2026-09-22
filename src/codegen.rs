@@ -48182,6 +48182,63 @@ fn emit_cfg_scalar_expr_direct(
                 interface_pack_helper_name(interface, target)
             ))
         }
+        CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
+            let implementation = crate::builtin_names::global_impl(callee);
+            if matches!(
+                implementation,
+                "bind"
+                    | "contains"
+                    | "any"
+                    | "every"
+                    | "take"
+                    | "skip"
+                    | "chunked"
+                    | "sorted"
+                    | "flatten"
+                    | "distinct"
+                    | "concat"
+                    | "map"
+                    | "filter"
+                    | "where"
+                    | "fold"
+                    | "reduce"
+                    | "print"
+                    | "drop"
+                    | "error"
+            ) || signatures.interface(implementation).is_some()
+            {
+                return None;
+            }
+            let signature = signatures.get(implementation)?;
+            if signature.asynchronous
+                || signature.params.len() != arguments.len()
+                || signature.param_details.len() != arguments.len()
+                || signature.returns.len() != 1
+                || signatures.canonical_type(&signature.returns[0]) != ty
+                || !signatures.is_copy_type(&ty)
+                || signature.param_details.iter().any(|param| param.named_only)
+            {
+                return None;
+            }
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, parameter) in arguments.iter().zip(&signature.params) {
+                let parameter = signatures.canonical_type(parameter);
+                if !matches!(argument.kind, CfgScalarExprKind::Name(_))
+                    || signatures.canonical_type(&argument.ty) != parameter
+                    || !signatures.is_copy_type(&parameter)
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            let callee = signature
+                .foreign_symbol
+                .clone()
+                .unwrap_or_else(|| function_c_name(implementation));
+            Some(format!("{callee}({})", rendered.join(", ")))
+        }
         CfgScalarExprKind::Field {
             base,
             name,
@@ -53571,6 +53628,14 @@ fn direct(left: i64, right: i64) -> i64 {
     return add(left, right)
 }
 
+fn listCount(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn borrowedCollectionCall(values: i64[]) -> i64 {
+    return listCount(values)
+}
+
 fn defaulted(value: i64) -> i64 {
     return scale(value)
 }
@@ -53681,16 +53746,33 @@ fn main() -> i64 {
                 })
                 .expect("typed IR should retain the direct call");
             let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("direct call should have scalar typed-IR facts");
             assert!(matches!(
-                facts.scalar_exprs.get(&source_span_key(call.span)),
-                Some(CfgScalarExpr {
+                scalar,
+                CfgScalarExpr {
                     kind: CfgScalarExprKind::Call {
                         callee: value_callee,
                         ..
                     },
                     ..
-                }) if value_callee == callee
+                } if value_callee == callee
             ));
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
+            if callee == "add" {
+                let direct = direct
+                    .expect("exact-copy positional call should render directly from typed IR");
+                assert!(direct.contains(&format!("{}(", function_c_name(callee))));
+                assert!(direct.contains(&local_c_name("left")));
+                assert!(direct.contains(&local_c_name("right")));
+            } else {
+                assert!(
+                    direct.is_none(),
+                    "calls requiring default-argument synthesis should retain the AST bridge"
+                );
+            }
 
             let fake = Expr {
                 line: call.span.line,
@@ -53716,6 +53798,35 @@ fn main() -> i64 {
                 assert!(emitted.contains("INT64_C(4)"));
             }
         }
+
+        let borrowed_graph = database
+            .control_flow_graph("borrowedCollectionCall")
+            .expect("borrowed collection call CFG should exist");
+        let borrowed_facts = cfg_rewrite_facts(borrowed_graph);
+        let borrowed_call = borrowed_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if callee == "listCount"
+                )
+            })
+            .expect("typed IR should retain the borrowed collection call");
+        let borrowed_scalar = borrowed_facts
+            .scalar_exprs
+            .get(&source_span_key(borrowed_call.span))
+            .expect("borrowed collection call should have scalar typed-IR facts");
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                borrowed_scalar,
+                &HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)),)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "non-copy collection arguments must retain ownership-aware call lowering"
+        );
 
         let aggregate_call = database
             .control_flow_graph("aggregateCall")
