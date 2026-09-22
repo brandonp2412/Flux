@@ -49426,9 +49426,6 @@ fn emit_cfg_scalar_expr_direct(
                     }
                 }
                 Type::Record(fields) => {
-                    if aggregate_base {
-                        return None;
-                    }
                     let index = if let Ok(index) = name.parse::<usize>() {
                         index
                     } else {
@@ -49437,7 +49434,11 @@ fn emit_cfg_scalar_expr_direct(
                             .position(|field| field.name.as_deref() == Some(name.as_str()))?
                     };
                     let field = fields.get(index)?;
-                    if signatures.canonical_type(&field.ty) != ty {
+                    if signatures.canonical_type(&field.ty) != ty
+                        || (aggregate_base
+                            && (!signatures.is_copy_type(&base_ty)
+                                || !signatures.is_copy_type(&field.ty)))
+                    {
                         return None;
                     }
                     Some(format!(
@@ -49446,12 +49447,13 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 Type::Named(struct_name) => {
-                    if aggregate_base {
-                        return None;
-                    }
                     let definition = signatures.struct_type(struct_name)?;
                     let field = definition.field(name)?;
-                    if signatures.canonical_type(&field.ty) != ty {
+                    if signatures.canonical_type(&field.ty) != ty
+                        || (aggregate_base
+                            && (!signatures.is_copy_type(&base_ty)
+                                || !signatures.is_copy_type(&field.ty)))
+                    {
                         return None;
                     }
                     Some(format!("({rendered_base}).{}", field_c_name(name)))
@@ -52731,6 +52733,14 @@ fn pointX(point: Point) -> i64 {
     return point.x
 }
 
+fn temporaryPointX() -> i64 {
+    return Point { x: 3 }.x
+}
+
+fn temporaryDynamicPointX(value: i64) -> i64 {
+    return Point { x: value }.x
+}
+
 fn optionalPointX(point: Point?) -> i64? {
     return point?.x
 }
@@ -52759,6 +52769,14 @@ fn recordPositional(value: (i64, bool)) -> bool {
     return value.1
 }
 
+fn temporaryRecordNamed() -> i64 {
+    return (amount: 3, enabled: true).amount
+}
+
+fn temporaryDynamicRecordNamed(value: i64) -> i64 {
+    return (amount: value, enabled: true).amount
+}
+
 fn borrowedMapCount(values: map<i64, str>) -> i64 {
     return (borrow values).count
 }
@@ -52776,6 +52794,8 @@ fn main() -> i64 {
 
         for (function, parameter, should_emit_directly) in [
             ("pointX", Some("point"), true),
+            ("temporaryPointX", None, true),
+            ("temporaryDynamicPointX", Some("value"), true),
             ("optionalPointX", Some("point"), false),
             ("listLength", Some("values"), true),
             ("listFirst", Some("values"), true),
@@ -52783,6 +52803,8 @@ fn main() -> i64 {
             ("mapCount", Some("values"), true),
             ("recordNamed", Some("value"), true),
             ("recordPositional", Some("value"), true),
+            ("temporaryRecordNamed", None, true),
+            ("temporaryDynamicRecordNamed", Some("value"), true),
             ("borrowedMapCount", Some("values"), false),
             ("temporaryMapCount", None, true),
         ] {
@@ -52826,11 +52848,13 @@ fn main() -> i64 {
 
             let direct = direct.expect("named field/property should render directly from typed IR");
             let marker = match function {
-                "pointX" => field_c_name("x"),
+                "pointX" | "temporaryPointX" | "temporaryDynamicPointX" => field_c_name("x"),
                 "listLength" | "setCount" => ".len".to_string(),
                 "listFirst" => "flux_list_at(".to_string(),
                 "mapCount" | "temporaryMapCount" => ".keys.len".to_string(),
-                "recordNamed" => record_field_c_name(Some("amount"), 0),
+                "recordNamed" | "temporaryRecordNamed" | "temporaryDynamicRecordNamed" => {
+                    record_field_c_name(Some("amount"), 0)
+                }
                 "recordPositional" => record_field_c_name(None, 1),
                 _ => unreachable!("direct fixture case"),
             };
