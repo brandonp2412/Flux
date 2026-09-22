@@ -48353,6 +48353,30 @@ fn cfg_interface_dispatch_callee_direct(
     Some(function_c_name(mapped))
 }
 
+fn cfg_direct_aggregate_list_length(value: &CfgScalarExpr) -> Option<usize> {
+    let CfgScalarExprKind::Aggregate(aggregate) = &value.kind else {
+        return None;
+    };
+    let CfgAggregateConstantKind::List(items) = &aggregate.kind else {
+        return None;
+    };
+    Some(items.len())
+}
+
+fn cfg_direct_aggregate_list_index(base: &CfgScalarExpr, index: &CfgScalarExpr) -> Option<usize> {
+    let len = cfg_direct_aggregate_list_length(base)?;
+    let CfgScalarExprKind::Constant(ConstantValue::I64(index)) = &index.kind else {
+        return None;
+    };
+    let len = i64::try_from(len).ok()?;
+    let resolved = if *index < 0 {
+        len.checked_add(*index)?
+    } else {
+        *index
+    };
+    (resolved >= 0 && resolved < len).then_some(resolved as usize)
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -49123,9 +49147,18 @@ fn emit_cfg_scalar_expr_direct(
                         && (!aggregate_base || signatures.is_copy_type(&element)) =>
                 {
                     let element_c = c_type(&element, signatures);
-                    Some(format!(
-                        "(*(({element_c} *)flux_list_at({rendered_base}, {rendered_index}, sizeof({element_c}))))"
-                    ))
+                    let access = if let Some(static_index) =
+                        cfg_direct_aggregate_list_index(base, index)
+                    {
+                        format!(
+                            "flux_list_at_unchecked({rendered_base}, {static_index}, sizeof({element_c}))"
+                        )
+                    } else {
+                        format!(
+                            "flux_list_at({rendered_base}, {rendered_index}, sizeof({element_c}))"
+                        )
+                    };
+                    Some(format!("(*(({element_c} *){access}))"))
                 }
                 Type::Map(key, value)
                     if index_ty == signatures.canonical_type(&key)
@@ -49376,6 +49409,7 @@ fn emit_cfg_scalar_expr_direct(
         {
             let base_ty = signatures.canonical_type(&base.ty);
             let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
+            let static_list_len = cfg_direct_aggregate_list_length(base);
             let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
             match &base_ty {
                 Type::List(element) => {
@@ -49388,6 +49422,34 @@ fn emit_cfg_scalar_expr_direct(
                         }
                         "isNotEmpty" if ty == Type::Bool => {
                             Some(format!("(({rendered_base}).len != 0)"))
+                        }
+                        "first"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element))
+                                && static_list_len.is_some_and(|len| len > 0) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_at_unchecked({rendered_base}, 0, sizeof({element_c}))))"
+                            ))
+                        }
+                        "last"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element))
+                                && static_list_len.is_some_and(|len| len > 0) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_at_unchecked({rendered_base}, {}, sizeof({element_c}))))",
+                                static_list_len.expect("non-empty direct aggregate list") - 1
+                            ))
+                        }
+                        "single"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element))
+                                && static_list_len == Some(1) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_at_unchecked({rendered_base}, 0, sizeof({element_c}))))"
+                            ))
                         }
                         "first"
                             if ty == element_ty
@@ -54917,7 +54979,7 @@ fn main() -> i64 {
             (
                 "temporaryListFirst",
                 Type::I64,
-                "flux_list_at(",
+                "flux_list_at_unchecked(",
                 "checked-ast-temporary-list-first",
             ),
             (
