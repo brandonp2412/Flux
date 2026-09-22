@@ -4420,6 +4420,10 @@ struct LoopTargets {
     continue_target: ControlFlowNodeId,
 }
 
+fn complete_value_list(values: Vec<Option<ControlFlowValueId>>) -> Option<Vec<ControlFlowValueId>> {
+    values.into_iter().collect()
+}
+
 fn complete_map_entry_values(
     values: Vec<Option<ControlFlowValueId>>,
 ) -> Option<Vec<(ControlFlowValueId, ControlFlowValueId)>> {
@@ -5324,14 +5328,12 @@ impl<'a> ControlFlowBuilder<'a> {
                         name,
                         args,
                         named_args,
-                    } => {
-                        let arguments = self.lower_call_arguments(producer, args, named_args);
-                        if named_args.is_empty() {
-                            ControlFlowValueKind::Call {
-                                callee: name.clone(),
-                                arguments,
-                            }
-                        } else {
+                    } => match self.lower_call_arguments(producer, args, named_args) {
+                        Some(arguments) if named_args.is_empty() => ControlFlowValueKind::Call {
+                            callee: name.clone(),
+                            arguments,
+                        },
+                        Some(arguments) => {
                             let mut argument_names = vec![None; args.len()];
                             argument_names.extend(
                                 named_args
@@ -5344,7 +5346,8 @@ impl<'a> ControlFlowBuilder<'a> {
                                 argument_names,
                             }
                         }
-                    }
+                        None => ControlFlowValueKind::Opaque,
+                    },
                     _ => ControlFlowValueKind::Opaque,
                 };
                 let awaited_types = self.expression_types(expr);
@@ -5409,11 +5412,11 @@ impl<'a> ControlFlowBuilder<'a> {
                 name,
                 args,
                 named_args,
-            } => {
-                let arguments = self.lower_call_arguments(producer, args, named_args);
-                if self.signatures.interface(name).is_some()
-                    && named_args.is_empty()
-                    && arguments.len() == 1
+            } => match self.lower_call_arguments(producer, args, named_args) {
+                Some(arguments)
+                    if self.signatures.interface(name).is_some()
+                        && named_args.is_empty()
+                        && arguments.len() == 1 =>
                 {
                     let value = arguments[0];
                     let target = self.values.get(value.0).and_then(|argument| {
@@ -5435,12 +5438,12 @@ impl<'a> ControlFlowBuilder<'a> {
                             value,
                         },
                     )
-                } else if named_args.is_empty() {
-                    ControlFlowValueKind::Call {
-                        callee: name.clone(),
-                        arguments,
-                    }
-                } else {
+                }
+                Some(arguments) if named_args.is_empty() => ControlFlowValueKind::Call {
+                    callee: name.clone(),
+                    arguments,
+                },
+                Some(arguments) => {
                     let mut argument_names = vec![None; args.len()];
                     argument_names.extend(
                         named_args
@@ -5453,11 +5456,16 @@ impl<'a> ControlFlowBuilder<'a> {
                         argument_names,
                     }
                 }
-            }
-            ExprKind::ShellCall { name, args, .. } => ControlFlowValueKind::Call {
-                callee: name.clone(),
-                arguments: self.lower_expr_arguments(producer, args),
+                None => ControlFlowValueKind::Opaque,
             },
+            ExprKind::ShellCall { name, args, .. } => self
+                .lower_expr_arguments(producer, args)
+                .map_or(ControlFlowValueKind::Opaque, |arguments| {
+                    ControlFlowValueKind::Call {
+                        callee: name.clone(),
+                        arguments,
+                    }
+                }),
             ExprKind::Pipe {
                 input,
                 name,
@@ -5468,28 +5476,40 @@ impl<'a> ControlFlowBuilder<'a> {
                 if *optional {
                     let optional = self.lower_scalar_expr(producer, input);
                     let arguments = self.lower_expr_arguments(producer, args);
-                    optional.map_or(ControlFlowValueKind::Opaque, |optional| {
-                        ControlFlowValueKind::OptionalCascadeCall {
-                            optional,
-                            callee: name.clone(),
-                            arguments,
+                    match (optional, arguments) {
+                        (Some(optional), Some(arguments)) => {
+                            ControlFlowValueKind::OptionalCascadeCall {
+                                optional,
+                                callee: name.clone(),
+                                arguments,
+                            }
                         }
-                    })
+                        _ => ControlFlowValueKind::Opaque,
+                    }
                 } else {
-                    let mut arguments = self.lower_expr_values(producer, input, false);
-                    arguments.extend(self.lower_expr_arguments(producer, args));
-                    ControlFlowValueKind::Call {
-                        callee: name.clone(),
-                        arguments,
+                    let mut input_values = self.lower_expr_values(producer, input, false);
+                    match self.lower_expr_arguments(producer, args) {
+                        Some(arguments) => {
+                            input_values.extend(arguments);
+                            ControlFlowValueKind::Call {
+                                callee: name.clone(),
+                                arguments: input_values,
+                            }
+                        }
+                        None => ControlFlowValueKind::Opaque,
                     }
                 }
             }
-            ExprKind::List(items) => ControlFlowValueKind::List {
-                items: self.lower_expr_arguments(producer, items),
-            },
-            ExprKind::Set(items) => ControlFlowValueKind::Set {
-                items: self.lower_expr_arguments(producer, items),
-            },
+            ExprKind::List(items) => self
+                .lower_expr_arguments(producer, items)
+                .map_or(ControlFlowValueKind::Opaque, |items| {
+                    ControlFlowValueKind::List { items }
+                }),
+            ExprKind::Set(items) => self
+                .lower_expr_arguments(producer, items)
+                .map_or(ControlFlowValueKind::Opaque, |items| {
+                    ControlFlowValueKind::Set { items }
+                }),
             ExprKind::Map(items) => {
                 let values = items
                     .iter()
@@ -5674,9 +5694,8 @@ impl<'a> ControlFlowBuilder<'a> {
                 args,
                 named_args,
                 ..
-            } => {
-                let arguments = self.lower_call_arguments(producer, args, named_args);
-                if self.signatures.interface(namespace).is_some() {
+            } => match self.lower_call_arguments(producer, args, named_args) {
+                Some(arguments) if self.signatures.interface(namespace).is_some() => {
                     let concrete_target = arguments.first().and_then(|receiver| {
                         let receiver = self.values.get(receiver.0)?;
                         let Type::Named(target) = self.signatures.canonical_type(&receiver.ty)
@@ -5717,13 +5736,13 @@ impl<'a> ControlFlowBuilder<'a> {
                             argument_names,
                         }
                     }
-                } else if named_args.is_empty() {
-                    ControlFlowValueKind::QualifiedCall {
-                        namespace: namespace.clone(),
-                        name: name.clone(),
-                        arguments,
-                    }
-                } else {
+                }
+                Some(arguments) if named_args.is_empty() => ControlFlowValueKind::QualifiedCall {
+                    namespace: namespace.clone(),
+                    name: name.clone(),
+                    arguments,
+                },
+                Some(arguments) => {
                     let mut argument_names = vec![None; args.len()];
                     argument_names.extend(
                         named_args
@@ -5737,7 +5756,8 @@ impl<'a> ControlFlowBuilder<'a> {
                         argument_names,
                     }
                 }
-            }
+                None => ControlFlowValueKind::Opaque,
+            },
             ExprKind::Field {
                 base,
                 name,
@@ -5897,25 +5917,34 @@ impl<'a> ControlFlowBuilder<'a> {
         producer: ControlFlowNodeId,
         args: &[Expr],
         named_args: &[crate::ast::NamedArg],
-    ) -> Vec<ControlFlowValueId> {
-        let mut values = self.lower_expr_arguments(producer, args);
-        values.extend(
+    ) -> Option<Vec<ControlFlowValueId>> {
+        let positional = self.lower_expr_arguments(producer, args);
+        let named = complete_value_list(
             named_args
                 .iter()
-                .filter_map(|arg| self.lower_scalar_expr(producer, &arg.value)),
+                .map(|arg| self.lower_scalar_expr(producer, &arg.value))
+                .collect(),
         );
-        values
+        match (positional, named) {
+            (Some(mut positional), Some(named)) => {
+                positional.extend(named);
+                Some(positional)
+            }
+            _ => None,
+        }
     }
 
     fn lower_expr_arguments(
         &mut self,
         producer: ControlFlowNodeId,
         expressions: &[Expr],
-    ) -> Vec<ControlFlowValueId> {
-        expressions
-            .iter()
-            .filter_map(|expr| self.lower_scalar_expr(producer, expr))
-            .collect()
+    ) -> Option<Vec<ControlFlowValueId>> {
+        complete_value_list(
+            expressions
+                .iter()
+                .map(|expr| self.lower_scalar_expr(producer, expr))
+                .collect(),
+        )
     }
 
     fn lower_scalar_expr(
@@ -9317,6 +9346,20 @@ mod tests {
 
     fn path(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    #[test]
+    fn incomplete_value_lists_fail_atomically() {
+        let first = super::ControlFlowValueId(2);
+        let second = super::ControlFlowValueId(3);
+        assert_eq!(
+            super::complete_value_list(vec![Some(first), Some(second)]),
+            Some(vec![first, second])
+        );
+        assert_eq!(
+            super::complete_value_list(vec![Some(first), None, Some(second)]),
+            None
+        );
     }
 
     #[test]
