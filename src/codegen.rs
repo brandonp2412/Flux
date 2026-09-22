@@ -50940,6 +50940,41 @@ fn direct(value: i64) -> void {
     sink(value)
 }
 
+fn namedSink(value: i64, *, label: str) -> void {
+    print(value)
+    print(label)
+}
+
+fn namedEffect(value: i64) -> void {
+    namedSink(value, label: "typed")
+}
+
+fn qualifiedEffect(value: i64) -> void {
+    time.sleep(value)
+}
+
+interface Recorder {
+    fn write(value: i64, *, flush: bool) -> void
+}
+
+struct Writer {
+    marker: i64
+}
+
+fn writerWrite(writer: Writer, value: i64, *, flush: bool) -> void {
+    print(writer.marker)
+    print(value)
+    print(flush)
+}
+
+impl Recorder for Writer {
+    write: writerWrite
+}
+
+fn interfaceEffect(writer: Writer, value: i64) -> void {
+    Recorder.write(writer, value, flush: true)
+}
+
 async fn asyncSink(value: i64) -> void {
     print(value)
 }
@@ -50998,6 +51033,114 @@ fn main() -> i64 {
             format!("{}({})", function_c_name("sink"), local_c_name("value"))
         );
         assert!(!emitted.contains("checked-ast-void-call"));
+
+        for (function, expected_ir_kind, env) in [
+            (
+                "namedEffect",
+                "named call",
+                HashMap::from([("value".to_string(), Type::I64)]),
+            ),
+            (
+                "qualifiedEffect",
+                "qualified call",
+                HashMap::from([("value".to_string(), Type::I64)]),
+            ),
+            (
+                "interfaceEffect",
+                "named interface dispatch",
+                HashMap::from([
+                    ("writer".to_string(), Type::Named("Writer".to_string())),
+                    ("value".to_string(), Type::I64),
+                ]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("effect-only call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.ty == Type::Void
+                        && match (&value.kind, expected_ir_kind) {
+                            (
+                                crate::ir::ControlFlowValueKind::NamedCall { callee, .. },
+                                "named call",
+                            ) => callee == "namedSink",
+                            (
+                                crate::ir::ControlFlowValueKind::QualifiedCall {
+                                    namespace,
+                                    name,
+                                    ..
+                                },
+                                "qualified call",
+                            ) => namespace == "time" && name == "sleep",
+                            (
+                                crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                                    interface,
+                                    capability,
+                                    ..
+                                },
+                                "named interface dispatch",
+                            ) => interface == "Recorder" && capability == "write",
+                            _ => false,
+                        }
+                })
+                .unwrap_or_else(|| panic!("typed IR should retain effect-only {expected_ir_kind}"));
+            assert!(root.ownership.is_effect_only());
+
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{expected_ir_kind} should reconstruct from typed IR"));
+            assert!(match (&scalar.kind, expected_ir_kind) {
+                (CfgScalarExprKind::NamedCall { callee, .. }, "named call") => {
+                    callee == "namedSink"
+                }
+                (
+                    CfgScalarExprKind::QualifiedCall {
+                        namespace, name, ..
+                    },
+                    "qualified call",
+                ) => namespace == "time" && name == "sleep",
+                (
+                    CfgScalarExprKind::NamedQualifiedCall {
+                        namespace, name, ..
+                    },
+                    "named interface dispatch",
+                ) => namespace == "Recorder" && name == "write",
+                _ => false,
+            });
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str(format!("checked-ast-{function}")),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Void,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .unwrap_or_else(|error| {
+                panic!("{expected_ir_kind} should emit from typed IR: {error:?}")
+            });
+            assert!(
+                !emitted.contains("checked-ast-"),
+                "{expected_ir_kind} fell back to the poisoned checked AST: {emitted}"
+            );
+            assert!(emitted.contains(&local_c_name("value")), "{emitted}");
+            if function == "interfaceEffect" {
+                assert!(
+                    emitted.contains(&function_c_name("writerWrite")),
+                    "{emitted}"
+                );
+            }
+        }
 
         let suspended = database
             .control_flow_graph("suspended")
