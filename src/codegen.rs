@@ -40674,6 +40674,49 @@ fn cfg_rewrite_expr_as_ast(
     Some(expr)
 }
 
+fn cfg_plain_aggregate_shape_as_ast(
+    root_span: SourceSpan,
+    shape: &CfgAggregateShape,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Expr> {
+    let kind = match shape {
+        CfgAggregateShape::List(items)
+            if items
+                .iter()
+                .all(|item| matches!(item, CfgListItemShape::Value(_))) =>
+        {
+            return cfg_list_shape_as_ast(root_span, shape, env, signatures, rewrite_facts);
+        }
+        CfgAggregateShape::Set(items) => ExprKind::Set(
+            items
+                .iter()
+                .map(|span| cfg_rewrite_expr_as_ast(*span, env, signatures, rewrite_facts))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        CfgAggregateShape::Record(fields) => ExprKind::RecordLiteral {
+            fields: fields
+                .iter()
+                .map(|(name, span)| {
+                    let value = cfg_rewrite_expr_as_ast(*span, env, signatures, rewrite_facts)?;
+                    Some(crate::ast::RecordLiteralField {
+                        name: name.clone(),
+                        name_span: name.as_ref().map(|_| source_span_from_key(*span)),
+                        value,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        CfgAggregateShape::List(_) | CfgAggregateShape::ListComprehension { .. } => return None,
+    };
+    Some(Expr {
+        line: root_span.line,
+        span: root_span,
+        kind,
+    })
+}
+
 fn cfg_list_shape_as_ast(
     root_span: SourceSpan,
     shape: &CfgAggregateShape,
@@ -46747,6 +46790,12 @@ fn emit_expr_for_expected_with_cfg_proofs(
     {
         return Ok(value);
     }
+    if let Some(shape) = rewrite_facts.aggregates.get(&span)
+        && let Some(rewritten) =
+            cfg_plain_aggregate_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
+    {
+        return emit_expr_for_expected(&rewritten, expected, env, signatures);
+    }
     let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     emit_expr_for_expected(&rewritten, expected, env, signatures)
 }
@@ -47400,6 +47449,96 @@ mod cfg_rewrite_fact_tests {
         };
         assert_eq!(fields[0].name.as_deref(), Some("right"));
         assert_eq!(fields[1].name.as_deref(), Some("left"));
+    }
+
+    #[test]
+    fn plain_aggregate_shapes_emit_without_checked_ast_children() {
+        let source = SourceId::new(4246);
+        let left_span = SourceSpan::new(1, 2, 4).with_source(source);
+        let right_span = SourceSpan::new(1, 8, 5).with_source(source);
+        let set_span = SourceSpan::new(1, 1, 14).with_source(source);
+        let env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        let mut set_facts = CfgRewriteFacts::default();
+        set_facts
+            .constants
+            .insert(source_span_key(left_span), ConstantValue::I64(1));
+        set_facts
+            .constants
+            .insert(source_span_key(right_span), ConstantValue::I64(2));
+        set_facts.aggregates.insert(
+            source_span_key(set_span),
+            CfgAggregateShape::Set(vec![
+                source_span_key(right_span),
+                source_span_key(left_span),
+            ]),
+        );
+        let fake_set = Expr {
+            line: 1,
+            span: set_span,
+            kind: ExprKind::Str("checked-ast-set".to_string()),
+        };
+        let set_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_set,
+            &Type::Set(Box::new(Type::I64)),
+            &env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &set_facts,
+        )
+        .expect("set shape should emit from typed IR children");
+        assert!(set_code.contains("INT64_C(2)"));
+        assert!(set_code.contains("INT64_C(1)"));
+        assert!(set_code.find("INT64_C(2)") < set_code.find("INT64_C(1)"));
+        assert!(!set_code.contains("checked-ast-set"));
+
+        let record_span = SourceSpan::new(2, 1, 20).with_source(source);
+        let mut record_facts = CfgRewriteFacts::default();
+        for (span, name) in [(left_span, "left"), (right_span, "right")] {
+            record_facts.scalar_exprs.insert(
+                source_span_key(span),
+                CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Name(name.to_string()),
+                },
+            );
+        }
+        record_facts.aggregates.insert(
+            source_span_key(record_span),
+            CfgAggregateShape::Record(vec![
+                (Some("right".to_string()), source_span_key(right_span)),
+                (Some("left".to_string()), source_span_key(left_span)),
+            ]),
+        );
+        let record_ty = Type::Record(vec![
+            crate::ast::RecordTypeField {
+                name: Some("right".to_string()),
+                ty: Type::I64,
+            },
+            crate::ast::RecordTypeField {
+                name: Some("left".to_string()),
+                ty: Type::I64,
+            },
+        ]);
+        let fake_record = Expr {
+            line: 2,
+            span: record_span,
+            kind: ExprKind::Str("checked-ast-record".to_string()),
+        };
+        let record_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_record,
+            &record_ty,
+            &env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &record_facts,
+        )
+        .expect("record shape should emit from typed IR children");
+        assert!(record_code.contains(&local_c_name("right")));
+        assert!(record_code.contains(&local_c_name("left")));
+        assert!(!record_code.contains("checked-ast-record"));
     }
 
     #[test]
