@@ -49234,8 +49234,11 @@ fn emit_cfg_scalar_expr_direct(
                     })?
                 };
                 let parameter_ty = signatures.canonical_type(&parameter.ty);
-                let direct_argument = matches!(argument.kind, CfgScalarExprKind::Name(_))
-                    || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
                 if !direct_argument
                     || signatures.canonical_type(&argument.ty) != parameter_ty
                     || !signatures.is_copy_type(&parameter_ty)
@@ -55252,17 +55255,10 @@ fn main() -> i64 {
             });
 
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
-            if function == "namedEffect" {
-                assert!(
-                    direct.is_none(),
-                    "{function} should retain its specialized/conservative fallback path"
-                );
-            } else {
-                assert!(
-                    direct.is_some(),
-                    "{expected_ir_kind} should emit directly from typed IR"
-                );
-            }
+            assert!(
+                direct.is_some(),
+                "{expected_ir_kind} should emit directly from typed IR"
+            );
 
             let fake = Expr {
                 line: root.span.line,
@@ -55397,6 +55393,10 @@ fn repeatedArgument(value: i64, other: i64) -> i64 {
 
 fn namedCall(value: i64, adjust: i64) -> i64 {
     return named(value, adjust: adjust)
+}
+
+fn literalNamedCall(value: i64) -> i64 {
+    return named(value, adjust: 3)
 }
 
 fn nestedNamedCall(left: i64, right: i64, adjust: i64) -> i64 {
@@ -55810,6 +55810,57 @@ fn main() -> i64 {
                 local_c_name("adjust")
             )
         );
+
+        let literal_named = database
+            .control_flow_graph("literalNamedCall")
+            .expect("literal named-call CFG should exist");
+        let literal_named_call = literal_named
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedCall { callee, .. }
+                        if callee == "named"
+                )
+            })
+            .expect("literal named call should retain typed IR");
+        let literal_named_facts = cfg_rewrite_facts(literal_named);
+        let literal_named_scalar = literal_named_facts
+            .scalar_exprs
+            .get(&source_span_key(literal_named_call.span))
+            .expect("literal named call should have typed-IR facts");
+        let literal_named_env = HashMap::from([("value".to_string(), Type::I64)]);
+        let literal_named_direct = emit_cfg_scalar_expr_direct(
+            literal_named_scalar,
+            &literal_named_env,
+            database.signatures(),
+        )
+        .expect("top-level scalar literal named argument should emit directly from typed IR");
+        assert_eq!(
+            literal_named_direct,
+            format!(
+                "{}({}, INT64_C(3))",
+                function_c_name("named"),
+                local_c_name("value")
+            )
+        );
+        let fake_literal_named = Expr {
+            line: literal_named_call.span.line,
+            span: literal_named_call.span,
+            kind: ExprKind::Str("checked-ast-literal-named-call".to_string()),
+        };
+        let literal_named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_literal_named,
+            &Type::I64,
+            &literal_named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &literal_named_facts,
+        )
+        .expect("literal named call should bypass the checked-AST root");
+        assert_eq!(literal_named_emitted, literal_named_direct);
+        assert!(!literal_named_emitted.contains("checked-ast-literal-named-call"));
 
         let nested_named = database
             .control_flow_graph("nestedNamedCall")
