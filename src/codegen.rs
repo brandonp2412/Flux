@@ -48441,10 +48441,14 @@ fn emit_cfg_scalar_expr_direct(
                     let mut rendered = Vec::with_capacity(arguments.len());
                     for (argument, parameter) in arguments.iter().zip(&signature.params) {
                         let parameter = signatures.canonical_type(parameter);
-                        if !matches!(
+                        let direct_argument = matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || signatures.canonical_type(&argument.ty) != parameter
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            argument, env, signatures,
+                        );
+                        if !direct_argument
+                            || signatures.canonical_type(&argument.ty) != parameter
                             || !signatures.is_copy_type(&parameter)
                         {
                             return None;
@@ -48495,10 +48499,14 @@ fn emit_cfg_scalar_expr_direct(
                                 })?
                             };
                         let parameter_ty = signatures.canonical_type(&parameter.ty);
-                        if !matches!(
+                        let direct_argument = matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || signatures.canonical_type(&argument.ty) != parameter_ty
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            argument, env, signatures,
+                        );
+                        if !direct_argument
+                            || signatures.canonical_type(&argument.ty) != parameter_ty
                             || !signatures.is_copy_type(&parameter_ty)
                         {
                             return None;
@@ -49052,7 +49060,9 @@ fn emit_cfg_scalar_expr_direct(
                     })?
                 };
                 let parameter_ty = signatures.canonical_type(&parameter.ty);
-                if !matches!(argument.kind, CfgScalarExprKind::Name(_))
+                let direct_argument = matches!(argument.kind, CfgScalarExprKind::Name(_))
+                    || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument
                     || signatures.canonical_type(&argument.ty) != parameter_ty
                     || !signatures.is_copy_type(&parameter_ty)
                 {
@@ -49131,10 +49141,13 @@ fn emit_cfg_scalar_expr_direct(
             rendered.push("flux__optional_cascade_value_direct".to_string());
             for (argument, parameter) in arguments.iter().zip(&signature.params[1..]) {
                 let parameter = signatures.canonical_type(parameter);
-                if !matches!(
-                    argument.kind,
-                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                ) || signatures.canonical_type(&argument.ty) != parameter
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument
+                    || signatures.canonical_type(&argument.ty) != parameter
                     || !signatures.is_copy_type(&parameter)
                 {
                     return None;
@@ -55022,6 +55035,10 @@ fn namedCall(value: i64, adjust: i64) -> i64 {
     return named(value, adjust: adjust)
 }
 
+fn nestedNamedCall(left: i64, right: i64, adjust: i64) -> i64 {
+    return named(left + right, adjust: adjust)
+}
+
 fn functionValueCall(transform: fn(i64) -> i64, value: i64) -> i64 {
     return transform(value)
 }
@@ -55032,6 +55049,10 @@ fn qualifiedCall(value: i64) -> i64 {
 
 fn optionalCall(value: i64?) -> i64? {
     return value ?.. add(1)
+}
+
+fn nestedOptionalCall(value: i64?, left: i64, right: i64) -> i64? {
+    return value ?.. add(left + right)
 }
 
 interface Measure {
@@ -55418,6 +55439,63 @@ fn main() -> i64 {
             )
         );
 
+        let nested_named = database
+            .control_flow_graph("nestedNamedCall")
+            .expect("nested named-call CFG should exist");
+        let nested_named_call = nested_named
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedCall { callee, .. }
+                        if callee == "named"
+                )
+            })
+            .expect("nested named call should retain typed IR");
+        let nested_named_facts = cfg_rewrite_facts(nested_named);
+        let nested_named_scalar = nested_named_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_named_call.span))
+            .expect("nested named call should have typed-IR facts");
+        let nested_named_env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+            ("adjust".to_string(), Type::I64),
+        ]);
+        let nested_named_direct = emit_cfg_scalar_expr_direct(
+            nested_named_scalar,
+            &nested_named_env,
+            database.signatures(),
+        )
+        .expect("safe nested primitive named-call arguments should render from typed IR");
+        assert!(
+            nested_named_direct.contains(&format!(
+                "{}(flux_add_i64({}, {}), {})",
+                function_c_name("named"),
+                local_c_name("left"),
+                local_c_name("right"),
+                local_c_name("adjust"),
+            )),
+            "{nested_named_direct}"
+        );
+        let fake_nested_named = Expr {
+            line: nested_named_call.span.line,
+            span: nested_named_call.span,
+            kind: ExprKind::Str("checked-ast-nested-named-call".to_string()),
+        };
+        let nested_named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_named,
+            &Type::I64,
+            &nested_named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_named_facts,
+        )
+        .expect("nested primitive named-call arguments should bypass the checked-AST root");
+        assert_eq!(nested_named_emitted, nested_named_direct);
+        assert!(!nested_named_emitted.contains("checked-ast-nested-named-call"));
+
         let function_value = database
             .control_flow_graph("functionValueCall")
             .expect("function-value call CFG should exist");
@@ -55538,6 +55616,59 @@ fn main() -> i64 {
             direct_optional.contains(&local_c_name("value")),
             "{direct_optional}"
         );
+
+        let nested_optional = database
+            .control_flow_graph("nestedOptionalCall")
+            .expect("nested optional-cascade CFG should exist");
+        let nested_optional_call = nested_optional
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
+                        if callee == "add"
+                )
+            })
+            .expect("nested optional cascade should retain typed IR");
+        let nested_optional_facts = cfg_rewrite_facts(nested_optional);
+        let nested_optional_scalar = nested_optional_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_optional_call.span))
+            .expect("nested optional cascade should have typed-IR facts");
+        let nested_optional_env = HashMap::from([
+            ("value".to_string(), Type::Optional(Box::new(Type::I64))),
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        let nested_optional_direct = emit_cfg_scalar_expr_direct(
+            nested_optional_scalar,
+            &nested_optional_env,
+            database.signatures(),
+        )
+        .expect("safe nested primitive optional-cascade arguments should render from typed IR");
+        assert!(nested_optional_direct.contains(&function_c_name("add")));
+        assert!(nested_optional_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("left"),
+            local_c_name("right"),
+        )));
+        let fake_nested_optional = Expr {
+            line: nested_optional_call.span.line,
+            span: nested_optional_call.span,
+            kind: ExprKind::Str("checked-ast-nested-optional-call".to_string()),
+        };
+        let nested_optional_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_optional,
+            &Type::Optional(Box::new(Type::I64)),
+            &nested_optional_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_optional_facts,
+        )
+        .expect("nested primitive optional-cascade arguments should bypass the checked-AST root");
+        assert_eq!(nested_optional_emitted, nested_optional_direct);
+        assert!(!nested_optional_emitted.contains("checked-ast-nested-optional-call"));
 
         let CfgScalarExprKind::OptionalCascadeCall {
             optional: optional_input,
@@ -57018,6 +57149,14 @@ async fn namedAwait() -> i64 {
     return await adjust(4, delta: 3)
 }
 
+async fn nestedDirectAwait(left: i64, right: i64) -> i64 {
+    return await delay(left + right)
+}
+
+async fn nestedNamedAwait(left: i64, right: i64, delta: i64) -> i64 {
+    return await adjust(left + right, delta: delta)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -57116,6 +57255,72 @@ fn main() -> i64 {
             .expect("await should emit from typed IR");
             assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-await"));
+        }
+
+        for (function, callee, env) in [
+            (
+                "nestedDirectAwait",
+                "delay",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "nestedNamedAwait",
+                "adjust",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                    ("delta".to_string(), Type::I64),
+                ]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("nested await CFG should exist");
+            let awaited = graph
+                .values()
+                .iter()
+                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. }))
+                .expect("nested await should retain the await boundary");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(awaited.span))
+                .expect("nested await should have typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("safe nested primitive await arguments should render from typed IR");
+            assert!(direct.contains(&async_await_c_name(callee)), "{direct}");
+            assert!(direct.contains(&async_start_c_name(callee)), "{direct}");
+            assert!(
+                direct.contains(&format!(
+                    "flux_add_i64({}, {})",
+                    local_c_name("left"),
+                    local_c_name("right"),
+                )),
+                "{direct}"
+            );
+            if function == "nestedNamedAwait" {
+                assert!(direct.contains(&local_c_name("delta")), "{direct}");
+            }
+
+            let fake = Expr {
+                line: awaited.span.line,
+                span: awaited.span,
+                kind: ExprKind::Str("checked-ast-nested-await".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("nested primitive await arguments should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+            assert!(!emitted.contains("checked-ast-nested-await"));
         }
     }
 
