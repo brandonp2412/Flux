@@ -34094,6 +34094,10 @@ enum CfgScalarExprKind {
         target: String,
         value: Box<CfgScalarExpr>,
     },
+    Bind {
+        span: SourceSpan,
+        arguments: Vec<CfgScalarExpr>,
+    },
     Call {
         callee: String,
         arguments: Vec<CfgScalarExpr>,
@@ -34408,6 +34412,9 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
                 || step.as_deref().is_some_and(cfg_scalar_expr_contains_call)
         }
         CfgScalarExprKind::InterfacePack { value, .. } => cfg_scalar_expr_contains_call(value),
+        CfgScalarExprKind::Bind { arguments, .. } => {
+            arguments.iter().any(cfg_scalar_expr_contains_call)
+        }
         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => false,
     }
 }
@@ -34501,6 +34508,15 @@ fn cfg_direct_scalar_expr(
         crate::ir::ControlFlowValueKind::Await { value } => CfgScalarExprKind::Await {
             value: Box::new(cfg_direct_scalar_expr(cfg, *value)?),
         },
+        crate::ir::ControlFlowValueKind::Call { callee, arguments } if callee == "bind" => {
+            CfgScalarExprKind::Bind {
+                span: value.span,
+                arguments: arguments
+                    .iter()
+                    .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                    .collect::<Option<Vec<_>>>()?,
+            }
+        }
         crate::ir::ControlFlowValueKind::Call { callee, arguments } => CfgScalarExprKind::Call {
             callee: callee.clone(),
             arguments: arguments
@@ -45820,6 +45836,20 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 named_args: Vec::new(),
             }
         }
+        CfgScalarExprKind::Bind {
+            span: bind_span,
+            arguments,
+        } => {
+            return Expr {
+                line: bind_span.line,
+                span: *bind_span,
+                kind: ExprKind::Call {
+                    name: "bind".to_string(),
+                    args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+                    named_args: Vec::new(),
+                },
+            };
+        }
         CfgScalarExprKind::Await { value } => {
             ExprKind::Await(Box::new(cfg_scalar_expr_as_ast(value)))
         }
@@ -46108,6 +46138,9 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                     .is_some_and(|signature| signature.asynchronous)
                 && cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
         }
+        CfgScalarExprKind::Bind { arguments, .. } => arguments
+            .iter()
+            .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)),
         CfgScalarExprKind::Call { callee, arguments } => {
             let callable = if let Some(local_ty) = env.get(callee) {
                 matches!(
@@ -48960,6 +48993,57 @@ fn main() -> i64 {
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("top-level function reference should emit from typed IR");
         assert_eq!(emitted, function_c_name("increment"));
+    }
+
+    #[test]
+    fn bound_function_values_lower_from_typed_ir() {
+        let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn pick() -> fn(i64) -> i64 {
+    return bind(add, 5)
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("bound function value fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist");
+        let bind = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "bind"
+                )
+            })
+            .expect("typed IR should retain the bind expression");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(bind.span))
+            .expect("bind function value should be reconstructable from typed IR");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::Bind { span, arguments }
+                if *span == bind.span && arguments.len() == 2
+        ));
+        let function_ty = Type::Function {
+            params: vec![Type::I64],
+            returns: vec![Type::I64],
+        };
+        let emitted =
+            emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
+                .expect("bind function value should emit from typed IR");
+        assert_eq!(emitted, partial_application_c_name(bind.span));
     }
 
     #[test]
