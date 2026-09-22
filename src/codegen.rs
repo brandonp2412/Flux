@@ -34638,11 +34638,12 @@ fn cfg_direct_scalar_expr(
                     | BinOp::Le
                     | BinOp::Gt
                     | BinOp::Ge
+                    | BinOp::Coalesce
             ) =>
         {
             let left = cfg_direct_scalar_expr(cfg, *left)?;
             let right = cfg_direct_scalar_expr(cfg, *right)?;
-            if matches!(op, BinOp::And | BinOp::Or)
+            if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
                 && (cfg_scalar_expr_contains_call(&left) || cfg_scalar_expr_contains_call(&right))
             {
                 return None;
@@ -47775,6 +47776,104 @@ fn main() -> i64 {
         )
         .expect("dynamic negation should emit from typed IR");
         assert_eq!(emitted, format!("flux_neg_i64({})", local_c_name("value")));
+    }
+
+    #[test]
+    fn dynamic_coalescing_lowers_from_typed_ir_without_eager_calls() {
+        let source = r#"
+fn choose(value: i64?, fallback: i64) -> i64 {
+    return value ?? fallback
+}
+
+fn fallback() -> i64 {
+    return 7
+}
+
+fn chooseCall(value: i64?) -> i64 {
+    return value ?? fallback()
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("coalescing IR fixture should typecheck");
+
+        let choose = database
+            .control_flow_graph("choose")
+            .expect("choose CFG should exist");
+        let coalesce = choose
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary {
+                        op: BinOp::Coalesce,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain dynamic coalescing");
+        let facts = cfg_rewrite_facts(choose);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(coalesce.span))
+            .expect("pure dynamic coalescing should be reconstructable from typed IR");
+        assert!(matches!(
+            scalar.kind,
+            CfgScalarExprKind::Binary {
+                op: BinOp::Coalesce,
+                ..
+            }
+        ));
+
+        let fake = Expr {
+            line: coalesce.span.line,
+            span: coalesce.span,
+            kind: ExprKind::Int(999),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([
+                ("value".to_string(), Type::Optional(Box::new(Type::I64))),
+                ("fallback".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("dynamic coalescing should emit from typed IR");
+        assert!(emitted.contains("flux__coalesce_value"));
+        assert!(emitted.contains(&local_c_name("value")));
+        assert!(emitted.contains(&local_c_name("fallback")));
+        assert!(!emitted.contains("999"));
+
+        let choose_call = database
+            .control_flow_graph("chooseCall")
+            .expect("chooseCall CFG should exist");
+        let call_coalesce = choose_call
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary {
+                        op: BinOp::Coalesce,
+                        ..
+                    }
+                )
+            })
+            .expect("typed IR should retain call-backed coalescing");
+        let call_facts = cfg_rewrite_facts(choose_call);
+        assert!(
+            !call_facts
+                .scalar_exprs
+                .contains_key(&source_span_key(call_coalesce.span)),
+            "effectful coalescing fallback must retain the checked-AST path"
+        );
     }
 
     #[test]
