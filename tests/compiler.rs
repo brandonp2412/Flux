@@ -72315,7 +72315,7 @@ fn main() -> i64 {
     let optional_generated =
         compile_to_c(optional_source).expect("optional map indexing should lower natively");
     assert!(optional_generated.contains("struct flux__optional_map"));
-    assert!(optional_generated.contains(".has_value && true"));
+    assert!(optional_generated.contains("flux__typed_map_index_base.has_value"));
     let optional_root = std::env::temp_dir().join(format!(
         "flux-optional-map-index-{}-{}",
         std::process::id(),

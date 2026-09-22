@@ -49121,6 +49121,87 @@ fn emit_cfg_scalar_expr_direct(
         CfgScalarExprKind::Index {
             base,
             index,
+            optional: true,
+        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+            let direct_index =
+                matches!(
+                    index.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                ) || cfg_scalar_expr_is_direct_primitive_tree(index, env, signatures);
+            if !direct_index {
+                return None;
+            }
+            let Type::Optional(inner) = signatures.canonical_type(&base.ty) else {
+                return None;
+            };
+            let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            let rendered_index = emit_cfg_scalar_expr_direct(index, env, signatures)?;
+            match signatures.canonical_type(&inner) {
+                Type::List(element)
+                    if signatures.canonical_type(&index.ty) == Type::I64
+                        && signatures.is_copy_type(&element) =>
+                {
+                    let element_ty = signatures.canonical_type(&element);
+                    let expected = if matches!(element_ty, Type::Optional(_)) {
+                        element_ty.clone()
+                    } else {
+                        Type::Optional(Box::new(element_ty.clone()))
+                    };
+                    if ty != expected {
+                        return None;
+                    }
+                    let base_c = c_type(&Type::Optional(inner.clone()), signatures);
+                    let element_c = c_type(&element, signatures);
+                    let result_c = c_type(&ty, signatures);
+                    let present = if matches!(element_ty, Type::Optional(_)) {
+                        format!(
+                            "(*(({element_c} *)flux_list_at(flux__optional_index_base.value, {rendered_index}, sizeof({element_c}))))"
+                        )
+                    } else {
+                        format!(
+                            "({result_c}){{ .has_value = true, .value = *(({element_c} *)flux_list_at(flux__optional_index_base.value, {rendered_index}, sizeof({element_c}))) }}"
+                        )
+                    };
+                    Some(format!(
+                        "__extension__ ({{ {base_c} flux__optional_index_base = {rendered_base}; flux__optional_index_base.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})"
+                    ))
+                }
+                Type::Map(key, value)
+                    if signatures.canonical_type(&index.ty) == signatures.canonical_type(&key)
+                        && ty == Type::Optional(value.clone())
+                        && signatures.is_copy_type(&value) =>
+                {
+                    let key_ty = signatures.canonical_type(&key);
+                    if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
+                        return None;
+                    }
+                    let base_ty = Type::Optional(Box::new(Type::Map(key.clone(), value.clone())));
+                    let base_c = c_type(&base_ty, signatures);
+                    let key_c = c_type(&key, signatures);
+                    let value_c = c_type(&value, signatures);
+                    let result_c = c_type(&ty, signatures);
+                    let equality = match key_ty {
+                        Type::Str => format!(
+                            "strcmp(flux__typed_map_index_key, *((const char **)flux_list_at_unchecked(flux__typed_map_index_base.value.keys, flux__typed_map_index_i, sizeof({key_c})))) == 0"
+                        ),
+                        Type::I64 | Type::Bool => format!(
+                            "flux__typed_map_index_key == *(({key_c} *)flux_list_at_unchecked(flux__typed_map_index_base.value.keys, flux__typed_map_index_i, sizeof({key_c})))"
+                        ),
+                        _ => unreachable!("map key kind checked above"),
+                    };
+                    let value_read = format!(
+                        "*((({value_c} *)flux_list_at_unchecked(flux__typed_map_index_base.value.values, flux__typed_map_index_i, sizeof({value_c}))))"
+                    );
+                    Some(format!(
+                        "__extension__ ({{ {base_c} flux__typed_map_index_base = {rendered_base}; {key_c} flux__typed_map_index_key = {rendered_index}; {result_c} flux__typed_map_index_result = ({result_c}){{ .has_value = false }}; if (flux__typed_map_index_base.has_value) {{ for (size_t flux__typed_map_index_i = 0; flux__typed_map_index_i < flux__typed_map_index_base.value.keys.len; ++flux__typed_map_index_i) {{ if ({equality}) {{ flux__typed_map_index_result.has_value = true; flux__typed_map_index_result.value = {value_read}; break; }} }} }} flux__typed_map_index_result; }})"
+                    ))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::Index {
+            base,
+            index,
             optional: false,
         } if matches!(
             base.kind,
@@ -53024,16 +53105,22 @@ fn main() -> i64 {
                 .get(&source_span_key(index.span))
                 .expect("list index should have scalar typed-IR facts");
             let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
-            if function == "direct" {
-                let direct = direct.expect("named list index should render directly from typed IR");
-                assert!(direct.contains("flux_list_at("), "{direct}");
-                assert!(direct.contains(&local_c_name("values")), "{direct}");
-                assert!(direct.contains(&local_c_name("at")), "{direct}");
-            } else {
+            if function == "borrowed" {
                 assert!(
                     direct.is_none(),
                     "{function} should retain the established list-index fallback"
                 );
+            } else {
+                let direct = direct.expect("named list index should render directly from typed IR");
+                assert!(direct.contains("flux_list_at("), "{direct}");
+                assert!(direct.contains(&local_c_name("values")), "{direct}");
+                assert!(direct.contains(&local_c_name("at")), "{direct}");
+                if expected_optional {
+                    assert!(
+                        direct.contains("flux__optional_index_base.has_value"),
+                        "{direct}"
+                    );
+                }
             }
 
             let fake = Expr {
@@ -53317,17 +53404,23 @@ fn main() -> i64 {
                 .get(&source_span_key(index.span))
                 .expect("map index should have scalar typed-IR facts");
             let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
-            if function == "direct" {
+            if function == "borrowed" {
+                assert!(
+                    direct.is_none(),
+                    "{function} should retain the established map-index fallback"
+                );
+            } else {
                 let direct = direct.expect("named map index should render directly from typed IR");
                 assert!(direct.contains("flux__typed_map_index_"), "{direct}");
                 assert!(direct.contains("strcmp("), "{direct}");
                 assert!(direct.contains(&local_c_name("values")), "{direct}");
                 assert!(direct.contains(&local_c_name("key")), "{direct}");
-            } else {
-                assert!(
-                    direct.is_none(),
-                    "{function} should retain the established map-index fallback"
-                );
+                if expected_optional_base {
+                    assert!(
+                        direct.contains("flux__typed_map_index_base.has_value"),
+                        "{direct}"
+                    );
+                }
             }
 
             let fake = Expr {
@@ -53356,15 +53449,15 @@ fn main() -> i64 {
 
             assert!(emitted.contains(&local_c_name("values")));
             assert!(emitted.contains(&local_c_name("key")));
-            if function == "direct" {
-                assert!(emitted.contains("flux__typed_map_index_"), "{emitted}");
-            } else {
+            if function == "borrowed" {
                 assert!(emitted.contains("flux__map_index_"), "{emitted}");
+            } else {
+                assert!(emitted.contains("flux__typed_map_index_"), "{emitted}");
             }
             assert!(emitted.contains("strcmp("));
             assert!(!emitted.contains("checked-ast-map-index"));
             if expected_optional_base {
-                assert!(emitted.contains(".has_value &&"));
+                assert!(emitted.contains("flux__typed_map_index_base.has_value"));
             }
         }
 
