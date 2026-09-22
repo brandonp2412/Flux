@@ -34391,6 +34391,24 @@ fn cfg_borrowed_list_base(
             };
             CfgScalarExprKind::Aggregate(aggregate)
         }
+        crate::ir::ControlFlowValueKind::Index {
+            base,
+            index,
+            optional,
+        } => CfgScalarExprKind::Index {
+            base: Box::new(cfg_borrowed_index_base(cfg, *base)?),
+            index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
+            optional: *optional,
+        },
+        crate::ir::ControlFlowValueKind::Field {
+            base,
+            name,
+            optional,
+        } => CfgScalarExprKind::Field {
+            base: Box::new(cfg_borrowed_collection_field_base(cfg, *base)?),
+            name: name.clone(),
+            optional: *optional,
+        },
         crate::ir::ControlFlowValueKind::Slice {
             base,
             start,
@@ -34513,27 +34531,14 @@ fn cfg_direct_scalar_expr(
             },
         });
     }
-    if let crate::ir::ControlFlowValueKind::Slice {
-        base,
-        start,
-        end,
-        step,
-    } = &value.kind
-        && value.ownership.is_borrow()
+    if value.ownership.is_borrow()
+        && matches!(
+            &value.ty,
+            Type::List(_) | Type::Set(_) | Type::Map(_, _) | Type::Optional(_)
+        )
+        && let Some(borrowed) = cfg_borrowed_collection_value(cfg, id)
     {
-        let direct_bound = |id: &Option<crate::ir::ControlFlowValueId>| match id {
-            Some(id) => Some(Some(Box::new(cfg_direct_scalar_expr(cfg, *id)?))),
-            None => Some(None),
-        };
-        return Some(CfgScalarExpr {
-            ty: value.ty.clone(),
-            kind: CfgScalarExprKind::Slice {
-                base: Box::new(cfg_borrowed_list_base(cfg, *base)?),
-                start: direct_bound(start)?,
-                end: direct_bound(end)?,
-                step: direct_bound(step)?,
-            },
-        });
+        return Some(borrowed);
     }
     if !value.ownership.is_copy() {
         return None;
@@ -48707,6 +48712,16 @@ fn borrowSlice(values: i64[], start: i64) -> i64 {
     return view.count
 }
 
+fn borrowIndex(rows: i64[][], at: i64) -> i64 {
+    let view: i64[] = borrow rows[at]
+    return view.count
+}
+
+fn borrowProperty(rows: i64[][]) -> i64 {
+    let view: i64[] = borrow rows.first
+    return view.count
+}
+
 fn borrowSet(values: set<i64>) -> i64 {
     let view: set<i64> = borrow values
     return view.count
@@ -48742,6 +48757,25 @@ fn main() -> i64 {
                     ("start".to_string(), Type::I64),
                 ]),
                 "flux_list_slice(".to_string(),
+            ),
+            (
+                "borrowIndex",
+                HashMap::from([
+                    (
+                        "rows".to_string(),
+                        Type::List(Box::new(Type::List(Box::new(Type::I64)))),
+                    ),
+                    ("at".to_string(), Type::I64),
+                ]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowProperty",
+                HashMap::from([(
+                    "rows".to_string(),
+                    Type::List(Box::new(Type::List(Box::new(Type::I64)))),
+                )]),
+                "flux_list_at(".to_string(),
             ),
             (
                 "borrowSet",
