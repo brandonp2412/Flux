@@ -34064,6 +34064,8 @@ struct CfgAggregateConstant {
 enum CfgScalarExprKind {
     Name(String),
     Constant(ConstantValue),
+    Nil,
+    NoneLiteral,
     Unary {
         op: UnaryOp,
         operand: Box<CfgScalarExpr>,
@@ -34273,7 +34275,23 @@ fn cfg_scalar_leaf(
     id: crate::ir::ControlFlowValueId,
 ) -> Option<CfgScalarExpr> {
     let value = cfg.value(id)?;
-    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    if matches!(value.kind, crate::ir::ControlFlowValueKind::Literal) {
+        let kind = match &value.ty {
+            Type::Error => Some(CfgScalarExprKind::Nil),
+            Type::Optional(inner) if **inner == Type::Void => Some(CfgScalarExprKind::NoneLiteral),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Some(CfgScalarExpr {
+                ty: value.ty.clone(),
+                kind,
+            });
+        }
+    }
+    if !value.ownership.is_copy() {
         return None;
     }
     if let Some(constant) = cfg.proven_scalar_constant(id) {
@@ -34423,7 +34441,9 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
         }
         CfgScalarExprKind::AnonymousFunction { .. }
         | CfgScalarExprKind::Name(_)
-        | CfgScalarExprKind::Constant(_) => false,
+        | CfgScalarExprKind::Constant(_)
+        | CfgScalarExprKind::Nil
+        | CfgScalarExprKind::NoneLiteral => false,
     }
 }
 
@@ -45812,6 +45832,8 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             ConstantValue::Bool(value) => ExprKind::Bool(*value),
             ConstantValue::Str(value) => ExprKind::Str(value.clone()),
         },
+        CfgScalarExprKind::Nil => ExprKind::Nil,
+        CfgScalarExprKind::NoneLiteral => ExprKind::None,
         CfgScalarExprKind::Name(name) => ExprKind::Var(name.clone()),
         CfgScalarExprKind::Field {
             base,
@@ -46274,7 +46296,10 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         CfgScalarExprKind::InterfacePack { value, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
         }
-        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
+        CfgScalarExprKind::Name(_)
+        | CfgScalarExprKind::Constant(_)
+        | CfgScalarExprKind::Nil
+        | CfgScalarExprKind::NoneLiteral => true,
     }
 }
 
@@ -47874,6 +47899,70 @@ fn main() -> i64 {
                 .contains_key(&source_span_key(call_coalesce.span)),
             "effectful coalescing fallback must retain the checked-AST path"
         );
+    }
+
+    #[test]
+    fn absence_literals_lower_from_typed_ir_in_presence_checks() {
+        let source = r#"
+fn hasValue(value: i64?) -> bool {
+    return value != none
+}
+
+fn hasError(value: error) -> bool {
+    return value != nil
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("absence literal IR fixture should typecheck");
+
+        for (function, expected_ty, marker) in [
+            ("hasValue", Type::Optional(Box::new(Type::I64)), "has_value"),
+            ("hasError", Type::Error, "NULL"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("presence-check CFG should exist");
+            let comparison = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: BinOp::Ne, .. }
+                    )
+                })
+                .expect("typed IR should retain the presence comparison");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(comparison.span))
+                .expect("presence comparison should reconstruct from typed IR");
+            assert!(matches!(
+                scalar.kind,
+                CfgScalarExprKind::Binary { op: BinOp::Ne, .. }
+            ));
+
+            let fake = Expr {
+                line: comparison.span.line,
+                span: comparison.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &HashMap::from([("value".to_string(), expected_ty)]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("presence comparison should emit from typed IR");
+            assert!(emitted.contains(&local_c_name("value")));
+            assert!(emitted.contains(marker));
+        }
     }
 
     #[test]
