@@ -34275,7 +34275,7 @@ fn cfg_scalar_leaf(
     let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
         return None;
     };
-    if definitions.is_empty() {
+    if definitions.is_empty() && !matches!(value.ty, Type::Function { .. }) {
         return None;
     }
     Some(CfgScalarExpr {
@@ -48909,6 +48909,57 @@ fn main() -> i64 {
                 local_c_name("value")
             )
         );
+    }
+
+    #[test]
+    fn named_function_references_lower_from_typed_ir() {
+        let source = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn pick() -> fn(i64) -> i64 {
+    return increment
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("named function reference fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist");
+        let function_ref = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+                        if name == "increment" && definitions.is_empty()
+                )
+            })
+            .expect("typed IR should retain the top-level function reference");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(function_ref.span))
+            .expect("top-level function reference should be reconstructable from typed IR");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::Name(name) if name == "increment"
+        ));
+        let function_ty = Type::Function {
+            params: vec![Type::I64],
+            returns: vec![Type::I64],
+        };
+        let emitted =
+            emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
+                .expect("top-level function reference should emit from typed IR");
+        assert_eq!(emitted, function_c_name("increment"));
     }
 
     #[test]
