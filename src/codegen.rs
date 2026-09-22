@@ -48701,6 +48701,38 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "locale" && ty == Type::Str => {
+            let (helper, expected) = match name.as_str() {
+                "language" if arguments.is_empty() => ("flux__locale_language", Vec::new()),
+                "region" if arguments.is_empty() => ("flux__locale_region", Vec::new()),
+                "text" => ("flux__locale_text", vec![Type::Str, Type::Str]),
+                "select" => ("flux__locale_select", vec![Type::Str, Type::Str, Type::Str]),
+                "plural" => ("flux__locale_plural", vec![Type::Str, Type::I64, Type::Str]),
+                _ => return None,
+            };
+            if arguments.len() != expected.len() {
+                return None;
+            }
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, expected) in arguments.iter().zip(expected) {
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            Some(format!("{helper}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "linux" => {
             let binding = crate::linux_bindings::binding_named(name)?;
             if ty != Type::Bool || arguments.len() != binding.params.len() {
@@ -55740,6 +55772,148 @@ fn main() -> i64 {
             )
             .is_none(),
             "effect-only time calls should retain their established lowering path"
+        );
+    }
+
+    #[test]
+    fn direct_scalar_locale_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn language() -> str {
+    return locale.language()
+}
+
+fn region() -> str {
+    return locale.region()
+}
+
+fn text(key: str, fallback: str) -> str {
+    return locale.text(key, fallback)
+}
+
+fn select(key: str, selector: str, fallback: str) -> str {
+    return locale.select(key, selector, fallback)
+}
+
+fn plural(key: str, count: i64, offset: i64, fallback: str) -> str {
+    return locale.plural(key, count + offset, fallback)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct locale qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "language",
+                HashMap::new(),
+                "flux__locale_language()".to_string(),
+            ),
+            (
+                "region",
+                HashMap::new(),
+                "flux__locale_region()".to_string(),
+            ),
+            (
+                "text",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__locale_text({}, {})",
+                    local_c_name("key"),
+                    local_c_name("fallback")
+                ),
+            ),
+            (
+                "select",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("selector".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__locale_select({}, {}, {})",
+                    local_c_name("key"),
+                    local_c_name("selector"),
+                    local_c_name("fallback")
+                ),
+            ),
+            (
+                "plural",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("count".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__locale_plural({}, flux_add_i64({}, {}), {})",
+                    local_c_name("key"),
+                    local_c_name("count"),
+                    local_c_name("offset"),
+                    local_c_name("fallback")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("locale qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("locale qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("locale qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("supported scalar locale call should emit directly from typed IR: {function}: {scalar:?}"));
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        let unsupported = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "locale".to_string(),
+                name: "formatNumber".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Name("value".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &unsupported,
+                &HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("callback".to_string(), callback_ty),
+                ]),
+                database.signatures(),
+            )
+            .is_none(),
+            "callback-based locale formatting should retain its established lowering path"
         );
     }
 
