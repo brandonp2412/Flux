@@ -49493,7 +49493,7 @@ fn emit_cfg_scalar_expr_direct(
             base,
             name,
             optional: true,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+        } => {
             let Type::Optional(inner) = signatures.canonical_type(&base.ty) else {
                 return None;
             };
@@ -53004,6 +53004,10 @@ struct Point {
     x: i64
 }
 
+struct Container {
+    point: Point?
+}
+
 fn pointX(point: Point) -> i64 {
     return point.x
 }
@@ -53018,6 +53022,10 @@ fn temporaryDynamicPointX(value: i64) -> i64 {
 
 fn optionalPointX(point: Point?) -> i64? {
     return point?.x
+}
+
+fn nestedOptionalPointX(value: Container?) -> i64? {
+    return value?.point?.x
 }
 
 fn optionalListLength(values: i64[]?) -> i64? {
@@ -53088,6 +53096,7 @@ fn main() -> i64 {
             ("temporaryPointX", None, true),
             ("temporaryDynamicPointX", Some("value"), true),
             ("optionalPointX", Some("point"), true),
+            ("nestedOptionalPointX", Some("value"), true),
             ("optionalListLength", Some("values"), true),
             ("optionalListFirst", Some("values"), true),
             ("optionalMapCount", Some("values"), true),
@@ -53114,9 +53123,10 @@ fn main() -> i64 {
                     matches!(
                         facts.scalar_exprs.get(&source_span_key(value.span)),
                         Some(CfgScalarExpr {
-                            kind: CfgScalarExprKind::Field { .. },
+                            kind: CfgScalarExprKind::Field { base, .. },
                             ..
-                        })
+                        }) if function != "nestedOptionalPointX"
+                            || matches!(&base.kind, CfgScalarExprKind::Field { optional: true, .. })
                     )
                 })
                 .expect("typed IR should retain the field/property projection");
@@ -53145,6 +53155,7 @@ fn main() -> i64 {
             let marker = match function {
                 "pointX" | "temporaryPointX" | "temporaryDynamicPointX" => field_c_name("x"),
                 "optionalPointX"
+                | "nestedOptionalPointX"
                 | "optionalListLength"
                 | "optionalListFirst"
                 | "optionalMapCount"
