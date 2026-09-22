@@ -49094,7 +49094,11 @@ fn emit_cfg_scalar_expr_direct(
             base,
             index,
             optional: false,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+        } if matches!(
+            base.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+        ) =>
+        {
             let direct_index =
                 matches!(
                     index.kind,
@@ -49105,11 +49109,14 @@ fn emit_cfg_scalar_expr_direct(
             }
             let base_ty = signatures.canonical_type(&base.ty);
             let index_ty = signatures.canonical_type(&index.ty);
+            let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
             let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
             let rendered_index = emit_cfg_scalar_expr_direct(index, env, signatures)?;
             match base_ty {
                 Type::List(element)
-                    if index_ty == Type::I64 && signatures.canonical_type(&element) == ty =>
+                    if index_ty == Type::I64
+                        && signatures.canonical_type(&element) == ty
+                        && (!aggregate_base || signatures.is_copy_type(&element)) =>
                 {
                     let element_c = c_type(&element, signatures);
                     Some(format!(
@@ -52824,6 +52831,10 @@ fn temporary(at: i64) -> i64 {
     return [1, 2][at]
 }
 
+fn temporaryDynamic(value: i64, at: i64) -> i64 {
+    return [value, 2][at]
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -53000,17 +53011,31 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        let temporary_env = HashMap::from([("at".to_string(), Type::I64)]);
+        let temporary_direct = emit_cfg_scalar_expr_direct(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("temporary list index should have scalar typed-IR facts"),
+            &temporary_env,
+            database.signatures(),
+        )
+        .expect("temporary list aggregate base should render directly from typed IR");
         assert!(
-            emit_cfg_scalar_expr_direct(
-                facts
-                    .scalar_exprs
-                    .get(&source_span_key(index.span))
-                    .expect("temporary list index should have scalar typed-IR facts"),
-                &HashMap::from([("at".to_string(), Type::I64)]),
-                database.signatures(),
-            )
-            .is_none(),
-            "temporary list bases should retain aggregate-aware index lowering"
+            temporary_direct.contains("flux_list_at("),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains(&local_c_name("at")),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains("INT64_C(1)"),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains("INT64_C(2)"),
+            "{temporary_direct}"
         );
         let fake = Expr {
             line: index.span.line,
@@ -53020,17 +53045,61 @@ fn main() -> i64 {
         let emitted = emit_expr_for_expected_with_cfg_proofs(
             &fake,
             &Type::I64,
-            &HashMap::from([("at".to_string(), Type::I64)]),
+            &temporary_env,
             database.signatures(),
             &HashMap::new(),
             &facts,
         )
         .expect("temporary list index should emit from typed IR");
-        assert!(emitted.contains(&local_c_name("at")));
-        assert!(emitted.contains("flux_list_at("));
-        assert!(emitted.contains("INT64_C(1)"));
-        assert!(emitted.contains("INT64_C(2)"));
+        assert_eq!(emitted, temporary_direct);
         assert!(!emitted.contains("checked-ast-temporary-list-index"));
+
+        let temporary_dynamic = database
+            .control_flow_graph("temporaryDynamic")
+            .expect("dynamic temporary list index CFG should exist");
+        let dynamic_index = temporary_dynamic
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
+            .expect("dynamic temporary list index should have typed IR");
+        let dynamic_facts = cfg_rewrite_facts(temporary_dynamic);
+        let dynamic_scalar = dynamic_facts
+            .scalar_exprs
+            .get(&source_span_key(dynamic_index.span))
+            .expect("dynamic temporary list index should have scalar typed-IR facts");
+        let dynamic_env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("at".to_string(), Type::I64),
+        ]);
+        let dynamic_direct =
+            emit_cfg_scalar_expr_direct(dynamic_scalar, &dynamic_env, database.signatures())
+                .expect("dynamic temporary list aggregate base should render from typed IR");
+        assert!(dynamic_direct.contains("flux_list_at("), "{dynamic_direct}");
+        assert!(
+            dynamic_direct.contains(&local_c_name("value")),
+            "{dynamic_direct}"
+        );
+        assert!(
+            dynamic_direct.contains(&local_c_name("at")),
+            "{dynamic_direct}"
+        );
+        assert!(dynamic_direct.contains("INT64_C(2)"), "{dynamic_direct}");
+        let fake_dynamic = Expr {
+            line: dynamic_index.span.line,
+            span: dynamic_index.span,
+            kind: ExprKind::Str("checked-ast-dynamic-temporary-list-index".to_string()),
+        };
+        let dynamic_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_dynamic,
+            &Type::I64,
+            &dynamic_env,
+            database.signatures(),
+            &HashMap::new(),
+            &dynamic_facts,
+        )
+        .expect("dynamic temporary list index should bypass the checked-AST root");
+        assert_eq!(dynamic_emitted, dynamic_direct);
+        assert!(!dynamic_emitted.contains("checked-ast-dynamic-temporary-list-index"));
     }
 
     #[test]
@@ -53242,18 +53311,29 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        let temporary_env = HashMap::from([("key".to_string(), Type::Str)]);
+        let temporary_direct = emit_cfg_scalar_expr_direct(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("temporary map index should have scalar typed-IR facts"),
+            &temporary_env,
+            database.signatures(),
+        )
+        .expect("temporary map aggregate base should render directly from typed IR");
         assert!(
-            emit_cfg_scalar_expr_direct(
-                facts
-                    .scalar_exprs
-                    .get(&source_span_key(index.span))
-                    .expect("temporary map index should have scalar typed-IR facts"),
-                &HashMap::from([("key".to_string(), Type::Str)]),
-                database.signatures(),
-            )
-            .is_none(),
-            "temporary map bases should retain aggregate-aware map-index lowering"
+            temporary_direct.contains("flux__typed_map_index_"),
+            "{temporary_direct}"
         );
+        assert!(
+            temporary_direct.contains(&local_c_name("key")),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains("INT64_C(1)"),
+            "{temporary_direct}"
+        );
+        assert!(temporary_direct.contains("\"one\""), "{temporary_direct}");
         let fake = Expr {
             line: index.span.line,
             span: index.span,
@@ -53262,16 +53342,13 @@ fn main() -> i64 {
         let emitted = emit_expr_for_expected_with_cfg_proofs(
             &fake,
             &Type::Optional(Box::new(Type::I64)),
-            &HashMap::from([("key".to_string(), Type::Str)]),
+            &temporary_env,
             database.signatures(),
             &HashMap::new(),
             &facts,
         )
         .expect("temporary map index should emit from typed IR");
-        assert!(emitted.contains(&local_c_name("key")));
-        assert!(emitted.contains("flux__map_index_"));
-        assert!(emitted.contains("INT64_C(1)"));
-        assert!(emitted.contains("\"one\""));
+        assert_eq!(emitted, temporary_direct);
         assert!(!emitted.contains("checked-ast-temporary-map-index"));
     }
 
