@@ -34178,6 +34178,7 @@ struct CfgRewriteFacts {
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
     scalar_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
+    multi_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     match_exprs: HashMap<(u32, usize, usize, usize), CfgMatchExpr>,
     list_match_exprs: HashMap<(u32, usize, usize, usize), CfgListMatchExpr>,
 }
@@ -34742,6 +34743,120 @@ fn cfg_direct_scalar_expr(
     })
 }
 
+fn cfg_direct_multi_expr(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    fn direct_call(
+        cfg: &crate::ir::ControlFlowGraph,
+        id: crate::ir::ControlFlowValueId,
+    ) -> Option<CfgScalarExpr> {
+        let value = cfg.value(id)?;
+        if !cfg.is_value_reachable(id) {
+            return None;
+        }
+        let kind = match &value.kind {
+            crate::ir::ControlFlowValueKind::Call { callee, arguments } => {
+                CfgScalarExprKind::Call {
+                    callee: callee.clone(),
+                    arguments: arguments
+                        .iter()
+                        .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                        .collect::<Option<Vec<_>>>()?,
+                }
+            }
+            crate::ir::ControlFlowValueKind::NamedCall {
+                callee,
+                arguments,
+                argument_names,
+            } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedCall {
+                callee: callee.clone(),
+                arguments: argument_names
+                    .iter()
+                    .cloned()
+                    .zip(arguments.iter().copied())
+                    .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            crate::ir::ControlFlowValueKind::QualifiedCall {
+                namespace,
+                name,
+                arguments,
+            } => CfgScalarExprKind::QualifiedCall {
+                namespace: namespace.clone(),
+                name: name.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            crate::ir::ControlFlowValueKind::NamedQualifiedCall {
+                namespace,
+                name,
+                arguments,
+                argument_names,
+            } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedQualifiedCall {
+                namespace: namespace.clone(),
+                name: name.clone(),
+                arguments: argument_names
+                    .iter()
+                    .cloned()
+                    .zip(arguments.iter().copied())
+                    .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                interface,
+                capability,
+                arguments,
+                ..
+            } => CfgScalarExprKind::QualifiedCall {
+                namespace: interface.clone(),
+                name: capability.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                interface,
+                capability,
+                arguments,
+                argument_names,
+                ..
+            } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedQualifiedCall {
+                namespace: interface.clone(),
+                name: capability.clone(),
+                arguments: argument_names
+                    .iter()
+                    .cloned()
+                    .zip(arguments.iter().copied())
+                    .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
+                    .collect::<Option<Vec<_>>>()?,
+            },
+            _ => return None,
+        };
+        Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind,
+        })
+    }
+
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    match &value.kind {
+        crate::ir::ControlFlowValueKind::Await { value: awaited } => Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Await {
+                value: Box::new(direct_call(cfg, *awaited)?),
+            },
+        }),
+        _ => direct_call(cfg, id),
+    }
+}
+
 fn cfg_list_item_shape(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -35049,6 +35164,38 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    let multi_result_spans = cfg
+        .values()
+        .iter()
+        .filter(|value| {
+            cfg.is_value_reachable(value.id) && value.result_index.is_some_and(|index| index > 0)
+        })
+        .map(|value| source_span_key(value.span))
+        .collect::<HashSet<_>>();
+    let mut multi_exprs = HashMap::new();
+    let mut ambiguous_multi_exprs = HashSet::new();
+    for value in cfg.values().iter().filter(|value| {
+        cfg.is_value_reachable(value.id)
+            && value.result_index == Some(0)
+            && multi_result_spans.contains(&source_span_key(value.span))
+    }) {
+        let Some(multi) = cfg_direct_multi_expr(cfg, value.id) else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_multi_exprs.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = multi_exprs.get(&span) {
+            if existing != &multi {
+                multi_exprs.remove(&span);
+                ambiguous_multi_exprs.insert(span);
+            }
+        } else {
+            multi_exprs.insert(span, multi);
+        }
+    }
+
     let mut match_exprs = HashMap::new();
     let mut ambiguous_match_exprs = HashSet::new();
     let mut list_match_exprs = HashMap::new();
@@ -35091,6 +35238,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         aggregates,
         aggregate_constants,
         scalar_exprs,
+        multi_exprs,
         match_exprs,
         list_match_exprs,
     }
@@ -50206,6 +50354,110 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn multi_value_call_roots_lower_from_typed_ir_without_ast_shape() {
+        let source = r#"
+fn pair(value: i64, offset: i64) -> (i64, bool) {
+    return value + offset, true
+}
+
+fn exercise(value: i64) -> i64 {
+    let (direct, _) = pair(value, 1)
+    let (shell, _) = pair value 2
+    let (piped, _) = value | pair 3
+    return direct + shell + piped
+}
+
+fn main() -> i64 {
+    return exercise(40)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("multi-value typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if callee == "pair"
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 3);
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+
+        for root in roots {
+            assert!(facts.multi_exprs.contains_key(&source_span_key(root.span)));
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let (code, shape, returns) =
+                emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                    .expect("multi-value call should emit from typed IR");
+            assert!(code.contains(&function_c_name("pair")));
+            assert_eq!(shape, multi_return_struct_name("pair"));
+            assert_eq!(returns, vec![Type::I64, Type::Bool]);
+        }
+    }
+
+    #[test]
+    fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
+        let source = r#"
+async fn pair(value: i64, offset: i64) -> (i64, bool) {
+    return value + offset, true
+}
+
+async fn exercise(value: i64) -> i64 {
+    let (first, _) = await pair(value, 2)
+    return first
+}
+
+async fn main() -> i64 {
+    return await exercise(40)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("multi-value await typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("async exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. })
+            })
+            .expect("typed IR should retain the multi-value await root");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(facts.multi_exprs.contains_key(&source_span_key(root.span)));
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let (code, shape, returns) = emit_multi_expr(
+            &fake,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+            &facts,
+        )
+        .expect("multi-value await should emit from typed IR");
+        assert!(code.contains(&async_await_c_name("pair")));
+        assert!(code.contains(&async_start_c_name("pair")));
+        assert_eq!(shape, multi_return_struct_name("pair"));
+        assert_eq!(returns, vec![Type::I64, Type::Bool]);
+    }
+
+    #[test]
     fn named_function_references_lower_from_typed_ir() {
         let source = r#"
 fn increment(value: i64) -> i64 {
@@ -51374,13 +51626,26 @@ fn emit_multi_expr(
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
-    // Multi-value boundaries used to bypass the typed-IR constant consumer
-    // even though ordinary scalar call boundaries already used it. Rewrite
-    // the complete value tree once here so destructuring and return forwarding
-    // receive the same proven constants without changing their evaluation
-    // shape or ownership-sensitive fallback behavior.
+    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span))
+        && cfg_scalar_expr_calls_are_reconstructable(multi, env, signatures)
+    {
+        let reconstructed = cfg_scalar_expr_as_ast(multi);
+        return emit_multi_expr_from_ast(&reconstructed, env, signatures, rewrite_facts);
+    }
+
+    // Keep the checked-AST fallback for values whose normalized call shape
+    // cannot yet be represented safely, while still substituting any scalar
+    // constants already proven by typed IR.
     let rewritten = substitute_nested_ir_constant_arguments(expr, rewrite_facts);
-    let expr = &rewritten;
+    emit_multi_expr_from_ast(&rewritten, env, signatures, rewrite_facts)
+}
+
+fn emit_multi_expr_from_ast(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Result<(String, String, Vec<Type>), Diagnostic> {
     match &expr.kind {
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
@@ -51392,7 +51657,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures, rewrite_facts)
+            emit_multi_expr_from_ast(&call, env, signatures, rewrite_facts)
         }
         ExprKind::Pipe {
             input, name, args, ..
@@ -51409,7 +51674,7 @@ fn emit_multi_expr(
                     named_args: Vec::new(),
                 },
             };
-            emit_multi_expr(&call, env, signatures, rewrite_facts)
+            emit_multi_expr_from_ast(&call, env, signatures, rewrite_facts)
         }
         ExprKind::Await(awaited) => {
             let ExprKind::Call {
