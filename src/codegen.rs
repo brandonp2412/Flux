@@ -49161,11 +49161,18 @@ fn emit_cfg_scalar_expr_direct(
             start,
             end,
             step,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+        } if matches!(
+            base.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+        ) =>
+        {
             let Type::List(element) = signatures.canonical_type(&base.ty) else {
                 return None;
             };
-            if ty != Type::List(element.clone()) {
+            let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
+            if ty != Type::List(element.clone())
+                || (aggregate_base && !signatures.is_copy_type(&element))
+            {
                 return None;
             }
             let render_bound =
@@ -53375,6 +53382,11 @@ fn temporary(start: i64, end: i64) -> i64 {
     return view.length
 }
 
+fn temporaryDynamic(value: i64, start: i64, end: i64) -> i64 {
+    let view: i64[] = [value, 2, 3][start:end]
+    return view.length
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -53583,20 +53595,38 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        let temporary_env = HashMap::from([
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+        ]);
+        let temporary_direct = emit_cfg_scalar_expr_direct(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(slice.span))
+                .expect("temporary list slice should have scalar typed-IR facts"),
+            &temporary_env,
+            database.signatures(),
+        )
+        .expect("temporary list aggregate slice base should render directly from typed IR");
         assert!(
-            emit_cfg_scalar_expr_direct(
-                facts
-                    .scalar_exprs
-                    .get(&source_span_key(slice.span))
-                    .expect("temporary list slice should have scalar typed-IR facts"),
-                &HashMap::from([
-                    ("start".to_string(), Type::I64),
-                    ("end".to_string(), Type::I64),
-                ]),
-                database.signatures(),
-            )
-            .is_none(),
-            "temporary list bases should retain aggregate-aware slice lowering"
+            temporary_direct.contains("flux_list_slice("),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains(&local_c_name("start")),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains(&local_c_name("end")),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains("INT64_C(1)"),
+            "{temporary_direct}"
+        );
+        assert!(
+            temporary_direct.contains("INT64_C(3)"),
+            "{temporary_direct}"
         );
         let fake = Expr {
             line: slice.span.line,
@@ -53606,21 +53636,70 @@ fn main() -> i64 {
         let emitted = emit_expr_for_expected_with_cfg_proofs(
             &fake,
             &Type::List(Box::new(Type::I64)),
-            &HashMap::from([
-                ("start".to_string(), Type::I64),
-                ("end".to_string(), Type::I64),
-            ]),
+            &temporary_env,
             database.signatures(),
             &HashMap::new(),
             &facts,
         )
         .expect("temporary list slice should emit from typed IR");
-        assert!(emitted.contains("flux_list_slice("));
-        assert!(emitted.contains(&local_c_name("start")));
-        assert!(emitted.contains(&local_c_name("end")));
-        assert!(emitted.contains("INT64_C(1)"));
-        assert!(emitted.contains("INT64_C(3)"));
+        assert_eq!(emitted, temporary_direct);
         assert!(!emitted.contains("checked-ast-temporary-slice"));
+
+        let temporary_dynamic = database
+            .control_flow_graph("temporaryDynamic")
+            .expect("dynamic temporary list slice CFG should exist");
+        let dynamic_slice = temporary_dynamic
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
+            .expect("dynamic temporary list slice should have typed IR");
+        let dynamic_facts = cfg_rewrite_facts(temporary_dynamic);
+        let dynamic_scalar = dynamic_facts
+            .scalar_exprs
+            .get(&source_span_key(dynamic_slice.span))
+            .expect("dynamic temporary list slice should have scalar typed-IR facts");
+        let dynamic_env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+        ]);
+        let dynamic_direct =
+            emit_cfg_scalar_expr_direct(dynamic_scalar, &dynamic_env, database.signatures())
+                .expect("dynamic temporary list aggregate slice should render from typed IR");
+        assert!(
+            dynamic_direct.contains("flux_list_slice("),
+            "{dynamic_direct}"
+        );
+        assert!(
+            dynamic_direct.contains(&local_c_name("value")),
+            "{dynamic_direct}"
+        );
+        assert!(
+            dynamic_direct.contains(&local_c_name("start")),
+            "{dynamic_direct}"
+        );
+        assert!(
+            dynamic_direct.contains(&local_c_name("end")),
+            "{dynamic_direct}"
+        );
+        assert!(dynamic_direct.contains("INT64_C(2)"), "{dynamic_direct}");
+        assert!(dynamic_direct.contains("INT64_C(3)"), "{dynamic_direct}");
+        let fake_dynamic = Expr {
+            line: dynamic_slice.span.line,
+            span: dynamic_slice.span,
+            kind: ExprKind::Str("checked-ast-dynamic-temporary-slice".to_string()),
+        };
+        let dynamic_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_dynamic,
+            &Type::List(Box::new(Type::I64)),
+            &dynamic_env,
+            database.signatures(),
+            &HashMap::new(),
+            &dynamic_facts,
+        )
+        .expect("dynamic temporary list slice should bypass the checked-AST root");
+        assert_eq!(dynamic_emitted, dynamic_direct);
+        assert!(!dynamic_emitted.contains("checked-ast-dynamic-temporary-slice"));
     }
 
     #[test]
