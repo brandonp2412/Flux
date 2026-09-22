@@ -34694,6 +34694,15 @@ fn cfg_borrowed_collection_field_base(
             index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
             optional: *optional,
         },
+        crate::ir::ControlFlowValueKind::Field {
+            base,
+            name,
+            optional,
+        } => CfgScalarExprKind::Field {
+            base: Box::new(cfg_borrowed_collection_field_base(cfg, *base)?),
+            name: name.clone(),
+            optional: *optional,
+        },
         _ => return None,
     };
     Some(CfgScalarExpr {
@@ -34740,6 +34749,15 @@ fn cfg_borrowed_collection_value(
                 } => CfgScalarExprKind::Index {
                     base: Box::new(cfg_borrowed_index_base(cfg, *base)?),
                     index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
+                    optional: *optional,
+                },
+                crate::ir::ControlFlowValueKind::Field {
+                    base,
+                    name,
+                    optional,
+                } => CfgScalarExprKind::Field {
+                    base: Box::new(cfg_borrowed_collection_field_base(cfg, *base)?),
+                    name: name.clone(),
                     optional: *optional,
                 },
                 _ => return None,
@@ -50843,6 +50861,21 @@ fn borrowSetIndex(rows: set<i64>[], at: i64) -> i64 {
     return view.count
 }
 
+fn borrowMapProperty(rows: map<str, i64>[]) -> i64 {
+    let view: map<str, i64> = borrow rows.first
+    return view.count
+}
+
+fn borrowSetProperty(rows: set<i64>[]) -> i64 {
+    let view: set<i64> = borrow rows.first
+    return view.count
+}
+
+fn borrowOptionalProperty(rows: i64[]?[]) -> i64? {
+    let view: i64[]? = borrow rows.first
+    return view?.count
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -50940,6 +50973,35 @@ fn main() -> i64 {
                     ),
                     ("at".to_string(), Type::I64),
                 ]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowMapProperty",
+                HashMap::from([(
+                    "rows".to_string(),
+                    Type::List(Box::new(Type::Map(
+                        Box::new(Type::Str),
+                        Box::new(Type::I64),
+                    ))),
+                )]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowSetProperty",
+                HashMap::from([(
+                    "rows".to_string(),
+                    Type::List(Box::new(Type::Set(Box::new(Type::I64)))),
+                )]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowOptionalProperty",
+                HashMap::from([(
+                    "rows".to_string(),
+                    Type::List(Box::new(Type::Optional(Box::new(Type::List(Box::new(
+                        Type::I64,
+                    )))))),
+                )]),
                 "flux_list_at(".to_string(),
             ),
         ] {
