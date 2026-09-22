@@ -118,6 +118,12 @@ pub enum ControlFlowValueKind {
         name: String,
         arguments: Vec<ControlFlowValueId>,
     },
+    NamedQualifiedCall {
+        namespace: String,
+        name: String,
+        arguments: Vec<ControlFlowValueId>,
+        argument_names: Vec<Option<String>>,
+    },
     InterfaceDispatch {
         interface: String,
         capability: String,
@@ -1510,6 +1516,18 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 name.encode_cache_value(bytes);
                 arguments.encode_cache_value(bytes);
             }
+            Self::NamedQualifiedCall {
+                namespace,
+                name,
+                arguments,
+                argument_names,
+            } => {
+                30u8.encode_cache_value(bytes);
+                namespace.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+                argument_names.encode_cache_value(bytes);
+            }
             Self::InterfaceDispatch {
                 interface,
                 capability,
@@ -1728,6 +1746,12 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 capability: String::decode_cache_value(reader)?,
                 target: Option::<String>::decode_cache_value(reader)?,
                 mapped_function: Option::<String>::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+                argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
+            }),
+            30 => Some(Self::NamedQualifiedCall {
+                namespace: String::decode_cache_value(reader)?,
+                name: String::decode_cache_value(reader)?,
                 arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
                 argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
             }),
@@ -2517,6 +2541,11 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
             arguments,
             argument_names,
             ..
+        }
+        | ControlFlowValueKind::NamedQualifiedCall {
+            arguments,
+            argument_names,
+            ..
         } => arguments.len() == argument_names.len() && valid_values(arguments),
         ControlFlowValueKind::OptionalCascadeCall {
             optional,
@@ -3003,6 +3032,7 @@ impl ControlFlowGraph {
                 | ControlFlowValueKind::NamedCall { .. }
                 | ControlFlowValueKind::OptionalCascadeCall { .. }
                 | ControlFlowValueKind::QualifiedCall { .. }
+                | ControlFlowValueKind::NamedQualifiedCall { .. }
                 | ControlFlowValueKind::InterfaceDispatch { .. }
                 | ControlFlowValueKind::NamedInterfaceDispatch { .. }
                 | ControlFlowValueKind::Opaque => ControlFlowValueEffect::MayEffect,
@@ -3170,6 +3200,9 @@ impl ControlFlowGraph {
                     std::iter::once(callee.clone()).collect::<BTreeSet<_>>()
                 }
                 ControlFlowValueKind::QualifiedCall {
+                    namespace, name, ..
+                }
+                | ControlFlowValueKind::NamedQualifiedCall {
                     namespace, name, ..
                 } => std::iter::once(format!("{namespace}.{name}")).collect(),
                 ControlFlowValueKind::InterfaceDispatch {
@@ -5347,11 +5380,24 @@ impl<'a> ControlFlowBuilder<'a> {
                             argument_names,
                         }
                     }
-                } else {
+                } else if named_args.is_empty() {
                     ControlFlowValueKind::QualifiedCall {
                         namespace: namespace.clone(),
                         name: name.clone(),
                         arguments,
+                    }
+                } else {
+                    let mut argument_names = vec![None; args.len()];
+                    argument_names.extend(
+                        named_args
+                            .iter()
+                            .map(|argument| Some(argument.name.clone())),
+                    );
+                    ControlFlowValueKind::NamedQualifiedCall {
+                        namespace: namespace.clone(),
+                        name: name.clone(),
+                        arguments,
+                        argument_names,
                     }
                 }
             }
@@ -5782,6 +5828,12 @@ impl<'a> ControlFlowBuilder<'a> {
                         namespace,
                         name,
                         arguments,
+                    }
+                    | ControlFlowValueKind::NamedQualifiedCall {
+                        namespace,
+                        name,
+                        arguments,
+                        ..
                     } => (format!("{namespace}.{name}"), arguments.clone()),
                     ControlFlowValueKind::OptionalCascadeCall {
                         callee, arguments, ..
@@ -6254,6 +6306,7 @@ fn collect_call_argument_definitions(
             }
         }
         ControlFlowValueKind::QualifiedCall { arguments, .. }
+        | ControlFlowValueKind::NamedQualifiedCall { arguments, .. }
         | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
         | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
             for argument in arguments {
@@ -6965,6 +7018,7 @@ fn collect_value_uses(
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
+            | ControlFlowValueKind::NamedQualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
             | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
                 for argument in arguments {
@@ -7624,6 +7678,7 @@ fn compute_escaping_values(
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
+            | ControlFlowValueKind::NamedQualifiedCall { arguments, .. }
             | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
             | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
                 pending.extend(arguments.iter().copied());
@@ -8804,6 +8859,25 @@ fn main() -> i64 {
         let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
             .expect("named-call CFG should decode");
         assert_eq!(&decoded, graph);
+    }
+
+    #[test]
+    fn named_qualified_calls_preserve_argument_names_through_persisted_ir() {
+        let value = super::ControlFlowValueKind::NamedQualifiedCall {
+            namespace: "platform".to_string(),
+            name: "operation".to_string(),
+            arguments: vec![super::ControlFlowValueId(3), super::ControlFlowValueId(5)],
+            argument_names: vec![None, Some("label".to_string())],
+        };
+        let mut encoded = Vec::new();
+        super::PersistedIrCodec::encode_cache_value(&value, &mut encoded);
+        let mut reader = super::PersistedIrReader::new(&encoded);
+        let decoded = <super::ControlFlowValueKind as super::PersistedIrCodec>::decode_cache_value(
+            &mut reader,
+        )
+        .expect("named qualified-call value should decode");
+        assert_eq!(decoded, value);
+        assert!(reader.is_finished());
     }
 
     #[test]

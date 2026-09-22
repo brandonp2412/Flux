@@ -34498,6 +34498,21 @@ fn cfg_direct_scalar_expr(
                 .map(|id| cfg_direct_scalar_expr(cfg, *id))
                 .collect::<Option<Vec<_>>>()?,
         },
+        crate::ir::ControlFlowValueKind::NamedQualifiedCall {
+            namespace,
+            name,
+            arguments,
+            argument_names,
+        } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedQualifiedCall {
+            namespace: namespace.clone(),
+            name: name.clone(),
+            arguments: argument_names
+                .iter()
+                .cloned()
+                .zip(arguments.iter().copied())
+                .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
+                .collect::<Option<Vec<_>>>()?,
+        },
         crate::ir::ControlFlowValueKind::InterfaceDispatch {
             interface,
             capability,
