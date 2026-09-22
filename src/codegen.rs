@@ -36873,7 +36873,9 @@ fn emit_block(
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if list_literal_needs_builder(expr) => {
+            StmtKind::Let { name, ty, expr, .. }
+                if list_literal_needs_builder(expr, context.cfg_rewrite_facts) =>
+            {
                 emit_list_builder_binding(
                     out,
                     &pad,
@@ -36887,7 +36889,7 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. }
-                if matches!(expr.kind, ExprKind::ListComprehension { .. }) =>
+                if list_binding_is_comprehension(expr, context.cfg_rewrite_facts) =>
             {
                 emit_list_comprehension_binding(
                     out,
@@ -40311,7 +40313,15 @@ fn emit_sequence_reduction_binding(
     Ok(())
 }
 
-fn list_literal_needs_builder(expr: &Expr) -> bool {
+fn list_literal_needs_builder(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> bool {
+    if let Some(CfgAggregateShape::List(items)) =
+        rewrite_facts.aggregates.get(&source_span_key(expr.span))
+        && items
+            .iter()
+            .any(|item| !matches!(item, CfgListItemShape::Value(_)))
+    {
+        return true;
+    }
     matches!(
         &expr.kind,
         ExprKind::List(items)
@@ -40324,6 +40334,13 @@ fn list_literal_needs_builder(expr: &Expr) -> bool {
                 )
             })
     )
+}
+
+fn list_binding_is_comprehension(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> bool {
+    matches!(
+        rewrite_facts.aggregates.get(&source_span_key(expr.span)),
+        Some(CfgAggregateShape::ListComprehension { .. })
+    ) || matches!(expr.kind, ExprKind::ListComprehension { .. })
 }
 
 enum BufferedListItem {
@@ -47190,6 +47207,53 @@ mod cfg_rewrite_fact_tests {
         assert!(matches!(
             facts.aggregates.get(&source_span_key(comprehension.span)),
             Some(CfgAggregateShape::ListComprehension { binding, .. }) if binding == "item"
+        ));
+    }
+
+    #[test]
+    fn normalized_ir_selects_specialized_list_lowering_without_ast_control_shape() {
+        let source = SourceId::new(4247);
+        let list_span = SourceSpan::new(1, 1, 12).with_source(source);
+        let child_span = SourceSpan::new(1, 4, 5).with_source(source);
+        let plain_ast_list = Expr {
+            line: 1,
+            span: list_span,
+            kind: ExprKind::List(vec![Expr {
+                line: 1,
+                span: child_span,
+                kind: ExprKind::Int(1),
+            }]),
+        };
+        let mut list_facts = CfgRewriteFacts::default();
+        list_facts.aggregates.insert(
+            source_span_key(list_span),
+            CfgAggregateShape::List(vec![CfgListItemShape::Spread {
+                span: source_span_key(child_span),
+                value: source_span_key(child_span),
+                optional: false,
+            }]),
+        );
+        assert!(list_literal_needs_builder(&plain_ast_list, &list_facts));
+
+        let comprehension_span = SourceSpan::new(2, 1, 20).with_source(source);
+        let plain_ast_value = Expr {
+            line: 2,
+            span: comprehension_span,
+            kind: ExprKind::Int(0),
+        };
+        let mut comprehension_facts = CfgRewriteFacts::default();
+        comprehension_facts.aggregates.insert(
+            source_span_key(comprehension_span),
+            CfgAggregateShape::ListComprehension {
+                binding: "item".to_string(),
+                iterable: source_span_key(child_span),
+                value: source_span_key(child_span),
+                condition: None,
+            },
+        );
+        assert!(list_binding_is_comprehension(
+            &plain_ast_value,
+            &comprehension_facts
         ));
     }
 
