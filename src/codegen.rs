@@ -1988,7 +1988,10 @@ fn emit_c_for_target_with_source_metadata_impl(
                 c_type(&param.ty, signatures)
             ));
         }
-        if let Some(plan) = async_continuation_plan(function, signatures) {
+        let cfg = function_ir
+            .get(&function.name)
+            .expect("all parsed functions have cached typed IR");
+        if let Some(plan) = async_continuation_plan(function, signatures, cfg) {
             for (name, ty) in &plan.locals {
                 out.push_str(&format!(
                     "    {} {};\n",
@@ -2030,7 +2033,10 @@ fn emit_c_for_target_with_source_metadata_impl(
             continue;
         }
         if function.asynchronous {
-            if async_continuation_plan(function, signatures).is_some() {
+            let cfg = function_ir
+                .get(&function.name)
+                .expect("all parsed functions have cached typed IR");
+            if async_continuation_plan(function, signatures, cfg).is_some() {
                 out.push_str(&async_resume_prototype(function));
                 out.push_str(";\n");
             } else {
@@ -25172,7 +25178,19 @@ fn stmt_contains_await(stmt: &Stmt) -> bool {
     }
 }
 
-fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
+fn cfg_direct_await_expr<'a>(
+    expr: &Expr,
+    rewrite_facts: &'a CfgRewriteFacts,
+) -> Option<&'a CfgScalarExpr> {
+    let span = source_span_key(expr.span);
+    rewrite_facts
+        .scalar_exprs
+        .get(&span)
+        .or_else(|| rewrite_facts.multi_exprs.get(&span))
+        .filter(|value| matches!(value.kind, CfgScalarExprKind::Await { .. }))
+}
+
+fn direct_await_candidate(stmt: &Stmt) -> Option<&Expr> {
     match &stmt.kind {
         StmtKind::Let { expr, .. }
         | StmtKind::Var { expr, .. }
@@ -25194,12 +25212,29 @@ fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
             ..
         }
         | StmtKind::AssignMultiDestructure { expr, .. }
-        | StmtKind::Expr(expr) => matches!(&expr.kind, ExprKind::Await(_)).then_some(expr),
-        StmtKind::Return(values) if values.len() == 1 => {
-            matches!(&values[0].kind, ExprKind::Await(_)).then_some(&values[0])
-        }
+        | StmtKind::Expr(expr) => Some(expr),
+        StmtKind::Return(values) if values.len() == 1 => Some(&values[0]),
         _ => None,
     }
+}
+
+fn direct_await_expr(stmt: &Stmt) -> Option<&Expr> {
+    let expr = direct_await_candidate(stmt)?;
+    matches!(&expr.kind, ExprKind::Await(_)).then_some(expr)
+}
+
+fn direct_await_expr_with_facts<'a>(
+    stmt: &'a Stmt,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<&'a Expr> {
+    let expr = direct_await_candidate(stmt)?;
+    (matches!(&expr.kind, ExprKind::Await(_))
+        || cfg_direct_await_expr(expr, rewrite_facts).is_some())
+    .then_some(expr)
+}
+
+fn stmt_contains_await_with_facts(stmt: &Stmt, rewrite_facts: &CfgRewriteFacts) -> bool {
+    stmt_contains_await(stmt) || direct_await_expr_with_facts(stmt, rewrite_facts).is_some()
 }
 
 fn coalescing_assignment_await_expr(stmt: &Stmt) -> Option<&Expr> {
@@ -25248,6 +25283,19 @@ fn direct_await_call(expr: &Expr) -> Option<(&str, &[Expr], &[NamedArg])> {
         return None;
     }
     Some((name, args, named_args))
+}
+
+fn direct_await_callee<'a>(expr: &'a Expr, rewrite_facts: &'a CfgRewriteFacts) -> Option<&'a str> {
+    if let Some(item) = cfg_direct_await_expr(expr, rewrite_facts) {
+        if let CfgScalarExprKind::Await { value } = &item.kind {
+            return match &value.kind {
+                CfgScalarExprKind::Call { callee, .. } => Some(callee.as_str()),
+                CfgScalarExprKind::NamedCall { callee, .. } => Some(callee.as_str()),
+                _ => None,
+            };
+        }
+    }
+    direct_await_call(expr).map(|(name, _, _)| name)
 }
 
 fn block_branch_await_indices(
@@ -25915,8 +25963,15 @@ fn collect_async_match_arm_bindings(
 fn async_continuation_plan(
     function: &Function,
     signatures: &Signatures,
+    cfg: &crate::ir::ControlFlowGraph,
 ) -> Option<AsyncContinuationPlan> {
-    if !function.asynchronous || !function.body.iter().any(stmt_contains_await) {
+    let cfg_rewrite_facts = cfg_rewrite_facts(cfg);
+    if !function.asynchronous
+        || !function
+            .body
+            .iter()
+            .any(|stmt| stmt_contains_await_with_facts(stmt, &cfg_rewrite_facts))
+    {
         return None;
     }
     if function
@@ -25926,7 +25981,10 @@ fn async_continuation_plan(
     {
         return None;
     }
-    let last_await_statement_index = function.body.iter().rposition(stmt_contains_await)?;
+    let last_await_statement_index = function
+        .body
+        .iter()
+        .rposition(|stmt| stmt_contains_await_with_facts(stmt, &cfg_rewrite_facts))?;
 
     let mut env = function
         .params
@@ -25979,11 +26037,10 @@ fn async_continuation_plan(
         && match_await.is_none()
         && list_match_await.is_none()
         && coalescing_await.is_none();
-    if function
-        .body
-        .iter()
-        .any(|stmt| stmt_contains_await(stmt) && direct_await_expr(stmt).is_none())
-        && branch_await.is_none()
+    if function.body.iter().any(|stmt| {
+        stmt_contains_await_with_facts(stmt, &cfg_rewrite_facts)
+            && direct_await_expr_with_facts(stmt, &cfg_rewrite_facts).is_none()
+    }) && branch_await.is_none()
         && nested_branch_await.is_none()
         && while_await.is_none()
         && for_range_await.is_none()
@@ -26016,9 +26073,9 @@ fn async_continuation_plan(
             || coalescing_await.as_ref().is_some_and(|coalescing_plan| {
                 coalescing_plan.statement_indices.contains(&stmt_index)
             });
-        if stmt_contains_await(stmt) && !specially_lowered {
-            let await_expr = direct_await_expr(stmt)?;
-            let (callee, _, _) = direct_await_call(await_expr)?;
+        if stmt_contains_await_with_facts(stmt, &cfg_rewrite_facts) && !specially_lowered {
+            let await_expr = direct_await_expr_with_facts(stmt, &cfg_rewrite_facts)?;
+            let callee = direct_await_callee(await_expr, &cfg_rewrite_facts)?;
             let signature = signatures.get(callee)?;
             if !signature.asynchronous {
                 return None;
@@ -26372,7 +26429,7 @@ fn async_continuation_plan(
     }
 
     Some(AsyncContinuationPlan {
-        cfg_rewrite_facts: CfgRewriteFacts::default(),
+        cfg_rewrite_facts,
         locals: locals.into_iter().collect(),
         resume_locals: resume_locals.into_iter().collect(),
         mutable,
@@ -35456,9 +35513,8 @@ fn emit_function(
         async_loop_control: None,
     };
     if function.asynchronous
-        && let Some(mut plan) = async_continuation_plan(function, signatures)
+        && let Some(plan) = async_continuation_plan(function, signatures, cfg)
     {
-        plan.cfg_rewrite_facts = cfg_rewrite_facts.clone();
         emit_source_line(out, function.span, source_paths);
         emit_async_continuation_function(
             out,
@@ -50978,6 +51034,53 @@ fn main() -> i64 {
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("anonymous function value should emit from typed IR");
         assert_eq!(emitted, anonymous_function_c_name(anonymous.span));
+    }
+
+    #[test]
+    fn async_continuation_plan_selects_direct_await_from_typed_ir() {
+        let source = r#"
+async fn ping() -> i64 {
+    return 41
+}
+
+async fn exercise() -> i64 {
+    return await ping()
+}
+
+async fn main() -> i64 {
+    return await exercise()
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async continuation typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async continuation fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let StmtKind::Return(values) = &mut function.body[0].kind else {
+            panic!("exercise should contain one return statement");
+        };
+        let await_expr = &mut values[0];
+        let await_span = await_expr.span;
+        await_expr.kind = ExprKind::Int(0);
+
+        assert!(direct_await_expr(&function.body[0]).is_none());
+        let selected = direct_await_expr_with_facts(&function.body[0], &facts)
+            .expect("typed IR should select the direct await despite the fake AST root");
+        assert_eq!(selected.span, await_span);
+        assert_eq!(direct_await_callee(selected, &facts), Some("ping"));
+
+        let plan = async_continuation_plan(function, database.signatures(), graph)
+            .expect("typed IR should keep straight-line continuation lowering eligible");
+        assert!(cfg_direct_await_expr(selected, &plan.cfg_rewrite_facts).is_some());
     }
 
     #[test]
