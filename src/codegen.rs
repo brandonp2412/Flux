@@ -25233,8 +25233,93 @@ fn direct_await_expr_with_facts<'a>(
     .then_some(expr)
 }
 
+fn expr_contains_await_with_facts(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> bool {
+    expr_contains_await(expr) || cfg_direct_await_expr(expr, rewrite_facts).is_some()
+}
+
 fn stmt_contains_await_with_facts(stmt: &Stmt, rewrite_facts: &CfgRewriteFacts) -> bool {
-    stmt_contains_await(stmt) || direct_await_expr_with_facts(stmt, rewrite_facts).is_some()
+    match &stmt.kind {
+        StmtKind::Let { expr, .. }
+        | StmtKind::Var { expr, .. }
+        | StmtKind::Assign { expr, .. }
+        | StmtKind::AssignMultiDestructure { expr, .. }
+        | StmtKind::AssignListDestructure { expr, .. }
+        | StmtKind::AssignStructDestructure { expr, .. }
+        | StmtKind::LetDestructure { expr, .. }
+        | StmtKind::LetMultiDestructure { expr, .. }
+        | StmtKind::LetListDestructure { expr, .. }
+        | StmtKind::LetStructDestructure { expr, .. }
+        | StmtKind::Expr(expr) => expr_contains_await_with_facts(expr, rewrite_facts),
+        StmtKind::Return(values) => values
+            .iter()
+            .any(|value| expr_contains_await_with_facts(value, rewrite_facts)),
+        StmtKind::Shell { expr, redirect, .. } => {
+            expr_contains_await_with_facts(expr, rewrite_facts)
+                || redirect.as_ref().is_some_and(|redirect| {
+                    expr_contains_await_with_facts(&redirect.path, rewrite_facts)
+                })
+        }
+        StmtKind::If {
+            cond,
+            body,
+            else_body,
+            ..
+        } => {
+            expr_contains_await_with_facts(cond, rewrite_facts)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+                || else_body
+                    .iter()
+                    .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+        }
+        StmtKind::ForRange {
+            start, end, body, ..
+        } => {
+            expr_contains_await_with_facts(start, rewrite_facts)
+                || expr_contains_await_with_facts(end, rewrite_facts)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+        }
+        StmtKind::ForEach { iterable, body, .. } => {
+            expr_contains_await_with_facts(iterable, rewrite_facts)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+        }
+        StmtKind::While { cond, body } => {
+            expr_contains_await_with_facts(cond, rewrite_facts)
+                || body
+                    .iter()
+                    .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+        }
+        StmtKind::Match { value, arms } => {
+            expr_contains_await_with_facts(value, rewrite_facts)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_contains_await_with_facts(guard, rewrite_facts))
+                        || arm
+                            .body
+                            .iter()
+                            .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+                })
+        }
+        StmtKind::ListMatch { value, arms } => {
+            expr_contains_await_with_facts(value, rewrite_facts)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_contains_await_with_facts(guard, rewrite_facts))
+                        || arm
+                            .body
+                            .iter()
+                            .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
+                })
+        }
+        StmtKind::Break | StmtKind::Continue => false,
+    }
 }
 
 fn coalescing_assignment_await_expr(stmt: &Stmt) -> Option<&Expr> {
@@ -25301,18 +25386,19 @@ fn direct_await_callee<'a>(expr: &'a Expr, rewrite_facts: &'a CfgRewriteFacts) -
 fn block_branch_await_indices(
     block: &[Stmt],
     allow_await_after_coalescing: bool,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Option<Vec<usize>> {
     let mut await_indices = Vec::new();
     let mut saw_coalescing_await = false;
     for (index, stmt) in block.iter().enumerate() {
-        if !stmt_contains_await(stmt) {
+        if !stmt_contains_await_with_facts(stmt, rewrite_facts) {
             continue;
         }
-        if let Some(await_expr) = direct_await_expr(stmt) {
+        if let Some(await_expr) = direct_await_expr_with_facts(stmt, rewrite_facts) {
             if saw_coalescing_await && !allow_await_after_coalescing {
                 return None;
             }
-            direct_await_call(await_expr)?;
+            direct_await_callee(await_expr, rewrite_facts)?;
             await_indices.push(index);
             continue;
         }
@@ -25327,12 +25413,17 @@ fn block_branch_await_indices(
     Some(await_indices)
 }
 
-fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> {
+fn async_branch_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncBranchAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25348,12 +25439,12 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     else {
         return None;
     };
-    let condition_await = expr_contains_await(cond);
+    let condition_await = expr_contains_await_with_facts(cond, rewrite_facts);
     if condition_await {
-        direct_await_call(cond)?;
+        direct_await_callee(cond, rewrite_facts)?;
     }
-    let then_await_indices = block_branch_await_indices(body, true)?;
-    let else_await_indices = block_branch_await_indices(else_body, true)?;
+    let then_await_indices = block_branch_await_indices(body, true, rewrite_facts)?;
+    let else_await_indices = block_branch_await_indices(else_body, true, rewrite_facts)?;
     if !condition_await && then_await_indices.is_empty() && else_await_indices.is_empty() {
         None
     } else {
@@ -25366,12 +25457,17 @@ fn async_branch_await_plan(function: &Function) -> Option<AsyncBranchAwaitPlan> 
     }
 }
 
-fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBranchAwaitPlan> {
+fn async_nested_branch_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncNestedBranchAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25388,8 +25484,10 @@ fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBran
         return None;
     };
     if binding.is_some()
-        || expr_contains_await(cond)
-        || body.iter().any(stmt_contains_await)
+        || expr_contains_await_with_facts(cond, rewrite_facts)
+        || body
+            .iter()
+            .any(|stmt| stmt_contains_await_with_facts(stmt, rewrite_facts))
         || else_body.len() != 1
     {
         return None;
@@ -25403,12 +25501,12 @@ fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBran
     else {
         return None;
     };
-    if !expr_contains_await(nested_cond) {
+    if !expr_contains_await_with_facts(nested_cond, rewrite_facts) {
         return None;
     }
-    direct_await_call(nested_cond)?;
-    let then_await_indices = block_branch_await_indices(nested_body, true)?;
-    let else_await_indices = block_branch_await_indices(nested_else_body, true)?;
+    direct_await_callee(nested_cond, rewrite_facts)?;
+    let then_await_indices = block_branch_await_indices(nested_body, true, rewrite_facts)?;
+    let else_await_indices = block_branch_await_indices(nested_else_body, true, rewrite_facts)?;
     Some(AsyncNestedBranchAwaitPlan {
         statement_index,
         then_await_indices,
@@ -25416,12 +25514,17 @@ fn async_nested_branch_await_plan(function: &Function) -> Option<AsyncNestedBran
     })
 }
 
-fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
+fn async_while_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncWhileAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25430,11 +25533,11 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     let StmtKind::While { cond, body } = &function.body[statement_index].kind else {
         return None;
     };
-    let condition_await = expr_contains_await(cond);
+    let condition_await = expr_contains_await_with_facts(cond, rewrite_facts);
     if condition_await {
-        direct_await_call(cond)?;
+        direct_await_callee(cond, rewrite_facts)?;
     }
-    let body_await_indices = block_branch_await_indices(body, true)?;
+    let body_await_indices = block_branch_await_indices(body, true, rewrite_facts)?;
     if !condition_await && body_await_indices.is_empty() {
         None
     } else {
@@ -25446,12 +25549,17 @@ fn async_while_await_plan(function: &Function) -> Option<AsyncWhileAwaitPlan> {
     }
 }
 
-fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitPlan> {
+fn async_for_range_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncForRangeAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25463,15 +25571,15 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     else {
         return None;
     };
-    let start_await = expr_contains_await(start);
+    let start_await = expr_contains_await_with_facts(start, rewrite_facts);
     if start_await {
-        direct_await_call(start)?;
+        direct_await_callee(start, rewrite_facts)?;
     }
-    let end_await = expr_contains_await(end);
+    let end_await = expr_contains_await_with_facts(end, rewrite_facts);
     if end_await {
-        direct_await_call(end)?;
+        direct_await_callee(end, rewrite_facts)?;
     }
-    let body_await_indices = block_branch_await_indices(body, true)?;
+    let body_await_indices = block_branch_await_indices(body, true, rewrite_facts)?;
     if !start_await && !end_await && body_await_indices.is_empty() {
         None
     } else {
@@ -25484,30 +25592,41 @@ fn async_for_range_await_plan(function: &Function) -> Option<AsyncForRangeAwaitP
     }
 }
 
-fn async_coalescing_await_plan(function: &Function) -> Option<AsyncCoalescingAwaitPlan> {
+fn async_coalescing_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncCoalescingAwaitPlan> {
     let statement_indices = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     statement_indices.first()?;
     let mut saw_coalescing = false;
     for &statement_index in &statement_indices {
         let stmt = &function.body[statement_index];
-        let await_expr = continuation_await_expr(stmt)?;
-        direct_await_call(await_expr)?;
+        let await_expr = direct_await_expr_with_facts(stmt, rewrite_facts)
+            .or_else(|| coalescing_assignment_await_expr(stmt))?;
+        direct_await_callee(await_expr, rewrite_facts)?;
         saw_coalescing |= coalescing_assignment_await_expr(stmt).is_some();
     }
     saw_coalescing.then_some(AsyncCoalescingAwaitPlan { statement_indices })
 }
 
-fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
+fn async_match_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncMatchAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25519,17 +25638,21 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     if arms.is_empty() {
         return None;
     }
-    let scrutinee_await = expr_contains_await(value);
+    let scrutinee_await = expr_contains_await_with_facts(value, rewrite_facts);
     if scrutinee_await {
-        direct_await_call(value)?;
+        direct_await_callee(value, rewrite_facts)?;
     }
     let mut arm_await_indices = Vec::with_capacity(arms.len());
     let mut any_await = scrutinee_await;
     for arm in arms {
-        if arm.guard.as_ref().is_some_and(expr_contains_await) {
+        if arm
+            .guard
+            .as_ref()
+            .is_some_and(|guard| expr_contains_await_with_facts(guard, rewrite_facts))
+        {
             return None;
         }
-        let await_indices = block_branch_await_indices(&arm.body, true)?;
+        let await_indices = block_branch_await_indices(&arm.body, true, rewrite_facts)?;
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -25540,12 +25663,17 @@ fn async_match_await_plan(function: &Function) -> Option<AsyncMatchAwaitPlan> {
     })
 }
 
-fn async_list_match_await_plan(function: &Function) -> Option<AsyncListMatchAwaitPlan> {
+fn async_list_match_await_plan(
+    function: &Function,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<AsyncListMatchAwaitPlan> {
     let await_statements = function
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, stmt)| stmt_contains_await(stmt).then_some(index))
+        .filter_map(|(index, stmt)| {
+            stmt_contains_await_with_facts(stmt, rewrite_facts).then_some(index)
+        })
         .collect::<Vec<_>>();
     let [statement_index] = await_statements.as_slice() else {
         return None;
@@ -25554,16 +25682,20 @@ fn async_list_match_await_plan(function: &Function) -> Option<AsyncListMatchAwai
     let StmtKind::ListMatch { value, arms } = &function.body[statement_index].kind else {
         return None;
     };
-    if expr_contains_await(value) || arms.is_empty() {
+    if expr_contains_await_with_facts(value, rewrite_facts) || arms.is_empty() {
         return None;
     }
     let mut arm_await_indices = Vec::with_capacity(arms.len());
     let mut any_await = false;
     for arm in arms {
-        if arm.guard.as_ref().is_some_and(expr_contains_await) {
+        if arm
+            .guard
+            .as_ref()
+            .is_some_and(|guard| expr_contains_await_with_facts(guard, rewrite_facts))
+        {
             return None;
         }
-        let await_indices = block_branch_await_indices(&arm.body, true)?;
+        let await_indices = block_branch_await_indices(&arm.body, true, rewrite_facts)?;
         any_await |= !await_indices.is_empty();
         arm_await_indices.push(await_indices);
     }
@@ -25995,31 +26127,31 @@ fn async_continuation_plan(
     let mut locals = BTreeMap::<String, Type>::new();
     let mut resume_locals = BTreeMap::<String, Type>::new();
     let mut mutable = HashSet::new();
-    let branch_await = async_branch_await_plan(function);
+    let branch_await = async_branch_await_plan(function, &cfg_rewrite_facts);
     let nested_branch_await = branch_await
         .is_none()
-        .then(|| async_nested_branch_await_plan(function))
+        .then(|| async_nested_branch_await_plan(function, &cfg_rewrite_facts))
         .flatten();
     let while_await = branch_await
         .is_none()
         .then_some(())
         .filter(|_| nested_branch_await.is_none())
-        .and_then(|_| async_while_await_plan(function));
+        .and_then(|_| async_while_await_plan(function, &cfg_rewrite_facts));
     let for_range_await = branch_await
         .is_none()
         .then_some(())
         .filter(|_| while_await.is_none())
-        .and_then(|_| async_for_range_await_plan(function));
+        .and_then(|_| async_for_range_await_plan(function, &cfg_rewrite_facts));
     let match_await = branch_await
         .is_none()
         .then_some(())
         .filter(|_| while_await.is_none() && for_range_await.is_none())
-        .and_then(|_| async_match_await_plan(function));
+        .and_then(|_| async_match_await_plan(function, &cfg_rewrite_facts));
     let list_match_await = branch_await
         .is_none()
         .then_some(())
         .filter(|_| while_await.is_none() && for_range_await.is_none() && match_await.is_none())
-        .and_then(|_| async_list_match_await_plan(function));
+        .and_then(|_| async_list_match_await_plan(function, &cfg_rewrite_facts));
     let coalescing_await = branch_await
         .is_none()
         .then_some(())
@@ -26029,7 +26161,7 @@ fn async_continuation_plan(
                 && match_await.is_none()
                 && list_match_await.is_none()
         })
-        .and_then(|_| async_coalescing_await_plan(function));
+        .and_then(|_| async_coalescing_await_plan(function, &cfg_rewrite_facts));
     let straight_line_awaits = branch_await.is_none()
         && nested_branch_await.is_none()
         && while_await.is_none()
@@ -51081,6 +51213,70 @@ async fn main() -> i64 {
         let plan = async_continuation_plan(function, database.signatures(), graph)
             .expect("typed IR should keep straight-line continuation lowering eligible");
         assert!(cfg_direct_await_expr(selected, &plan.cfg_rewrite_facts).is_some());
+    }
+
+    #[test]
+    fn async_branch_plan_selects_nested_direct_await_from_typed_ir() {
+        let source = r#"
+async fn ping(value: i64) -> i64 {
+    return value
+}
+
+async fn exercise(flag: bool) -> i64 {
+    if flag:
+        return await ping(41)
+    else:
+        return 0
+}
+
+async fn main() -> i64 {
+    return await exercise(true)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async branch typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async branch fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let StmtKind::If { body, .. } = &mut function.body[0].kind else {
+            panic!("exercise should contain one if statement");
+        };
+        let StmtKind::Return(values) = &mut body[0].kind else {
+            panic!("then branch should contain one return statement");
+        };
+        let await_expr = &mut values[0];
+        let await_span = await_expr.span;
+        await_expr.kind = ExprKind::Int(0);
+
+        assert!(!stmt_contains_await(&function.body[0]));
+        assert!(stmt_contains_await_with_facts(&function.body[0], &facts));
+        let plan = async_branch_await_plan(function, &facts)
+            .expect("typed IR should keep branch continuation lowering eligible");
+        assert_eq!(plan.statement_index, 0);
+        assert_eq!(plan.then_await_indices, vec![0]);
+        assert!(plan.else_await_indices.is_empty());
+
+        let selected = direct_await_expr_with_facts(
+            match &function.body[0].kind {
+                StmtKind::If { body, .. } => &body[0],
+                _ => unreachable!(),
+            },
+            &facts,
+        )
+        .expect("typed IR should recover the nested direct await");
+        assert_eq!(selected.span, await_span);
+        assert_eq!(direct_await_callee(selected, &facts), Some("ping"));
+        async_continuation_plan(function, database.signatures(), graph)
+            .expect("typed IR should preserve the full async continuation plan");
     }
 
     #[test]
