@@ -34751,7 +34751,18 @@ fn cfg_direct_scalar_expr(
             kind: CfgScalarExprKind::Aggregate(aggregate),
         });
     }
-    if !value.ownership.is_copy() {
+    let reconstructable_void_effect = value.ownership.is_effect_only()
+        && matches!(
+            &value.kind,
+            crate::ir::ControlFlowValueKind::Await { .. }
+                | crate::ir::ControlFlowValueKind::Call { .. }
+                | crate::ir::ControlFlowValueKind::NamedCall { .. }
+                | crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                | crate::ir::ControlFlowValueKind::NamedQualifiedCall { .. }
+                | crate::ir::ControlFlowValueKind::InterfaceDispatch { .. }
+                | crate::ir::ControlFlowValueKind::NamedInterfaceDispatch { .. }
+        );
+    if !value.ownership.is_copy() && !reconstructable_void_effect {
         return None;
     }
     let kind = match &value.kind {
@@ -50916,6 +50927,123 @@ fn main() -> i64 {
 
         assert_eq!(emitted, local_c_name("value"));
         assert!(!emitted.contains("checked-ast-interpolation-root"));
+    }
+
+    #[test]
+    fn void_effect_roots_lower_from_typed_ir_without_ast_shape() {
+        let source = r#"
+fn sink(value: i64) -> void {
+    print(value)
+}
+
+fn direct(value: i64) -> void {
+    sink(value)
+}
+
+async fn asyncSink(value: i64) -> void {
+    print(value)
+}
+
+async fn suspended(value: i64) -> void {
+    await asyncSink(value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("void-effect typed-IR fixture should typecheck");
+
+        let direct = database
+            .control_flow_graph("direct")
+            .expect("direct void-call CFG should exist");
+        let root = direct
+            .values()
+            .iter()
+            .find(|value| {
+                value.ty == Type::Void
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "sink"
+                    )
+            })
+            .expect("typed IR should retain the void call root");
+        assert!(root.ownership.is_effect_only());
+        let facts = cfg_rewrite_facts(direct);
+        assert!(matches!(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .map(|scalar| &scalar.kind),
+            Some(CfgScalarExprKind::Call { callee, .. }) if callee == "sink"
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-void-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Void,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("void call should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!("{}({})", function_c_name("sink"), local_c_name("value"))
+        );
+        assert!(!emitted.contains("checked-ast-void-call"));
+
+        let suspended = database
+            .control_flow_graph("suspended")
+            .expect("void-await CFG should exist");
+        let root = suspended
+            .values()
+            .iter()
+            .find(|value| {
+                value.ty == Type::Void
+                    && matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. })
+            })
+            .expect("typed IR should retain the void await root");
+        assert!(root.ownership.is_effect_only());
+        let facts = cfg_rewrite_facts(suspended);
+        assert!(matches!(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .map(|scalar| &scalar.kind),
+            Some(CfgScalarExprKind::Await { .. })
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-void-await".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Void,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("void await should emit from typed IR");
+        assert!(
+            emitted.contains(&async_start_c_name("asyncSink")),
+            "{emitted}"
+        );
+        assert!(
+            emitted.contains(&async_await_c_name("asyncSink")),
+            "{emitted}"
+        );
+        assert!(emitted.contains(&local_c_name("value")), "{emitted}");
+        assert!(!emitted.contains("checked-ast-void-await"));
     }
 
     #[test]

@@ -265,6 +265,7 @@ pub struct ControlFlowValue {
 pub enum ControlFlowValueOwnership {
     Copy,
     ImmutableBorrow,
+    EffectOnly,
 }
 
 impl ControlFlowValueOwnership {
@@ -274,6 +275,10 @@ impl ControlFlowValueOwnership {
 
     pub const fn is_borrow(self) -> bool {
         matches!(self, Self::ImmutableBorrow)
+    }
+
+    pub const fn is_effect_only(self) -> bool {
+        matches!(self, Self::EffectOnly)
     }
 }
 
@@ -2025,6 +2030,7 @@ impl PersistedIrCodec for ControlFlowValueOwnership {
         match self {
             Self::Copy => 0u8.encode_cache_value(bytes),
             Self::ImmutableBorrow => 1u8.encode_cache_value(bytes),
+            Self::EffectOnly => 2u8.encode_cache_value(bytes),
         }
     }
 
@@ -2032,6 +2038,7 @@ impl PersistedIrCodec for ControlFlowValueOwnership {
         match u8::decode_cache_value(reader)? {
             0 => Some(Self::Copy),
             1 => Some(Self::ImmutableBorrow),
+            2 => Some(Self::EffectOnly),
             _ => None,
         }
     }
@@ -5898,6 +5905,25 @@ impl<'a> ControlFlowBuilder<'a> {
         is_result: bool,
         types: Vec<Type>,
     ) -> Vec<ControlFlowValueId> {
+        let types = if types.is_empty()
+            && matches!(
+                &kind,
+                ControlFlowValueKind::Await { .. }
+                    | ControlFlowValueKind::Call { .. }
+                    | ControlFlowValueKind::NamedCall { .. }
+                    | ControlFlowValueKind::QualifiedCall { .. }
+                    | ControlFlowValueKind::NamedQualifiedCall { .. }
+                    | ControlFlowValueKind::InterfaceDispatch { .. }
+                    | ControlFlowValueKind::NamedInterfaceDispatch { .. }
+            ) {
+            // Void calls still represent observable evaluation even though
+            // they do not produce a source-level value. Preserve one typed
+            // effect-only node so reachability/effects/backend consumers can
+            // reconstruct that evaluation without consulting the checked AST.
+            vec![Type::Void]
+        } else {
+            types
+        };
         let scalar = types.len() == 1;
         types
             .into_iter()
@@ -8179,13 +8205,15 @@ fn value_use_is_reachable(
 }
 
 fn value_ownership(signatures: &Signatures, ty: &Type) -> ControlFlowValueOwnership {
-    if signatures.is_copy_type(ty) {
+    if signatures.canonical_type(ty) == Type::Void {
+        ControlFlowValueOwnership::EffectOnly
+    } else if signatures.is_copy_type(ty) {
         ControlFlowValueOwnership::Copy
     } else {
-        // Every currently admitted non-Copy value is a borrowed collection
-        // descriptor.  Keep this conservative fallback explicit so a future
-        // owned value cannot accidentally inherit borrow semantics when its
-        // type is added to the language.
+        // Every currently admitted value-bearing non-Copy value is a borrowed
+        // collection descriptor. Keep this conservative fallback explicit so
+        // a future owned value cannot accidentally inherit borrow semantics
+        // when its type is added to the language.
         ControlFlowValueOwnership::ImmutableBorrow
     }
 }
