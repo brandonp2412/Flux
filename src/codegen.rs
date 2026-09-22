@@ -48599,11 +48599,13 @@ fn emit_cfg_scalar_expr_direct(
                 arguments
                     .iter()
                     .map(|argument| {
-                        if signatures.canonical_type(&argument.ty) != Type::I64
-                            || !matches!(
-                                argument.kind,
-                                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                            )
+                        let direct_argument = matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            argument, env, signatures,
+                        );
+                        if signatures.canonical_type(&argument.ty) != Type::I64 || !direct_argument
                         {
                             return None;
                         }
@@ -56031,6 +56033,14 @@ fn monthDays(year: i64, month: i64) -> i64 {
     return time.daysInMonth(year, month)
 }
 
+fn nestedUtcPart(left: i64, right: i64) -> i64 {
+    return time.utcYear(left + right)
+}
+
+fn nestedMonthDays(year: i64, offset: i64, month: i64) -> i64 {
+    return time.daysInMonth(year + offset, month)
+}
+
 fn seconds(value: i64) -> i64 {
     return time.seconds(value)
 }
@@ -56070,6 +56080,32 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "nestedUtcPart",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_utc_part(flux_add_i64({}, {}), 0)",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
+            (
+                "nestedMonthDays",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_days_in_month(flux_add_i64({}, {}), {})",
+                    local_c_name("year"),
+                    local_c_name("offset"),
+                    local_c_name("month")
+                ),
+            ),
+            (
                 "seconds",
                 HashMap::from([("value".to_string(), Type::I64)]),
                 format!("flux_mul_i64({}, INT64_C(1000))", local_c_name("value")),
@@ -56101,6 +56137,24 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar time call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
+            if function.starts_with("nested") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-nested-time-call".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &scalar.ty,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("nested primitive time arguments should bypass the checked-AST root");
+                assert_eq!(emitted, direct);
+                assert!(!emitted.contains("checked-ast-nested-time-call"));
+            }
         }
 
         let unsupported = CfgScalarExpr {
