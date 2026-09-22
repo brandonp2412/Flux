@@ -34102,6 +34102,9 @@ enum CfgScalarExprKind {
         callee: String,
         arguments: Vec<(Option<String>, CfgScalarExpr)>,
     },
+    Await {
+        value: Box<CfgScalarExpr>,
+    },
     QualifiedCall {
         namespace: String,
         name: String,
@@ -34353,6 +34356,7 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
     match &expr.kind {
         CfgScalarExprKind::Call { .. }
         | CfgScalarExprKind::NamedCall { .. }
+        | CfgScalarExprKind::Await { .. }
         | CfgScalarExprKind::QualifiedCall { .. }
         | CfgScalarExprKind::NamedQualifiedCall { .. }
         | CfgScalarExprKind::OptionalCascadeCall { .. } => true,
@@ -34466,6 +34470,9 @@ fn cfg_direct_scalar_expr(
                 value: Box::new(cfg_direct_scalar_expr(cfg, *packed)?),
             }
         }
+        crate::ir::ControlFlowValueKind::Await { value } => CfgScalarExprKind::Await {
+            value: Box::new(cfg_direct_scalar_expr(cfg, *value)?),
+        },
         crate::ir::ControlFlowValueKind::Call { callee, arguments } => CfgScalarExprKind::Call {
             callee: callee.clone(),
             arguments: arguments
@@ -45630,6 +45637,9 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 named_args: Vec::new(),
             }
         }
+        CfgScalarExprKind::Await { value } => {
+            ExprKind::Await(Box::new(cfg_scalar_expr_as_ast(value)))
+        }
         CfgScalarExprKind::Call { callee, arguments } => ExprKind::Call {
             name: callee.clone(),
             args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
@@ -45730,6 +45740,18 @@ fn cfg_scalar_expr_calls_are_reconstructable(
     signatures: &Signatures,
 ) -> bool {
     match &expr.kind {
+        CfgScalarExprKind::Await { value } => {
+            let callee = match &value.kind {
+                CfgScalarExprKind::Call { callee, .. }
+                | CfgScalarExprKind::NamedCall { callee, .. } => callee,
+                _ => return false,
+            };
+            !env.contains_key(callee)
+                && signatures
+                    .get(callee)
+                    .is_some_and(|signature| signature.asynchronous)
+                && cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
+        }
         CfgScalarExprKind::Call { callee, arguments } => {
             let callable = if let Some(local_ty) = env.get(callee) {
                 matches!(
@@ -48518,6 +48540,98 @@ fn main() -> i64 {
                 local_c_name("value")
             )
         );
+    }
+
+    #[test]
+    fn direct_typed_ir_await_calls_bypass_checked_ast_rebuild() {
+        let source = r#"
+async fn delay(value: i64) -> i64 {
+    return value
+}
+
+async fn adjust(value: i64, *, delta: i64) -> i64 {
+    return value + delta
+}
+
+async fn directAwait() -> i64 {
+    return await delay(4)
+}
+
+async fn namedAwait() -> i64 {
+    return await adjust(4, delta: 3)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("await IR fixture should typecheck");
+
+        for (function, callee, expected) in [
+            (
+                "directAwait",
+                "delay",
+                format!(
+                    "{}({}(INT64_C(4)))",
+                    async_await_c_name("delay"),
+                    async_start_c_name("delay")
+                ),
+            ),
+            (
+                "namedAwait",
+                "adjust",
+                format!(
+                    "{}({}(INT64_C(4), INT64_C(3)))",
+                    async_await_c_name("adjust"),
+                    async_start_c_name("adjust")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("await CFG should exist");
+            let awaited = graph
+                .values()
+                .iter()
+                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. }))
+                .expect("typed IR should retain the await boundary");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(awaited.span))
+                .expect("await should have reconstructable typed-IR facts");
+            let CfgScalarExprKind::Await { value } = &scalar.kind else {
+                panic!("await root should reconstruct directly from typed IR");
+            };
+            assert!(matches!(
+                &value.kind,
+                CfgScalarExprKind::Call {
+                    callee: value_callee,
+                    ..
+                } | CfgScalarExprKind::NamedCall {
+                    callee: value_callee,
+                    ..
+                } if value_callee == callee
+            ));
+
+            let fake = Expr {
+                line: awaited.span.line,
+                span: awaited.span,
+                kind: ExprKind::Str("checked-ast-await".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &HashMap::new(),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("await should emit from typed IR");
+            assert_eq!(emitted, expected);
+            assert!(!emitted.contains("checked-ast-await"));
+        }
     }
 
     #[test]
