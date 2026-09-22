@@ -35211,8 +35211,8 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
     // Consume constants from the typed value graph, not only from name reads.
     // A propagated scalar value is safe to inline here because the IR constant
     // pass records its complete expression under Flux's checked semantics.
-    // Boolean short-circuit results remain on the AST path until value-level
-    // effect regions are consumed here. Keep the span collision guard:
+    // Reconstructable short-circuit/coalescing trees are consumed through
+    // scalar_exprs below; keep the span collision guard for every fact family:
     // a source span can occur in more than one CFG path, and differing values
     // must continue through the ordinary AST emitter.
     for (value, constant) in cfg.values().iter().filter_map(|value| {
@@ -47905,6 +47905,189 @@ mod cfg_rewrite_fact_tests {
             &plain_ast_value,
             &comprehension_facts
         ));
+    }
+
+    #[test]
+    fn dynamic_list_builders_lower_from_typed_ir_without_ast_root() {
+        let source = r#"
+fn exercise(values: i64[], present: i64[]?, maybeValue: i64?, include: bool) -> i64 {
+    let built: i64[] = [0, ...values, ...?present, ?maybeValue, if include: 7 else: 8, if let bound = maybeValue: bound else: 9]
+    return built.length
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2]
+    return exercise(values, values, 3, true)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("dynamic list builder IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::List { items }
+                        if items.iter().any(|item| {
+                            graph.value(*item).is_some_and(|value| matches!(
+                                value.kind,
+                                crate::ir::ControlFlowValueKind::ListSpread { .. }
+                                    | crate::ir::ControlFlowValueKind::ListOptional { .. }
+                                    | crate::ir::ControlFlowValueKind::ListIf { .. }
+                            ))
+                        })
+                )
+            })
+            .expect("typed IR should retain the dynamic list root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("dynamic list root should retain aggregate shape");
+        let CfgAggregateShape::List(items) = shape else {
+            panic!("dynamic list root should retain list item shape");
+        };
+        assert!(items.iter().any(|item| matches!(
+            item,
+            CfgListItemShape::Spread {
+                optional: false,
+                ..
+            }
+        )));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, CfgListItemShape::Spread { optional: true, .. }))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, CfgListItemShape::Optional { .. }))
+        );
+        assert!(
+            items
+                .iter()
+                .filter(|item| matches!(item, CfgListItemShape::Conditional { .. }))
+                .count()
+                >= 2
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        assert!(list_literal_needs_builder(&fake, &facts));
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([
+            ("values".to_string(), list_ty.clone()),
+            (
+                "present".to_string(),
+                Type::Optional(Box::new(list_ty.clone())),
+            ),
+            (
+                "maybeValue".to_string(),
+                Type::Optional(Box::new(Type::I64)),
+            ),
+            ("include".to_string(), Type::Bool),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("built", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("dynamic list builder should emit from typed IR");
+
+        assert!(out.contains("flux__list_build_source_"), "{out}");
+        assert!(out.contains("flux__list_build_optional_source_"), "{out}");
+        assert!(out.contains("flux__list_build_optional_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("present")), "{out}");
+        assert!(out.contains(&local_c_name("maybeValue")), "{out}");
+        assert!(out.contains(&local_c_name("include")), "{out}");
+        assert!(out.contains(&local_c_name("bound")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn dynamic_list_comprehension_lowers_from_typed_ir_without_ast_root() {
+        let source = r#"
+fn exercise(values: i64[], floor: i64) -> i64 {
+    let projected: i64[] = [value * 2 + floor for value in values if value > floor]
+    return projected.length
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    return exercise(values, 1)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list comprehension IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListComprehension { .. }
+                )
+            })
+            .expect("typed IR should retain the list comprehension root");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.aggregates.get(&source_span_key(root.span)),
+            Some(CfgAggregateShape::ListComprehension { .. })
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        assert!(list_binding_is_comprehension(&fake, &facts));
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([
+            ("values".to_string(), list_ty.clone()),
+            ("floor".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("projected", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("list comprehension should emit from typed IR");
+
+        assert!(out.contains("flux__list_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("floor")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(out.contains("flux_mul_i64"), "{out}");
+        assert!(out.contains("flux_add_i64"), "{out}");
+        assert!(!out.contains("999"), "{out}");
     }
 
     #[test]
