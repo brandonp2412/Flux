@@ -47749,6 +47749,14 @@ fn cfg_list_match_expr_calls_are_reconstructable(
         })
 }
 
+fn reconstructable_core_builtin_arity(name: &str) -> Option<usize> {
+    match crate::builtin_names::global_impl(name) {
+        "contains" | "take" | "skip" => Some(2),
+        "any" | "error" | "every" | "print" => Some(1),
+        _ => None,
+    }
+}
+
 fn cfg_scalar_expr_calls_are_reconstructable(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -47785,12 +47793,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                 )
             } else {
                 let implementation = crate::builtin_names::global_impl(callee);
-                let builtin_arity = match implementation {
-                    "contains" | "take" | "skip" => Some(2),
-                    "any" | "error" | "every" | "print" => Some(1),
-                    _ => None,
-                };
-                if let Some(arity) = builtin_arity {
+                if let Some(arity) = reconstructable_core_builtin_arity(implementation) {
                     arguments.len() == arity
                 } else {
                     signatures.get(implementation).is_some_and(|signature| {
@@ -47827,7 +47830,9 @@ fn cfg_scalar_expr_calls_are_reconstructable(
             arguments,
         } => {
             let implementation = crate::builtin_names::global_impl(callee);
-            signatures.get(implementation).is_some()
+            let callable = (implementation == "error" && arguments.is_empty())
+                || signatures.get(implementation).is_some();
+            callable
                 && cfg_scalar_expr_calls_are_reconstructable(optional, env, signatures)
                 && arguments.iter().all(|argument| {
                     cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
@@ -51122,6 +51127,70 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+    }
+
+    #[test]
+    fn core_builtin_optional_cascades_lower_from_typed_ir() {
+        let source = r#"
+fn maybeError(message: str?) -> error? {
+    return message ?.. error
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("core builtin optional-cascade typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("maybeError")
+            .expect("core builtin optional-cascade CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall {
+                        callee,
+                        arguments,
+                        ..
+                    } if crate::builtin_names::global_impl(callee) == "error"
+                        && arguments.is_empty()
+                )
+            })
+            .expect("typed IR should retain the optional error cascade");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(root.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::OptionalCascadeCall {
+                    callee,
+                    arguments,
+                    ..
+                },
+                ..
+            }) if crate::builtin_names::global_impl(callee) == "error"
+                && arguments.is_empty()
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-maybe-error".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Optional(Box::new(Type::Error)),
+            &HashMap::from([("message".to_string(), Type::Optional(Box::new(Type::Str)))]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("optional error cascade should emit from typed IR");
+        assert!(emitted.contains("has_value"), "{emitted}");
+        assert!(emitted.contains(&local_c_name("message")), "{emitted}");
+        assert!(!emitted.contains("checked-ast-maybe-error"));
     }
 
     #[test]
