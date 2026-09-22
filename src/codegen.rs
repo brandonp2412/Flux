@@ -34141,6 +34141,19 @@ struct CfgMatchExpr {
     arms: Vec<CfgMatchExprArm>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CfgListMatchExprArm {
+    pattern: crate::ir::ControlFlowListMatchPattern,
+    guard: Option<CfgScalarExpr>,
+    value: CfgScalarExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CfgListMatchExpr {
+    value: CfgScalarExpr,
+    arms: Vec<CfgListMatchExprArm>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct CfgRewriteFacts {
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
@@ -34148,6 +34161,7 @@ struct CfgRewriteFacts {
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
     scalar_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     match_exprs: HashMap<(u32, usize, usize, usize), CfgMatchExpr>,
+    list_match_exprs: HashMap<(u32, usize, usize, usize), CfgListMatchExpr>,
 }
 
 fn cfg_literal_aggregate_value(
@@ -34692,6 +34706,46 @@ fn cfg_direct_match_expr(
     })
 }
 
+fn cfg_direct_list_match_expr(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgListMatchExpr> {
+    let root = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::ListMatch {
+        value,
+        guards,
+        arms,
+        arm_patterns,
+    } = &root.kind
+    else {
+        return None;
+    };
+    if guards.len() != arms.len() || arms.len() != arm_patterns.len() {
+        return None;
+    }
+
+    let mut lowered_arms = Vec::with_capacity(arms.len());
+    for index in 0..arms.len() {
+        let guard = match guards[index] {
+            Some(guard) => Some(cfg_direct_scalar_expr(cfg, guard)?),
+            None => None,
+        };
+        lowered_arms.push(CfgListMatchExprArm {
+            pattern: arm_patterns[index].clone(),
+            guard,
+            value: cfg_direct_scalar_expr(cfg, arms[index])?,
+        });
+    }
+
+    Some(CfgListMatchExpr {
+        value: cfg_borrowed_list_base(cfg, *value)?,
+        arms: lowered_arms,
+    })
+}
+
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
     let mut constants = HashMap::new();
     let mut ambiguous_constants = HashSet::new();
@@ -34882,25 +34936,38 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
 
     let mut match_exprs = HashMap::new();
     let mut ambiguous_match_exprs = HashSet::new();
+    let mut list_match_exprs = HashMap::new();
+    let mut ambiguous_list_match_exprs = HashSet::new();
     for value in cfg
         .values()
         .iter()
         .filter(|value| cfg.is_value_reachable(value.id))
     {
-        let Some(match_expr) = cfg_direct_match_expr(cfg, value.id) else {
-            continue;
-        };
-        let span = source_span_key(value.span);
-        if ambiguous_match_exprs.contains(&span) {
-            continue;
-        }
-        if let Some(existing) = match_exprs.get(&span) {
-            if existing != &match_expr {
-                match_exprs.remove(&span);
-                ambiguous_match_exprs.insert(span);
+        if let Some(match_expr) = cfg_direct_match_expr(cfg, value.id) {
+            let span = source_span_key(value.span);
+            if !ambiguous_match_exprs.contains(&span) {
+                if let Some(existing) = match_exprs.get(&span) {
+                    if existing != &match_expr {
+                        match_exprs.remove(&span);
+                        ambiguous_match_exprs.insert(span);
+                    }
+                } else {
+                    match_exprs.insert(span, match_expr);
+                }
             }
-        } else {
-            match_exprs.insert(span, match_expr);
+        }
+        if let Some(list_match_expr) = cfg_direct_list_match_expr(cfg, value.id) {
+            let span = source_span_key(value.span);
+            if !ambiguous_list_match_exprs.contains(&span) {
+                if let Some(existing) = list_match_exprs.get(&span) {
+                    if existing != &list_match_expr {
+                        list_match_exprs.remove(&span);
+                        ambiguous_list_match_exprs.insert(span);
+                    }
+                } else {
+                    list_match_exprs.insert(span, list_match_expr);
+                }
+            }
         }
     }
 
@@ -34910,6 +34977,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         aggregate_constants,
         scalar_exprs,
         match_exprs,
+        list_match_exprs,
     }
 }
 
@@ -38676,6 +38744,24 @@ fn emit_list_match_expr_into(
     checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
     cfg_rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(), Diagnostic> {
+    if let Some(list_match_expr) = cfg_rewrite_facts
+        .list_match_exprs
+        .get(&source_span_key(expr.span))
+        && cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
+    {
+        let synthetic = cfg_list_match_expr_as_ast(list_match_expr);
+        return emit_list_match_expr_into(
+            out,
+            &synthetic,
+            target,
+            depth,
+            env,
+            signatures,
+            temp_counter,
+            &HashMap::new(),
+            &CfgRewriteFacts::default(),
+        );
+    }
     let ExprKind::ListMatch { value, arms } = &expr.kind else {
         return Err(diag(
             expr.span,
@@ -45930,6 +46016,80 @@ fn cfg_match_expr_as_ast(expr: &CfgMatchExpr) -> Expr {
     }
 }
 
+fn cfg_list_match_pattern_as_ast(
+    pattern: &crate::ir::ControlFlowListMatchPattern,
+    span: SourceSpan,
+) -> ListMatchPattern {
+    let binding = |name: &str| crate::ast::PatternBinding {
+        name: name.to_string(),
+        span,
+    };
+    match pattern {
+        crate::ir::ControlFlowListMatchPattern::List { bindings, rest } => ListMatchPattern::List {
+            bindings: bindings.iter().map(|name| binding(name)).collect(),
+            rest: rest.as_ref().map(|rest| crate::ast::ListRestPattern {
+                binding: binding(&rest.binding),
+                index: rest.index,
+            }),
+            span,
+        },
+        crate::ir::ControlFlowListMatchPattern::Wildcard => ListMatchPattern::Wildcard { span },
+        crate::ir::ControlFlowListMatchPattern::Map { entries } => ListMatchPattern::Map {
+            entries: entries
+                .iter()
+                .map(|entry| crate::ast::MapPatternEntry {
+                    key: Expr {
+                        line: span.line,
+                        span,
+                        kind: match &entry.key {
+                            ConstantValue::I64(value) => ExprKind::Int(*value),
+                            ConstantValue::Bool(value) => ExprKind::Bool(*value),
+                            ConstantValue::Str(value) => ExprKind::Str(value.clone()),
+                        },
+                    },
+                    binding: binding(&entry.binding),
+                })
+                .collect(),
+            span,
+        },
+    }
+}
+
+fn cfg_list_match_expr_as_ast(expr: &CfgListMatchExpr) -> Expr {
+    let span = SourceSpan::new(1, 1, 1);
+    Expr {
+        line: span.line,
+        span,
+        kind: ExprKind::ListMatch {
+            value: Box::new(cfg_scalar_expr_as_ast(&expr.value)),
+            arms: expr
+                .arms
+                .iter()
+                .map(|arm| crate::ast::ListMatchExprArm {
+                    pattern: cfg_list_match_pattern_as_ast(&arm.pattern, span),
+                    guard: arm.guard.as_ref().map(cfg_scalar_expr_as_ast),
+                    value: cfg_scalar_expr_as_ast(&arm.value),
+                    line: span.line,
+                    span,
+                })
+                .collect(),
+        },
+    }
+}
+
+fn cfg_list_match_expr_calls_are_reconstructable(
+    expr: &CfgListMatchExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> bool {
+    cfg_scalar_expr_calls_are_reconstructable(&expr.value, env, signatures)
+        && expr.arms.iter().all(|arm| {
+            arm.guard.as_ref().is_none_or(|guard| {
+                cfg_scalar_expr_calls_are_reconstructable(guard, env, signatures)
+            }) && cfg_scalar_expr_calls_are_reconstructable(&arm.value, env, signatures)
+        })
+}
+
 fn cfg_scalar_expr_calls_are_reconstructable(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48916,6 +49076,82 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("floor")));
         assert!(out.contains(&local_c_name("value")));
         assert!(!out.contains("checked-ast-match"));
+    }
+
+    #[test]
+    fn dynamic_typed_ir_list_matches_bypass_checked_ast_rebuild() {
+        let source = r#"
+fn choose(values: i64[], floor: i64) -> i64 {
+    return match values[::-1]:
+        []: 0
+        [first] if first > floor: first + 1
+        [first]: first
+        [_, ...body, _]: body.length + floor
+}
+
+fn main() -> i64 {
+    return choose([1, 2, 3], 1)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list match IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("choose")
+            .expect("choose CFG should exist");
+        let matched = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::ListMatch { .. }
+                )
+            })
+            .expect("typed IR should retain the list-match root");
+        let facts = cfg_rewrite_facts(graph);
+        let list_match_expr = facts
+            .list_match_exprs
+            .get(&source_span_key(matched.span))
+            .expect("list match should have reconstructable typed-IR facts");
+        assert_eq!(list_match_expr.arms.len(), 4);
+
+        let fake = Expr {
+            line: matched.span.line,
+            span: matched.span,
+            kind: ExprKind::ListMatch {
+                value: Box::new(Expr {
+                    line: matched.span.line,
+                    span: matched.span,
+                    kind: ExprKind::Str("checked-ast-list-match".to_string()),
+                }),
+                arms: Vec::new(),
+            },
+        };
+        let env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("floor".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_match_expr_into(
+            &mut out,
+            &fake,
+            "flux__typed_list_match_result",
+            1,
+            &env,
+            database.signatures(),
+            &mut temp_counter,
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("list match should emit from typed IR");
+
+        assert!(out.contains("flux__list_match_"));
+        assert!(out.contains(&local_c_name("values")));
+        assert!(out.contains(&local_c_name("floor")));
+        assert!(out.contains(&local_c_name("first")));
+        assert!(out.contains(&local_c_name("body")));
+        assert!(!out.contains("checked-ast-list-match"));
     }
 
     #[test]
