@@ -72085,7 +72085,10 @@ fn choose(values: map<str, i64>, floor: i64) -> i64 {
 
 fn main() -> i64 {
     let values: map<str, i64> = {"one": 7, "two": 2}
+    let other: map<str, i64> = {"three": 9}
     print(choose(values, 3))
+    print(choose(values, 8))
+    print(choose(other, 4))
     return 0
 }
 "#;
@@ -72128,7 +72131,7 @@ fn main() -> i64 {
         .output()
         .expect("map match expression program should run");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n3\n4\n");
     let _ = fs::remove_dir_all(&root);
 
     let missing_fallback = r#"
