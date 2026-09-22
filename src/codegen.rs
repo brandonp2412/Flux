@@ -48701,6 +48701,66 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "str" && name == "length" && ty == Type::I64 => {
+            let [value] = arguments.as_slice() else {
+                return None;
+            };
+            if signatures.canonical_type(&value.ty) != Type::Str
+                || !matches!(
+                    value.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                )
+            {
+                return None;
+            }
+            let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+            Some(format!("flux__str_length({value})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "process" => {
+            let (helper, expected, result) = match name.as_str() {
+                "pid" => ("flux__process_pid", Vec::new(), Type::I64),
+                "parentPid" => ("flux__process_parent_pid", Vec::new(), Type::I64),
+                "cpuMillis" => ("flux__process_cpu_millis", Vec::new(), Type::I64),
+                "peakResidentMemoryBytes" => (
+                    "flux__process_peak_resident_memory_bytes",
+                    Vec::new(),
+                    Type::I64,
+                ),
+                "terminationRequested" => (
+                    "flux__process_termination_requested",
+                    Vec::new(),
+                    Type::Bool,
+                ),
+                "hasEnv" => ("flux__process_has_env", vec![Type::Str], Type::Bool),
+                "env" => ("flux__process_env", vec![Type::Str, Type::Str], Type::Str),
+                _ => return None,
+            };
+            if ty != result || arguments.len() != expected.len() {
+                return None;
+            }
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, expected) in arguments.iter().zip(expected) {
+                if signatures.canonical_type(&argument.ty) != expected
+                    || !matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    )
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+            Some(format!("{helper}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "locale" && ty == Type::Str => {
             let (helper, expected) = match name.as_str() {
                 "language" if arguments.is_empty() => ("flux__locale_language", Vec::new()),
@@ -55772,6 +55832,186 @@ fn main() -> i64 {
             )
             .is_none(),
             "effect-only time calls should retain their established lowering path"
+        );
+    }
+
+    #[test]
+    fn direct_scalar_string_and_process_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn stringLength(value: str) -> i64 {
+    return str.length(value)
+}
+
+fn pid() -> i64 {
+    return process.pid()
+}
+
+fn parentPid() -> i64 {
+    return process.parentPid()
+}
+
+fn cpuMillis() -> i64 {
+    return process.cpuMillis()
+}
+
+fn peakMemory() -> i64 {
+    return process.peakResidentMemoryBytes()
+}
+
+fn terminationRequested() -> bool {
+    return process.terminationRequested()
+}
+
+fn hasEnv(name: str) -> bool {
+    return process.hasEnv(name)
+}
+
+fn environment(name: str, fallback: str) -> str {
+    return process.env(name, fallback)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct string/process qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "stringLength",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!("flux__str_length({})", local_c_name("value")),
+            ),
+            ("pid", HashMap::new(), "flux__process_pid()".to_string()),
+            (
+                "parentPid",
+                HashMap::new(),
+                "flux__process_parent_pid()".to_string(),
+            ),
+            (
+                "cpuMillis",
+                HashMap::new(),
+                "flux__process_cpu_millis()".to_string(),
+            ),
+            (
+                "peakMemory",
+                HashMap::new(),
+                "flux__process_peak_resident_memory_bytes()".to_string(),
+            ),
+            (
+                "terminationRequested",
+                HashMap::new(),
+                "flux__process_termination_requested()".to_string(),
+            ),
+            (
+                "hasEnv",
+                HashMap::from([("name".to_string(), Type::Str)]),
+                format!("flux__process_has_env({})", local_c_name("name")),
+            ),
+            (
+                "environment",
+                HashMap::from([
+                    ("name".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__process_env({}, {})",
+                    local_c_name("name"),
+                    local_c_name("fallback")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("string/process qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("string/process qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("string/process qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported scalar string/process call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let process_exit = CfgScalarExpr {
+            ty: Type::Void,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "process".to_string(),
+                name: "exit".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Name("code".to_string()),
+                }],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &process_exit,
+                &HashMap::from([("code".to_string(), Type::I64)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "effect-only process exit should retain its established lowering path"
+        );
+
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        let string_slice = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "str".to_string(),
+                name: "slice".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Name("value".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Name("start".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Name("end".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &string_slice,
+                &HashMap::from([
+                    ("value".to_string(), Type::Str),
+                    ("start".to_string(), Type::I64),
+                    ("end".to_string(), Type::I64),
+                    ("callback".to_string(), callback_ty),
+                ]),
+                database.signatures(),
+            )
+            .is_none(),
+            "callback-based string slicing should retain its established lowering path"
         );
     }
 
