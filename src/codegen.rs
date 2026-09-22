@@ -48777,6 +48777,43 @@ fn emit_cfg_scalar_expr_direct(
                 rendered.join(", ")
             ))
         }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "android" => {
+            let binding = crate::android_bindings::binding_named(name)?;
+            let expected_return = match binding.returns {
+                crate::android_bindings::AndroidBindingReturn::Void => return None,
+                crate::android_bindings::AndroidBindingReturn::I64 => Type::I64,
+                crate::android_bindings::AndroidBindingReturn::Bool => Type::Bool,
+            };
+            if ty != expected_return {
+                return None;
+            }
+            let runtime_symbol = binding.runtime_symbol_for_arity(arguments.len())?;
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, parameter) in arguments.iter().zip(binding.params) {
+                let expected = match parameter.ty {
+                    crate::android_bindings::AndroidBindingType::I64 => Type::I64,
+                    crate::android_bindings::AndroidBindingType::Bool => Type::Bool,
+                    crate::android_bindings::AndroidBindingType::Str => Type::Str,
+                    crate::android_bindings::AndroidBindingType::StrCallback => return None,
+                };
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            Some(format!("{runtime_symbol}({})", rendered.join(", ")))
+        }
         CfgScalarExprKind::Index {
             base,
             index,
@@ -55703,6 +55740,180 @@ fn main() -> i64 {
             )
             .is_none(),
             "effect-only time calls should retain their established lowering path"
+        );
+    }
+
+    #[test]
+    fn direct_scalar_android_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn sdk() -> i64 {
+    return android.sdkInt()
+}
+
+fn feature(name: str) -> bool {
+    return android.hasSystemFeature(name)
+}
+
+fn schedule(jobId: i64, delay: i64) -> bool {
+    return android.scheduleBackgroundJob(jobId + delay, delay)
+}
+
+fn play(source: str) -> bool {
+    return android.play(source)
+}
+
+fn selectionStart() -> i64 {
+    return android.selectionStart()
+}
+
+fn setCaret(position: i64) -> bool {
+    return android.setCaret(position)
+}
+
+fn permission(name: str) -> bool {
+    return android.permissionGranted(name)
+}
+
+fn notificationPermission() -> bool {
+    return android.notificationPermissionGranted()
+}
+
+fn store(key: str, value: str) -> bool {
+    return android.secureStore(key, value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct Android qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            ("sdk", HashMap::new(), "flux__android_sdk_int()".to_string()),
+            (
+                "feature",
+                HashMap::from([("name".to_string(), Type::Str)]),
+                format!("flux__android_has_system_feature({})", local_c_name("name")),
+            ),
+            (
+                "schedule",
+                HashMap::from([
+                    ("jobId".to_string(), Type::I64),
+                    ("delay".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__android_schedule_background_job(flux_add_i64({}, {}), {})",
+                    local_c_name("jobId"),
+                    local_c_name("delay"),
+                    local_c_name("delay")
+                ),
+            ),
+            (
+                "play",
+                HashMap::from([("source".to_string(), Type::Str)]),
+                format!("flux__android_play({})", local_c_name("source")),
+            ),
+            (
+                "selectionStart",
+                HashMap::new(),
+                "flux__android_selection_start()".to_string(),
+            ),
+            (
+                "setCaret",
+                HashMap::from([("position".to_string(), Type::I64)]),
+                format!("flux__android_set_caret({})", local_c_name("position")),
+            ),
+            (
+                "permission",
+                HashMap::from([("name".to_string(), Type::Str)]),
+                format!("flux__android_permission_granted({})", local_c_name("name")),
+            ),
+            (
+                "notificationPermission",
+                HashMap::new(),
+                "flux__android_notification_permission_granted()".to_string(),
+            ),
+            (
+                "store",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__android_secure_store({}, {})",
+                    local_c_name("key"),
+                    local_c_name("value")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Android qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("Android qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("Android qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported scalar Android call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        let callback_call = CfgScalarExpr {
+            ty: Type::Bool,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "android".to_string(),
+                name: "camera".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: callback_ty.clone(),
+                    kind: CfgScalarExprKind::Name("callback".to_string()),
+                }],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &callback_call,
+                &HashMap::from([("callback".to_string(), callback_ty)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "callback-based Android calls should retain their established lowering path"
+        );
+
+        let effect_call = CfgScalarExpr {
+            ty: Type::Void,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "android".to_string(),
+                name: "vibrate".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Name("duration".to_string()),
+                }],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &effect_call,
+                &HashMap::from([("duration".to_string(), Type::I64)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "effect-only Android calls should retain their established lowering path"
         );
     }
 
