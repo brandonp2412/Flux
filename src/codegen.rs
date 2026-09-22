@@ -34454,6 +34454,40 @@ fn cfg_borrowed_collection_field_base(
     })
 }
 
+fn cfg_borrowed_collection_value(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_borrow() {
+        return None;
+    }
+    match &value.ty {
+        Type::List(_) | Type::Set(_) | Type::Map(_, _) => {
+            cfg_borrowed_collection_field_base(cfg, id)
+        }
+        Type::Optional(inner)
+            if matches!(
+                inner.as_ref(),
+                Type::List(_) | Type::Set(_) | Type::Map(_, _)
+            ) =>
+        {
+            let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind
+            else {
+                return None;
+            };
+            if definitions.is_empty() {
+                return None;
+            }
+            Some(CfgScalarExpr {
+                ty: value.ty.clone(),
+                kind: CfgScalarExprKind::Name(name.clone()),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34464,6 +34498,20 @@ fn cfg_direct_scalar_expr(
     let value = cfg.value(id)?;
     if !cfg.is_value_reachable(id) {
         return None;
+    }
+    if let crate::ir::ControlFlowValueKind::Unary {
+        op: UnaryOp::Borrow,
+        operand,
+    } = &value.kind
+        && value.ownership.is_borrow()
+    {
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Unary {
+                op: UnaryOp::Borrow,
+                operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
+            },
+        });
     }
     if let crate::ir::ControlFlowValueKind::Slice {
         base,
@@ -48644,6 +48692,125 @@ fn main() -> i64 {
         .expect("nested borrowed slice should emit from typed IR");
         assert_eq!(emitted_slice.matches("flux_list_slice(").count(), 2);
         assert!(!emitted_slice.contains("checked-ast-nested-slice"));
+    }
+
+    #[test]
+    fn explicit_collection_borrows_lower_from_typed_ir() {
+        let source = r#"
+fn borrowList(values: i64[]) -> i64 {
+    let view: i64[] = borrow values
+    return view.count
+}
+
+fn borrowSlice(values: i64[], start: i64) -> i64 {
+    let view: i64[] = borrow values[start:]
+    return view.count
+}
+
+fn borrowSet(values: set<i64>) -> i64 {
+    let view: set<i64> = borrow values
+    return view.count
+}
+
+fn borrowMap(values: map<str, i64>) -> i64 {
+    let view: map<str, i64> = borrow values
+    return view.count
+}
+
+fn borrowOptionalList(values: i64[]?) -> i64 {
+    let _view: i64[]? = borrow values
+    return 0
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("explicit collection borrow IR fixture should typecheck");
+
+        for (function, env, expected_fragment) in [
+            (
+                "borrowList",
+                HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]),
+                local_c_name("values"),
+            ),
+            (
+                "borrowSlice",
+                HashMap::from([
+                    ("values".to_string(), Type::List(Box::new(Type::I64))),
+                    ("start".to_string(), Type::I64),
+                ]),
+                "flux_list_slice(".to_string(),
+            ),
+            (
+                "borrowSet",
+                HashMap::from([("values".to_string(), Type::Set(Box::new(Type::I64)))]),
+                local_c_name("values"),
+            ),
+            (
+                "borrowMap",
+                HashMap::from([(
+                    "values".to_string(),
+                    Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                )]),
+                local_c_name("values"),
+            ),
+            (
+                "borrowOptionalList",
+                HashMap::from([(
+                    "values".to_string(),
+                    Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+                )]),
+                local_c_name("values"),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("borrow CFG should exist");
+            let borrow = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Unary {
+                            op: UnaryOp::Borrow,
+                            ..
+                        }
+                    )
+                })
+                .expect("typed IR should retain the explicit borrow");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(borrow.span))
+                .expect("explicit collection borrow should be reconstructable from typed IR");
+            assert!(matches!(
+                scalar.kind,
+                CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
+            ));
+
+            let fake = Expr {
+                line: borrow.span.line,
+                span: borrow.span,
+                kind: ExprKind::Str("checked-ast-collection-borrow".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &borrow.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("explicit collection borrow should emit from typed IR");
+            assert!(emitted.contains(&expected_fragment), "{emitted}");
+            assert!(!emitted.contains("checked-ast-collection-borrow"));
+        }
     }
 
     #[test]
