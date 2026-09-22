@@ -4432,6 +4432,16 @@ fn complete_map_entry_values(
         .collect()
 }
 
+fn complete_optional_value<T, U>(
+    source: Option<T>,
+    lower: impl FnOnce(T) -> Option<U>,
+) -> Option<Option<U>> {
+    match source {
+        Some(value) => lower(value).map(Some),
+        None => Some(None),
+    }
+}
+
 struct ControlFlowBuilder<'a> {
     signatures: &'a Signatures,
     function: String,
@@ -5531,16 +5541,18 @@ impl<'a> ControlFlowBuilder<'a> {
                 } else {
                     self.lower_scalar_expr(producer, value)
                 };
-                let else_value = else_value
-                    .as_deref()
-                    .and_then(|value| self.lower_scalar_expr(producer, value));
-                match (condition_value, value) {
-                    (Some(condition), Some(value)) => ControlFlowValueKind::ListIf {
-                        condition,
-                        binding: binding.as_ref().map(|binding| binding.name.clone()),
-                        value,
-                        else_value,
-                    },
+                let else_value = complete_optional_value(else_value.as_deref(), |value| {
+                    self.lower_scalar_expr(producer, value)
+                });
+                match (condition_value, value, else_value) {
+                    (Some(condition), Some(value), Some(else_value)) => {
+                        ControlFlowValueKind::ListIf {
+                            condition,
+                            binding: binding.as_ref().map(|binding| binding.name.clone()),
+                            value,
+                            else_value,
+                        }
+                    }
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
@@ -5567,23 +5579,26 @@ impl<'a> ControlFlowBuilder<'a> {
                 step,
             } => {
                 let base = self.lower_scalar_expr(producer, base);
-                let start = start
-                    .as_deref()
-                    .and_then(|value| self.lower_scalar_expr(producer, value));
-                let end = end
-                    .as_deref()
-                    .and_then(|value| self.lower_scalar_expr(producer, value));
-                let step = step
-                    .as_deref()
-                    .and_then(|value| self.lower_scalar_expr(producer, value));
-                base.map_or(ControlFlowValueKind::Opaque, |base| {
-                    ControlFlowValueKind::Slice {
-                        base,
-                        start,
-                        end,
-                        step,
+                let start = complete_optional_value(start.as_deref(), |value| {
+                    self.lower_scalar_expr(producer, value)
+                });
+                let end = complete_optional_value(end.as_deref(), |value| {
+                    self.lower_scalar_expr(producer, value)
+                });
+                let step = complete_optional_value(step.as_deref(), |value| {
+                    self.lower_scalar_expr(producer, value)
+                });
+                match (base, start, end, step) {
+                    (Some(base), Some(start), Some(end), Some(step)) => {
+                        ControlFlowValueKind::Slice {
+                            base,
+                            start,
+                            end,
+                            step,
+                        }
                     }
-                })
+                    _ => ControlFlowValueKind::Opaque,
+                }
             }
             ExprKind::ListComprehension {
                 value,
@@ -5604,47 +5619,53 @@ impl<'a> ControlFlowBuilder<'a> {
                 let definitions = self.add_scoped_definitions(producer, definitions);
                 self.record_scoped_borrow_sources(&definitions, iterable_value);
                 self.push_scoped_definitions(definitions);
-                let condition = condition
-                    .as_deref()
-                    .and_then(|condition| self.lower_scalar_expr(producer, condition));
+                let condition = complete_optional_value(condition.as_deref(), |condition| {
+                    self.lower_scalar_expr(producer, condition)
+                });
                 let value = self.lower_scalar_expr(producer, value);
                 self.scoped_definition_stack.pop();
-                match (iterable_value, value) {
-                    (Some(iterable), Some(value)) => ControlFlowValueKind::ListComprehension {
-                        binding: binding.clone(),
-                        iterable,
-                        value,
-                        condition,
-                    },
+                match (iterable_value, value, condition) {
+                    (Some(iterable), Some(value), Some(condition)) => {
+                        ControlFlowValueKind::ListComprehension {
+                            binding: binding.clone(),
+                            iterable,
+                            value,
+                            condition,
+                        }
+                    }
                     _ => ControlFlowValueKind::Opaque,
                 }
             }
-            ExprKind::RecordLiteral { fields } => ControlFlowValueKind::RecordLiteral {
-                fields: fields
-                    .iter()
-                    .filter_map(|field| {
-                        self.lower_scalar_expr(producer, &field.value)
-                            .map(|value| (field.name.clone(), value))
-                    })
-                    .collect(),
-            },
+            ExprKind::RecordLiteral { fields } => fields
+                .iter()
+                .map(|field| {
+                    self.lower_scalar_expr(producer, &field.value)
+                        .map(|value| (field.name.clone(), value))
+                })
+                .collect::<Option<Vec<_>>>()
+                .map_or(ControlFlowValueKind::Opaque, |fields| {
+                    ControlFlowValueKind::RecordLiteral { fields }
+                }),
             ExprKind::StructLiteral {
                 name, base, fields, ..
             } => {
-                let base = base
-                    .as_deref()
-                    .and_then(|value| self.lower_scalar_expr(producer, value));
+                let base = complete_optional_value(base.as_deref(), |value| {
+                    self.lower_scalar_expr(producer, value)
+                });
                 let fields = fields
                     .iter()
-                    .filter_map(|field| {
+                    .map(|field| {
                         self.lower_scalar_expr(producer, &field.value)
                             .map(|value| (field.name.clone(), value))
                     })
-                    .collect();
-                ControlFlowValueKind::StructLiteral {
-                    name: name.clone(),
-                    base,
-                    fields,
+                    .collect::<Option<Vec<_>>>();
+                match (base, fields) {
+                    (Some(base), Some(fields)) => ControlFlowValueKind::StructLiteral {
+                        name: name.clone(),
+                        base,
+                        fields,
+                    },
+                    _ => ControlFlowValueKind::Opaque,
                 }
             }
             ExprKind::QualifiedCall {
@@ -5749,66 +5770,86 @@ impl<'a> ControlFlowBuilder<'a> {
                 let arm_patterns = arms
                     .iter()
                     .map(|arm| self.lower_match_arm_pattern(arm))
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap_or_default();
+                    .collect::<Option<Vec<_>>>();
                 let mut guards = Vec::with_capacity(arms.len());
                 let mut arm_values = Vec::with_capacity(arms.len());
+                let mut complete = true;
                 for arm in arms {
                     let definitions = self.enum_match_expr_definitions(value, arm);
                     let definitions = self.add_scoped_definitions(producer, definitions);
                     self.record_scoped_borrow_sources(&definitions, matched_value);
                     self.push_scoped_definitions(definitions);
-                    guards.push(
-                        arm.guard
-                            .as_ref()
-                            .and_then(|guard| self.lower_scalar_expr(producer, guard)),
-                    );
-                    if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
-                        arm_values.push(value);
-                    }
+                    let guard = complete_optional_value(arm.guard.as_ref(), |guard| {
+                        self.lower_scalar_expr(producer, guard)
+                    });
+                    let arm_value = self.lower_scalar_expr(producer, &arm.value);
                     self.scoped_definition_stack.pop();
-                }
-                matched_value.map_or(ControlFlowValueKind::Opaque, |value| {
-                    ControlFlowValueKind::Match {
-                        value,
-                        guards,
-                        arms: arm_values,
-                        arm_patterns,
+                    match (guard, arm_value) {
+                        (Some(guard), Some(arm_value)) => {
+                            guards.push(guard);
+                            arm_values.push(arm_value);
+                        }
+                        _ => complete = false,
                     }
-                })
+                }
+                match (matched_value, arm_patterns, complete) {
+                    (Some(value), Some(arm_patterns), true)
+                        if arm_patterns.len() == arms.len()
+                            && guards.len() == arms.len()
+                            && arm_values.len() == arms.len() =>
+                    {
+                        ControlFlowValueKind::Match {
+                            value,
+                            guards,
+                            arms: arm_values,
+                            arm_patterns,
+                        }
+                    }
+                    _ => ControlFlowValueKind::Opaque,
+                }
             }
             ExprKind::ListMatch { value, arms } => {
                 let matched_value = self.lower_scalar_expr(producer, value);
                 let arm_patterns = arms
                     .iter()
                     .map(|arm| self.lower_list_match_pattern(&arm.pattern))
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap_or_default();
+                    .collect::<Option<Vec<_>>>();
                 let mut guards = Vec::with_capacity(arms.len());
                 let mut arm_values = Vec::with_capacity(arms.len());
+                let mut complete = true;
                 for arm in arms {
                     let definitions = self.list_match_definitions(value, &arm.pattern);
                     let definitions = self.add_scoped_definitions(producer, definitions);
                     self.record_scoped_borrow_sources(&definitions, matched_value);
                     self.push_scoped_definitions(definitions);
-                    guards.push(
-                        arm.guard
-                            .as_ref()
-                            .and_then(|guard| self.lower_scalar_expr(producer, guard)),
-                    );
-                    if let Some(value) = self.lower_scalar_expr(producer, &arm.value) {
-                        arm_values.push(value);
-                    }
+                    let guard = complete_optional_value(arm.guard.as_ref(), |guard| {
+                        self.lower_scalar_expr(producer, guard)
+                    });
+                    let arm_value = self.lower_scalar_expr(producer, &arm.value);
                     self.scoped_definition_stack.pop();
-                }
-                matched_value.map_or(ControlFlowValueKind::Opaque, |value| {
-                    ControlFlowValueKind::ListMatch {
-                        value,
-                        guards,
-                        arms: arm_values,
-                        arm_patterns,
+                    match (guard, arm_value) {
+                        (Some(guard), Some(arm_value)) => {
+                            guards.push(guard);
+                            arm_values.push(arm_value);
+                        }
+                        _ => complete = false,
                     }
-                })
+                }
+                match (matched_value, arm_patterns, complete) {
+                    (Some(value), Some(arm_patterns), true)
+                        if arm_patterns.len() == arms.len()
+                            && guards.len() == arms.len()
+                            && arm_values.len() == arms.len() =>
+                    {
+                        ControlFlowValueKind::ListMatch {
+                            value,
+                            guards,
+                            arms: arm_values,
+                            arm_patterns,
+                        }
+                    }
+                    _ => ControlFlowValueKind::Opaque,
+                }
             }
             ExprKind::Conditional {
                 then_expr,
@@ -9291,6 +9332,23 @@ mod tests {
             None
         );
         assert_eq!(super::complete_map_entry_values(vec![Some(first)]), None);
+    }
+
+    #[test]
+    fn optional_ir_children_preserve_source_presence() {
+        let value = super::ControlFlowValueId(7);
+        assert_eq!(
+            super::complete_optional_value(Some("present"), |_| Some(value)),
+            Some(Some(value))
+        );
+        assert_eq!(
+            super::complete_optional_value(Some("present"), |_| None::<super::ControlFlowValueId>),
+            None
+        );
+        assert_eq!(
+            super::complete_optional_value(None::<&str>, |_| Some(value)),
+            Some(None)
+        );
     }
 
     #[test]
