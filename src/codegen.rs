@@ -48697,6 +48697,54 @@ fn emit_cfg_scalar_expr_direct(
                 _ => None,
             }
         }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "windows" => {
+            match name.as_str() {
+                "processId" if arguments.is_empty() && ty == Type::I64 => {
+                    return Some("flux__windows_process_id()".to_string());
+                }
+                "uptimeMillis" if arguments.is_empty() && ty == Type::I64 => {
+                    return Some("flux__windows_uptime_millis()".to_string());
+                }
+                _ => {}
+            }
+
+            let binding = crate::windows_bindings::binding_named(name)?;
+            let expected_return = match binding.returns {
+                crate::windows_bindings::WindowsBindingReturn::I64 => Type::I64,
+                crate::windows_bindings::WindowsBindingReturn::Bool => Type::Bool,
+            };
+            if ty != expected_return || arguments.len() != binding.params.len() {
+                return None;
+            }
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, parameter) in arguments.iter().zip(binding.params) {
+                let expected = match parameter.ty {
+                    crate::windows_bindings::WindowsBindingType::I64 => Type::I64,
+                    crate::windows_bindings::WindowsBindingType::Str => Type::Str,
+                    crate::windows_bindings::WindowsBindingType::StrCallback => return None,
+                };
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            Some(format!(
+                "{}({})",
+                binding.runtime_symbol(),
+                rendered.join(", ")
+            ))
+        }
         CfgScalarExprKind::Index {
             base,
             index,
@@ -55623,6 +55671,166 @@ fn main() -> i64 {
             )
             .is_none(),
             "effect-only time calls should retain their established lowering path"
+        );
+    }
+
+    #[test]
+    fn direct_scalar_windows_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn processId() -> i64 {
+    return windows.processId()
+}
+
+fn uptime() -> i64 {
+    return windows.uptimeMillis()
+}
+
+fn openTarget(target: str) -> bool {
+    return windows.open(target)
+}
+
+fn beep(frequency: i64, duration: i64) -> bool {
+    return windows.beep(frequency + duration, duration)
+}
+
+fn message(title: str, body: str) -> i64 {
+    return windows.messageBox(title, body)
+}
+
+fn screenWidth() -> i64 {
+    return windows.screenWidth()
+}
+
+fn store(key: str, value: str) -> bool {
+    return windows.secureStore(key, value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct Windows qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "processId",
+                HashMap::new(),
+                "flux__windows_process_id()".to_string(),
+            ),
+            (
+                "uptime",
+                HashMap::new(),
+                "flux__windows_uptime_millis()".to_string(),
+            ),
+            (
+                "openTarget",
+                HashMap::from([("target".to_string(), Type::Str)]),
+                format!("flux__windows_open({})", local_c_name("target")),
+            ),
+            (
+                "beep",
+                HashMap::from([
+                    ("frequency".to_string(), Type::I64),
+                    ("duration".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__windows_beep(flux_add_i64({}, {}), {})",
+                    local_c_name("frequency"),
+                    local_c_name("duration"),
+                    local_c_name("duration")
+                ),
+            ),
+            (
+                "message",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__windows_message_box({}, {})",
+                    local_c_name("title"),
+                    local_c_name("body")
+                ),
+            ),
+            (
+                "screenWidth",
+                HashMap::new(),
+                "flux__windows_screen_width()".to_string(),
+            ),
+            (
+                "store",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__windows_secure_store({}, {})",
+                    local_c_name("key"),
+                    local_c_name("value")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Windows qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("Windows qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("Windows qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported scalar Windows call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let unsupported = CfgScalarExpr {
+            ty: Type::Bool,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "windows".to_string(),
+                name: "secureRead".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Name("key".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: Type::Function {
+                            params: vec![Type::Str],
+                            returns: Vec::new(),
+                        },
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &unsupported,
+                &HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    (
+                        "callback".to_string(),
+                        Type::Function {
+                            params: vec![Type::Str],
+                            returns: Vec::new(),
+                        },
+                    ),
+                ]),
+                database.signatures(),
+            )
+            .is_none(),
+            "callback-based Windows calls should retain their established lowering path"
         );
     }
 
