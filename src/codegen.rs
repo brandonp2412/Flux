@@ -48182,6 +48182,78 @@ fn emit_cfg_scalar_expr_direct(
                 interface_pack_helper_name(interface, target)
             ))
         }
+        CfgScalarExprKind::Field {
+            base,
+            name,
+            optional: false,
+        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+            let base_ty = signatures.canonical_type(&base.ty);
+            let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            match &base_ty {
+                Type::List(element) => {
+                    let element_ty = signatures.canonical_type(element);
+                    let element_c = c_type(element, signatures);
+                    match crate::builtin_names::list_member_impl(name) {
+                        "length" if ty == Type::I64 => Some(format!("({rendered_base}).len")),
+                        "isEmpty" if ty == Type::Bool => {
+                            Some(format!("(({rendered_base}).len == 0)"))
+                        }
+                        "isNotEmpty" if ty == Type::Bool => {
+                            Some(format!("(({rendered_base}).len != 0)"))
+                        }
+                        "first" if ty == element_ty => Some(format!(
+                            "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(0), sizeof({element_c}))))"
+                        )),
+                        "last" if ty == element_ty => Some(format!(
+                            "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(-1), sizeof({element_c}))))"
+                        )),
+                        "single" if ty == element_ty => Some(format!(
+                            "(*(({element_c} *)flux_list_single({rendered_base})))"
+                        )),
+                        _ => None,
+                    }
+                }
+                Type::Set(_) | Type::Map(_, _) => {
+                    let length = match &base_ty {
+                        Type::Set(_) => format!("({rendered_base}).len"),
+                        Type::Map(_, _) => format!("({rendered_base}).keys.len"),
+                        _ => unreachable!("collection property branch"),
+                    };
+                    match name.as_str() {
+                        "count" if ty == Type::I64 => Some(length),
+                        "empty" if ty == Type::Bool => Some(format!("({length} == 0)")),
+                        "nonempty" if ty == Type::Bool => Some(format!("({length} != 0)")),
+                        _ => None,
+                    }
+                }
+                Type::Record(fields) => {
+                    let index = if let Ok(index) = name.parse::<usize>() {
+                        index
+                    } else {
+                        fields
+                            .iter()
+                            .position(|field| field.name.as_deref() == Some(name.as_str()))?
+                    };
+                    let field = fields.get(index)?;
+                    if signatures.canonical_type(&field.ty) != ty {
+                        return None;
+                    }
+                    Some(format!(
+                        "({rendered_base}).{}",
+                        record_field_c_name(field.name.as_deref(), index)
+                    ))
+                }
+                Type::Named(struct_name) => {
+                    let definition = signatures.struct_type(struct_name)?;
+                    let field = definition.field(name)?;
+                    if signatures.canonical_type(&field.ty) != ty {
+                        return None;
+                    }
+                    Some(format!("({rendered_base}).{}", field_c_name(name)))
+                }
+                _ => None,
+            }
+        }
         CfgScalarExprKind::Unary { op, operand }
             if matches!(operand.kind, CfgScalarExprKind::Name(_)) =>
         {
@@ -51222,6 +51294,127 @@ fn main() -> i64 {
                     format!("({}).{}", local_c_name("point"), field_c_name("x"))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_named_field_properties_skip_ast_bridge() {
+        let source = r#"
+struct Point {
+    x: i64
+}
+
+fn pointX(point: Point) -> i64 {
+    return point.x
+}
+
+fn optionalPointX(point: Point?) -> i64? {
+    return point?.x
+}
+
+fn listLength(values: i64[]) -> i64 {
+    return values.length
+}
+
+fn listFirst(values: i64[]) -> i64 {
+    return values.first
+}
+
+fn setCount(values: set<i64>) -> i64 {
+    return values.count
+}
+
+fn mapCount(values: map<i64, str>) -> i64 {
+    return values.count
+}
+
+fn recordNamed(value: (amount: i64, enabled: bool)) -> i64 {
+    return value.amount
+}
+
+fn recordPositional(value: (i64, bool)) -> bool {
+    return value.1
+}
+
+fn borrowedMapCount(values: map<i64, str>) -> i64 {
+    return (borrow values).count
+}
+
+fn temporaryMapCount() -> i64 {
+    return {1: "one", 2: "two"}.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct named field/property fixture should typecheck");
+
+        for (function, parameter, should_emit_directly) in [
+            ("pointX", Some("point"), true),
+            ("optionalPointX", Some("point"), false),
+            ("listLength", Some("values"), true),
+            ("listFirst", Some("values"), true),
+            ("setCount", Some("values"), true),
+            ("mapCount", Some("values"), true),
+            ("recordNamed", Some("value"), true),
+            ("recordPositional", Some("value"), true),
+            ("borrowedMapCount", Some("values"), false),
+            ("temporaryMapCount", None, false),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("field/property CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Field { .. },
+                            ..
+                        })
+                    )
+                })
+                .expect("typed IR should retain the field/property projection");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(field.span))
+                .expect("field/property projection should have scalar typed-IR facts");
+            let signature = database
+                .signatures()
+                .get(function)
+                .expect("fixture function signature should exist");
+            let env = parameter.map_or_else(HashMap::new, |name| {
+                HashMap::from([(name.to_string(), signature.params[0].clone())])
+            });
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
+
+            if !should_emit_directly {
+                assert!(
+                    direct.is_none(),
+                    "{function} should retain the established projection fallback"
+                );
+                continue;
+            }
+
+            let direct = direct.expect("named field/property should render directly from typed IR");
+            let marker = match function {
+                "pointX" => field_c_name("x"),
+                "listLength" | "setCount" => ".len".to_string(),
+                "listFirst" => "flux_list_at(".to_string(),
+                "mapCount" => ".keys.len".to_string(),
+                "recordNamed" => record_field_c_name(Some("amount"), 0),
+                "recordPositional" => record_field_c_name(None, 1),
+                _ => unreachable!("direct fixture case"),
+            };
+            assert!(
+                direct.contains(&marker),
+                "{function} direct projection should contain {marker}: {direct}"
+            );
         }
     }
 
