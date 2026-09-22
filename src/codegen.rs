@@ -49205,7 +49205,12 @@ fn emit_cfg_scalar_expr_direct(
             optional: false,
         } if matches!(
             base.kind,
-            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+            CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Aggregate(_)
+                | CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
         ) =>
         {
             let direct_index =
@@ -49281,7 +49286,12 @@ fn emit_cfg_scalar_expr_direct(
             step,
         } if matches!(
             base.kind,
-            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+            CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Aggregate(_)
+                | CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
         ) =>
         {
             let Type::List(element) = signatures.canonical_type(&base.ty) else {
@@ -49590,7 +49600,12 @@ fn emit_cfg_scalar_expr_direct(
             optional: false,
         } if matches!(
             base.kind,
-            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+            CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Aggregate(_)
+                | CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
         ) =>
         {
             let base_ty = signatures.canonical_type(&base.ty);
@@ -49712,6 +49727,14 @@ fn emit_cfg_scalar_expr_direct(
                 }
                 _ => None,
             }
+        }
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } if matches!(operand.kind, CfgScalarExprKind::Name(_))
+            && ty == signatures.canonical_type(&operand.ty) =>
+        {
+            emit_cfg_scalar_expr_direct(operand, env, signatures)
         }
         CfgScalarExprKind::Unary { op, operand }
             if cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures) =>
@@ -53077,7 +53100,7 @@ fn main() -> i64 {
             ("recordPositional", Some("value"), true),
             ("temporaryRecordNamed", None, true),
             ("temporaryDynamicRecordNamed", Some("value"), true),
-            ("borrowedMapCount", Some("values"), false),
+            ("borrowedMapCount", Some("values"), true),
             ("temporaryMapCount", None, true),
         ] {
             let graph = database
@@ -53128,7 +53151,7 @@ fn main() -> i64 {
                 | "optionalRecordAmount" => "flux__optional_access_value".to_string(),
                 "listLength" | "setCount" => ".len".to_string(),
                 "listFirst" => "flux_list_at(".to_string(),
-                "mapCount" | "temporaryMapCount" => ".keys.len".to_string(),
+                "mapCount" | "borrowedMapCount" | "temporaryMapCount" => ".keys.len".to_string(),
                 "recordNamed" | "temporaryRecordNamed" | "temporaryDynamicRecordNamed" => {
                     record_field_c_name(Some("amount"), 0)
                 }
@@ -53234,23 +53257,16 @@ fn main() -> i64 {
                 .scalar_exprs
                 .get(&source_span_key(index.span))
                 .expect("list index should have scalar typed-IR facts");
-            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
-            if function == "borrowed" {
+            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures())
+                .expect("direct list index should render from typed IR");
+            assert!(direct.contains("flux_list_at("), "{direct}");
+            assert!(direct.contains(&local_c_name("values")), "{direct}");
+            assert!(direct.contains(&local_c_name("at")), "{direct}");
+            if expected_optional {
                 assert!(
-                    direct.is_none(),
-                    "{function} should retain the established list-index fallback"
+                    direct.contains("flux__optional_index_base.has_value"),
+                    "{direct}"
                 );
-            } else {
-                let direct = direct.expect("named list index should render directly from typed IR");
-                assert!(direct.contains("flux_list_at("), "{direct}");
-                assert!(direct.contains(&local_c_name("values")), "{direct}");
-                assert!(direct.contains(&local_c_name("at")), "{direct}");
-                if expected_optional {
-                    assert!(
-                        direct.contains("flux__optional_index_base.has_value"),
-                        "{direct}"
-                    );
-                }
             }
 
             let fake = Expr {
@@ -53533,24 +53549,17 @@ fn main() -> i64 {
                 .scalar_exprs
                 .get(&source_span_key(index.span))
                 .expect("map index should have scalar typed-IR facts");
-            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
-            if function == "borrowed" {
+            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures())
+                .expect("direct map index should render from typed IR");
+            assert!(direct.contains("flux__typed_map_index_"), "{direct}");
+            assert!(direct.contains("strcmp("), "{direct}");
+            assert!(direct.contains(&local_c_name("values")), "{direct}");
+            assert!(direct.contains(&local_c_name("key")), "{direct}");
+            if expected_optional_base {
                 assert!(
-                    direct.is_none(),
-                    "{function} should retain the established map-index fallback"
+                    direct.contains("flux__typed_map_index_base.has_value"),
+                    "{direct}"
                 );
-            } else {
-                let direct = direct.expect("named map index should render directly from typed IR");
-                assert!(direct.contains("flux__typed_map_index_"), "{direct}");
-                assert!(direct.contains("strcmp("), "{direct}");
-                assert!(direct.contains(&local_c_name("values")), "{direct}");
-                assert!(direct.contains(&local_c_name("key")), "{direct}");
-                if expected_optional_base {
-                    assert!(
-                        direct.contains("flux__typed_map_index_base.has_value"),
-                        "{direct}"
-                    );
-                }
             }
 
             let fake = Expr {
@@ -53579,11 +53588,7 @@ fn main() -> i64 {
 
             assert!(emitted.contains(&local_c_name("values")));
             assert!(emitted.contains(&local_c_name("key")));
-            if function == "borrowed" {
-                assert!(emitted.contains("flux__map_index_"), "{emitted}");
-            } else {
-                assert!(emitted.contains("flux__typed_map_index_"), "{emitted}");
-            }
+            assert!(emitted.contains("flux__typed_map_index_"), "{emitted}");
             assert!(emitted.contains("strcmp("));
             assert!(!emitted.contains("checked-ast-map-index"));
             if expected_optional_base {
@@ -53883,17 +53888,22 @@ fn main() -> i64 {
                 }
             )
         ));
+        let borrowed_direct = emit_cfg_scalar_expr_direct(
+            borrowed_facts
+                .scalar_exprs
+                .get(&source_span_key(borrowed_slice.span))
+                .expect("borrowed list slice should have scalar typed-IR facts"),
+            &direct_env,
+            database.signatures(),
+        )
+        .expect("explicit borrowed list slice should render directly from typed IR");
         assert!(
-            emit_cfg_scalar_expr_direct(
-                borrowed_facts
-                    .scalar_exprs
-                    .get(&source_span_key(borrowed_slice.span))
-                    .expect("borrowed list slice should have scalar typed-IR facts"),
-                &direct_env,
-                database.signatures(),
-            )
-            .is_none(),
-            "explicit borrow wrappers should retain the established slice fallback"
+            borrowed_direct.contains("flux_list_slice("),
+            "{borrowed_direct}"
+        );
+        assert!(
+            borrowed_direct.contains(&local_c_name("values")),
+            "{borrowed_direct}"
         );
         let fake_borrowed = Expr {
             line: borrowed_slice.span.line,
