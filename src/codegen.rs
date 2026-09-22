@@ -47785,8 +47785,13 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                 )
             } else {
                 let implementation = crate::builtin_names::global_impl(callee);
-                if matches!(implementation, "take" | "skip") {
-                    arguments.len() == 2
+                let builtin_arity = match implementation {
+                    "contains" | "take" | "skip" => Some(2),
+                    "any" | "every" => Some(1),
+                    _ => None,
+                };
+                if let Some(arity) = builtin_arity {
+                    arguments.len() == arity
                 } else {
                     signatures.get(implementation).is_some_and(|signature| {
                         signature
@@ -51117,6 +51122,85 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+    }
+
+    #[test]
+    fn generic_collection_queries_lower_from_typed_ir() {
+        let source = r#"
+fn hasValue(values: i64[], needle: i64) -> bool {
+    return contains(values, needle)
+}
+
+fn hasAny(values: bool[]) -> bool {
+    return any(values)
+}
+
+fn hasEvery(values: bool[]) -> bool {
+    return every(values)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("generic collection query IR fixture should typecheck");
+
+        for (function, env, helper) in [
+            (
+                "hasValue",
+                HashMap::from([
+                    ("values".to_string(), Type::List(Box::new(Type::I64))),
+                    ("needle".to_string(), Type::I64),
+                ]),
+                "flux__contains_result_",
+            ),
+            (
+                "hasAny",
+                HashMap::from([("values".to_string(), Type::List(Box::new(Type::Bool)))]),
+                "flux_list_any_bool(",
+            ),
+            (
+                "hasEvery",
+                HashMap::from([("values".to_string(), Type::List(Box::new(Type::Bool)))]),
+                "flux_list_every_bool(",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("collection query CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Call { .. },
+                            ..
+                        })
+                    )
+                })
+                .expect("collection query should remain reconstructable typed IR");
+            let fake_text = format!("checked-ast-{function}");
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str(fake_text.clone()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("collection query should emit from typed IR");
+            assert!(emitted.contains(helper), "{function}: {emitted}");
+            assert!(!emitted.contains(&fake_text), "{function}: {emitted}");
+        }
     }
 
     #[test]
