@@ -46511,19 +46511,22 @@ fn emit_expr_for_expected_with_cfg_proofs(
         return Ok(value);
     }
     if signatures.canonical_type(expected) == Type::I64
-        && let Some(proof) = proofs.get(&source_span_key(expr.span))
-        && let ExprKind::Binary { left, op, right } = &expr.kind
+        && let Some(proof) = proofs.get(&span)
+        && let Some(CfgScalarExpr {
+            kind: CfgScalarExprKind::Binary { op, left, right },
+            ..
+        }) = rewrite_facts.scalar_exprs.get(&span)
         && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+        && let Some(left) = emit_cfg_scalar_expr(left, &Type::I64, env, signatures)
+        && let Some(right) = emit_cfg_scalar_expr(right, &Type::I64, env, signatures)
     {
-        let left = emit_expr(left, env, signatures)?;
-        let right = emit_expr(right, env, signatures)?;
         return Ok(match proof {
             CfgCheckedI64Proof::Native => {
-                format!("(({}) {} ({}))", left.code, c_operator(*op), right.code)
+                format!("(({left}) {} ({right}))", c_operator(*op))
             }
             CfgCheckedI64Proof::NonzeroDivision => {
                 debug_assert!(matches!(op, BinOp::Div));
-                format!("flux_div_nonzero_i64({}, {})", left.code, right.code)
+                format!("flux_div_nonzero_i64({left}, {right})")
             }
         });
     }
@@ -47993,6 +47996,105 @@ fn main() -> i64 {
         )
         .expect("dynamic negation should emit from typed IR");
         assert_eq!(emitted, format!("flux_neg_i64({})", local_c_name("value")));
+    }
+
+    #[test]
+    fn checked_i64_cfg_proofs_emit_from_typed_ir_without_ast_operands() {
+        let source = r#"
+fn cancelAdd(value: i64, delta: i64) -> i64 {
+    let added: i64 = value + delta
+    return added - delta
+}
+
+fn cancelMul(value: i64, factor: i64) -> i64 {
+    let product: i64 = value * factor
+    return product / factor
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("checked i64 proof fixture should typecheck");
+
+        for (function, op, expected_proof, env, expected) in [
+            (
+                "cancelAdd",
+                BinOp::Sub,
+                CfgCheckedI64Proof::Native,
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("delta".to_string(), Type::I64),
+                    ("added".to_string(), Type::I64),
+                ]),
+                format!(
+                    "(({}) - ({}))",
+                    local_c_name("added"),
+                    local_c_name("delta")
+                ),
+            ),
+            (
+                "cancelMul",
+                BinOp::Div,
+                CfgCheckedI64Proof::NonzeroDivision,
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("factor".to_string(), Type::I64),
+                    ("product".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux_div_nonzero_i64({}, {})",
+                    local_c_name("product"),
+                    local_c_name("factor")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("checked i64 proof CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: actual, .. }
+                            if actual == op
+                    )
+                })
+                .expect("checked i64 proof root should remain in typed IR");
+            let proofs = cfg_checked_i64_proofs(graph);
+            assert_eq!(
+                proofs.get(&source_span_key(root.span)),
+                Some(&expected_proof)
+            );
+            let facts = cfg_rewrite_facts(graph);
+            assert!(matches!(
+                facts.scalar_exprs.get(&source_span_key(root.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Binary { op: actual, .. },
+                    ..
+                }) if *actual == op
+            ));
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-proof-root".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &proofs,
+                &facts,
+            )
+            .expect("checked i64 proof should emit from typed IR");
+            assert_eq!(emitted, expected);
+            assert!(!emitted.contains("checked-ast-proof-root"));
+        }
     }
 
     #[test]
