@@ -29320,6 +29320,11 @@ fn source_span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
     (span.source_id.value(), span.line, span.column, span.length)
 }
 
+fn source_span_from_key(key: (u32, usize, usize, usize)) -> SourceSpan {
+    let (source_id, line, column, length) = key;
+    SourceSpan::new(line, column, length).with_source(SourceId::new(source_id))
+}
+
 fn emit_source_line(out: &mut String, span: SourceSpan, source_paths: &HashMap<SourceId, String>) {
     let path = source_paths
         .get(&span.source_id)
@@ -40636,6 +40641,82 @@ fn emit_list_builder_binding(
     Ok(())
 }
 
+fn cfg_rewrite_expr_as_ast(
+    span_key: (u32, usize, usize, usize),
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Expr> {
+    let span = source_span_from_key(span_key);
+    if let Some(constant) = rewrite_facts.constants.get(&span_key) {
+        let kind = match constant {
+            ConstantValue::I64(value) => ExprKind::Int(*value),
+            ConstantValue::Bool(value) => ExprKind::Bool(*value),
+            ConstantValue::Str(value) => ExprKind::Str(value.clone()),
+        };
+        return Some(Expr {
+            line: span.line,
+            span,
+            kind,
+        });
+    }
+    let scalar = rewrite_facts.scalar_exprs.get(&span_key)?;
+    if !cfg_scalar_expr_calls_are_reconstructable(scalar, env, signatures) {
+        return None;
+    }
+    let mut expr = cfg_scalar_expr_as_ast(scalar);
+    expr.line = span.line;
+    expr.span = span;
+    Some(expr)
+}
+
+fn cfg_list_comprehension_shape_as_ast(
+    root_span: SourceSpan,
+    shape: &CfgAggregateShape,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Expr> {
+    let CfgAggregateShape::ListComprehension {
+        binding,
+        iterable,
+        value,
+        condition,
+    } = shape
+    else {
+        return None;
+    };
+    let iterable_expr = cfg_rewrite_expr_as_ast(*iterable, env, signatures, rewrite_facts)?;
+    let iterable_ty = type_of_expr(&iterable_expr, env, signatures).ok()?;
+    let Type::List(element) = signatures.canonical_type(&iterable_ty) else {
+        return None;
+    };
+    let mut nested = env.clone();
+    nested.insert(binding.clone(), *element);
+    let value_expr = cfg_rewrite_expr_as_ast(*value, &nested, signatures, rewrite_facts)?;
+    let condition_expr = match condition {
+        Some(span) => Some(cfg_rewrite_expr_as_ast(
+            *span,
+            &nested,
+            signatures,
+            rewrite_facts,
+        )?),
+        None => None,
+    };
+
+    Some(Expr {
+        line: root_span.line,
+        span: root_span,
+        kind: ExprKind::ListComprehension {
+            value: Box::new(value_expr),
+            binding: binding.clone(),
+            binding_span: root_span,
+            iterable: Box::new(iterable_expr),
+            condition: condition_expr.map(Box::new),
+        },
+    })
+}
+
 fn emit_list_comprehension_binding(
     out: &mut String,
     pad: &str,
@@ -40648,7 +40729,13 @@ fn emit_list_comprehension_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
+    let rewritten = rewrite_facts
+        .aggregates
+        .get(&source_span_key(expr.span))
+        .and_then(|shape| {
+            cfg_list_comprehension_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
+        })
+        .unwrap_or_else(|| substitute_direct_ir_constant_arguments(expr, rewrite_facts));
     let ExprKind::ListComprehension {
         value,
         binding,
@@ -47092,11 +47179,7 @@ mod cfg_rewrite_fact_tests {
                 value: Box::new(unusable(value_span)),
                 binding: "checkedAstBinding".to_string(),
                 binding_span: SourceSpan::new(1, 7, 4).with_source(source_id),
-                iterable: Box::new(Expr {
-                    line: 1,
-                    span: iterable_span,
-                    kind: ExprKind::Var("source".to_string()),
-                }),
+                iterable: Box::new(unusable(iterable_span)),
                 condition: Some(Box::new(unusable(condition_span))),
             },
         };
@@ -47108,6 +47191,13 @@ mod cfg_rewrite_fact_tests {
                 iterable: source_span_key(iterable_span),
                 value: source_span_key(value_span),
                 condition: Some(source_span_key(condition_span)),
+            },
+        );
+        facts.scalar_exprs.insert(
+            source_span_key(iterable_span),
+            CfgScalarExpr {
+                ty: Type::List(Box::new(Type::I64)),
+                kind: CfgScalarExprKind::Name("source".to_string()),
             },
         );
         facts.scalar_exprs.insert(
