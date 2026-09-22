@@ -34454,46 +34454,6 @@ fn cfg_borrowed_collection_field_base(
     })
 }
 
-fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
-    match &expr.kind {
-        CfgScalarExprKind::Call { .. }
-        | CfgScalarExprKind::NamedCall { .. }
-        | CfgScalarExprKind::Await { .. }
-        | CfgScalarExprKind::QualifiedCall { .. }
-        | CfgScalarExprKind::NamedQualifiedCall { .. }
-        | CfgScalarExprKind::OptionalCascadeCall { .. } => true,
-        CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
-        CfgScalarExprKind::Binary { left, right, .. } => {
-            cfg_scalar_expr_contains_call(left) || cfg_scalar_expr_contains_call(right)
-        }
-        CfgScalarExprKind::Field { base, .. } => cfg_scalar_expr_contains_call(base),
-        CfgScalarExprKind::Index { base, index, .. } => {
-            cfg_scalar_expr_contains_call(base) || cfg_scalar_expr_contains_call(index)
-        }
-        CfgScalarExprKind::Slice {
-            base,
-            start,
-            end,
-            step,
-        } => {
-            cfg_scalar_expr_contains_call(base)
-                || start.as_deref().is_some_and(cfg_scalar_expr_contains_call)
-                || end.as_deref().is_some_and(cfg_scalar_expr_contains_call)
-                || step.as_deref().is_some_and(cfg_scalar_expr_contains_call)
-        }
-        CfgScalarExprKind::InterfacePack { value, .. } => cfg_scalar_expr_contains_call(value),
-        CfgScalarExprKind::Bind { arguments, .. } => {
-            arguments.iter().any(cfg_scalar_expr_contains_call)
-        }
-        CfgScalarExprKind::Aggregate(_) => true,
-        CfgScalarExprKind::AnonymousFunction { .. }
-        | CfgScalarExprKind::Name(_)
-        | CfgScalarExprKind::Constant(_)
-        | CfgScalarExprKind::Nil
-        | CfgScalarExprKind::NoneLiteral => false,
-    }
-}
-
 fn cfg_direct_scalar_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -34710,11 +34670,6 @@ fn cfg_direct_scalar_expr(
         {
             let left = cfg_direct_scalar_expr(cfg, *left)?;
             let right = cfg_direct_scalar_expr(cfg, *right)?;
-            if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
-                && (cfg_scalar_expr_contains_call(&left) || cfg_scalar_expr_contains_call(&right))
-            {
-                return None;
-            }
             CfgScalarExprKind::Binary {
                 op: *op,
                 left: Box::new(left),
@@ -47486,6 +47441,9 @@ fn passthrough(value: bool) -> bool {
 fn guardedCall(left: bool) -> bool {
     return left && passthrough(left)
 }
+fn guardedOrCall(left: bool) -> bool {
+    return left || passthrough(left)
+}
 fn negate(value: i64) -> i64 {
     return -value
 }
@@ -47900,26 +47858,55 @@ fn main() -> i64 {
             )
         );
 
-        let guarded_call = database
-            .control_flow_graph("guardedCall")
-            .expect("guarded call CFG should exist");
-        let guarded_call_root = guarded_call
-            .values()
-            .iter()
-            .find(|value| {
-                matches!(
-                    value.kind,
-                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::And, .. }
-                )
-            })
-            .expect("typed IR should retain the guarded call");
-        let guarded_call_facts = cfg_rewrite_facts(guarded_call);
-        assert!(
-            !guarded_call_facts
+        for (function, op, operator) in [
+            ("guardedCall", BinOp::And, "&&"),
+            ("guardedOrCall", BinOp::Or, "||"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("guarded call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: actual, .. }
+                            if actual == op
+                    )
+                })
+                .expect("typed IR should retain the guarded call");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
                 .scalar_exprs
-                .contains_key(&source_span_key(guarded_call_root.span)),
-            "a short-circuit RHS call must retain the checked-AST fallback"
-        );
+                .get(&source_span_key(root.span))
+                .expect("short-circuit call should be reconstructable from typed IR");
+            assert!(matches!(
+                scalar.kind,
+                CfgScalarExprKind::Binary { op: actual, .. } if actual == op
+            ));
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-short-circuit-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &HashMap::from([("left".to_string(), Type::Bool)]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("short-circuit call should emit from typed IR");
+            assert!(emitted.contains(operator), "{emitted}");
+            assert!(
+                emitted.contains(&function_c_name("passthrough")),
+                "{emitted}"
+            );
+            assert!(emitted.contains(&local_c_name("left")), "{emitted}");
+            assert!(!emitted.contains("checked-ast-short-circuit-call"));
+        }
 
         let negate = database
             .control_flow_graph("negate")
@@ -48045,12 +48032,38 @@ fn main() -> i64 {
             })
             .expect("typed IR should retain call-backed coalescing");
         let call_facts = cfg_rewrite_facts(choose_call);
+        let scalar = call_facts
+            .scalar_exprs
+            .get(&source_span_key(call_coalesce.span))
+            .expect("call-backed coalescing should be reconstructable from typed IR");
+        assert!(matches!(
+            scalar.kind,
+            CfgScalarExprKind::Binary {
+                op: BinOp::Coalesce,
+                ..
+            }
+        ));
+        let fake = Expr {
+            line: call_coalesce.span.line,
+            span: call_coalesce.span,
+            kind: ExprKind::Int(999),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]),
+            database.signatures(),
+            &HashMap::new(),
+            &call_facts,
+        )
+        .expect("call-backed coalescing should emit from typed IR");
+        assert!(emitted.contains("flux__coalesce_value"), "{emitted}");
+        assert!(emitted.contains(&function_c_name("fallback")), "{emitted}");
         assert!(
-            !call_facts
-                .scalar_exprs
-                .contains_key(&source_span_key(call_coalesce.span)),
-            "effectful coalescing fallback must retain the checked-AST path"
+            emitted.contains("? flux__coalesce_value.value :"),
+            "{emitted}"
         );
+        assert!(!emitted.contains("999"));
     }
 
     #[test]
