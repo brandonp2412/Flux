@@ -48365,6 +48365,39 @@ fn emit_cfg_scalar_expr_direct(
         CfgScalarExprKind::Aggregate(aggregate) => {
             emit_cfg_aggregate_constant(aggregate, &ty, env, signatures)
         }
+        CfgScalarExprKind::Bind { span, arguments }
+            if matches!(ty, Type::Function { .. }) && arguments.len() >= 2 =>
+        {
+            let CfgScalarExprKind::Name(target) = &arguments[0].kind else {
+                return None;
+            };
+            let signature = signatures.get(target)?;
+            let bound_count = arguments.len() - 1;
+            if bound_count > signature.params.len()
+                || arguments[1..]
+                    .iter()
+                    .any(|argument| !matches!(argument.kind, CfgScalarExprKind::Constant(_)))
+            {
+                return None;
+            }
+            let expected = Type::Function {
+                params: signature.params[bound_count..].to_vec(),
+                returns: signature.returns.clone(),
+            };
+            (signatures.canonical_type(&expected) == ty).then(|| partial_application_c_name(*span))
+        }
+        CfgScalarExprKind::AnonymousFunction {
+            span,
+            params,
+            return_type,
+            ..
+        } if matches!(ty, Type::Function { .. }) => {
+            let expected = Type::Function {
+                params: params.iter().map(|(_, ty)| ty.clone()).collect(),
+                returns: return_type.iter().cloned().collect(),
+            };
+            (signatures.canonical_type(&expected) == ty).then(|| anonymous_function_c_name(*span))
+        }
         CfgScalarExprKind::InterfacePack {
             interface,
             target,
@@ -55155,10 +55188,24 @@ fn main() -> i64 {
             params: vec![Type::I64],
             returns: vec![Type::I64],
         };
+        let direct = emit_cfg_scalar_expr_direct(scalar, &HashMap::new(), database.signatures())
+            .expect("bind helper symbol should emit directly from typed IR");
+        assert_eq!(direct, partial_application_c_name(bind.span));
         let emitted =
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("bind function value should emit from typed IR");
-        assert_eq!(emitted, partial_application_c_name(bind.span));
+        assert_eq!(emitted, direct);
+
+        let mut mismatched = scalar.clone();
+        mismatched.ty = Type::Function {
+            params: vec![Type::Bool],
+            returns: vec![Type::I64],
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(&mismatched, &HashMap::new(), database.signatures())
+                .is_none(),
+            "bind direct emission should verify the residual function signature"
+        );
     }
 
     #[test]
@@ -55207,10 +55254,24 @@ fn main() -> i64 {
             params: vec![Type::I64],
             returns: vec![Type::I64],
         };
+        let direct = emit_cfg_scalar_expr_direct(scalar, &HashMap::new(), database.signatures())
+            .expect("anonymous helper symbol should emit directly from typed IR");
+        assert_eq!(direct, anonymous_function_c_name(anonymous.span));
         let emitted =
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("anonymous function value should emit from typed IR");
-        assert_eq!(emitted, anonymous_function_c_name(anonymous.span));
+        assert_eq!(emitted, direct);
+
+        let mut mismatched = scalar.clone();
+        mismatched.ty = Type::Function {
+            params: vec![Type::Bool],
+            returns: vec![Type::I64],
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(&mismatched, &HashMap::new(), database.signatures())
+                .is_none(),
+            "anonymous direct emission should verify its preserved function signature"
+        );
     }
 
     #[test]
