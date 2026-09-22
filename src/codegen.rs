@@ -34645,6 +34645,17 @@ fn cfg_borrowed_list_base(
                 step: direct_bound(step)?,
             }
         }
+        crate::ir::ControlFlowValueKind::Call { callee, arguments }
+            if matches!(crate::builtin_names::global_impl(callee), "take" | "skip") =>
+        {
+            CfgScalarExprKind::Call {
+                callee: callee.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                    .collect::<Option<Vec<_>>>()?,
+            }
+        }
         _ => return None,
     };
     Some(CfgScalarExpr {
@@ -47774,12 +47785,16 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                 )
             } else {
                 let implementation = crate::builtin_names::global_impl(callee);
-                signatures.get(implementation).is_some_and(|signature| {
-                    signature
-                        .param_details
-                        .iter()
-                        .all(|param| !param.named_only)
-                })
+                if matches!(implementation, "take" | "skip") {
+                    arguments.len() == 2
+                } else {
+                    signatures.get(implementation).is_some_and(|signature| {
+                        signature
+                            .param_details
+                            .iter()
+                            .all(|param| !param.named_only)
+                    })
+                }
             };
             callable
                 && arguments.iter().all(|argument| {
@@ -50894,6 +50909,214 @@ fn main() -> i64 {
         .expect("nested borrowed slice should emit from typed IR");
         assert_eq!(emitted_slice.matches("flux_list_slice(").count(), 2);
         assert!(!emitted_slice.contains("checked-ast-nested-slice"));
+    }
+
+    #[test]
+    fn list_view_call_projections_lower_from_typed_ir() {
+        let source = r#"
+fn takeIndex(values: i64[], count: i64, at: i64) -> i64 {
+    return take(values, count)[at]
+}
+
+fn skipCount(values: i64[], count: i64) -> i64 {
+    return skip(values, count).count
+}
+
+fn takeSlice(values: i64[], count: i64, start: i64, end: i64) -> i64 {
+    let view: i64[] = take(values, count)[start:end]
+    return view.count
+}
+
+fn nestedIndex(values: i64[], takeCount: i64, skipCount: i64, at: i64) -> i64 {
+    return skip(take(values, takeCount), skipCount)[at]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list view projection IR fixture should typecheck");
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        let graph = database
+            .control_flow_graph("takeIndex")
+            .expect("take index CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let index = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Index { base, .. },
+                        ..
+                    }) if matches!(
+                        &base.kind,
+                        CfgScalarExprKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == "take"
+                    )
+                )
+            })
+            .expect("take index should retain the list-view call base in typed IR");
+        let fake = Expr {
+            line: index.span.line,
+            span: index.span,
+            kind: ExprKind::Str("checked-ast-take-index".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([
+                ("values".to_string(), list_ty.clone()),
+                ("count".to_string(), Type::I64),
+                ("at".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("take index should emit from typed IR");
+        assert!(emitted.contains("flux_list_take("), "{emitted}");
+        assert!(emitted.contains("flux_list_at("), "{emitted}");
+        assert!(!emitted.contains("checked-ast-take-index"));
+
+        let graph = database
+            .control_flow_graph("skipCount")
+            .expect("skip property CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let field = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Field { base, .. },
+                        ..
+                    }) if matches!(
+                        &base.kind,
+                        CfgScalarExprKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == "skip"
+                    )
+                )
+            })
+            .expect("skip property should retain the list-view call base in typed IR");
+        let fake = Expr {
+            line: field.span.line,
+            span: field.span,
+            kind: ExprKind::Str("checked-ast-skip-property".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([
+                ("values".to_string(), list_ty.clone()),
+                ("count".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("skip property should emit from typed IR");
+        assert!(emitted.contains("flux_list_skip("), "{emitted}");
+        assert!(emitted.contains(".len"), "{emitted}");
+        assert!(!emitted.contains("checked-ast-skip-property"));
+
+        let graph = database
+            .control_flow_graph("takeSlice")
+            .expect("take slice CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let slice = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Slice { base, .. },
+                        ..
+                    }) if matches!(
+                        &base.kind,
+                        CfgScalarExprKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == "take"
+                    )
+                )
+            })
+            .expect("take slice should retain the list-view call base in typed IR");
+        let fake = Expr {
+            line: slice.span.line,
+            span: slice.span,
+            kind: ExprKind::Str("checked-ast-take-slice".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &list_ty,
+            &HashMap::from([
+                ("values".to_string(), list_ty.clone()),
+                ("count".to_string(), Type::I64),
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("take slice should emit from typed IR");
+        assert!(emitted.contains("flux_list_take("), "{emitted}");
+        assert!(emitted.contains("flux_list_slice("), "{emitted}");
+        assert!(!emitted.contains("checked-ast-take-slice"));
+
+        let graph = database
+            .control_flow_graph("nestedIndex")
+            .expect("nested list-view index CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let index = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Index { base, .. },
+                        ..
+                    }) if matches!(
+                        &base.kind,
+                        CfgScalarExprKind::Call { callee, arguments }
+                            if crate::builtin_names::global_impl(callee) == "skip"
+                                && matches!(
+                                    arguments.first().map(|argument| &argument.kind),
+                                    Some(CfgScalarExprKind::Call { callee, .. })
+                                        if crate::builtin_names::global_impl(callee) == "take"
+                                )
+                    )
+                )
+            })
+            .expect("nested list-view index should retain both calls in typed IR");
+        let fake = Expr {
+            line: index.span.line,
+            span: index.span,
+            kind: ExprKind::Str("checked-ast-nested-list-view-index".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([
+                ("values".to_string(), list_ty),
+                ("takeCount".to_string(), Type::I64),
+                ("skipCount".to_string(), Type::I64),
+                ("at".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("nested list-view index should emit from typed IR");
+        assert!(emitted.contains("flux_list_take("), "{emitted}");
+        assert!(emitted.contains("flux_list_skip("), "{emitted}");
+        assert!(emitted.contains("flux_list_at("), "{emitted}");
+        assert!(!emitted.contains("checked-ast-nested-list-view-index"));
     }
 
     #[test]
