@@ -34551,15 +34551,24 @@ fn cfg_borrowed_index_base(
             kind: CfgScalarExprKind::Aggregate(aggregate),
         });
     }
-    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
-        return None;
+    let kind = match &value.kind {
+        crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+            if !definitions.is_empty() =>
+        {
+            CfgScalarExprKind::Name(name.clone())
+        }
+        crate::ir::ControlFlowValueKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } => CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
+        },
+        _ => return None,
     };
-    if definitions.is_empty() {
-        return None;
-    }
     Some(CfgScalarExpr {
         ty: value.ty.clone(),
-        kind: CfgScalarExprKind::Name(name.clone()),
+        kind,
     })
 }
 
@@ -34580,6 +34589,13 @@ fn cfg_borrowed_list_base(
         {
             CfgScalarExprKind::Name(name.clone())
         }
+        crate::ir::ControlFlowValueKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } => CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
+        },
         crate::ir::ControlFlowValueKind::List { .. } => {
             let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)?
             else {
@@ -34656,15 +34672,24 @@ fn cfg_borrowed_collection_field_base(
             kind: CfgScalarExprKind::Aggregate(aggregate),
         });
     }
-    let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
-        return None;
+    let kind = match &value.kind {
+        crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+            if !definitions.is_empty() =>
+        {
+            CfgScalarExprKind::Name(name.clone())
+        }
+        crate::ir::ControlFlowValueKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } => CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
+        },
+        _ => return None,
     };
-    if definitions.is_empty() {
-        return None;
-    }
     Some(CfgScalarExpr {
         ty: value.ty.clone(),
-        kind: CfgScalarExprKind::Name(name.clone()),
+        kind,
     })
 }
 
@@ -50218,6 +50243,10 @@ fn direct(values: i64[], at: i64) -> i64 {
     return values[at]
 }
 
+fn borrowed(values: i64[], at: i64) -> i64 {
+    return (borrow values)[at]
+}
+
 fn optional(values: i64[]?, at: i64) -> i64? {
     return values?[at]
 }
@@ -50233,7 +50262,11 @@ fn main() -> i64 {
         let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
             .expect("list index IR fixture should typecheck");
 
-        for (function, expected_optional) in [("direct", false), ("optional", true)] {
+        for (function, expected_optional, expected_borrow) in [
+            ("direct", false, false),
+            ("borrowed", false, true),
+            ("optional", true, false),
+        ] {
             let graph = database
                 .control_flow_graph(function)
                 .expect("list index CFG should exist");
@@ -50256,6 +50289,21 @@ fn main() -> i64 {
                     ..
                 }) if *optional == expected_optional
             ));
+            if expected_borrow {
+                assert!(matches!(
+                    facts.scalar_exprs.get(&source_span_key(index.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Index { base, .. },
+                        ..
+                    }) if matches!(
+                        base.kind,
+                        CfgScalarExprKind::Unary {
+                            op: UnaryOp::Borrow,
+                            ..
+                        }
+                    )
+                ));
+            }
 
             let fake = Expr {
                 line: index.span.line,
@@ -50339,6 +50387,10 @@ fn direct(values: map<str, i64>, key: str) -> i64? {
     return values[key]
 }
 
+fn borrowed(values: map<str, i64>, key: str) -> i64? {
+    return (borrow values)[key]
+}
+
 fn optional(values: map<str, i64>?, key: str) -> i64? {
     return values?[key]
 }
@@ -50354,7 +50406,11 @@ fn main() -> i64 {
         let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
             .expect("map index IR fixture should typecheck");
 
-        for (function, expected_optional_base) in [("direct", false), ("optional", true)] {
+        for (function, expected_optional_base, expected_borrow) in [
+            ("direct", false, false),
+            ("borrowed", false, true),
+            ("optional", true, false),
+        ] {
             let graph = database
                 .control_flow_graph(function)
                 .expect("map index CFG should exist");
@@ -50377,6 +50433,21 @@ fn main() -> i64 {
                     ..
                 }) if *optional == expected_optional_base
             ));
+            if expected_borrow {
+                assert!(matches!(
+                    facts.scalar_exprs.get(&source_span_key(index.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Index { base, .. },
+                        ..
+                    }) if matches!(
+                        base.kind,
+                        CfgScalarExprKind::Unary {
+                            op: UnaryOp::Borrow,
+                            ..
+                        }
+                    )
+                ));
+            }
 
             let fake = Expr {
                 line: index.span.line,
@@ -50457,6 +50528,11 @@ fn direct(values: i64[], start: i64, end: i64, step: i64) -> i64 {
     return view.length
 }
 
+fn borrowed(values: i64[], start: i64, end: i64, step: i64) -> i64 {
+    let view: i64[] = (borrow values)[start:end:step]
+    return view.length
+}
+
 fn temporary(start: i64, end: i64) -> i64 {
     let view: i64[] = [1, 2, 3][start:end]
     return view.length
@@ -50512,6 +50588,53 @@ fn main() -> i64 {
         assert!(emitted.contains(&local_c_name("end")));
         assert!(emitted.contains(&local_c_name("step")));
         assert!(!emitted.contains("checked-ast-slice"));
+
+        let borrowed_graph = database
+            .control_flow_graph("borrowed")
+            .expect("explicit borrowed list slice CFG should exist");
+        let borrowed_slice = borrowed_graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
+            .expect("typed IR should retain the explicit borrowed list slice");
+        let borrowed_facts = cfg_rewrite_facts(borrowed_graph);
+        assert!(matches!(
+            borrowed_facts
+                .scalar_exprs
+                .get(&source_span_key(borrowed_slice.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Slice { base, .. },
+                ..
+            }) if matches!(
+                base.kind,
+                CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
+            )
+        ));
+        let fake_borrowed = Expr {
+            line: borrowed_slice.span.line,
+            span: borrowed_slice.span,
+            kind: ExprKind::Str("checked-ast-borrowed-slice".to_string()),
+        };
+        let borrowed_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_borrowed,
+            &Type::List(Box::new(Type::I64)),
+            &HashMap::from([
+                ("values".to_string(), Type::List(Box::new(Type::I64))),
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+                ("step".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &borrowed_facts,
+        )
+        .expect("explicit borrowed list slice should emit from typed IR");
+        assert!(borrowed_emitted.contains("flux_list_slice("));
+        assert!(borrowed_emitted.contains(&local_c_name("values")));
+        assert!(!borrowed_emitted.contains("checked-ast-borrowed-slice"));
 
         let temporary = database
             .control_flow_graph("temporary")
@@ -50809,6 +50932,10 @@ fn mapCount(values: map<str, i64>) -> i64 {
     return values.count
 }
 
+fn borrowedMapCount(values: map<str, i64>) -> i64 {
+    return (borrow values).count
+}
+
 fn optionalListCount(values: i64[]?) -> i64? {
     return values?.count
 }
@@ -50827,6 +50954,10 @@ fn borrowedOptionalMapCount(values: map<str, i64>?) -> i64? {
 
 fn setNonempty(values: set<i64>) -> bool {
     return values.nonempty
+}
+
+fn borrowedSetNonempty(values: set<i64>) -> bool {
+    return (borrow values).nonempty
 }
 
 fn temporaryListCount() -> i64 {
@@ -51024,6 +51155,23 @@ fn main() -> i64 {
                 Type::Bool,
                 ".len != 0",
                 "checked-ast-set-property",
+                HashMap::from([("values".to_string(), Type::Set(Box::new(Type::I64)))]),
+            ),
+            (
+                "borrowedMapCount",
+                Type::I64,
+                ".keys.len",
+                "checked-ast-borrowed-map-property",
+                HashMap::from([(
+                    "values".to_string(),
+                    Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                )]),
+            ),
+            (
+                "borrowedSetNonempty",
+                Type::Bool,
+                ".len != 0",
+                "checked-ast-borrowed-set-property",
                 HashMap::from([("values".to_string(), Type::Set(Box::new(Type::I64)))]),
             ),
         ] {
