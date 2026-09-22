@@ -39598,7 +39598,13 @@ fn cfg_sequence_expr_calls_are_reconstructable(
         return false;
     }
     arguments.iter().all(|argument| {
-        if matches!(
+        if matches!(&argument.kind, CfgScalarExprKind::AnonymousFunction { .. }) {
+            // Parent-function typed IR records the callback value and its nested
+            // body, but capture/parameter evaluation belongs to the callback's
+            // own synthetic CFG. Keep the source callback subtree intact until
+            // callback-local typed IR can be embedded in the sequence fact.
+            false
+        } else if matches!(
             &argument.kind,
             CfgScalarExprKind::Call { callee, .. }
                 if matches!(
