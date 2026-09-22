@@ -32,6 +32,49 @@ pub enum ControlFlowDefinitionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowStructPattern {
+    pub name: String,
+    pub fields: Vec<ControlFlowStructPatternField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowStructPatternField {
+    pub field: String,
+    pub binding: String,
+    pub nested: Option<Box<ControlFlowStructPattern>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlowPatternLogicalOp {
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlFlowMatchPattern {
+    Binding {
+        name: String,
+    },
+    Struct(ControlFlowStructPattern),
+    Relational {
+        op: BinOp,
+        value: ConstantValue,
+    },
+    Logical {
+        left: Box<ControlFlowMatchPattern>,
+        op: ControlFlowPatternLogicalOp,
+        right: Box<ControlFlowMatchPattern>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlFlowMatchArmPattern {
+    pub enum_name: String,
+    pub variant: String,
+    pub patterns: Vec<ControlFlowMatchPattern>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlFlowValueKind {
     Literal,
     NameRead {
@@ -148,6 +191,7 @@ pub enum ControlFlowValueKind {
         value: ControlFlowValueId,
         guards: Vec<Option<ControlFlowValueId>>,
         arms: Vec<ControlFlowValueId>,
+        arm_patterns: Vec<ControlFlowMatchArmPattern>,
     },
     ListMatch {
         value: ControlFlowValueId,
@@ -897,7 +941,7 @@ pub struct ControlFlowGraph {
     drops: Vec<(ControlFlowNodeId, OwnershipDrop)>,
 }
 
-const PERSISTED_IR_MAGIC: &[u8] = b"FLUXIR1\0";
+const PERSISTED_IR_MAGIC: &[u8] = b"FLUXIR2\0";
 const PERSISTED_IR_MAX_ITEMS: usize = 1_000_000;
 const PERSISTED_IR_MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1311,6 +1355,117 @@ impl PersistedIrCodec for BinOp {
     }
 }
 
+impl PersistedIrCodec for ControlFlowStructPattern {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.name.encode_cache_value(bytes);
+        self.fields.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            name: String::decode_cache_value(reader)?,
+            fields: Vec::<ControlFlowStructPatternField>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowStructPatternField {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.field.encode_cache_value(bytes);
+        self.binding.encode_cache_value(bytes);
+        self.nested.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            field: String::decode_cache_value(reader)?,
+            binding: String::decode_cache_value(reader)?,
+            nested: Option::<Box<ControlFlowStructPattern>>::decode_cache_value(reader)?,
+        })
+    }
+}
+
+impl PersistedIrCodec for ControlFlowPatternLogicalOp {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::And => 0u8,
+            Self::Or => 1u8,
+        }
+        .encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::And),
+            1 => Some(Self::Or),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowMatchPattern {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        match self {
+            Self::Binding { name } => {
+                0u8.encode_cache_value(bytes);
+                name.encode_cache_value(bytes);
+            }
+            Self::Struct(pattern) => {
+                1u8.encode_cache_value(bytes);
+                pattern.encode_cache_value(bytes);
+            }
+            Self::Relational { op, value } => {
+                2u8.encode_cache_value(bytes);
+                op.encode_cache_value(bytes);
+                value.encode_cache_value(bytes);
+            }
+            Self::Logical { left, op, right } => {
+                3u8.encode_cache_value(bytes);
+                left.encode_cache_value(bytes);
+                op.encode_cache_value(bytes);
+                right.encode_cache_value(bytes);
+            }
+        }
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        match u8::decode_cache_value(reader)? {
+            0 => Some(Self::Binding {
+                name: String::decode_cache_value(reader)?,
+            }),
+            1 => Some(Self::Struct(ControlFlowStructPattern::decode_cache_value(
+                reader,
+            )?)),
+            2 => Some(Self::Relational {
+                op: BinOp::decode_cache_value(reader)?,
+                value: ConstantValue::decode_cache_value(reader)?,
+            }),
+            3 => Some(Self::Logical {
+                left: Box::<ControlFlowMatchPattern>::decode_cache_value(reader)?,
+                op: ControlFlowPatternLogicalOp::decode_cache_value(reader)?,
+                right: Box::<ControlFlowMatchPattern>::decode_cache_value(reader)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl PersistedIrCodec for ControlFlowMatchArmPattern {
+    fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
+        self.enum_name.encode_cache_value(bytes);
+        self.variant.encode_cache_value(bytes);
+        self.patterns.encode_cache_value(bytes);
+    }
+
+    fn decode_cache_value(reader: &mut PersistedIrReader<'_>) -> Option<Self> {
+        Some(Self {
+            enum_name: String::decode_cache_value(reader)?,
+            variant: String::decode_cache_value(reader)?,
+            patterns: Vec::<ControlFlowMatchPattern>::decode_cache_value(reader)?,
+        })
+    }
+}
+
 impl PersistedIrCodec for ControlFlowNodeId {
     fn encode_cache_value(&self, bytes: &mut Vec<u8>) {
         self.0.encode_cache_value(bytes);
@@ -1572,11 +1727,13 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 value,
                 guards,
                 arms,
+                arm_patterns,
             } => {
                 21u8.encode_cache_value(bytes);
                 value.encode_cache_value(bytes);
                 guards.encode_cache_value(bytes);
                 arms.encode_cache_value(bytes);
+                arm_patterns.encode_cache_value(bytes);
             }
             Self::ListMatch {
                 value,
@@ -1710,6 +1867,7 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
                 guards: Vec::<Option<ControlFlowValueId>>::decode_cache_value(reader)?,
                 arms: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+                arm_patterns: Vec::<ControlFlowMatchArmPattern>::decode_cache_value(reader)?,
             }),
             22 => Some(Self::ListMatch {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
@@ -2595,6 +2753,7 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
             value,
             guards,
             arms,
+            ..
         }
         | ControlFlowValueKind::ListMatch {
             value,
@@ -3128,6 +3287,7 @@ impl ControlFlowGraph {
                     value,
                     guards,
                     arms,
+                    ..
                 }
                 | ControlFlowValueKind::ListMatch {
                     value,
@@ -5447,6 +5607,11 @@ impl<'a> ControlFlowBuilder<'a> {
             ),
             ExprKind::Match { value, arms } => {
                 let matched_value = self.lower_scalar_expr(producer, value);
+                let arm_patterns = arms
+                    .iter()
+                    .map(|arm| self.lower_match_arm_pattern(arm))
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap_or_default();
                 let mut guards = Vec::with_capacity(arms.len());
                 let mut arm_values = Vec::with_capacity(arms.len());
                 for arm in arms {
@@ -5469,6 +5634,7 @@ impl<'a> ControlFlowBuilder<'a> {
                         value,
                         guards,
                         arms: arm_values,
+                        arm_patterns,
                     }
                 })
             }
@@ -5753,6 +5919,72 @@ impl<'a> ControlFlowBuilder<'a> {
         arm: &crate::ast::MatchExprArm,
     ) -> Vec<ControlFlowDefinition> {
         self.enum_match_pattern_definitions(value, &arm.variant, &arm.patterns)
+    }
+
+    fn lower_match_arm_pattern(
+        &self,
+        arm: &crate::ast::MatchExprArm,
+    ) -> Option<ControlFlowMatchArmPattern> {
+        Some(ControlFlowMatchArmPattern {
+            enum_name: arm.enum_name.clone(),
+            variant: arm.variant.clone(),
+            patterns: arm
+                .patterns
+                .iter()
+                .map(|pattern| self.lower_match_pattern(pattern))
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
+    fn lower_match_pattern(
+        &self,
+        pattern: &crate::ast::MatchPattern,
+    ) -> Option<ControlFlowMatchPattern> {
+        match pattern {
+            crate::ast::MatchPattern::Binding(binding) => Some(ControlFlowMatchPattern::Binding {
+                name: binding.name.clone(),
+            }),
+            crate::ast::MatchPattern::Struct(pattern) => Some(ControlFlowMatchPattern::Struct(
+                self.lower_struct_pattern(pattern),
+            )),
+            crate::ast::MatchPattern::Relational(pattern) => {
+                Some(ControlFlowMatchPattern::Relational {
+                    op: pattern.op,
+                    value: typecheck::constant_primitive_value(&pattern.value, self.signatures)?,
+                })
+            }
+            crate::ast::MatchPattern::Logical {
+                left, op, right, ..
+            } => Some(ControlFlowMatchPattern::Logical {
+                left: Box::new(self.lower_match_pattern(left)?),
+                op: match op {
+                    crate::ast::PatternLogicalOp::And => ControlFlowPatternLogicalOp::And,
+                    crate::ast::PatternLogicalOp::Or => ControlFlowPatternLogicalOp::Or,
+                },
+                right: Box::new(self.lower_match_pattern(right)?),
+            }),
+        }
+    }
+
+    fn lower_struct_pattern(
+        &self,
+        pattern: &crate::ast::StructPattern,
+    ) -> ControlFlowStructPattern {
+        ControlFlowStructPattern {
+            name: pattern.struct_name.clone(),
+            fields: pattern
+                .fields
+                .iter()
+                .map(|field| ControlFlowStructPatternField {
+                    field: field.field.clone(),
+                    binding: field.binding.name.clone(),
+                    nested: field
+                        .nested
+                        .as_deref()
+                        .map(|nested| Box::new(self.lower_struct_pattern(nested))),
+                })
+                .collect(),
+        }
     }
 
     fn enum_match_pattern_definitions(
@@ -7219,6 +7451,7 @@ fn collect_value_uses(
                 value: matched,
                 guards,
                 arms,
+                ..
             }
             | ControlFlowValueKind::ListMatch {
                 value: matched,
@@ -8838,6 +9071,54 @@ mod tests {
             super::ControlFlowGraph::decode_persisted(&truncated).is_none(),
             "truncated CFG payloads must be rejected"
         );
+    }
+
+    #[test]
+    fn enum_match_patterns_preserve_codegen_metadata_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"const LIMIT: i64 = 10
+
+enum Reading {
+    Number(i64)
+}
+
+fn classify(reading: Reading) -> i64 {
+    return match reading:
+        Reading.Number(< LIMIT): 1
+        Reading.Number(_): 2
+}
+
+fn main() -> i64 {
+    return classify(Reading.Number(7))
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("enum-match IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("classify")
+            .expect("classify CFG should exist");
+
+        let arm_patterns = graph
+            .values()
+            .iter()
+            .find_map(|value| match &value.kind {
+                super::ControlFlowValueKind::Match { arm_patterns, .. } => Some(arm_patterns),
+                _ => None,
+            })
+            .expect("enum match should retain arm-pattern metadata");
+        assert!(matches!(
+            arm_patterns[0].patterns.as_slice(),
+            [super::ControlFlowMatchPattern::Relational {
+                op: crate::ast::BinOp::Lt,
+                value: crate::typecheck::ConstantValue::I64(10),
+            }]
+        ));
+
+        let encoded = graph.encode_persisted();
+        let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+            .expect("enum-match CFG should decode");
+        assert_eq!(&decoded, graph);
     }
 
     #[test]

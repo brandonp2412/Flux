@@ -14,9 +14,10 @@ use fluxc::ast::Type;
 use fluxc::formatter::format_source;
 use fluxc::ir::{
     ControlFlowBorrowBoundary, ControlFlowDefinitionId, ControlFlowEdgeKind,
-    ControlFlowEvaluationKind, ControlFlowNodeKind, ControlFlowOwnershipEvent,
-    ControlFlowValueEffect, ControlFlowValueKind, ControlFlowValueOwnership,
-    ControlFlowValueRegionKind, ControlFlowValueUseKind, OwnershipCallArgumentKind,
+    ControlFlowEvaluationKind, ControlFlowMatchPattern, ControlFlowNodeKind,
+    ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
+    ControlFlowValueOwnership, ControlFlowValueRegionKind, ControlFlowValueUseKind,
+    OwnershipCallArgumentKind,
 };
 use fluxc::semantic::SemanticDatabase;
 use fluxc::{
@@ -24359,6 +24360,54 @@ fn main() -> i64 {
 "#;
 
     check_source(source).expect("relational/logical payload patterns should typecheck");
+    let database = SemanticDatabase::analyze(source, SourceId::new(1313))
+        .expect("relational/logical payload patterns should analyze");
+    let graph = database
+        .control_flow_graph("classify")
+        .expect("classify should have a control-flow graph");
+    let arm_patterns = graph
+        .values()
+        .iter()
+        .find_map(|value| match &value.kind {
+            ControlFlowValueKind::Match { arm_patterns, .. } => Some(arm_patterns),
+            _ => None,
+        })
+        .expect("match typed IR should retain arm patterns");
+    assert_eq!(arm_patterns.len(), 8);
+    assert!(matches!(
+        arm_patterns[0].patterns.as_slice(),
+        [ControlFlowMatchPattern::Relational {
+            op: fluxc::ast::BinOp::Lt,
+            value: fluxc::typecheck::ConstantValue::I64(0),
+        }]
+    ));
+    assert!(matches!(
+        arm_patterns[1].patterns.as_slice(),
+        [ControlFlowMatchPattern::Logical {
+            left,
+            op: fluxc::ir::ControlFlowPatternLogicalOp::And,
+            right,
+        }] if matches!(
+            left.as_ref(),
+            ControlFlowMatchPattern::Relational {
+                op: fluxc::ast::BinOp::Ge,
+                value: fluxc::typecheck::ConstantValue::I64(0),
+            }
+        ) && matches!(
+            right.as_ref(),
+            ControlFlowMatchPattern::Relational {
+                op: fluxc::ast::BinOp::Lt,
+                value: fluxc::typecheck::ConstantValue::I64(10),
+            }
+        )
+    ));
+    assert!(matches!(
+        arm_patterns[4].patterns.as_slice(),
+        [ControlFlowMatchPattern::Logical {
+            op: fluxc::ir::ControlFlowPatternLogicalOp::Or,
+            ..
+        }]
+    ));
     let generated =
         compile_to_c(source).expect("relational/logical patterns should lower natively");
     assert!(generated.contains("< INT64_C(0)"));
@@ -32938,12 +32987,23 @@ fn main() -> i64 {
         value,
         guards,
         arms,
+        arm_patterns,
     } = &match_value.kind
     else {
         unreachable!();
     };
     assert_eq!(guards, &[None, None]);
     assert_eq!(arms.len(), 2);
+    assert_eq!(arm_patterns.len(), 2);
+    assert_eq!(arm_patterns[0].enum_name, "Choice");
+    assert_eq!(arm_patterns[0].variant, "One");
+    assert!(matches!(
+        arm_patterns[0].patterns.as_slice(),
+        [ControlFlowMatchPattern::Binding { name }] if name == "value"
+    ));
+    assert_eq!(arm_patterns[1].enum_name, "Choice");
+    assert_eq!(arm_patterns[1].variant, "None");
+    assert!(arm_patterns[1].patterns.is_empty());
     assert!(matches!(
         graph.value(*value).map(|value| &value.kind),
         Some(ControlFlowValueKind::NameRead { name, .. }) if name == "choice"
