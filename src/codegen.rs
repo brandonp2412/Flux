@@ -49282,7 +49282,7 @@ fn emit_cfg_scalar_expr_direct(
             optional,
             callee,
             arguments,
-        } if matches!(optional.kind, CfgScalarExprKind::Name(_)) && !env.contains_key(callee) => {
+        } if !env.contains_key(callee) => {
             let Type::Optional(input_inner) = signatures.canonical_type(&optional.ty) else {
                 return None;
             };
@@ -55702,6 +55702,14 @@ fn optionalCall(value: i64?) -> i64? {
     return value ?.. add(1)
 }
 
+fn maybeValue(value: i64) -> i64? {
+    return value
+}
+
+fn temporaryOptionalCall(value: i64) -> i64? {
+    return maybeValue(value) ?.. add(1)
+}
+
 fn nestedOptionalCall(value: i64?, left: i64, right: i64) -> i64? {
     return value ?.. add(left + right)
 }
@@ -56384,6 +56392,66 @@ fn main() -> i64 {
             direct_optional.contains(&local_c_name("value")),
             "{direct_optional}"
         );
+
+        let temporary_optional = database
+            .control_flow_graph("temporaryOptionalCall")
+            .expect("temporary optional-cascade CFG should exist");
+        let temporary_optional_call = temporary_optional
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
+                        if callee == "add"
+                )
+            })
+            .expect("temporary optional cascade should retain typed IR");
+        let temporary_optional_facts = cfg_rewrite_facts(temporary_optional);
+        let temporary_optional_scalar = temporary_optional_facts
+            .scalar_exprs
+            .get(&source_span_key(temporary_optional_call.span))
+            .expect("temporary optional cascade should have typed-IR facts");
+        assert!(matches!(
+            &temporary_optional_scalar.kind,
+            CfgScalarExprKind::OptionalCascadeCall { optional, .. }
+                if matches!(optional.kind, CfgScalarExprKind::Call { .. })
+        ));
+        let temporary_optional_env = HashMap::from([("value".to_string(), Type::I64)]);
+        let temporary_optional_direct = emit_cfg_scalar_expr_direct(
+            temporary_optional_scalar,
+            &temporary_optional_env,
+            database.signatures(),
+        )
+        .expect("direct optional-producing receiver should emit from typed IR");
+        assert!(
+            temporary_optional_direct.contains(&function_c_name("maybeValue")),
+            "{temporary_optional_direct}"
+        );
+        assert!(
+            temporary_optional_direct.contains(&function_c_name("add")),
+            "{temporary_optional_direct}"
+        );
+        assert!(
+            temporary_optional_direct.contains("flux__optional_cascade_input_direct"),
+            "{temporary_optional_direct}"
+        );
+        let fake_temporary_optional = Expr {
+            line: temporary_optional_call.span.line,
+            span: temporary_optional_call.span,
+            kind: ExprKind::Str("checked-ast-temporary-optional-call".to_string()),
+        };
+        let temporary_optional_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_temporary_optional,
+            &Type::Optional(Box::new(Type::I64)),
+            &temporary_optional_env,
+            database.signatures(),
+            &HashMap::new(),
+            &temporary_optional_facts,
+        )
+        .expect("temporary optional cascade should bypass the checked-AST root");
+        assert_eq!(temporary_optional_emitted, temporary_optional_direct);
+        assert!(!temporary_optional_emitted.contains("checked-ast-temporary-optional-call"));
 
         let nested_optional = database
             .control_flow_graph("nestedOptionalCall")
