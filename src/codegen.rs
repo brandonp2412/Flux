@@ -36904,9 +36904,11 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
-                if matches!(
-                    expr.kind,
-                    ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+                if match_binding_needs_specialized_lowering(
+                    expr,
+                    env,
+                    signatures,
+                    context.cfg_rewrite_facts,
                 ) =>
             {
                 let target = local_c_name(name);
@@ -38651,6 +38653,33 @@ fn emit_list_match_pattern_bindings(
         );
     }
     Ok(())
+}
+
+fn match_binding_needs_specialized_lowering(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> bool {
+    if matches!(
+        expr.kind,
+        ExprKind::Match { .. } | ExprKind::ListMatch { .. }
+    ) {
+        return true;
+    }
+    let span = source_span_key(expr.span);
+    rewrite_facts
+        .match_exprs
+        .get(&span)
+        .is_some_and(|match_expr| {
+            cfg_match_expr_calls_are_reconstructable(match_expr, env, signatures)
+        })
+        || rewrite_facts
+            .list_match_exprs
+            .get(&span)
+            .is_some_and(|list_match_expr| {
+                cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
+            })
 }
 
 fn emit_match_expr_into(
@@ -50462,19 +50491,18 @@ fn main() -> i64 {
         let fake = Expr {
             line: matched.span.line,
             span: matched.span,
-            kind: ExprKind::Match {
-                value: Box::new(Expr {
-                    line: matched.span.line,
-                    span: matched.span,
-                    kind: ExprKind::Str("checked-ast-match".to_string()),
-                }),
-                arms: Vec::new(),
-            },
+            kind: ExprKind::Str("checked-ast-match".to_string()),
         };
         let env = HashMap::from([
             ("choice".to_string(), Type::Named("Choice".to_string())),
             ("floor".to_string(), Type::I64),
         ]);
+        assert!(match_binding_needs_specialized_lowering(
+            &fake,
+            &env,
+            database.signatures(),
+            &facts,
+        ));
         let mut out = String::new();
         let mut temp_counter = 0;
         emit_match_expr_into(
@@ -50543,6 +50571,12 @@ fn main() -> i64 {
             ("values".to_string(), Type::List(Box::new(Type::I64))),
             ("floor".to_string(), Type::I64),
         ]);
+        assert!(match_binding_needs_specialized_lowering(
+            &fake,
+            &env,
+            database.signatures(),
+            &facts,
+        ));
         let mut out = String::new();
         let mut temp_counter = 0;
         emit_match_expr_into(
