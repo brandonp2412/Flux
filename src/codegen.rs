@@ -34781,7 +34781,7 @@ fn cfg_direct_scalar_expr(
         } => {
             let base_value = cfg.value(*base)?;
             let base = if base_value.ownership.is_borrow() {
-                cfg_borrowed_collection_field_base(cfg, *base)?
+                cfg_borrowed_collection_value(cfg, *base)?
             } else {
                 cfg_direct_scalar_expr(cfg, *base)?
             };
@@ -42769,29 +42769,118 @@ fn emit_expr(
                     ));
                 };
                 let inner_ty = signatures.canonical_type(inner);
-                let Type::Named(struct_name) = &inner_ty else {
-                    return Err(diag(
-                        expr.span,
-                        "optional-aware field code generation currently requires a struct receiver",
-                    ));
+                let inner_value = "flux__optional_access_value.value";
+                let (field_ty, field_code) = match &inner_ty {
+                    Type::List(element) => {
+                        let field_ty = match crate::builtin_names::list_member_impl(name) {
+                            "length" => Type::I64,
+                            "isEmpty" | "isNotEmpty" => Type::Bool,
+                            "first" | "last" | "single" => (**element).clone(),
+                            _ => {
+                                return Err(diag(
+                                    expr.span,
+                                    "unknown optional list property reached code generation",
+                                ));
+                            }
+                        };
+                        let element_c = c_type(element, signatures);
+                        let field_code = match crate::builtin_names::list_member_impl(name) {
+                            "length" => format!("({inner_value}).len"),
+                            "isEmpty" => format!("(({inner_value}).len == 0)"),
+                            "isNotEmpty" => format!("(({inner_value}).len != 0)"),
+                            "first" => format!(
+                                "(*(({element_c} *)flux_list_at({inner_value}, INT64_C(0), sizeof({element_c}))))"
+                            ),
+                            "last" => format!(
+                                "(*(({element_c} *)flux_list_at({inner_value}, INT64_C(-1), sizeof({element_c}))))"
+                            ),
+                            "single" => {
+                                format!("(*(({element_c} *)flux_list_single({inner_value})))")
+                            }
+                            _ => unreachable!("optional list property validated above"),
+                        };
+                        (field_ty, field_code)
+                    }
+                    Type::Set(_) | Type::Map(_, _) => {
+                        let field_ty = match name.as_str() {
+                            "count" => Type::I64,
+                            "empty" | "nonempty" => Type::Bool,
+                            _ => {
+                                return Err(diag(
+                                    expr.span,
+                                    "unknown optional collection property reached code generation",
+                                ));
+                            }
+                        };
+                        let length_code = match &inner_ty {
+                            Type::Set(_) => format!("({inner_value}).len"),
+                            Type::Map(_, _) => format!("({inner_value}).keys.len"),
+                            _ => unreachable!("optional collection property branch"),
+                        };
+                        let field_code = match name.as_str() {
+                            "count" => length_code,
+                            "empty" => format!("({length_code} == 0)"),
+                            "nonempty" => format!("({length_code} != 0)"),
+                            _ => unreachable!("optional collection property validated above"),
+                        };
+                        (field_ty, field_code)
+                    }
+                    Type::Record(fields) => {
+                        let index = if let Ok(index) = name.parse::<usize>() {
+                            index
+                        } else {
+                            fields
+                                .iter()
+                                .position(|field| field.name.as_deref() == Some(name.as_str()))
+                                .ok_or_else(|| {
+                                    diag(
+                                        expr.span,
+                                        "unknown optional record field during code generation",
+                                    )
+                                })?
+                        };
+                        let Some(field) = fields.get(index) else {
+                            return Err(diag(
+                                expr.span,
+                                "unknown optional record field during code generation",
+                            ));
+                        };
+                        (
+                            field.ty.clone(),
+                            format!(
+                                "({inner_value}).{}",
+                                record_field_c_name(field.name.as_deref(), index)
+                            ),
+                        )
+                    }
+                    Type::Named(struct_name) => {
+                        let Some(definition) = signatures.struct_type(struct_name) else {
+                            return Err(diag(
+                                expr.span,
+                                "unknown optional struct receiver during code generation",
+                            ));
+                        };
+                        let Some(field) = definition.field(name) else {
+                            return Err(diag(
+                                expr.span,
+                                "unknown optional struct field during code generation",
+                            ));
+                        };
+                        (
+                            field.ty.clone(),
+                            format!("{inner_value}.{}", field_c_name(name)),
+                        )
+                    }
+                    _ => {
+                        return Err(diag(
+                            expr.span,
+                            "optional-aware field code generation requires a struct, record, or collection receiver",
+                        ));
+                    }
                 };
-                let Some(definition) = signatures.struct_type(struct_name) else {
-                    return Err(diag(
-                        expr.span,
-                        "unknown optional struct receiver during code generation",
-                    ));
-                };
-                let Some(field) = definition.field(name) else {
-                    return Err(diag(
-                        expr.span,
-                        "unknown optional struct field during code generation",
-                    ));
-                };
-                let field_ty = signatures.canonical_type(&field.ty);
+                let field_ty = signatures.canonical_type(&field_ty);
                 let result_c = c_type(&result_ty, signatures);
                 let base_c = c_type(&base_ty, signatures);
-                let field_code =
-                    format!("flux__optional_access_value.value.{}", field_c_name(name));
                 let present = if matches!(field_ty, Type::Optional(_)) {
                     field_code
                 } else {
@@ -50451,6 +50540,18 @@ fn mapCount(values: map<str, i64>) -> i64 {
     return values.count
 }
 
+fn optionalListCount(values: i64[]?) -> i64? {
+    return values?.count
+}
+
+fn optionalListFirst(values: i64[]?) -> i64? {
+    return values?.first
+}
+
+fn optionalMapCount(values: map<str, i64>?) -> i64? {
+    return values?.count
+}
+
 fn setNonempty(values: set<i64>) -> bool {
     return values.nonempty
 }
@@ -50511,6 +50612,73 @@ fn main() -> i64 {
         .expect("borrowed list property should emit from typed IR");
         assert!(list_emitted.contains(".len"), "{list_emitted}");
         assert!(!list_emitted.contains("checked-ast-list-property"));
+
+        for (function, property, expected, values_ty, expected_fragment) in [
+            (
+                "optionalListCount",
+                "count",
+                Type::Optional(Box::new(Type::I64)),
+                Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+                ".len",
+            ),
+            (
+                "optionalListFirst",
+                "first",
+                Type::Optional(Box::new(Type::I64)),
+                Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+                "flux_list_at(",
+            ),
+            (
+                "optionalMapCount",
+                "count",
+                Type::Optional(Box::new(Type::I64)),
+                Type::Optional(Box::new(Type::Map(
+                    Box::new(Type::Str),
+                    Box::new(Type::I64),
+                ))),
+                ".keys.len",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("optional collection property CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Field {
+                                base,
+                                name,
+                                optional: true,
+                            },
+                            ..
+                        }) if name == property && matches!(base.kind, CfgScalarExprKind::Name(_))
+                    )
+                })
+                .expect("optional collection property should retain its borrowed optional base in typed IR");
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Str("checked-ast-optional-collection-property".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &HashMap::from([("values".to_string(), values_ty)]),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("optional borrowed collection property should emit from typed IR");
+            assert!(emitted.contains(&local_c_name("values")), "{emitted}");
+            assert!(emitted.contains(".has_value"), "{emitted}");
+            assert!(emitted.contains(expected_fragment), "{emitted}");
+            assert!(!emitted.contains("checked-ast-optional-collection-property"));
+        }
 
         for (function, expected, expected_fragment, fake_text, env) in [
             (

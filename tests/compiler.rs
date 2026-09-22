@@ -17457,6 +17457,24 @@ fn main() -> i64 {
 }
 
 #[test]
+fn optional_map_properties_lower_natively() {
+    let source = r#"
+fn main() -> i64 {
+    let optional_map: map<i64, i64>? = map{1: 2}
+    print(optional_map?.count ?? 0)
+    return 0
+}
+"#;
+    check_source(source).expect("optional map property should typecheck");
+    let generated = compile_to_c(source).expect("optional map property should lower natively");
+    assert!(
+        generated.contains("flux__optional_access_value"),
+        "{generated}"
+    );
+    assert!(generated.contains(".keys.len"), "{generated}");
+}
+
+#[test]
 fn ownership_ir_records_typed_return_boundaries() {
     let source = r#"
 fn choose(flag: bool) -> i64 {
