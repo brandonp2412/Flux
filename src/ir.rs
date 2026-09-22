@@ -4420,6 +4420,18 @@ struct LoopTargets {
     continue_target: ControlFlowNodeId,
 }
 
+fn complete_map_entry_values(
+    values: Vec<Option<ControlFlowValueId>>,
+) -> Option<Vec<(ControlFlowValueId, ControlFlowValueId)>> {
+    if !values.len().is_multiple_of(2) {
+        return None;
+    }
+    values
+        .chunks_exact(2)
+        .map(|pair| Some((pair[0]?, pair[1]?)))
+        .collect()
+}
+
 struct ControlFlowBuilder<'a> {
     signatures: &'a Signatures,
     function: String,
@@ -5468,19 +5480,15 @@ impl<'a> ControlFlowBuilder<'a> {
             ExprKind::Set(items) => ControlFlowValueKind::Set {
                 items: self.lower_expr_arguments(producer, items),
             },
-            ExprKind::Map(items) => ControlFlowValueKind::Map {
-                entries: items
-                    .chunks_exact(2)
-                    .map(|pair| {
-                        (
-                            self.lower_scalar_expr(producer, &pair[0])
-                                .unwrap_or(ControlFlowValueId(0)),
-                            self.lower_scalar_expr(producer, &pair[1])
-                                .unwrap_or(ControlFlowValueId(0)),
-                        )
-                    })
-                    .collect(),
-            },
+            ExprKind::Map(items) => {
+                let values = items
+                    .iter()
+                    .map(|item| self.lower_scalar_expr(producer, item))
+                    .collect();
+                complete_map_entry_values(values).map_or(ControlFlowValueKind::Opaque, |entries| {
+                    ControlFlowValueKind::Map { entries }
+                })
+            }
             ExprKind::ListSpread {
                 value, optional, ..
             } => self.lower_scalar_expr(producer, value).map_or(
@@ -9268,6 +9276,21 @@ mod tests {
 
     fn path(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|part| (*part).to_string()).collect()
+    }
+
+    #[test]
+    fn incomplete_map_dependencies_do_not_fabricate_value_ids() {
+        let first = super::ControlFlowValueId(4);
+        let second = super::ControlFlowValueId(5);
+        assert_eq!(
+            super::complete_map_entry_values(vec![Some(first), Some(second)]),
+            Some(vec![(first, second)])
+        );
+        assert_eq!(
+            super::complete_map_entry_values(vec![Some(first), None]),
+            None
+        );
+        assert_eq!(super::complete_map_entry_values(vec![Some(first)]), None);
     }
 
     #[test]
