@@ -34736,6 +34736,21 @@ fn cfg_direct_scalar_expr(
     {
         return Some(borrowed);
     }
+    if value.ownership.is_copy()
+        && matches!(
+            &value.kind,
+            crate::ir::ControlFlowValueKind::RecordLiteral { .. }
+                | crate::ir::ControlFlowValueKind::StructLiteral { .. }
+        )
+    {
+        let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)? else {
+            return None;
+        };
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Aggregate(aggregate),
+        });
+    }
     if !value.ownership.is_copy() {
         return None;
     }
@@ -50813,6 +50828,10 @@ fn offsetApply(offset: Offset, value: i64) -> i64 {
     return offset.amount + value
 }
 
+fn aggregateCall(value: i64) -> i64 {
+    return offsetApply(Offset { amount: value + 1 }, value)
+}
+
 fn offsetAdjust(offset: Offset, value: i64, *, delta: i64) -> i64 {
     return offset.amount + value + delta
 }
@@ -50905,6 +50924,54 @@ fn main() -> i64 {
                 assert!(emitted.contains("INT64_C(2)"));
             }
         }
+
+        let aggregate_call = database
+            .control_flow_graph("aggregateCall")
+            .expect("aggregate-call CFG should exist");
+        let aggregate_root = aggregate_call
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call {
+                        callee,
+                        arguments,
+                    } if callee == "offsetApply" && arguments.len() == 2
+                )
+            })
+            .expect("typed IR should retain the aggregate call");
+        let aggregate_facts = cfg_rewrite_facts(aggregate_call);
+        let aggregate_scalar = aggregate_facts
+            .scalar_exprs
+            .get(&source_span_key(aggregate_root.span))
+            .expect("Copy aggregate call arguments should reconstruct through typed IR");
+        let CfgScalarExprKind::Call { arguments, .. } = &aggregate_scalar.kind else {
+            panic!("aggregate call should remain a direct typed-IR call");
+        };
+        assert!(matches!(
+            arguments.first().map(|argument| &argument.kind),
+            Some(CfgScalarExprKind::Aggregate(_))
+        ));
+        let fake_aggregate_call = Expr {
+            line: aggregate_root.span.line,
+            span: aggregate_root.span,
+            kind: ExprKind::Str("checked-ast-aggregate-call".to_string()),
+        };
+        let aggregate_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_aggregate_call,
+            &Type::I64,
+            &HashMap::from([("value".to_string(), Type::I64)]),
+            database.signatures(),
+            &HashMap::new(),
+            &aggregate_facts,
+        )
+        .expect("Copy aggregate call should emit from typed IR");
+        assert!(aggregate_emitted.contains(&format!("{}(", function_c_name("offsetApply"))));
+        assert!(aggregate_emitted.contains(&struct_c_name("Offset")));
+        assert!(aggregate_emitted.contains("flux_add_i64"));
+        assert!(aggregate_emitted.contains(&local_c_name("value")));
+        assert!(!aggregate_emitted.contains("checked-ast-aggregate-call"));
 
         let nested = database
             .control_flow_graph("nested")
