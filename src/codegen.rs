@@ -34178,6 +34178,7 @@ struct CfgRewriteFacts {
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
     scalar_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
+    sequence_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     multi_exprs: HashMap<(u32, usize, usize, usize), CfgScalarExpr>,
     match_exprs: HashMap<(u32, usize, usize, usize), CfgMatchExpr>,
     list_match_exprs: HashMap<(u32, usize, usize, usize), CfgListMatchExpr>,
@@ -34743,6 +34744,45 @@ fn cfg_direct_scalar_expr(
     })
 }
 
+fn cfg_direct_sequence_expr(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgScalarExpr> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::Call { callee, arguments } = &value.kind else {
+        return None;
+    };
+    if !matches!(
+        crate::builtin_names::global_impl(callee),
+        "map"
+            | "filter"
+            | "where"
+            | "chunked"
+            | "sorted"
+            | "flatten"
+            | "distinct"
+            | "concat"
+            | "fold"
+            | "reduce"
+    ) {
+        return None;
+    }
+    let arguments = arguments
+        .iter()
+        .map(|id| cfg_direct_scalar_expr(cfg, *id).or_else(|| cfg_direct_sequence_expr(cfg, *id)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(CfgScalarExpr {
+        ty: value.ty.clone(),
+        kind: CfgScalarExprKind::Call {
+            callee: callee.clone(),
+            arguments,
+        },
+    })
+}
+
 fn cfg_direct_multi_expr(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -35164,6 +35204,28 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    let mut sequence_exprs = HashMap::new();
+    let mut ambiguous_sequence_exprs = HashSet::new();
+    for value in cfg.values().iter().filter(|value| {
+        cfg.is_value_reachable(value.id) && !value.result_index.is_some_and(|index| index > 0)
+    }) {
+        let Some(sequence) = cfg_direct_sequence_expr(cfg, value.id) else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_sequence_exprs.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = sequence_exprs.get(&span) {
+            if existing != &sequence {
+                sequence_exprs.remove(&span);
+                ambiguous_sequence_exprs.insert(span);
+            }
+        } else {
+            sequence_exprs.insert(span, sequence);
+        }
+    }
+
     let multi_result_spans = cfg
         .values()
         .iter()
@@ -35238,6 +35300,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         aggregates,
         aggregate_constants,
         scalar_exprs,
+        sequence_exprs,
         multi_exprs,
         match_exprs,
         list_match_exprs,
@@ -36927,6 +36990,12 @@ fn emit_block(
         let dead_definitions = context
             .dead_definition_names
             .get(&source_span_key(stmt.span));
+        let sequence_lowering = match &stmt.kind {
+            StmtKind::Let { expr, .. } | StmtKind::Var { expr, .. } => {
+                sequence_lowering_kind(expr, env, signatures, context.cfg_rewrite_facts)
+            }
+            _ => None,
+        };
         match &stmt.kind {
             StmtKind::Var { name, ty, expr, .. }
                 if !context.async_state_machine
@@ -36942,7 +37011,9 @@ fn emit_block(
                 ));
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_chunked(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Chunked) =>
+            {
                 emit_sequence_chunked_binding(
                     out,
                     &pad,
@@ -36950,10 +37021,13 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_sorted(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Sorted) =>
+            {
                 emit_sequence_sorted_binding(
                     out,
                     &pad,
@@ -36961,10 +37035,13 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_flatten(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Flatten) =>
+            {
                 emit_sequence_flatten_binding(
                     out,
                     &pad,
@@ -36972,10 +37049,13 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_distinct(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Distinct) =>
+            {
                 emit_sequence_distinct_binding(
                     out,
                     &pad,
@@ -36983,10 +37063,13 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_concat(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Concat) =>
+            {
                 emit_sequence_concat_binding(
                     out,
                     &pad,
@@ -36994,10 +37077,13 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
-            StmtKind::Let { name, ty, expr, .. } if sequence_transform(expr).is_some() => {
+            StmtKind::Let { name, ty, expr, .. }
+                if sequence_lowering == Some(SequenceLoweringKind::Transform) =>
+            {
                 emit_sequence_transform_binding(
                     out,
                     &pad,
@@ -37005,11 +37091,12 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
-                if sequence_reduction(expr).is_some() =>
+                if sequence_lowering == Some(SequenceLoweringKind::Reduction) =>
             {
                 emit_sequence_reduction_binding(
                     out,
@@ -37018,6 +37105,7 @@ fn emit_block(
                     expr,
                     env,
                     signatures,
+                    context.cfg_rewrite_facts,
                     temp_counter,
                 )?;
             }
@@ -39287,6 +39375,112 @@ fn emit_struct_pattern_bindings(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SequenceLoweringKind {
+    Chunked,
+    Sorted,
+    Flatten,
+    Distinct,
+    Concat,
+    Transform,
+    Reduction,
+}
+
+fn cfg_sequence_expr_calls_are_reconstructable(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> bool {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return false;
+    };
+    if !matches!(
+        crate::builtin_names::global_impl(callee),
+        "map"
+            | "filter"
+            | "where"
+            | "chunked"
+            | "sorted"
+            | "flatten"
+            | "distinct"
+            | "concat"
+            | "fold"
+            | "reduce"
+    ) {
+        return false;
+    }
+    arguments.iter().all(|argument| {
+        if matches!(
+            &argument.kind,
+            CfgScalarExprKind::Call { callee, .. }
+                if matches!(
+                    crate::builtin_names::global_impl(callee),
+                    "map"
+                        | "filter"
+                        | "where"
+                        | "chunked"
+                        | "sorted"
+                        | "flatten"
+                        | "distinct"
+                        | "concat"
+                        | "fold"
+                        | "reduce"
+                )
+        ) {
+            cfg_sequence_expr_calls_are_reconstructable(argument, env, signatures)
+        } else {
+            cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
+        }
+    })
+}
+
+fn sequence_expr_for_lowering(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Expr {
+    let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    else {
+        return expr.clone();
+    };
+    if !cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures) {
+        return expr.clone();
+    }
+    let mut reconstructed = cfg_scalar_expr_as_ast(sequence);
+    reconstructed.line = expr.line;
+    reconstructed.span = expr.span;
+    reconstructed
+}
+
+fn sequence_lowering_kind(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<SequenceLoweringKind> {
+    let expr = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    if sequence_chunked(&expr).is_some() {
+        Some(SequenceLoweringKind::Chunked)
+    } else if sequence_sorted(&expr).is_some() {
+        Some(SequenceLoweringKind::Sorted)
+    } else if sequence_flatten(&expr).is_some() {
+        Some(SequenceLoweringKind::Flatten)
+    } else if sequence_distinct(&expr).is_some() {
+        Some(SequenceLoweringKind::Distinct)
+    } else if sequence_concat(&expr).is_some() {
+        Some(SequenceLoweringKind::Concat)
+    } else if sequence_transform(&expr).is_some() {
+        Some(SequenceLoweringKind::Transform)
+    } else if sequence_reduction(&expr).is_some() {
+        Some(SequenceLoweringKind::Reduction)
+    } else {
+        None
+    }
+}
+
 enum SequenceTransform<'a> {
     Map { list: &'a Expr, callback: &'a Expr },
     Filter { list: &'a Expr, callback: &'a Expr },
@@ -39475,9 +39669,12 @@ fn emit_sequence_chunked_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -39579,9 +39776,12 @@ fn emit_sequence_sorted_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -39670,9 +39870,12 @@ fn emit_sequence_flatten_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -39772,9 +39975,12 @@ fn emit_sequence_distinct_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -39873,9 +40079,12 @@ fn emit_sequence_concat_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -39966,9 +40175,12 @@ fn emit_sequence_transform_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let value = emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
@@ -40338,9 +40550,12 @@ fn emit_sequence_reduction_binding(
     expr: &Expr,
     env: &mut HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+    let expr = &rewritten;
     let reduction = sequence_reduction(expr).ok_or_else(|| {
         diag(
             expr.span,
@@ -47434,6 +47649,158 @@ mod cfg_rewrite_fact_tests {
             &plain_ast_value,
             &comprehension_facts
         ));
+    }
+
+    #[test]
+    fn sequence_transform_pipeline_lowers_from_typed_ir_without_ast_root() {
+        let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn exercise(values: i64[]) -> i64 {
+    let transformed: i64[] = values | map double | filter positive
+    return transformed.length
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    return exercise(values)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence transform typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "filter"
+                )
+            })
+            .expect("typed IR should canonicalize the pipeline to a filter call");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(
+            facts
+                .sequence_exprs
+                .contains_key(&source_span_key(root.span))
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(0),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        assert_eq!(
+            sequence_lowering_kind(&fake, &env, database.signatures(), &facts),
+            Some(SequenceLoweringKind::Transform)
+        );
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_transform_binding(
+            &mut out,
+            "",
+            ("transformed", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence transform should emit from typed IR");
+
+        assert!(out.contains("flux__transform_buffer_"));
+        assert!(out.contains(&function_c_name("double")));
+        assert!(out.contains(&function_c_name("positive")));
+    }
+
+    #[test]
+    fn sequence_reduction_pipeline_lowers_from_typed_ir_without_ast_root() {
+        let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn exercise(values: i64[]) -> i64 {
+    let total: i64 = values | map double | filter positive | fold 10 add
+    return total
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    return exercise(values)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence reduction typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "fold"
+                )
+            })
+            .expect("typed IR should canonicalize the reduction pipeline to a fold call");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(
+            facts
+                .sequence_exprs
+                .contains_key(&source_span_key(root.span))
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let mut env = HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        assert_eq!(
+            sequence_lowering_kind(&fake, &env, database.signatures(), &facts),
+            Some(SequenceLoweringKind::Reduction)
+        );
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_reduction_binding(
+            &mut out,
+            "",
+            ("total", &Type::I64),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence reduction should emit from typed IR");
+
+        assert!(out.contains(&function_c_name("double")));
+        assert!(out.contains(&function_c_name("positive")));
+        assert!(out.contains(&function_c_name("add")));
+        assert!(!out.contains("flux__transform_buffer_"));
     }
 
     #[test]
