@@ -48918,12 +48918,15 @@ fn emit_cfg_scalar_expr_direct(
             base,
             index,
             optional: false,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_))
-            && matches!(
-                index.kind,
-                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-            ) =>
-        {
+        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+            let direct_index =
+                matches!(
+                    index.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                ) || cfg_scalar_expr_is_direct_primitive_tree(index, env, signatures);
+            if !direct_index {
+                return None;
+            }
             let base_ty = signatures.canonical_type(&base.ty);
             let index_ty = signatures.canonical_type(&index.ty);
             let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
@@ -48987,12 +48990,12 @@ fn emit_cfg_scalar_expr_direct(
                     let Some(value) = value else {
                         return Some((false, default.to_string()));
                     };
-                    if signatures.canonical_type(&value.ty) != Type::I64
-                        || !matches!(
+                    let direct_bound =
+                        matches!(
                             value.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        )
-                    {
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(value, env, signatures);
+                    if signatures.canonical_type(&value.ty) != Type::I64 || !direct_bound {
                         return None;
                     }
                     Some((true, emit_cfg_scalar_expr_direct(value, env, signatures)?))
@@ -52628,6 +52631,10 @@ fn direct(values: i64[], at: i64) -> i64 {
     return values[at]
 }
 
+fn nested(values: i64[], left: i64, right: i64) -> i64 {
+    return values[left + right]
+}
+
 fn borrowed(values: i64[], at: i64) -> i64 {
     return (borrow values)[at]
 }
@@ -52756,6 +52763,50 @@ fn main() -> i64 {
             }
         }
 
+        let nested = database
+            .control_flow_graph("nested")
+            .expect("nested list index CFG should exist");
+        let nested_index = nested
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
+            .expect("nested list index should retain typed IR");
+        let nested_facts = cfg_rewrite_facts(nested);
+        let nested_scalar = nested_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_index.span))
+            .expect("nested list index should have scalar typed-IR facts");
+        let nested_env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        let nested_direct =
+            emit_cfg_scalar_expr_direct(nested_scalar, &nested_env, database.signatures())
+                .expect("safe nested primitive list index should render directly from typed IR");
+        assert!(nested_direct.contains("flux_list_at("), "{nested_direct}");
+        assert!(nested_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("left"),
+            local_c_name("right"),
+        )));
+        let fake_nested = Expr {
+            line: nested_index.span.line,
+            span: nested_index.span,
+            kind: ExprKind::Str("checked-ast-nested-list-index".to_string()),
+        };
+        let nested_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested,
+            &Type::I64,
+            &nested_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_facts,
+        )
+        .expect("nested primitive list index should bypass the checked-AST root");
+        assert_eq!(nested_emitted, nested_direct);
+        assert!(!nested_emitted.contains("checked-ast-nested-list-index"));
+
         let temporary = database
             .control_flow_graph("temporary")
             .expect("temporary list index CFG should exist");
@@ -52810,6 +52861,10 @@ fn main() -> i64 {
         let source = r#"
 fn direct(values: map<str, i64>, key: str) -> i64? {
     return values[key]
+}
+
+fn nested(values: map<i64, i64>, left: i64, right: i64) -> i64? {
+    return values[left + right]
 }
 
 fn borrowed(values: map<str, i64>, key: str) -> i64? {
@@ -52944,6 +52999,56 @@ fn main() -> i64 {
             }
         }
 
+        let nested = database
+            .control_flow_graph("nested")
+            .expect("nested map index CFG should exist");
+        let nested_index = nested
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
+            .expect("nested map index should retain typed IR");
+        let nested_facts = cfg_rewrite_facts(nested);
+        let nested_scalar = nested_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_index.span))
+            .expect("nested map index should have scalar typed-IR facts");
+        let nested_env = HashMap::from([
+            (
+                "values".to_string(),
+                Type::Map(Box::new(Type::I64), Box::new(Type::I64)),
+            ),
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        let nested_direct =
+            emit_cfg_scalar_expr_direct(nested_scalar, &nested_env, database.signatures())
+                .expect("safe nested primitive map index should render directly from typed IR");
+        assert!(
+            nested_direct.contains("flux__typed_map_index_"),
+            "{nested_direct}"
+        );
+        assert!(nested_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("left"),
+            local_c_name("right"),
+        )));
+        let fake_nested = Expr {
+            line: nested_index.span.line,
+            span: nested_index.span,
+            kind: ExprKind::Str("checked-ast-nested-map-index".to_string()),
+        };
+        let nested_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested,
+            &Type::Optional(Box::new(Type::I64)),
+            &nested_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_facts,
+        )
+        .expect("nested primitive map index should bypass the checked-AST root");
+        assert_eq!(nested_emitted, nested_direct);
+        assert!(!nested_emitted.contains("checked-ast-nested-map-index"));
+
         let temporary = database
             .control_flow_graph("temporary")
             .expect("temporary map index CFG should exist");
@@ -52998,6 +53103,11 @@ fn main() -> i64 {
         let source = r#"
 fn direct(values: i64[], start: i64, end: i64, step: i64) -> i64 {
     let view: i64[] = values[start:end:step]
+    return view.length
+}
+
+fn nested(values: i64[], start: i64, offset: i64, end: i64, step: i64) -> i64 {
+    let view: i64[] = values[start + offset:end:step]
     return view.length
 }
 
@@ -53094,6 +53204,55 @@ fn main() -> i64 {
         assert!(emitted.contains(&local_c_name("end")));
         assert!(emitted.contains(&local_c_name("step")));
         assert!(!emitted.contains("checked-ast-slice"));
+
+        let nested_graph = database
+            .control_flow_graph("nested")
+            .expect("nested list slice CFG should exist");
+        let nested_slice = nested_graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
+            .expect("nested list slice should retain typed IR");
+        let nested_facts = cfg_rewrite_facts(nested_graph);
+        let nested_scalar = nested_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_slice.span))
+            .expect("nested list slice should have scalar typed-IR facts");
+        let nested_env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("start".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+            ("step".to_string(), Type::I64),
+        ]);
+        let nested_direct =
+            emit_cfg_scalar_expr_direct(nested_scalar, &nested_env, database.signatures())
+                .expect("safe nested primitive list slice bounds should render from typed IR");
+        assert!(
+            nested_direct.contains("flux_list_slice("),
+            "{nested_direct}"
+        );
+        assert!(nested_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("start"),
+            local_c_name("offset"),
+        )));
+        let fake_nested = Expr {
+            line: nested_slice.span.line,
+            span: nested_slice.span,
+            kind: ExprKind::Str("checked-ast-nested-list-slice".to_string()),
+        };
+        let nested_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested,
+            &Type::List(Box::new(Type::I64)),
+            &nested_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_facts,
+        )
+        .expect("nested primitive list slice should bypass the checked-AST root");
+        assert_eq!(nested_emitted, nested_direct);
+        assert!(!nested_emitted.contains("checked-ast-nested-list-slice"));
 
         let borrowed_graph = database
             .control_flow_graph("borrowed")
