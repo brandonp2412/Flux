@@ -34272,6 +34272,11 @@ enum CfgScalarExprKind {
         left: Box<CfgScalarExpr>,
         right: Box<CfgScalarExpr>,
     },
+    Conditional {
+        condition: Box<CfgScalarExpr>,
+        then_value: Box<CfgScalarExpr>,
+        else_value: Box<CfgScalarExpr>,
+    },
     Field {
         base: Box<CfgScalarExpr>,
         name: String,
@@ -35022,6 +35027,15 @@ fn cfg_direct_scalar_expr(
                 right: Box::new(right),
             }
         }
+        crate::ir::ControlFlowValueKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => CfgScalarExprKind::Conditional {
+            condition: Box::new(cfg_direct_scalar_expr(cfg, *condition)?),
+            then_value: Box::new(cfg_direct_scalar_expr(cfg, *then_value)?),
+            else_value: Box::new(cfg_direct_scalar_expr(cfg, *else_value)?),
+        },
         _ => return None,
     };
     Some(CfgScalarExpr {
@@ -47534,6 +47548,15 @@ fn cfg_scalar_expr_as_ast_with_spans(
             op: *op,
             right: Box::new(cfg_scalar_expr_as_ast_with_spans(right, spans)),
         },
+        CfgScalarExprKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => ExprKind::Conditional {
+            then_expr: Box::new(cfg_scalar_expr_as_ast_with_spans(then_value, spans)),
+            cond: Box::new(cfg_scalar_expr_as_ast_with_spans(condition, spans)),
+            else_expr: Box::new(cfg_scalar_expr_as_ast_with_spans(else_value, spans)),
+        },
     };
     Expr {
         line: span.line,
@@ -47796,6 +47819,15 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         CfgScalarExprKind::Binary { left, right, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(left, env, signatures)
                 && cfg_scalar_expr_calls_are_reconstructable(right, env, signatures)
+        }
+        CfgScalarExprKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            cfg_scalar_expr_calls_are_reconstructable(condition, env, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(then_value, env, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(else_value, env, signatures)
         }
         CfgScalarExprKind::Field { base, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(base, env, signatures)
@@ -50130,6 +50162,60 @@ fn main() -> i64 {
             "{emitted}"
         );
         assert!(!emitted.contains("999"));
+    }
+
+    #[test]
+    fn dynamic_conditional_lowers_from_typed_ir_without_ast_shape() {
+        let source = SourceId::new(4251);
+        let span = SourceSpan::new(1, 1, 24).with_source(source);
+        let facts = CfgRewriteFacts {
+            scalar_exprs: HashMap::from([(
+                source_span_key(span),
+                CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Conditional {
+                        condition: Box::new(CfgScalarExpr {
+                            ty: Type::Bool,
+                            kind: CfgScalarExprKind::Name("enabled".to_string()),
+                        }),
+                        then_value: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("value".to_string()),
+                        }),
+                        else_value: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("fallback".to_string()),
+                        }),
+                    },
+                },
+            )]),
+            ..CfgRewriteFacts::default()
+        };
+        let fake = Expr {
+            line: span.line,
+            span,
+            kind: ExprKind::Str("checked-ast-conditional-root".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([
+                ("enabled".to_string(), Type::Bool),
+                ("value".to_string(), Type::I64),
+                ("fallback".to_string(), Type::I64),
+            ]),
+            &Signatures::default(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("dynamic conditional should emit from typed IR");
+
+        assert!(emitted.contains(&local_c_name("enabled")), "{emitted}");
+        assert!(emitted.contains(&local_c_name("value")), "{emitted}");
+        assert!(emitted.contains(&local_c_name("fallback")), "{emitted}");
+        assert!(emitted.contains('?'), "{emitted}");
+        assert!(emitted.contains(':'), "{emitted}");
+        assert!(!emitted.contains("checked-ast-conditional-root"));
     }
 
     #[test]
