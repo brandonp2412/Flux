@@ -14,8 +14,8 @@ use fluxc::ast::Type;
 use fluxc::formatter::format_source;
 use fluxc::ir::{
     ControlFlowBorrowBoundary, ControlFlowDefinitionId, ControlFlowEdgeKind,
-    ControlFlowEvaluationKind, ControlFlowMatchPattern, ControlFlowNodeKind,
-    ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
+    ControlFlowEvaluationKind, ControlFlowListMatchPattern, ControlFlowMatchPattern,
+    ControlFlowNodeKind, ControlFlowOwnershipEvent, ControlFlowValueEffect, ControlFlowValueKind,
     ControlFlowValueOwnership, ControlFlowValueRegionKind, ControlFlowValueUseKind,
     OwnershipCallArgumentKind,
 };
@@ -24198,14 +24198,31 @@ fn main() -> i64 {
     let graph = database
         .control_flow_graph("main")
         .expect("list match fixture should expose typed IR");
-    let list_match = graph
+    let (list_match, list_patterns) = graph
         .values()
         .iter()
         .find_map(|value| match &value.kind {
-            ControlFlowValueKind::ListMatch { arms, .. } if arms.len() == 3 => Some(arms),
+            ControlFlowValueKind::ListMatch {
+                arms, arm_patterns, ..
+            } if arms.len() == 3 => Some((arms, arm_patterns)),
             _ => None,
         })
         .expect("value-producing list match should be normalized");
+    assert_eq!(list_patterns.len(), 3);
+    assert!(matches!(
+        &list_patterns[0],
+        ControlFlowListMatchPattern::List { bindings, rest }
+            if bindings.is_empty() && rest.is_none()
+    ));
+    assert!(matches!(
+        &list_patterns[2],
+        ControlFlowListMatchPattern::List {
+            bindings,
+            rest: Some(rest),
+        } if bindings == &["_".to_string(), "_".to_string()]
+            && rest.binding == "body"
+            && rest.index == 1
+    ));
     let body_arm = graph
         .value(list_match[2])
         .expect("rest-pattern arm should retain its value expression");
