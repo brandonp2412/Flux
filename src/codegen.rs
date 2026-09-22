@@ -45711,35 +45711,45 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
 
 fn cfg_scalar_expr_calls_are_reconstructable(
     expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> bool {
     match &expr.kind {
         CfgScalarExprKind::Call { callee, arguments } => {
-            let implementation = crate::builtin_names::global_impl(callee);
-            let Some(signature) = signatures.get(implementation) else {
-                return false;
+            let callable = if let Some(local_ty) = env.get(callee) {
+                matches!(
+                    local_ty,
+                    Type::Function { params, .. } if params.len() == arguments.len()
+                )
+            } else {
+                let implementation = crate::builtin_names::global_impl(callee);
+                signatures.get(implementation).is_some_and(|signature| {
+                    signature
+                        .param_details
+                        .iter()
+                        .all(|param| !param.named_only)
+                })
             };
-            signature
-                .param_details
-                .iter()
-                .all(|param| !param.named_only)
-                && arguments
-                    .iter()
-                    .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures))
+            callable
+                && arguments.iter().all(|argument| {
+                    cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
+                })
         }
         CfgScalarExprKind::NamedCall { callee, arguments } => {
             let implementation = crate::builtin_names::global_impl(callee);
             signatures.get(implementation).is_some()
                 && arguments.iter().all(|(_, argument)| {
-                    cfg_scalar_expr_calls_are_reconstructable(argument, signatures)
+                    cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
                 })
         }
         CfgScalarExprKind::QualifiedCall { arguments, .. } => arguments
             .iter()
-            .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
-        CfgScalarExprKind::NamedQualifiedCall { arguments, .. } => arguments
-            .iter()
-            .all(|(_, argument)| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
+            .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)),
+        CfgScalarExprKind::NamedQualifiedCall { arguments, .. } => {
+            arguments.iter().all(|(_, argument)| {
+                cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
+            })
+        }
         CfgScalarExprKind::OptionalCascadeCall {
             optional,
             callee,
@@ -45747,24 +45757,24 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         } => {
             let implementation = crate::builtin_names::global_impl(callee);
             signatures.get(implementation).is_some()
-                && cfg_scalar_expr_calls_are_reconstructable(optional, signatures)
-                && arguments
-                    .iter()
-                    .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures))
+                && cfg_scalar_expr_calls_are_reconstructable(optional, env, signatures)
+                && arguments.iter().all(|argument| {
+                    cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)
+                })
         }
         CfgScalarExprKind::Unary { operand, .. } => {
-            cfg_scalar_expr_calls_are_reconstructable(operand, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(operand, env, signatures)
         }
         CfgScalarExprKind::Binary { left, right, .. } => {
-            cfg_scalar_expr_calls_are_reconstructable(left, signatures)
-                && cfg_scalar_expr_calls_are_reconstructable(right, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(left, env, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(right, env, signatures)
         }
         CfgScalarExprKind::Field { base, .. } => {
-            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(base, env, signatures)
         }
         CfgScalarExprKind::Index { base, index, .. } => {
-            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
-                && cfg_scalar_expr_calls_are_reconstructable(index, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(base, env, signatures)
+                && cfg_scalar_expr_calls_are_reconstructable(index, env, signatures)
         }
         CfgScalarExprKind::Slice {
             base,
@@ -45772,19 +45782,19 @@ fn cfg_scalar_expr_calls_are_reconstructable(
             end,
             step,
         } => {
-            cfg_scalar_expr_calls_are_reconstructable(base, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(base, env, signatures)
                 && start.as_deref().is_none_or(|value| {
-                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                    cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
                 })
                 && end.as_deref().is_none_or(|value| {
-                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                    cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
                 })
                 && step.as_deref().is_none_or(|value| {
-                    cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+                    cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
                 })
         }
         CfgScalarExprKind::InterfacePack { value, .. } => {
-            cfg_scalar_expr_calls_are_reconstructable(value, signatures)
+            cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
         }
         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
     }
@@ -45798,7 +45808,7 @@ fn emit_cfg_scalar_expr(
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
     let ty = signatures.canonical_type(&expr.ty);
-    if ty != expected || !cfg_scalar_expr_calls_are_reconstructable(expr, signatures) {
+    if ty != expected || !cfg_scalar_expr_calls_are_reconstructable(expr, env, signatures) {
         return None;
     }
     let synthetic = cfg_scalar_expr_as_ast(expr);
@@ -48035,6 +48045,10 @@ fn namedCall(value: i64) -> i64 {
     return named(value, adjust: 3)
 }
 
+fn functionValueCall(transform: fn(i64) -> i64, value: i64) -> i64 {
+    return transform(value)
+}
+
 fn qualifiedCall(value: i64) -> i64 {
     return time.utcYear(value)
 }
@@ -48219,6 +48233,46 @@ fn main() -> i64 {
                 function_c_name("named"),
                 local_c_name("value")
             )
+        );
+
+        let function_value = database
+            .control_flow_graph("functionValueCall")
+            .expect("function-value call CFG should exist");
+        let call = function_value
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if callee == "transform"
+                )
+            })
+            .expect("function-value call should retain typed IR");
+        let facts = cfg_rewrite_facts(function_value);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("function-value call should have reconstructable value facts");
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([
+                (
+                    "transform".to_string(),
+                    Type::Function {
+                        params: vec![Type::I64],
+                        returns: vec![Type::I64],
+                    },
+                ),
+                ("value".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+        )
+        .expect("function-value call should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!("{}({})", local_c_name("transform"), local_c_name("value"))
         );
 
         let qualified = database
