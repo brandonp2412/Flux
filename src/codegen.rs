@@ -34066,6 +34066,7 @@ enum CfgScalarExprKind {
     Constant(ConstantValue),
     Nil,
     NoneLiteral,
+    Aggregate(Box<CfgAggregateConstant>),
     Unary {
         op: UnaryOp,
         operand: Box<CfgScalarExpr>,
@@ -34231,6 +34232,23 @@ fn cfg_literal_aggregate_value(
                 .map(|id| cfg_literal_aggregate_value(cfg, *id))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        crate::ir::ControlFlowValueKind::Set { items } => CfgAggregateConstantKind::Set(
+            items
+                .iter()
+                .map(|id| cfg_literal_aggregate_value(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        crate::ir::ControlFlowValueKind::Map { entries } => CfgAggregateConstantKind::Map(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    Some((
+                        cfg.proven_scalar_constant(*key)?.clone(),
+                        cfg_literal_aggregate_value(cfg, *value)?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
         crate::ir::ControlFlowValueKind::RecordLiteral { fields } if value.ownership.is_copy() => {
             CfgAggregateConstantKind::Record(
                 fields
@@ -34328,6 +34346,15 @@ fn cfg_borrowed_index_base(
     if !indexable {
         return None;
     }
+    if matches!(&value.kind, crate::ir::ControlFlowValueKind::Map { .. }) {
+        let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)? else {
+            return None;
+        };
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Aggregate(aggregate),
+        });
+    }
     let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
         return None;
     };
@@ -34356,6 +34383,13 @@ fn cfg_borrowed_list_base(
             if !definitions.is_empty() =>
         {
             CfgScalarExprKind::Name(name.clone())
+        }
+        crate::ir::ControlFlowValueKind::List { .. } => {
+            let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)?
+            else {
+                return None;
+            };
+            CfgScalarExprKind::Aggregate(aggregate)
         }
         crate::ir::ControlFlowValueKind::Slice {
             base,
@@ -34439,6 +34473,7 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
         CfgScalarExprKind::Bind { arguments, .. } => {
             arguments.iter().any(cfg_scalar_expr_contains_call)
         }
+        CfgScalarExprKind::Aggregate(_) => true,
         CfgScalarExprKind::AnonymousFunction { .. }
         | CfgScalarExprKind::Name(_)
         | CfgScalarExprKind::Constant(_)
@@ -45824,6 +45859,109 @@ fn emit_cfg_aggregate_constant(
     }
 }
 
+fn cfg_constant_value_as_ast(value: &ConstantValue) -> Expr {
+    let span = SourceSpan::new(1, 1, 1);
+    let kind = match value {
+        ConstantValue::I64(value) => ExprKind::Int(*value),
+        ConstantValue::Bool(value) => ExprKind::Bool(*value),
+        ConstantValue::Str(value) => ExprKind::Str(value.clone()),
+    };
+    Expr {
+        line: span.line,
+        span,
+        kind,
+    }
+}
+
+fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue) -> Expr {
+    let span = SourceSpan::new(1, 1, 1);
+    match value {
+        CfgAggregateValue::Scalar(value) => cfg_constant_value_as_ast(value),
+        CfgAggregateValue::Direct(value) => cfg_scalar_expr_as_ast(value),
+        CfgAggregateValue::EnumVariant {
+            enum_name,
+            variant,
+            payloads,
+        } => Expr {
+            line: span.line,
+            span,
+            kind: ExprKind::QualifiedCall {
+                namespace: enum_name.clone(),
+                namespace_span: span,
+                name: variant.clone(),
+                name_span: span,
+                args: payloads.iter().map(cfg_aggregate_value_as_ast).collect(),
+                named_args: Vec::new(),
+            },
+        },
+        CfgAggregateValue::InterfacePack {
+            interface, value, ..
+        } => Expr {
+            line: span.line,
+            span,
+            kind: ExprKind::Call {
+                name: interface.clone(),
+                args: vec![cfg_aggregate_value_as_ast(value)],
+                named_args: Vec::new(),
+            },
+        },
+        CfgAggregateValue::AbsentOptional => Expr {
+            line: span.line,
+            span,
+            kind: ExprKind::None,
+        },
+        CfgAggregateValue::Aggregate(value) => cfg_aggregate_constant_as_ast(value),
+    }
+}
+
+fn cfg_aggregate_constant_as_ast(aggregate: &CfgAggregateConstant) -> Expr {
+    let span = SourceSpan::new(1, 1, 1);
+    let kind = match &aggregate.kind {
+        CfgAggregateConstantKind::List(values) => {
+            ExprKind::List(values.iter().map(cfg_aggregate_value_as_ast).collect())
+        }
+        CfgAggregateConstantKind::Set(values) => {
+            ExprKind::Set(values.iter().map(cfg_aggregate_value_as_ast).collect())
+        }
+        CfgAggregateConstantKind::Map(entries) => {
+            let mut values = Vec::with_capacity(entries.len() * 2);
+            for (key, value) in entries {
+                values.push(cfg_constant_value_as_ast(key));
+                values.push(cfg_aggregate_value_as_ast(value));
+            }
+            ExprKind::Map(values)
+        }
+        CfgAggregateConstantKind::Record(fields) => ExprKind::RecordLiteral {
+            fields: fields
+                .iter()
+                .map(|(name, value)| crate::ast::RecordLiteralField {
+                    name: name.clone(),
+                    name_span: name.as_ref().map(|_| span),
+                    value: cfg_aggregate_value_as_ast(value),
+                })
+                .collect(),
+        },
+        CfgAggregateConstantKind::Struct { name, base, fields } => ExprKind::StructLiteral {
+            name: name.clone(),
+            name_span: span,
+            base: base.as_ref().map(cfg_aggregate_value_as_ast).map(Box::new),
+            fields: fields
+                .iter()
+                .map(|(field, value)| crate::ast::StructLiteralField {
+                    name: field.clone(),
+                    name_span: span,
+                    value: cfg_aggregate_value_as_ast(value),
+                })
+                .collect(),
+        },
+    };
+    Expr {
+        line: span.line,
+        span,
+        kind,
+    }
+}
+
 fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
     let span = SourceSpan::new(1, 1, 1);
     let kind = match &expr.kind {
@@ -45834,6 +45972,7 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
         },
         CfgScalarExprKind::Nil => ExprKind::Nil,
         CfgScalarExprKind::NoneLiteral => ExprKind::None,
+        CfgScalarExprKind::Aggregate(value) => return cfg_aggregate_constant_as_ast(value),
         CfgScalarExprKind::Name(name) => ExprKind::Var(name.clone()),
         CfgScalarExprKind::Field {
             base,
@@ -46296,6 +46435,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         CfgScalarExprKind::InterfacePack { value, .. } => {
             cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
         }
+        CfgScalarExprKind::Aggregate(_) => true,
         CfgScalarExprKind::Name(_)
         | CfgScalarExprKind::Constant(_)
         | CfgScalarExprKind::Nil
@@ -48136,12 +48276,32 @@ fn main() -> i64 {
             .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
             .expect("temporary list index should have typed IR");
         let facts = cfg_rewrite_facts(temporary);
-        assert!(
-            !facts
-                .scalar_exprs
-                .contains_key(&source_span_key(index.span)),
-            "borrowed temporary list bases should retain checked-AST lowering"
-        );
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(index.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Index { base, .. },
+                ..
+            }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+        ));
+        let fake = Expr {
+            line: index.span.line,
+            span: index.span,
+            kind: ExprKind::Str("checked-ast-temporary-list-index".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &HashMap::from([("at".to_string(), Type::I64)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("temporary list index should emit from typed IR");
+        assert!(emitted.contains(&local_c_name("at")));
+        assert!(emitted.contains("flux_list_at("));
+        assert!(emitted.contains("INT64_C(1)"));
+        assert!(emitted.contains("INT64_C(2)"));
+        assert!(!emitted.contains("checked-ast-temporary-list-index"));
     }
 
     #[test]
@@ -48233,12 +48393,32 @@ fn main() -> i64 {
             .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Index { .. }))
             .expect("temporary map index should have typed IR");
         let facts = cfg_rewrite_facts(temporary);
-        assert!(
-            !facts
-                .scalar_exprs
-                .contains_key(&source_span_key(index.span)),
-            "borrowed temporary map bases should retain checked-AST lowering"
-        );
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(index.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Index { base, .. },
+                ..
+            }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+        ));
+        let fake = Expr {
+            line: index.span.line,
+            span: index.span,
+            kind: ExprKind::Str("checked-ast-temporary-map-index".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Optional(Box::new(Type::I64)),
+            &HashMap::from([("key".to_string(), Type::Str)]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("temporary map index should emit from typed IR");
+        assert!(emitted.contains(&local_c_name("key")));
+        assert!(emitted.contains("flux__map_index_"));
+        assert!(emitted.contains("INT64_C(1)"));
+        assert!(emitted.contains("\"one\""));
+        assert!(!emitted.contains("checked-ast-temporary-map-index"));
     }
 
     #[test]
@@ -48314,12 +48494,36 @@ fn main() -> i64 {
             .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Slice { .. }))
             .expect("temporary list slice should have typed IR");
         let facts = cfg_rewrite_facts(temporary);
-        assert!(
-            !facts
-                .scalar_exprs
-                .contains_key(&source_span_key(slice.span)),
-            "borrowed temporary list bases should retain checked-AST slice lowering"
-        );
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(slice.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Slice { base, .. },
+                ..
+            }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+        ));
+        let fake = Expr {
+            line: slice.span.line,
+            span: slice.span,
+            kind: ExprKind::Str("checked-ast-temporary-slice".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::List(Box::new(Type::I64)),
+            &HashMap::from([
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("temporary list slice should emit from typed IR");
+        assert!(emitted.contains("flux_list_slice("));
+        assert!(emitted.contains(&local_c_name("start")));
+        assert!(emitted.contains(&local_c_name("end")));
+        assert!(emitted.contains("INT64_C(1)"));
+        assert!(emitted.contains("INT64_C(3)"));
+        assert!(!emitted.contains("checked-ast-temporary-slice"));
     }
 
     #[test]
