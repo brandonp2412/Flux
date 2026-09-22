@@ -34479,7 +34479,9 @@ fn cfg_literal_aggregate_value(
             }
         }
         _ if value.ownership.is_copy() => {
-            return cfg_direct_scalar_expr(cfg, id).map(CfgAggregateValue::Direct);
+            let scalar = cfg_direct_scalar_expr(cfg, id)?;
+            return cfg_scalar_expr_is_aggregate_reorder_safe(&scalar)
+                .then_some(CfgAggregateValue::Direct(scalar));
         }
         _ => return None,
     };
@@ -47756,6 +47758,105 @@ fn cfg_list_match_expr_calls_are_reconstructable(
         })
 }
 
+fn cfg_aggregate_value_is_reorder_safe(value: &CfgAggregateValue) -> bool {
+    match value {
+        CfgAggregateValue::Scalar(_) | CfgAggregateValue::AbsentOptional => true,
+        CfgAggregateValue::Direct(value) => cfg_scalar_expr_is_aggregate_reorder_safe(value),
+        CfgAggregateValue::EnumVariant { payloads, .. } => {
+            payloads.iter().all(cfg_aggregate_value_is_reorder_safe)
+        }
+        CfgAggregateValue::InterfacePack { value, .. } => {
+            cfg_aggregate_value_is_reorder_safe(value)
+        }
+        CfgAggregateValue::Aggregate(aggregate) => {
+            cfg_aggregate_constant_is_reorder_safe(aggregate)
+        }
+    }
+}
+
+fn cfg_aggregate_constant_is_reorder_safe(aggregate: &CfgAggregateConstant) -> bool {
+    match &aggregate.kind {
+        CfgAggregateConstantKind::List(values) | CfgAggregateConstantKind::Set(values) => {
+            values.iter().all(cfg_aggregate_value_is_reorder_safe)
+        }
+        CfgAggregateConstantKind::Map(entries) => entries
+            .iter()
+            .all(|(_, value)| cfg_aggregate_value_is_reorder_safe(value)),
+        CfgAggregateConstantKind::Record(fields) => fields
+            .iter()
+            .all(|(_, value)| cfg_aggregate_value_is_reorder_safe(value)),
+        CfgAggregateConstantKind::Struct { base, fields, .. } => {
+            base.as_ref()
+                .is_none_or(cfg_aggregate_value_is_reorder_safe)
+                && fields
+                    .iter()
+                    .all(|(_, value)| cfg_aggregate_value_is_reorder_safe(value))
+        }
+    }
+}
+
+fn cfg_scalar_expr_is_aggregate_reorder_safe(expr: &CfgScalarExpr) -> bool {
+    match &expr.kind {
+        CfgScalarExprKind::Call { .. }
+        | CfgScalarExprKind::NamedCall { .. }
+        | CfgScalarExprKind::Await { .. }
+        | CfgScalarExprKind::QualifiedCall { .. }
+        | CfgScalarExprKind::NamedQualifiedCall { .. }
+        | CfgScalarExprKind::OptionalCascadeCall { .. } => false,
+        CfgScalarExprKind::Aggregate(aggregate) => {
+            cfg_aggregate_constant_is_reorder_safe(aggregate)
+        }
+        CfgScalarExprKind::Unary { operand, .. }
+        | CfgScalarExprKind::Field { base: operand, .. }
+        | CfgScalarExprKind::InterfacePack { value: operand, .. } => {
+            cfg_scalar_expr_is_aggregate_reorder_safe(operand)
+        }
+        CfgScalarExprKind::Binary { left, right, .. }
+        | CfgScalarExprKind::Index {
+            base: left,
+            index: right,
+            ..
+        } => {
+            cfg_scalar_expr_is_aggregate_reorder_safe(left)
+                && cfg_scalar_expr_is_aggregate_reorder_safe(right)
+        }
+        CfgScalarExprKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            cfg_scalar_expr_is_aggregate_reorder_safe(condition)
+                && cfg_scalar_expr_is_aggregate_reorder_safe(then_value)
+                && cfg_scalar_expr_is_aggregate_reorder_safe(else_value)
+        }
+        CfgScalarExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } => {
+            cfg_scalar_expr_is_aggregate_reorder_safe(base)
+                && start
+                    .as_deref()
+                    .is_none_or(cfg_scalar_expr_is_aggregate_reorder_safe)
+                && end
+                    .as_deref()
+                    .is_none_or(cfg_scalar_expr_is_aggregate_reorder_safe)
+                && step
+                    .as_deref()
+                    .is_none_or(cfg_scalar_expr_is_aggregate_reorder_safe)
+        }
+        CfgScalarExprKind::Bind { arguments, .. } => arguments
+            .iter()
+            .all(cfg_scalar_expr_is_aggregate_reorder_safe),
+        CfgScalarExprKind::AnonymousFunction { .. }
+        | CfgScalarExprKind::Name(_)
+        | CfgScalarExprKind::Constant(_)
+        | CfgScalarExprKind::Nil
+        | CfgScalarExprKind::NoneLiteral => true,
+    }
+}
+
 fn reconstructable_core_builtin_arity(name: &str) -> Option<usize> {
     match crate::builtin_names::global_impl(name) {
         "contains" | "take" | "skip" => Some(2),
@@ -53968,6 +54069,62 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("floor")), "{out}");
         assert!(out.contains(&local_c_name("value")), "{out}");
         assert!(!out.contains("checked-ast-map-match"), "{out}");
+    }
+
+    #[test]
+    fn effectful_aggregate_children_stay_on_safe_fallback() {
+        let source = r#"
+fn effect(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn build() -> i64 {
+    let values: i64[] = [effect(1), effect(2)]
+    return values.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("effectful aggregate fixture should typecheck");
+        let graph = database
+            .control_flow_graph("build")
+            .expect("build CFG should exist");
+        let list = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::List { items } if items.len() == 2
+                )
+            })
+            .expect("typed IR should retain the list root");
+        let crate::ir::ControlFlowValueKind::List { items } = &list.kind else {
+            unreachable!()
+        };
+        assert!(items.iter().all(|id| {
+            matches!(
+                graph.value(*id).map(|value| &value.kind),
+                Some(crate::ir::ControlFlowValueKind::Call { callee, .. })
+                    if callee == "effect"
+            )
+        }));
+
+        let facts = cfg_rewrite_facts(graph);
+        assert!(
+            !facts
+                .aggregate_constants
+                .contains_key(&source_span_key(list.span)),
+            "effectful children must not become direct aggregate constants"
+        );
+        assert!(
+            facts.aggregates.contains_key(&source_span_key(list.span)),
+            "structural aggregate facts should remain available for safe fallback"
+        );
     }
 
     #[test]
