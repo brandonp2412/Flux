@@ -107,6 +107,8 @@ pub enum ControlFlowValueKind {
     },
     AnonymousFunction {
         body: ControlFlowValueId,
+        params: Vec<(String, Type)>,
+        return_type: Option<Type>,
     },
     /// An explicit suspension boundary around the awaited value.  Keeping the
     /// inner call as a normal value preserves its argument provenance while
@@ -1625,9 +1627,15 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 name.encode_cache_value(bytes);
                 definitions.encode_cache_value(bytes);
             }
-            Self::AnonymousFunction { body } => {
-                2u8.encode_cache_value(bytes);
+            Self::AnonymousFunction {
+                body,
+                params,
+                return_type,
+            } => {
+                31u8.encode_cache_value(bytes);
                 body.encode_cache_value(bytes);
+                params.encode_cache_value(bytes);
+                return_type.encode_cache_value(bytes);
             }
             Self::Await { value } => {
                 3u8.encode_cache_value(bytes);
@@ -1865,6 +1873,8 @@ impl PersistedIrCodec for ControlFlowValueKind {
             }),
             2 => Some(Self::AnonymousFunction {
                 body: ControlFlowValueId::decode_cache_value(reader)?,
+                params: Vec::new(),
+                return_type: None,
             }),
             3 => Some(Self::Await {
                 value: ControlFlowValueId::decode_cache_value(reader)?,
@@ -1999,6 +2009,11 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 name: String::decode_cache_value(reader)?,
                 arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
                 argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
+            }),
+            31 => Some(Self::AnonymousFunction {
+                body: ControlFlowValueId::decode_cache_value(reader)?,
+                params: Vec::<(String, Type)>::decode_cache_value(reader)?,
+                return_type: Option::<Type>::decode_cache_value(reader)?,
             }),
             _ => None,
         }
@@ -2776,7 +2791,7 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
     match kind {
         ControlFlowValueKind::Literal | ControlFlowValueKind::Opaque => true,
         ControlFlowValueKind::NameRead { .. } => true,
-        ControlFlowValueKind::AnonymousFunction { body }
+        ControlFlowValueKind::AnonymousFunction { body, .. }
         | ControlFlowValueKind::Await { value: body }
         | ControlFlowValueKind::ListSpread { value: body, .. }
         | ControlFlowValueKind::ListOptional { value: body } => valid(*body),
@@ -3424,7 +3439,7 @@ impl ControlFlowGraph {
     /// that deferred work without incorrectly treating closure construction
     /// itself as effectful or re-walking the checked AST.
     pub fn deferred_body_effect(&self, id: ControlFlowValueId) -> Option<ControlFlowValueEffect> {
-        let ControlFlowValueKind::AnonymousFunction { body } = self.value(id)?.kind else {
+        let ControlFlowValueKind::AnonymousFunction { body, .. } = self.value(id)?.kind else {
             return None;
         };
         self.value_effect(body)
@@ -5319,7 +5334,23 @@ impl<'a> ControlFlowBuilder<'a> {
                         ControlFlowValueKind::Await { value }
                     })
             }
-            ExprKind::AnonymousFunction { params, body, .. } => {
+            ExprKind::AnonymousFunction {
+                params,
+                return_type,
+                body,
+            } => {
+                let parameter_types = params
+                    .iter()
+                    .map(|param| {
+                        (
+                            param.name.clone(),
+                            self.signatures.canonical_type(&param.ty),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let return_type = return_type
+                    .as_ref()
+                    .map(|ty| self.signatures.canonical_type(ty));
                 let definitions = params
                     .iter()
                     .map(|param| {
@@ -5338,7 +5369,11 @@ impl<'a> ControlFlowBuilder<'a> {
                 let body = self.lower_scalar_expr(producer, body);
                 self.scoped_definition_stack.pop();
                 body.map_or(ControlFlowValueKind::Opaque, |body| {
-                    ControlFlowValueKind::AnonymousFunction { body }
+                    ControlFlowValueKind::AnonymousFunction {
+                        body,
+                        params: parameter_types,
+                        return_type,
+                    }
                 })
             }
             ExprKind::Call {
@@ -7379,7 +7414,7 @@ fn collect_value_uses(
             ControlFlowValueKind::Literal
             | ControlFlowValueKind::NameRead { .. }
             | ControlFlowValueKind::Opaque => {}
-            ControlFlowValueKind::AnonymousFunction { body } => {
+            ControlFlowValueKind::AnonymousFunction { body, .. } => {
                 push_value_region_use(
                     values,
                     &mut uses,
@@ -9300,6 +9335,72 @@ fn main() -> i64 {
         let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
             .expect("list-match CFG should decode");
         assert_eq!(&decoded, graph);
+    }
+
+    #[test]
+    fn anonymous_function_metadata_preserves_codegen_shape_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"fn pick() -> fn(i64) -> i64 {
+    return fn(value: i64) -> i64 { value + 1 }
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("anonymous-function IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist");
+
+        let metadata = graph
+            .values()
+            .iter()
+            .find_map(|value| match &value.kind {
+                super::ControlFlowValueKind::AnonymousFunction {
+                    params,
+                    return_type,
+                    ..
+                } => Some((params.clone(), return_type.clone())),
+                _ => None,
+            })
+            .expect("anonymous function should retain codegen metadata");
+        assert_eq!(
+            metadata,
+            (
+                vec![("value".to_string(), crate::ast::Type::I64)],
+                Some(crate::ast::Type::I64),
+            )
+        );
+
+        let encoded = graph.encode_persisted();
+        let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+            .expect("anonymous-function CFG should decode");
+        assert_eq!(&decoded, graph);
+    }
+
+    #[test]
+    fn legacy_anonymous_function_ir_decodes_without_codegen_metadata() {
+        let mut encoded = Vec::new();
+        super::PersistedIrCodec::encode_cache_value(&2u8, &mut encoded);
+        super::PersistedIrCodec::encode_cache_value(&super::ControlFlowValueId(7), &mut encoded);
+        let mut reader = super::PersistedIrReader::new(&encoded);
+        let decoded = <super::ControlFlowValueKind as super::PersistedIrCodec>::decode_cache_value(
+            &mut reader,
+        )
+        .expect("legacy anonymous-function value should decode");
+        assert!(matches!(
+            decoded,
+            super::ControlFlowValueKind::AnonymousFunction {
+                body: super::ControlFlowValueId(7),
+                ref params,
+                return_type: None,
+            } if params.is_empty()
+        ));
+        assert!(reader.is_finished());
     }
 
     #[test]

@@ -34098,6 +34098,12 @@ enum CfgScalarExprKind {
         span: SourceSpan,
         arguments: Vec<CfgScalarExpr>,
     },
+    AnonymousFunction {
+        span: SourceSpan,
+        params: Vec<(String, Type)>,
+        return_type: Option<Type>,
+        body: Box<CfgScalarExpr>,
+    },
     Call {
         callee: String,
         arguments: Vec<CfgScalarExpr>,
@@ -34415,7 +34421,9 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
         CfgScalarExprKind::Bind { arguments, .. } => {
             arguments.iter().any(cfg_scalar_expr_contains_call)
         }
-        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => false,
+        CfgScalarExprKind::AnonymousFunction { .. }
+        | CfgScalarExprKind::Name(_)
+        | CfgScalarExprKind::Constant(_) => false,
     }
 }
 
@@ -34505,6 +34513,16 @@ fn cfg_direct_scalar_expr(
                 value: Box::new(cfg_direct_scalar_expr(cfg, *packed)?),
             }
         }
+        crate::ir::ControlFlowValueKind::AnonymousFunction {
+            body,
+            params,
+            return_type,
+        } => CfgScalarExprKind::AnonymousFunction {
+            span: value.span,
+            params: params.clone(),
+            return_type: return_type.clone(),
+            body: Box::new(cfg_direct_scalar_expr(cfg, *body)?),
+        },
         crate::ir::ControlFlowValueKind::Await { value } => CfgScalarExprKind::Await {
             value: Box::new(cfg_direct_scalar_expr(cfg, *value)?),
         },
@@ -45836,6 +45854,32 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 named_args: Vec::new(),
             }
         }
+        CfgScalarExprKind::AnonymousFunction {
+            span: function_span,
+            params,
+            return_type,
+            body,
+        } => {
+            return Expr {
+                line: function_span.line,
+                span: *function_span,
+                kind: ExprKind::AnonymousFunction {
+                    params: params
+                        .iter()
+                        .map(|(name, ty)| crate::ast::Param {
+                            name: name.clone(),
+                            name_span: *function_span,
+                            ty: ty.clone(),
+                            type_span: *function_span,
+                            named_only: false,
+                            default: None,
+                        })
+                        .collect(),
+                    return_type: return_type.clone(),
+                    body: Box::new(cfg_scalar_expr_as_ast(body)),
+                },
+            };
+        }
         CfgScalarExprKind::Bind {
             span: bind_span,
             arguments,
@@ -46137,6 +46181,13 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                     .get(callee)
                     .is_some_and(|signature| signature.asynchronous)
                 && cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
+        }
+        CfgScalarExprKind::AnonymousFunction { params, body, .. } => {
+            let mut nested = env.clone();
+            for (name, ty) in params {
+                nested.insert(name.clone(), ty.clone());
+            }
+            cfg_scalar_expr_calls_are_reconstructable(body, &nested, signatures)
         }
         CfgScalarExprKind::Bind { arguments, .. } => arguments
             .iter()
@@ -49044,6 +49095,58 @@ fn main() -> i64 {
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("bind function value should emit from typed IR");
         assert_eq!(emitted, partial_application_c_name(bind.span));
+    }
+
+    #[test]
+    fn anonymous_function_values_lower_from_typed_ir() {
+        let source = r#"
+fn pick() -> fn(i64) -> i64 {
+    return fn(value: i64) -> i64 { value + 1 }
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("anonymous function value fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist");
+        let anonymous = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
+                )
+            })
+            .expect("typed IR should retain the anonymous function");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(anonymous.span))
+            .expect("anonymous function value should be reconstructable from typed IR");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::AnonymousFunction {
+                span,
+                params,
+                return_type: Some(Type::I64),
+                ..
+            } if *span == anonymous.span
+                && params == &vec![("value".to_string(), Type::I64)]
+        ));
+        let function_ty = Type::Function {
+            params: vec![Type::I64],
+            returns: vec![Type::I64],
+        };
+        let emitted =
+            emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
+                .expect("anonymous function value should emit from typed IR");
+        assert_eq!(emitted, anonymous_function_c_name(anonymous.span));
     }
 
     #[test]

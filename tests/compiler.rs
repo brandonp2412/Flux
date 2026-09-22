@@ -320,7 +320,7 @@ fn main() -> i64 {
         .values()
         .iter()
         .filter_map(|value| match value.kind {
-            ControlFlowValueKind::AnonymousFunction { body } => Some((value.id, body)),
+            ControlFlowValueKind::AnonymousFunction { body, .. } => Some((value.id, body)),
             _ => None,
         })
         .collect::<Vec<_>>();
