@@ -30203,8 +30203,11 @@ fn emit_async_suspend_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    let rewritten_await =
-        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts);
+    let rewritten_await = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts)
+        .map(cfg_scalar_expr_as_ast)
+        .unwrap_or_else(|| {
+            substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts)
+        });
     let (callee, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
         diag(
             await_expr.span,
@@ -52807,10 +52810,26 @@ async fn main() -> i64 {
             .expect("typed IR should select the direct await despite the fake AST root");
         assert_eq!(selected.span, await_span);
         assert_eq!(direct_await_callee(selected, &facts), Some("ping"));
+        let selected = selected.clone();
 
         let plan = async_continuation_plan(function, database.signatures(), graph)
             .expect("typed IR should keep straight-line continuation lowering eligible");
-        assert!(cfg_direct_await_expr(selected, &plan.cfg_rewrite_facts).is_some());
+        assert!(cfg_direct_await_expr(&selected, &plan.cfg_rewrite_facts).is_some());
+
+        let mut out = String::new();
+        emit_async_suspend_expr(
+            &mut out,
+            "",
+            &selected,
+            selected.span,
+            1,
+            function,
+            &plan,
+            &HashMap::new(),
+            database.signatures(),
+        )
+        .expect("typed IR should emit the suspended call despite the fake AST root");
+        assert!(out.contains(&async_start_cont_c_name("ping")), "{out}");
     }
 
     #[test]

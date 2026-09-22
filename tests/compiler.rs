@@ -68863,7 +68863,7 @@ async fn main() -> i64 {
     assert!(!generated.contains("flux__async_body_chooseElse("));
     assert!(!generated.contains("flux__async_body_fallthrough("));
     assert!(generated.contains(
-        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_choose, flux__task)"
+        "flux__async_start_cont_addOne(INT64_C(40), flux__async_resume_choose, flux__task)"
     ));
     assert!(generated.contains(
         "flux__async_start_cont_addOne(INT64_C(40), flux__async_resume_chooseElse, flux__task)"
@@ -69059,7 +69059,7 @@ async fn main() -> i64 {
         "flux__async_start_cont_ready(flux__local_flag, flux__async_resume_chooseAndAwait, flux__task)"
     ));
     assert!(generated.contains(
-        "flux__async_start_cont_addOne(flux__local_total, flux__async_resume_chooseAndAwait, flux__task)"
+        "flux__async_start_cont_addOne(INT64_C(40), flux__async_resume_chooseAndAwait, flux__task)"
     ));
     assert!(!generated.contains("flux__async_await_ready(flux__async_start_ready"));
     assert!(!generated.contains("flux__async_await_addOne(flux__async_start_addOne"));
