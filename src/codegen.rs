@@ -48327,6 +48327,24 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
     visit(expr, env, signatures, &mut HashSet::new())
 }
 
+fn cfg_interface_dispatch_callee_direct(
+    namespace: &str,
+    name: &str,
+    receiver_ty: &Type,
+    signatures: &Signatures,
+) -> Option<String> {
+    signatures.interface(namespace)?;
+    let Type::Named(target_name) = signatures.canonical_type(receiver_ty) else {
+        return None;
+    };
+    if target_name == namespace && signatures.interface(&target_name).is_some() {
+        return Some(interface_dispatch_helper_name(namespace, name));
+    }
+    let implementation = signatures.implementation(namespace, &target_name)?;
+    let mapped = implementation.functions.get(name)?;
+    Some(function_c_name(mapped))
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48915,6 +48933,123 @@ fn emit_cfg_scalar_expr_direct(
             }
 
             Some(format!("{runtime_symbol}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if signatures.interface(namespace).is_some() => {
+            let interface = signatures.interface(namespace)?;
+            let member = interface.functions.get(name)?;
+            if member.asynchronous
+                || member.params.len() + 1 != arguments.len()
+                || member.param_details.len() != member.params.len()
+                || member
+                    .param_details
+                    .iter()
+                    .any(|parameter| parameter.named_only)
+                || member.returns.len() != 1
+                || signatures.canonical_type(&member.returns[0]) != ty
+                || !signatures.is_copy_type(&ty)
+            {
+                return None;
+            }
+
+            let receiver = arguments.first()?;
+            let receiver_ty = signatures.canonical_type(&receiver.ty);
+            if !matches!(receiver.kind, CfgScalarExprKind::Name(_))
+                || !signatures.is_copy_type(&receiver_ty)
+            {
+                return None;
+            }
+            let callee =
+                cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
+            let mut rendered = Vec::with_capacity(arguments.len());
+            rendered.push(emit_cfg_scalar_expr_direct(receiver, env, signatures)?);
+            for (argument, parameter) in arguments[1..].iter().zip(&member.params) {
+                let parameter_ty = signatures.canonical_type(parameter);
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument
+                    || signatures.canonical_type(&argument.ty) != parameter_ty
+                    || !signatures.is_copy_type(&parameter_ty)
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+            Some(format!("{callee}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::NamedQualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if signatures.interface(namespace).is_some() => {
+            let interface = signatures.interface(namespace)?;
+            let member = interface.functions.get(name)?;
+            if member.asynchronous
+                || member.params.len() + 1 != arguments.len()
+                || member.param_details.len() != member.params.len()
+                || member.returns.len() != 1
+                || signatures.canonical_type(&member.returns[0]) != ty
+                || !signatures.is_copy_type(&ty)
+            {
+                return None;
+            }
+
+            let (receiver_name, receiver) = arguments.first()?;
+            if receiver_name.is_some() {
+                return None;
+            }
+            let receiver_ty = signatures.canonical_type(&receiver.ty);
+            if !matches!(receiver.kind, CfgScalarExprKind::Name(_))
+                || !signatures.is_copy_type(&receiver_ty)
+            {
+                return None;
+            }
+            let callee =
+                cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
+
+            let supplied = &arguments[1..];
+            let positional = supplied
+                .iter()
+                .filter_map(|(argument_name, argument)| argument_name.is_none().then_some(argument))
+                .collect::<Vec<_>>();
+            let mut positional_index = 0usize;
+            let mut rendered = Vec::with_capacity(arguments.len());
+            rendered.push(emit_cfg_scalar_expr_direct(receiver, env, signatures)?);
+            for parameter in &member.param_details {
+                let argument = if !parameter.named_only && positional_index < positional.len() {
+                    let argument = positional[positional_index];
+                    positional_index += 1;
+                    argument
+                } else {
+                    supplied.iter().find_map(|(argument_name, argument)| {
+                        (argument_name.as_deref() == Some(parameter.name.as_str()))
+                            .then_some(argument)
+                    })?
+                };
+                let parameter_ty = signatures.canonical_type(&parameter.ty);
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument
+                    || signatures.canonical_type(&argument.ty) != parameter_ty
+                    || !signatures.is_copy_type(&parameter_ty)
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+            if positional_index != positional.len() {
+                return None;
+            }
+            Some(format!("{callee}({})", rendered.join(", ")))
         }
         CfgScalarExprKind::Index {
             base,
@@ -55246,12 +55381,20 @@ fn interfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.apply(offset, value)
 }
 
+fn nestedInterfaceCall(offset: Offset, left: i64, right: i64) -> i64 {
+    return Measure.apply(offset, left + right)
+}
+
 fn dynamicInterfaceCall(measure: Measure, value: i64) -> i64 {
     return Measure.apply(measure, value)
 }
 
 fn namedInterfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.adjust(offset, value, delta: 3)
+}
+
+fn nestedNamedInterfaceCall(offset: Offset, left: i64, right: i64, delta: i64) -> i64 {
+    return Measure.adjust(offset, left + right, delta: delta)
 }
 
 fn main() -> i64 {
@@ -55894,25 +56037,92 @@ fn main() -> i64 {
                 ..
             } if namespace == "Measure" && name == "apply"
         ));
-        let emitted = emit_cfg_scalar_expr(
-            scalar,
-            &Type::I64,
-            &HashMap::from([
-                ("offset".to_string(), Type::Named("Offset".to_string())),
-                ("value".to_string(), Type::I64),
-            ]),
-            database.signatures(),
-        )
-        .expect("interface dispatch should emit from typed IR");
-        assert_eq!(
-            emitted,
-            format!(
-                "{}({}, {})",
-                function_c_name("offsetApply"),
-                local_c_name("offset"),
-                local_c_name("value")
-            )
+        let interface_env = HashMap::from([
+            ("offset".to_string(), Type::Named("Offset".to_string())),
+            ("value".to_string(), Type::I64),
+        ]);
+        let expected_interface = format!(
+            "{}({}, {})",
+            function_c_name("offsetApply"),
+            local_c_name("offset"),
+            local_c_name("value")
         );
+        let direct_interface =
+            emit_cfg_scalar_expr_direct(scalar, &interface_env, database.signatures())
+                .expect("concrete interface dispatch should emit directly from typed IR");
+        assert_eq!(direct_interface, expected_interface);
+        let fake_interface = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-interface-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_interface,
+            &Type::I64,
+            &interface_env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("concrete interface dispatch should bypass the checked-AST root");
+        assert_eq!(emitted, direct_interface);
+        assert!(!emitted.contains("checked-ast-interface-call"));
+
+        let nested_interface = database
+            .control_flow_graph("nestedInterfaceCall")
+            .expect("nested interface-call CFG should exist");
+        let nested_call = nested_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "apply"
+                        && mapped_function.as_deref() == Some("offsetApply")
+                )
+            })
+            .expect("nested interface dispatch should retain typed IR");
+        let nested_facts = cfg_rewrite_facts(nested_interface);
+        let nested_scalar = nested_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_call.span))
+            .expect("nested interface dispatch should have typed-IR facts");
+        let nested_env = HashMap::from([
+            ("offset".to_string(), Type::Named("Offset".to_string())),
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        let nested_direct =
+            emit_cfg_scalar_expr_direct(nested_scalar, &nested_env, database.signatures())
+                .expect("nested primitive interface argument should emit directly from typed IR");
+        assert!(nested_direct.contains(&function_c_name("offsetApply")));
+        assert!(nested_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("left"),
+            local_c_name("right"),
+        )));
+        let fake_nested_interface = Expr {
+            line: nested_call.span.line,
+            span: nested_call.span,
+            kind: ExprKind::Str("checked-ast-nested-interface-call".to_string()),
+        };
+        let nested_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_interface,
+            &Type::I64,
+            &nested_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_facts,
+        )
+        .expect("nested interface dispatch should bypass the checked-AST root");
+        assert_eq!(nested_emitted, nested_direct);
+        assert!(!nested_emitted.contains("checked-ast-nested-interface-call"));
 
         let dynamic_interface = database
             .control_flow_graph("dynamicInterfaceCall")
@@ -55941,25 +56151,36 @@ fn main() -> i64 {
             .scalar_exprs
             .get(&source_span_key(call.span))
             .expect("dynamic interface dispatch should have reconstructable value facts");
-        let emitted = emit_cfg_scalar_expr(
-            scalar,
-            &Type::I64,
-            &HashMap::from([
-                ("measure".to_string(), Type::Named("Measure".to_string())),
-                ("value".to_string(), Type::I64),
-            ]),
-            database.signatures(),
-        )
-        .expect("dynamic interface dispatch should emit from typed IR");
-        assert_eq!(
-            emitted,
-            format!(
-                "{}({}, {})",
-                interface_dispatch_helper_name("Measure", "apply"),
-                local_c_name("measure"),
-                local_c_name("value")
-            )
+        let dynamic_interface_env = HashMap::from([
+            ("measure".to_string(), Type::Named("Measure".to_string())),
+            ("value".to_string(), Type::I64),
+        ]);
+        let expected_dynamic_interface = format!(
+            "{}({}, {})",
+            interface_dispatch_helper_name("Measure", "apply"),
+            local_c_name("measure"),
+            local_c_name("value")
         );
+        let direct_dynamic_interface =
+            emit_cfg_scalar_expr_direct(scalar, &dynamic_interface_env, database.signatures())
+                .expect("dynamic interface dispatch should emit directly from typed IR");
+        assert_eq!(direct_dynamic_interface, expected_dynamic_interface);
+        let fake_dynamic_interface = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-dynamic-interface-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_dynamic_interface,
+            &Type::I64,
+            &dynamic_interface_env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("dynamic interface dispatch should bypass the checked-AST root");
+        assert_eq!(emitted, direct_dynamic_interface);
+        assert!(!emitted.contains("checked-ast-dynamic-interface-call"));
 
         let named_interface = database
             .control_flow_graph("namedInterfaceCall")
@@ -55997,25 +56218,97 @@ fn main() -> i64 {
                 ..
             } if namespace == "Measure" && name == "adjust"
         ));
-        let emitted = emit_cfg_scalar_expr(
-            scalar,
+        let named_interface_env = HashMap::from([
+            ("offset".to_string(), Type::Named("Offset".to_string())),
+            ("value".to_string(), Type::I64),
+        ]);
+        let expected_named_interface = format!(
+            "{}({}, {}, INT64_C(3))",
+            function_c_name("offsetAdjust"),
+            local_c_name("offset"),
+            local_c_name("value")
+        );
+        let direct_named_interface =
+            emit_cfg_scalar_expr_direct(scalar, &named_interface_env, database.signatures())
+                .expect("named interface dispatch should emit directly from typed IR");
+        assert_eq!(direct_named_interface, expected_named_interface);
+        let fake_named_interface = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-named-interface-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_named_interface,
             &Type::I64,
-            &HashMap::from([
-                ("offset".to_string(), Type::Named("Offset".to_string())),
-                ("value".to_string(), Type::I64),
-            ]),
+            &named_interface_env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("named interface dispatch should bypass the checked-AST root");
+        assert_eq!(emitted, direct_named_interface);
+        assert!(!emitted.contains("checked-ast-named-interface-call"));
+
+        let nested_named_interface = database
+            .control_flow_graph("nestedNamedInterfaceCall")
+            .expect("nested named interface-call CFG should exist");
+        let nested_named_call = nested_named_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "adjust"
+                        && mapped_function.as_deref() == Some("offsetAdjust")
+                )
+            })
+            .expect("nested named interface dispatch should retain typed IR");
+        let nested_named_facts = cfg_rewrite_facts(nested_named_interface);
+        let nested_named_scalar = nested_named_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_named_call.span))
+            .expect("nested named interface dispatch should have typed-IR facts");
+        let nested_named_env = HashMap::from([
+            ("offset".to_string(), Type::Named("Offset".to_string())),
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+            ("delta".to_string(), Type::I64),
+        ]);
+        let nested_named_direct = emit_cfg_scalar_expr_direct(
+            nested_named_scalar,
+            &nested_named_env,
             database.signatures(),
         )
-        .expect("named interface dispatch should emit from typed IR");
-        assert_eq!(
-            emitted,
-            format!(
-                "{}({}, {}, INT64_C(3))",
-                function_c_name("offsetAdjust"),
-                local_c_name("offset"),
-                local_c_name("value")
-            )
-        );
+        .expect("nested named interface arguments should emit directly from typed IR");
+        assert!(nested_named_direct.contains(&function_c_name("offsetAdjust")));
+        assert!(nested_named_direct.contains(&format!(
+            "flux_add_i64({}, {})",
+            local_c_name("left"),
+            local_c_name("right"),
+        )));
+        assert!(nested_named_direct.contains(&local_c_name("delta")));
+        let fake_nested_named_interface = Expr {
+            line: nested_named_call.span.line,
+            span: nested_named_call.span,
+            kind: ExprKind::Str("checked-ast-nested-named-interface-call".to_string()),
+        };
+        let nested_named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_named_interface,
+            &Type::I64,
+            &nested_named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_named_facts,
+        )
+        .expect("nested named interface dispatch should bypass the checked-AST root");
+        assert_eq!(nested_named_emitted, nested_named_direct);
+        assert!(!nested_named_emitted.contains("checked-ast-nested-named-interface-call"));
     }
 
     #[test]
