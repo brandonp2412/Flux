@@ -48593,8 +48593,11 @@ fn emit_cfg_scalar_expr_direct(
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(&signature.params) {
                 let parameter = signatures.canonical_type(parameter);
-                let direct_argument = matches!(argument.kind, CfgScalarExprKind::Name(_))
-                    || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                let direct_argument =
+                    matches!(
+                        argument.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
                 if !direct_argument
                     || signatures.canonical_type(&argument.ty) != parameter
                     || !signatures.is_copy_type(&parameter)
@@ -55359,6 +55362,10 @@ fn direct(left: i64, right: i64) -> i64 {
     return add(left, right)
 }
 
+fn literalCall(value: i64) -> i64 {
+    return add(value, 3)
+}
+
 fn listCount(values: i64[]) -> i64 {
     return values.count
 }
@@ -55561,6 +55568,56 @@ fn main() -> i64 {
                 assert!(emitted.contains("INT64_C(4)"));
             }
         }
+
+        let literal_call_graph = database
+            .control_flow_graph("literalCall")
+            .expect("literal positional-call CFG should exist");
+        let literal_call = literal_call_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "add"
+                )
+            })
+            .expect("literal positional call should retain typed IR");
+        let literal_call_facts = cfg_rewrite_facts(literal_call_graph);
+        let literal_call_scalar = literal_call_facts
+            .scalar_exprs
+            .get(&source_span_key(literal_call.span))
+            .expect("literal positional call should have typed-IR facts");
+        let literal_call_env = HashMap::from([("value".to_string(), Type::I64)]);
+        let literal_call_direct = emit_cfg_scalar_expr_direct(
+            literal_call_scalar,
+            &literal_call_env,
+            database.signatures(),
+        )
+        .expect("top-level scalar literal positional argument should emit directly from typed IR");
+        assert_eq!(
+            literal_call_direct,
+            format!(
+                "{}({}, INT64_C(3))",
+                function_c_name("add"),
+                local_c_name("value")
+            )
+        );
+        let fake_literal_call = Expr {
+            line: literal_call.span.line,
+            span: literal_call.span,
+            kind: ExprKind::Str("checked-ast-literal-call".to_string()),
+        };
+        let literal_call_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_literal_call,
+            &Type::I64,
+            &literal_call_env,
+            database.signatures(),
+            &HashMap::new(),
+            &literal_call_facts,
+        )
+        .expect("literal positional call should bypass the checked-AST root");
+        assert_eq!(literal_call_emitted, literal_call_direct);
+        assert!(!literal_call_emitted.contains("checked-ast-literal-call"));
 
         let nested_argument_graph = database
             .control_flow_graph("nestedPrimitiveArgument")
