@@ -34430,6 +34430,18 @@ fn cfg_borrowed_collection_field_base(
     if !matches!(&value.ty, Type::Set(_) | Type::Map(_, _)) {
         return None;
     }
+    if matches!(
+        &value.kind,
+        crate::ir::ControlFlowValueKind::Set { .. } | crate::ir::ControlFlowValueKind::Map { .. }
+    ) {
+        let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)? else {
+            return None;
+        };
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Aggregate(aggregate),
+        });
+    }
     let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
         return None;
     };
@@ -48637,6 +48649,18 @@ fn setNonempty(values: set<i64>) -> bool {
     return values.nonempty
 }
 
+fn temporaryListCount() -> i64 {
+    return [1, 2, 3].count
+}
+
+fn temporaryMapCount() -> i64 {
+    return {"one": 1, "two": 2}.count
+}
+
+fn temporarySetNonempty() -> bool {
+    return {1, 2}.nonempty
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -48733,6 +48757,63 @@ fn main() -> i64 {
             )
             .expect("borrowed collection property should emit from typed IR");
             assert!(emitted.contains(expected_fragment));
+            assert!(!emitted.contains(fake_text));
+        }
+
+        for (function, expected, expected_fragment, fake_text) in [
+            (
+                "temporaryListCount",
+                Type::I64,
+                ".len",
+                "checked-ast-temporary-list-property",
+            ),
+            (
+                "temporaryMapCount",
+                Type::I64,
+                ".keys.len",
+                "checked-ast-temporary-map-property",
+            ),
+            (
+                "temporarySetNonempty",
+                Type::Bool,
+                ".len != 0",
+                "checked-ast-temporary-set-property",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("temporary collection property CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        facts.scalar_exprs.get(&source_span_key(value.span)),
+                        Some(CfgScalarExpr {
+                            kind: CfgScalarExprKind::Field { base, .. },
+                            ..
+                        }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+                    )
+                })
+                .expect(
+                    "temporary collection property should retain its aggregate base in typed IR",
+                );
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Str(fake_text.to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &HashMap::new(),
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("temporary collection property should emit from typed IR");
+            assert!(emitted.contains(expected_fragment), "{emitted}");
             assert!(!emitted.contains(fake_text));
         }
     }
