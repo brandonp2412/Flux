@@ -34070,6 +34070,9 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"state_preserved\":0"));
     assert!(status.contains("\"state_reset\":0"));
     assert!(status.contains("\"state_dropped\":0"));
+    assert!(status.contains("\"state_nested_compatible\":0"));
+    assert!(status.contains("\"state_nested_changed\":0"));
+    assert!(status.contains("\"state_nested_removed\":0"));
 
     fs::write(&dependency, "pub fn message() -> str { false }\n")
         .expect("broken dependency should be writable");
@@ -34102,6 +34105,9 @@ fn run_cli_rebuilds_on_dependency_saves_without_a_reload_hotkey() {
     assert!(status.contains("\"state_preserved\":0"));
     assert!(status.contains("\"state_reset\":0"));
     assert!(status.contains("\"state_dropped\":0"));
+    assert!(status.contains("\"state_nested_compatible\":0"));
+    assert!(status.contains("\"state_nested_changed\":0"));
+    assert!(status.contains("\"state_nested_removed\":0"));
 
     let _ = runner.kill();
     let _ = runner.wait();
@@ -41639,6 +41645,102 @@ app Screen
         renamed_boundary.dropped,
         vec!["count", "enabled", "fresh", "message"]
     );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_state_boundary_tracks_nested_composed_view_instances_by_path() {
+    let root = std::env::temp_dir().join(format!(
+        "flux-development-nested-state-boundary-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temporary nested state boundary project should be writable");
+    let entry = root.join("main.flux");
+    let initial = r#"view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 0
+    Text label at 1,1
+        text: "Counter"
+        size: count
+}
+view Gauge {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 0
+    Text label at 1,1
+        text: "Gauge"
+        size: count
+}
+view Pair {
+    grid columns: 1fr
+    grid rows: auto
+    Counter inner at 1,1
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Counter stable at 1,1
+    Counter moved at 2,1
+    Pair card at 3,1
+}
+app Screen
+"#;
+    let updated = r#"view Counter {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 1
+    Text label at 1,1
+        text: "Counter"
+        size: count
+}
+view Gauge {
+    grid columns: 1fr
+    grid rows: auto
+    state count: i64 = 0
+    Text label at 1,1
+        text: "Gauge"
+        size: count
+}
+view Pair {
+    grid columns: 1fr
+    grid rows: auto
+    Counter innerRenamed at 1,1
+}
+view Screen {
+    grid columns: 1fr
+    grid rows: auto auto auto
+    Counter stable at 1,1
+    Gauge moved at 2,1
+    Pair card at 3,1
+}
+app Screen
+"#;
+    fs::write(&entry, initial).expect("initial nested state boundary source should be writable");
+    let mut cache = fluxc::project::ProjectAnalysisCache::default();
+    let first = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("initial nested state boundary analysis should succeed");
+
+    fs::write(&entry, updated).expect("updated nested state boundary source should be writable");
+    let entry = fs::canonicalize(entry).expect("nested state boundary entry should canonicalize");
+    cache.invalidate_path(&entry);
+    let second = cache
+        .analyze_with_overlays(&entry, &std::collections::HashMap::new())
+        .expect("updated nested state boundary analysis should succeed");
+    let boundary = second.development_state_boundary_from(&first);
+    assert!(boundary.root_compatible);
+    assert!(boundary.preserved.is_empty());
+    assert!(boundary.reset.is_empty());
+    assert!(boundary.dropped.is_empty());
+    assert_eq!(boundary.nested_compatible, vec!["stable.count"]);
+    assert_eq!(
+        boundary.nested_changed,
+        vec!["card.innerRenamed.count", "moved.count"]
+    );
+    assert_eq!(boundary.nested_removed, vec!["card.inner.count"]);
 
     let _ = fs::remove_dir_all(root);
 }

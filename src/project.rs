@@ -55,6 +55,9 @@ pub struct DevelopmentStateBoundary {
     pub preserved: Vec<String>,
     pub reset: Vec<String>,
     pub dropped: Vec<String>,
+    pub nested_compatible: Vec<String>,
+    pub nested_changed: Vec<String>,
+    pub nested_removed: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5043,8 +5046,24 @@ fn source_span_byte_range(source: &str, span: SourceSpan) -> Option<(usize, usiz
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DevelopmentStateContract {
+    owner_view: String,
     ty: Type,
     text_input_owned: bool,
+}
+
+fn development_state_contract(
+    analysis: &ProjectAnalysis,
+    view: &crate::ast::ViewDef,
+    state: &crate::ast::ViewState,
+) -> DevelopmentStateContract {
+    let ty = analysis.signatures.canonical_type(&state.ty);
+    let text_input_owned =
+        ty == Type::Str && development_state_accepts_text_input_value(view, &state.name);
+    DevelopmentStateContract {
+        owner_view: view.name.clone(),
+        ty,
+        text_input_owned,
+    }
 }
 
 fn development_root_state_contracts(
@@ -5065,19 +5084,75 @@ fn development_root_state_contracts(
         .states
         .iter()
         .map(|state| {
-            let ty = analysis.signatures.canonical_type(&state.ty);
-            let text_input_owned =
-                ty == Type::Str && development_state_accepts_text_input_value(view, &state.name);
             (
                 state.name.clone(),
-                DevelopmentStateContract {
-                    ty,
-                    text_input_owned,
-                },
+                development_state_contract(analysis, view, state),
             )
         })
         .collect();
     (Some(view.name.clone()), states)
+}
+
+fn development_nested_state_contracts(
+    analysis: &ProjectAnalysis,
+) -> BTreeMap<String, DevelopmentStateContract> {
+    let Some(application) = analysis.program.application.as_ref() else {
+        return BTreeMap::new();
+    };
+    let Some(root) = analysis
+        .program
+        .views
+        .iter()
+        .find(|view| view.name == application.view_name)
+    else {
+        return BTreeMap::new();
+    };
+    let mut states = BTreeMap::new();
+    let mut view_stack = vec![root.name.clone()];
+    collect_development_nested_state_contracts(analysis, root, "", &mut view_stack, &mut states);
+    states
+}
+
+fn collect_development_nested_state_contracts(
+    analysis: &ProjectAnalysis,
+    view: &crate::ast::ViewDef,
+    prefix: &str,
+    view_stack: &mut Vec<String>,
+    states: &mut BTreeMap<String, DevelopmentStateContract>,
+) {
+    for element in &view.elements {
+        let Some(child) = analysis
+            .program
+            .views
+            .iter()
+            .find(|candidate| candidate.name == element.kind)
+        else {
+            continue;
+        };
+        if view_stack.iter().any(|name| name == &child.name) {
+            continue;
+        }
+        let instance_path = if prefix.is_empty() {
+            element.name.clone()
+        } else {
+            format!("{prefix}.{}", element.name)
+        };
+        for state in &child.states {
+            states.insert(
+                format!("{instance_path}.{}", state.name),
+                development_state_contract(analysis, child, state),
+            );
+        }
+        view_stack.push(child.name.clone());
+        collect_development_nested_state_contracts(
+            analysis,
+            child,
+            &instance_path,
+            view_stack,
+            states,
+        );
+        view_stack.pop();
+    }
 }
 
 fn development_state_accepts_text_input_value(
@@ -5103,6 +5178,8 @@ fn development_state_boundary(
 ) -> DevelopmentStateBoundary {
     let (current_root, current_states) = development_root_state_contracts(current);
     let (previous_root, previous_states) = development_root_state_contracts(previous);
+    let current_nested = development_nested_state_contracts(current);
+    let previous_nested = development_nested_state_contracts(previous);
     let root_compatible = current_root == previous_root;
 
     if !root_compatible {
@@ -5111,6 +5188,9 @@ fn development_state_boundary(
             preserved: Vec::new(),
             reset: current_states.keys().cloned().collect(),
             dropped: previous_states.keys().cloned().collect(),
+            nested_compatible: Vec::new(),
+            nested_changed: current_nested.keys().cloned().collect(),
+            nested_removed: previous_nested.keys().cloned().collect(),
         };
     }
 
@@ -5131,12 +5211,32 @@ fn development_state_boundary(
         .filter(|name| !current_states.contains_key(*name))
         .cloned()
         .collect();
+    let nested_compatible = current_nested
+        .iter()
+        .filter_map(|(path, contract)| {
+            (previous_nested.get(path) == Some(contract)).then_some(path.clone())
+        })
+        .collect();
+    let nested_changed = current_nested
+        .iter()
+        .filter_map(|(path, contract)| {
+            (previous_nested.get(path) != Some(contract)).then_some(path.clone())
+        })
+        .collect();
+    let nested_removed = previous_nested
+        .keys()
+        .filter(|path| !current_nested.contains_key(*path))
+        .cloned()
+        .collect();
 
     DevelopmentStateBoundary {
         root_compatible,
         preserved,
         reset,
         dropped,
+        nested_compatible,
+        nested_changed,
+        nested_removed,
     }
 }
 

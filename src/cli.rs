@@ -5218,6 +5218,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                     state_preserved: state_boundary.preserved.len(),
                     state_reset: state_boundary.reset.len(),
                     state_dropped: state_boundary.dropped.len(),
+                    nested_state_compatible: state_boundary.nested_compatible.len(),
+                    nested_state_changed: state_boundary.nested_changed.len(),
+                    nested_state_removed: state_boundary.nested_removed.len(),
                 };
                 development_abi = next_development_abi;
                 running_analysis = analysis;
@@ -5306,6 +5309,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
                 state_preserved: state_boundary.preserved.len(),
                 state_reset: state_boundary.reset.len(),
                 state_dropped: state_boundary.dropped.len(),
+                nested_state_compatible: state_boundary.nested_compatible.len(),
+                nested_state_changed: state_boundary.nested_changed.len(),
+                nested_state_removed: state_boundary.nested_removed.len(),
             };
             development_abi = next_development_abi;
             running_analysis = analysis;
@@ -5368,6 +5374,9 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             state_preserved: state_boundary.preserved.len(),
             state_reset: state_boundary.reset.len(),
             state_dropped: state_boundary.dropped.len(),
+            nested_state_compatible: state_boundary.nested_compatible.len(),
+            nested_state_changed: state_boundary.nested_changed.len(),
+            nested_state_removed: state_boundary.nested_removed.len(),
         };
         development_abi = next_development_abi;
         running_analysis = analysis;
@@ -5407,6 +5416,12 @@ fn run_development(target: &Path, mode: BuildMode) -> Result<(), CliError> {
             state_boundary.preserved.len(),
             state_boundary.reset.len(),
             state_boundary.dropped.len()
+        );
+        eprintln!(
+            "reload: nested state boundary compatible {} • changed {} • removed {}",
+            state_boundary.nested_compatible.len(),
+            state_boundary.nested_changed.len(),
+            state_boundary.nested_removed.len()
         );
         if !state_boundary.reset.is_empty() {
             eprintln!("reload: reset state: {}", state_boundary.reset.join(", "));
@@ -5454,6 +5469,9 @@ struct DevelopmentReloadTiming {
     state_preserved: usize,
     state_reset: usize,
     state_dropped: usize,
+    nested_state_compatible: usize,
+    nested_state_changed: usize,
+    nested_state_removed: usize,
 }
 
 fn development_analysis_summary(outcome: fluxc::project::ProjectAnalysisOutcome) -> String {
@@ -5565,7 +5583,7 @@ fn write_development_status_with_build(
     let timing_fields = timing
         .map(|timing| {
             format!(
-                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"apply_ms\":{},\"reload_total_ms\":{},\"reload_method\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\",\"state_root_compatible\":{},\"state_preserved\":{},\"state_reset\":{},\"state_dropped\":{}",
+                ",\"analysis_ms\":{},\"codegen_ms\":{},\"native_ms\":{},\"restart_ms\":{},\"apply_ms\":{},\"reload_total_ms\":{},\"reload_method\":{},\"abi_compatible\":{},\"abi_version\":{},\"abi_fingerprint\":\"{:016x}\",\"state_root_compatible\":{},\"state_preserved\":{},\"state_reset\":{},\"state_dropped\":{},\"state_nested_compatible\":{},\"state_nested_changed\":{},\"state_nested_removed\":{}",
                 timing.analysis_ms,
                 timing.codegen_ms,
                 timing.native_ms,
@@ -5579,7 +5597,10 @@ fn write_development_status_with_build(
                 timing.state_root_compatible,
                 timing.state_preserved,
                 timing.state_reset,
-                timing.state_dropped
+                timing.state_dropped,
+                timing.nested_state_compatible,
+                timing.nested_state_changed,
+                timing.nested_state_removed
             )
         })
         .unwrap_or_default();
