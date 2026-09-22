@@ -5031,10 +5031,27 @@ impl<'a> ControlFlowBuilder<'a> {
                         name,
                         args,
                         named_args,
-                    } => ControlFlowValueKind::Call {
-                        callee: name.clone(),
-                        arguments: self.lower_call_arguments(producer, args, named_args),
-                    },
+                    } => {
+                        let arguments = self.lower_call_arguments(producer, args, named_args);
+                        if named_args.is_empty() {
+                            ControlFlowValueKind::Call {
+                                callee: name.clone(),
+                                arguments,
+                            }
+                        } else {
+                            let mut argument_names = vec![None; args.len()];
+                            argument_names.extend(
+                                named_args
+                                    .iter()
+                                    .map(|argument| Some(argument.name.clone())),
+                            );
+                            ControlFlowValueKind::NamedCall {
+                                callee: name.clone(),
+                                arguments,
+                                argument_names,
+                            }
+                        }
+                    }
                     _ => ControlFlowValueKind::Opaque,
                 };
                 let awaited_types = self.expression_types(expr);

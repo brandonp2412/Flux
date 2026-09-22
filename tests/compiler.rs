@@ -413,6 +413,45 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_preserves_named_arguments_inside_await() {
+    let source = r#"
+async fn adjust(value: i64, *, delta: i64) -> i64 {
+    return value + delta
+}
+
+async fn main() -> i64 {
+    return await adjust(4, delta: 3)
+}
+"#;
+    let database = SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+        .expect("named await fixture should typecheck");
+    let main = database
+        .control_flow_graph("main")
+        .expect("main CFG should be available");
+    let awaited = main
+        .values()
+        .iter()
+        .find_map(|value| match value.kind {
+            ControlFlowValueKind::Await { value } => Some(value),
+            _ => None,
+        })
+        .expect("await boundary should be represented in typed IR");
+    let call = main
+        .value(awaited)
+        .expect("awaited call value should be available");
+
+    assert!(matches!(
+        &call.kind,
+        ControlFlowValueKind::NamedCall {
+            callee,
+            argument_names,
+            ..
+        } if callee == "adjust"
+            && argument_names == &[None, Some("delta".to_string())]
+    ));
+}
+
+#[test]
 fn semantic_effect_results_resolve_user_calls_and_cycles_conservatively() {
     let source = r#"
 fn pureValue(value: i64) -> i64 {
