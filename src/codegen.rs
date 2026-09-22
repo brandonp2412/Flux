@@ -48732,6 +48732,15 @@ fn emit_cfg_scalar_expr_direct(
             };
 
             match name {
+                "duration" if ty == duration_type() => {
+                    let values = render_i64_args(1)?;
+                    Some(format!(
+                        "({}){{ .{} = {} }}",
+                        c_type(&duration_type(), signatures),
+                        field_c_name("milliseconds"),
+                        values[0]
+                    ))
+                }
                 "unixMillis" if arguments.is_empty() && ty == Type::I64 => {
                     Some("flux__time_unix_millis()".to_string())
                 }
@@ -48837,9 +48846,7 @@ fn emit_cfg_scalar_expr_direct(
                             return None;
                         }
                         emit_cfg_scalar_expr_direct(duration, env, signatures)?
-                    } else if is_duration_type(&duration_ty, signatures)
-                        && matches!(duration.kind, CfgScalarExprKind::Name(_))
-                    {
+                    } else if is_duration_type(&duration_ty, signatures) {
                         format!(
                             "({}).{}",
                             emit_cfg_scalar_expr_direct(duration, env, signatures)?,
@@ -57410,6 +57417,10 @@ fn seconds(value: i64) -> i64 {
     return time.seconds(value)
 }
 
+fn temporaryDurationSleep(value: i64) -> void {
+    time.sleep(time.duration(value))
+}
+
 fn clock() -> i64 {
     return time.unixMillis()
 }
@@ -57488,6 +57499,17 @@ fn main() -> i64 {
                 format!("flux_mul_i64({}, INT64_C(1000))", local_c_name("value")),
             ),
             (
+                "temporaryDurationSleep",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_sleep_millis((({}){{ .{} = {} }}).{})",
+                    c_type(&duration_type(), database.signatures()),
+                    field_c_name("milliseconds"),
+                    local_c_name("value"),
+                    field_c_name("milliseconds")
+                ),
+            ),
+            (
                 "clock",
                 HashMap::new(),
                 "flux__time_unix_millis()".to_string(),
@@ -57524,11 +57546,14 @@ fn main() -> i64 {
             let root = graph
                 .values()
                 .iter()
-                .find(|value| {
-                    matches!(
-                        value.kind,
-                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
-                    )
+                .find(|value| match &value.kind {
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace, name, ..
+                    } => {
+                        function != "temporaryDurationSleep"
+                            || (namespace == "time" && name == "sleep")
+                    }
+                    _ => false,
                 })
                 .expect("time qualified call should remain in typed IR");
             let facts = cfg_rewrite_facts(graph);
@@ -57539,7 +57564,7 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar time call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
-            if function.starts_with("nested") {
+            if function.starts_with("nested") || function == "temporaryDurationSleep" {
                 let fake = Expr {
                     line: root.span.line,
                     span: root.span,
