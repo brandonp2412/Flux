@@ -48437,6 +48437,67 @@ fn emit_cfg_scalar_expr_direct(
                 .unwrap_or_else(|| function_c_name(implementation));
             Some(format!("{callee}({})", rendered.join(", ")))
         }
+        CfgScalarExprKind::Index {
+            base,
+            index,
+            optional: false,
+        } if matches!(base.kind, CfgScalarExprKind::Name(_))
+            && matches!(
+                index.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            ) =>
+        {
+            let Type::List(element) = signatures.canonical_type(&base.ty) else {
+                return None;
+            };
+            if signatures.canonical_type(&index.ty) != Type::I64
+                || signatures.canonical_type(&element) != ty
+            {
+                return None;
+            }
+            let base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            let index = emit_cfg_scalar_expr_direct(index, env, signatures)?;
+            let element_c = c_type(&element, signatures);
+            Some(format!(
+                "(*(({element_c} *)flux_list_at({base}, {index}, sizeof({element_c}))))"
+            ))
+        }
+        CfgScalarExprKind::Slice {
+            base,
+            start,
+            end,
+            step,
+        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+            let Type::List(element) = signatures.canonical_type(&base.ty) else {
+                return None;
+            };
+            if ty != Type::List(element.clone()) {
+                return None;
+            }
+            let render_bound =
+                |value: &Option<Box<CfgScalarExpr>>, default: &str| -> Option<(bool, String)> {
+                    let Some(value) = value else {
+                        return Some((false, default.to_string()));
+                    };
+                    if signatures.canonical_type(&value.ty) != Type::I64
+                        || !matches!(
+                            value.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        )
+                    {
+                        return None;
+                    }
+                    Some((true, emit_cfg_scalar_expr_direct(value, env, signatures)?))
+                };
+            let base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            let (has_start, start) = render_bound(start, "INT64_C(0)")?;
+            let (has_end, end) = render_bound(end, "INT64_C(0)")?;
+            let (_, step) = render_bound(step, "INT64_C(1)")?;
+            let element_c = c_type(&element, signatures);
+            Some(format!(
+                "flux_list_slice({base}, {has_start}, {start}, {has_end}, {end}, {step}, sizeof({element_c}))"
+            ))
+        }
         CfgScalarExprKind::Field {
             base,
             name,
@@ -51960,6 +52021,34 @@ fn main() -> i64 {
                 ));
             }
 
+            let direct_env = HashMap::from([
+                (
+                    "values".to_string(),
+                    if expected_optional {
+                        Type::Optional(Box::new(Type::List(Box::new(Type::I64))))
+                    } else {
+                        Type::List(Box::new(Type::I64))
+                    },
+                ),
+                ("at".to_string(), Type::I64),
+            ]);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("list index should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
+            if function == "direct" {
+                let direct = direct.expect("named list index should render directly from typed IR");
+                assert!(direct.contains("flux_list_at("), "{direct}");
+                assert!(direct.contains(&local_c_name("values")), "{direct}");
+                assert!(direct.contains(&local_c_name("at")), "{direct}");
+            } else {
+                assert!(
+                    direct.is_none(),
+                    "{function} should retain the established list-index fallback"
+                );
+            }
+
             let fake = Expr {
                 line: index.span.line,
                 span: index.span,
@@ -52014,6 +52103,18 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                facts
+                    .scalar_exprs
+                    .get(&source_span_key(index.span))
+                    .expect("temporary list index should have scalar typed-IR facts"),
+                &HashMap::from([("at".to_string(), Type::I64)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "temporary list bases should retain aggregate-aware index lowering"
+        );
         let fake = Expr {
             line: index.span.line,
             span: index.span,
@@ -52217,6 +52318,39 @@ fn main() -> i64 {
             })
         ));
 
+        let direct_env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+            ("step".to_string(), Type::I64),
+        ]);
+        let direct_slice = emit_cfg_scalar_expr_direct(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(slice.span))
+                .expect("list slice should have scalar typed-IR facts"),
+            &direct_env,
+            database.signatures(),
+        )
+        .expect("named list slice should render directly from typed IR");
+        assert!(direct_slice.contains("flux_list_slice("), "{direct_slice}");
+        assert!(
+            direct_slice.contains(&local_c_name("values")),
+            "{direct_slice}"
+        );
+        assert!(
+            direct_slice.contains(&local_c_name("start")),
+            "{direct_slice}"
+        );
+        assert!(
+            direct_slice.contains(&local_c_name("end")),
+            "{direct_slice}"
+        );
+        assert!(
+            direct_slice.contains(&local_c_name("step")),
+            "{direct_slice}"
+        );
+
         let fake = Expr {
             line: slice.span.line,
             span: slice.span,
@@ -52268,6 +52402,18 @@ fn main() -> i64 {
                 }
             )
         ));
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                borrowed_facts
+                    .scalar_exprs
+                    .get(&source_span_key(borrowed_slice.span))
+                    .expect("borrowed list slice should have scalar typed-IR facts"),
+                &direct_env,
+                database.signatures(),
+            )
+            .is_none(),
+            "explicit borrow wrappers should retain the established slice fallback"
+        );
         let fake_borrowed = Expr {
             line: borrowed_slice.span.line,
             span: borrowed_slice.span,
@@ -52307,6 +52453,21 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                facts
+                    .scalar_exprs
+                    .get(&source_span_key(slice.span))
+                    .expect("temporary list slice should have scalar typed-IR facts"),
+                &HashMap::from([
+                    ("start".to_string(), Type::I64),
+                    ("end".to_string(), Type::I64),
+                ]),
+                database.signatures(),
+            )
+            .is_none(),
+            "temporary list bases should retain aggregate-aware slice lowering"
+        );
         let fake = Expr {
             line: slice.span.line,
             span: slice.span,
