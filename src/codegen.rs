@@ -48331,6 +48331,31 @@ fn substitute_direct_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewri
                         *items = ordered;
                     }
                 }
+                (CfgAggregateShape::Map(ir_entries), ExprKind::Map(items))
+                    if items.len() == ir_entries.len() * 2 =>
+                {
+                    let mut remaining = items
+                        .chunks_exact(2)
+                        .map(|pair| (pair[0].clone(), pair[1].clone()))
+                        .collect::<Vec<_>>();
+                    let mut ordered = Vec::with_capacity(items.len());
+                    let mut matched = true;
+                    for (key_span, value_span) in ir_entries {
+                        let Some(index) = remaining.iter().position(|(key, value)| {
+                            source_span_key(key.span) == *key_span
+                                && source_span_key(value.span) == *value_span
+                        }) else {
+                            matched = false;
+                            break;
+                        };
+                        let (key, value) = remaining.remove(index);
+                        ordered.push(key);
+                        ordered.push(value);
+                    }
+                    if matched && remaining.is_empty() {
+                        *items = ordered;
+                    }
+                }
                 (CfgAggregateShape::Record(ir_fields), ExprKind::RecordLiteral { fields })
                     if ir_fields.len() == fields.len() =>
                 {
@@ -48347,6 +48372,35 @@ fn substitute_direct_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewri
                         ordered.push(remaining.remove(index));
                     }
                     if matched && remaining.is_empty() {
+                        *fields = ordered;
+                    }
+                }
+                (
+                    CfgAggregateShape::Struct {
+                        name: ir_name,
+                        base: ir_base,
+                        fields: ir_fields,
+                    },
+                    ExprKind::StructLiteral {
+                        name, base, fields, ..
+                    },
+                ) if ir_fields.len() == fields.len()
+                    && base.as_deref().map(|base| source_span_key(base.span)) == *ir_base =>
+                {
+                    let mut remaining = fields.clone();
+                    let mut ordered = Vec::with_capacity(remaining.len());
+                    let mut matched = true;
+                    for (field_name, span) in ir_fields {
+                        let Some(index) = remaining.iter().position(|field| {
+                            field.name == *field_name && source_span_key(field.value.span) == *span
+                        }) else {
+                            matched = false;
+                            break;
+                        };
+                        ordered.push(remaining.remove(index));
+                    }
+                    if matched && remaining.is_empty() {
+                        *name = ir_name.clone();
                         *fields = ordered;
                     }
                 }
@@ -49410,7 +49464,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn typed_ir_aggregate_shapes_drive_set_and_record_rewrite_order() {
+    fn typed_ir_aggregate_shapes_drive_set_record_map_and_struct_rewrite_order() {
         let first = int_expr(1, 1, 3);
         let second = int_expr(2, 1, 6);
         let set_span = SourceSpan::new(1, 1, 8).with_source(SourceId::new(4242));
@@ -49466,6 +49520,85 @@ fn main() -> i64 {
         };
         assert_eq!(fields[0].name.as_deref(), Some("right"));
         assert_eq!(fields[1].name.as_deref(), Some("left"));
+
+        let first_key = int_expr(1, 3, 5);
+        let first_value = int_expr(10, 3, 8);
+        let second_key = int_expr(2, 3, 12);
+        let second_value = int_expr(20, 3, 15);
+        let map_span = SourceSpan::new(3, 1, 17).with_source(SourceId::new(4242));
+        let map = Expr {
+            line: 3,
+            span: map_span,
+            kind: ExprKind::Map(vec![
+                first_key.clone(),
+                first_value.clone(),
+                second_key.clone(),
+                second_value.clone(),
+            ]),
+        };
+        let mut map_facts = CfgRewriteFacts::default();
+        map_facts.aggregates.insert(
+            source_span_key(map_span),
+            CfgAggregateShape::Map(vec![
+                (
+                    source_span_key(second_key.span),
+                    source_span_key(second_value.span),
+                ),
+                (
+                    source_span_key(first_key.span),
+                    source_span_key(first_value.span),
+                ),
+            ]),
+        );
+        let rewritten_map = substitute_direct_ir_constant_arguments(&map, &map_facts);
+        let ExprKind::Map(items) = rewritten_map.kind else {
+            panic!("map rewrite should preserve the map expression shape");
+        };
+        assert!(matches!(items[0].kind, ExprKind::Int(2)));
+        assert!(matches!(items[1].kind, ExprKind::Int(20)));
+        assert!(matches!(items[2].kind, ExprKind::Int(1)));
+        assert!(matches!(items[3].kind, ExprKind::Int(10)));
+
+        let left = crate::ast::StructLiteralField {
+            name: "left".to_string(),
+            name_span: SourceSpan::new(4, 4, 4).with_source(SourceId::new(4242)),
+            value: int_expr(10, 4, 10),
+        };
+        let right = crate::ast::StructLiteralField {
+            name: "right".to_string(),
+            name_span: SourceSpan::new(4, 14, 5).with_source(SourceId::new(4242)),
+            value: int_expr(20, 4, 21),
+        };
+        let struct_span = SourceSpan::new(4, 1, 23).with_source(SourceId::new(4242));
+        let struct_expr = Expr {
+            line: 4,
+            span: struct_span,
+            kind: ExprKind::StructLiteral {
+                name: "CheckedPair".to_string(),
+                name_span: struct_span,
+                base: None,
+                fields: vec![left.clone(), right.clone()],
+            },
+        };
+        let mut struct_facts = CfgRewriteFacts::default();
+        struct_facts.aggregates.insert(
+            source_span_key(struct_span),
+            CfgAggregateShape::Struct {
+                name: "TypedPair".to_string(),
+                base: None,
+                fields: vec![
+                    (right.name.clone(), source_span_key(right.value.span)),
+                    (left.name.clone(), source_span_key(left.value.span)),
+                ],
+            },
+        );
+        let rewritten_struct = substitute_direct_ir_constant_arguments(&struct_expr, &struct_facts);
+        let ExprKind::StructLiteral { name, fields, .. } = rewritten_struct.kind else {
+            panic!("struct rewrite should preserve the struct expression shape");
+        };
+        assert_eq!(name, "TypedPair");
+        assert_eq!(fields[0].name, "right");
+        assert_eq!(fields[1].name, "left");
     }
 
     #[test]
