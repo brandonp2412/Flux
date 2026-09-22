@@ -57,6 +57,56 @@ fn main() -> i64 {
 }
 
 #[test]
+fn scalar_sequence_projections_lower_without_direct_bindings() {
+    let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn sortedIndex(values: i64[], at: i64) -> i64 {
+    return sorted(values)[at]
+}
+
+fn exercise(values: i64[], other: i64[]) -> i64 {
+    let sortedFirst: i64 = sorted(values).first
+    var distinctCount: i64 = 0
+    distinctCount = distinct(values).length
+    let concatLast: i64 = concat(values, other).last
+    let mappedFirst: i64 = map(values, double).first
+    let filteredCount: i64 = filter(values, positive).length
+    let chunkCount: i64 = chunked(values, 2).length
+    let flattenedLast: i64 = flatten(chunked(values, 2)).last
+    return sortedFirst + distinctCount + concatLast + mappedFirst + filteredCount + chunkCount + flattenedLast
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 1, 2]
+    return sortedIndex(values, 0) + exercise(values, [4, 5])
+}
+"#;
+    let generated =
+        compile_to_c(source).expect("scalar projections over sequence values should lower");
+    for fragment in [
+        "flux__sorted_buffer_",
+        "flux__distinct_buffer_",
+        "flux__concat_buffer_",
+        "flux__transform_buffer_",
+        "flux__chunked_buffer_",
+        "flux__flatten_buffer_",
+        "__flux_sequence_projection_",
+    ] {
+        assert!(
+            generated.contains(fragment),
+            "missing {fragment}: {generated}"
+        );
+    }
+}
+
+#[test]
 fn typed_ir_preserves_local_string_interpolation_read_dependency() {
     let source = r#"
 fn main() -> i64 {

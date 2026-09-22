@@ -34664,6 +34664,9 @@ fn cfg_borrowed_list_base(
                     .collect::<Option<Vec<_>>>()?,
             }
         }
+        crate::ir::ControlFlowValueKind::Call { .. } => {
+            return cfg_direct_sequence_expr(cfg, id);
+        }
         _ => return None,
     };
     Some(CfgScalarExpr {
@@ -37243,6 +37246,116 @@ fn record_mutable_declaration(stmt: &Stmt, mutable: &mut HashSet<String>) {
     }
 }
 
+fn emit_direct_sequence_projection(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    expected: &Type,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Result<Option<String>, Diagnostic> {
+    let span_key = source_span_key(expr.span);
+    let rewritten = rewrite_facts
+        .scalar_exprs
+        .get(&span_key)
+        .filter(|scalar| match &scalar.kind {
+            CfgScalarExprKind::Index {
+                base,
+                index,
+                optional: false,
+            } => {
+                cfg_sequence_expr_calls_are_reconstructable(base, env, signatures)
+                    && cfg_scalar_expr_calls_are_reconstructable(index, env, signatures)
+            }
+            CfgScalarExprKind::Field {
+                base,
+                optional: false,
+                ..
+            } => cfg_sequence_expr_calls_are_reconstructable(base, env, signatures),
+            _ => false,
+        })
+        .map(|scalar| {
+            let mut reconstructed = cfg_scalar_expr_as_ast(scalar);
+            reconstructed.line = expr.line;
+            reconstructed.span = expr.span;
+            reconstructed
+        })
+        .unwrap_or_else(|| expr.clone());
+
+    let base = match &rewritten.kind {
+        ExprKind::Index {
+            base,
+            optional: false,
+            ..
+        }
+        | ExprKind::Field {
+            base,
+            optional: false,
+            ..
+        } => base.as_ref(),
+        _ => return Ok(None),
+    };
+    let sequence_kind = sequence_lowering_kind(base, env, signatures, rewrite_facts);
+    if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
+        return Ok(None);
+    }
+
+    let result_ty = signatures.canonical_type(&type_of_expr(&rewritten, env, signatures)?);
+    if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
+        return Ok(None);
+    }
+
+    let sequence = sequence_expr_for_lowering(base, env, signatures, rewrite_facts);
+    let sequence_ty = signatures.canonical_type(&type_of_expr(&sequence, env, signatures)?);
+    if !matches!(sequence_ty, Type::List(_)) {
+        return Ok(None);
+    }
+    let emitted = emit_sequence_list_value(out, pad, &sequence, env, signatures, temp_counter)?;
+    if signatures.canonical_type(&emitted.ty) != sequence_ty {
+        return Err(diag(
+            base.span,
+            "sequence projection type changed during code generation",
+        ));
+    }
+
+    let base_line = base.line;
+    let base_span = base.span;
+    let mut temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
+    *temp_counter += 1;
+    while env.contains_key(&temp_name) {
+        temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
+        *temp_counter += 1;
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(&emitted.ty, signatures),
+        local_c_name(&temp_name),
+        emitted.code
+    ));
+    env.insert(temp_name.clone(), sequence_ty);
+
+    let mut materialized = rewritten;
+    let replacement = Expr {
+        line: base_line,
+        span: base_span,
+        kind: ExprKind::Var(temp_name),
+    };
+    match &mut materialized.kind {
+        ExprKind::Index { base, .. } | ExprKind::Field { base, .. } => {
+            **base = replacement;
+        }
+        _ => unreachable!("sequence projection shape checked above"),
+    }
+    Ok(Some(emit_expr_for_expected(
+        &materialized,
+        expected,
+        env,
+        signatures,
+    )?))
+}
+
 fn emit_block(
     out: &mut String,
     body: &[Stmt],
@@ -37512,14 +37625,27 @@ fn emit_block(
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
-                let value = emit_expr_for_expected_with_cfg_proofs(
+                let value = if let Some(value) = emit_direct_sequence_projection(
+                    out,
+                    &pad,
                     expr,
                     ty,
                     env,
                     signatures,
-                    context.checked_i64_cfg_proofs,
                     context.cfg_rewrite_facts,
-                )?;
+                    temp_counter,
+                )? {
+                    value
+                } else {
+                    emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        ty,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_rewrite_facts,
+                    )?
+                };
                 out.push_str(&format!(
                     "{pad}{} {} = {};\n",
                     c_type(ty, signatures),
@@ -37529,20 +37655,33 @@ fn emit_block(
                 env.insert(name.clone(), signatures.canonical_type(ty));
             }
             StmtKind::Assign { name, expr, .. } => {
-                let expected = env.get(name).ok_or_else(|| {
+                let expected = env.get(name).cloned().ok_or_else(|| {
                     diag(
                         expr.span,
                         "assignment target missing from code generation environment",
                     )
                 })?;
-                let value = emit_expr_for_expected_with_cfg_proofs(
+                let value = if let Some(value) = emit_direct_sequence_projection(
+                    out,
+                    &pad,
                     expr,
-                    expected,
+                    &expected,
                     env,
                     signatures,
-                    context.checked_i64_cfg_proofs,
                     context.cfg_rewrite_facts,
-                )?;
+                    temp_counter,
+                )? {
+                    value
+                } else {
+                    emit_expr_for_expected_with_cfg_proofs(
+                        expr,
+                        &expected,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_rewrite_facts,
+                    )?
+                };
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
@@ -38091,14 +38230,27 @@ fn emit_block(
             }
             StmtKind::Return(values) if values.len() == 1 => {
                 let expected = &context.current_function.returns[0];
-                let value = emit_expr_for_expected_with_cfg_proofs(
+                let value = if let Some(value) = emit_direct_sequence_projection(
+                    out,
+                    &pad,
                     &values[0],
                     expected,
                     env,
                     signatures,
-                    context.checked_i64_cfg_proofs,
                     context.cfg_rewrite_facts,
-                )?;
+                    temp_counter,
+                )? {
+                    value
+                } else {
+                    emit_expr_for_expected_with_cfg_proofs(
+                        &values[0],
+                        expected,
+                        env,
+                        signatures,
+                        context.checked_i64_cfg_proofs,
+                        context.cfg_rewrite_facts,
+                    )?
+                };
                 if context.async_state_machine {
                     out.push_str(&format!(
                         "{pad}flux__task->result = {value};\n{pad}{}(flux__task);\n{pad}return;\n",
@@ -52160,6 +52312,83 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+    }
+
+    #[test]
+    fn sequence_call_projections_materialize_from_typed_ir() {
+        let source = r#"
+fn sortedIndex(values: i64[], at: i64) -> i64 {
+    return sorted(values)[at]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence projection typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sortedIndex")
+            .expect("sortedIndex CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Index { base, .. }
+                        if graph.value(*base).is_some_and(|base| {
+                            matches!(
+                                &base.kind,
+                                crate::ir::ControlFlowValueKind::Call { callee, .. }
+                                    if crate::builtin_names::global_impl(callee) == "sorted"
+                            )
+                        })
+                )
+            })
+            .expect("typed IR should retain the sequence projection root");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.scalar_exprs.get(&source_span_key(root.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Index { base, .. },
+                ..
+            }) if matches!(
+                &base.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "sorted"
+            )
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-sequence-projection".to_string()),
+        };
+        let mut env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("at".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let emitted = emit_direct_sequence_projection(
+            &mut out,
+            "",
+            &fake,
+            &Type::I64,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sequence projection should lower")
+        .expect("typed IR should materialize the sequence projection");
+
+        assert!(out.contains("flux__sorted_buffer_"), "{out}");
+        assert!(out.contains("__flux_sequence_projection_"), "{out}");
+        assert!(emitted.contains("flux_list_at("), "{emitted}");
+        assert!(!out.contains("checked-ast-sequence-projection"));
+        assert!(!emitted.contains("checked-ast-sequence-projection"));
     }
 
     #[test]
