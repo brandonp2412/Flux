@@ -48069,6 +48069,10 @@ fn interfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.apply(offset, value)
 }
 
+fn dynamicInterfaceCall(measure: Measure, value: i64) -> i64 {
+    return Measure.apply(measure, value)
+}
+
 fn namedInterfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.adjust(offset, value, delta: 3)
 }
@@ -48339,6 +48343,53 @@ fn main() -> i64 {
                 "{}({}, {})",
                 function_c_name("offsetApply"),
                 local_c_name("offset"),
+                local_c_name("value")
+            )
+        );
+
+        let dynamic_interface = database
+            .control_flow_graph("dynamicInterfaceCall")
+            .expect("dynamic interface-call CFG should exist");
+        let call = dynamic_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        target,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "apply"
+                        && target.is_none()
+                        && mapped_function.is_none()
+                )
+            })
+            .expect("dynamic interface dispatch should retain typed IR");
+        let facts = cfg_rewrite_facts(dynamic_interface);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("dynamic interface dispatch should have reconstructable value facts");
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([
+                ("measure".to_string(), Type::Named("Measure".to_string())),
+                ("value".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+        )
+        .expect("dynamic interface dispatch should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!(
+                "{}({}, {})",
+                interface_dispatch_helper_name("Measure", "apply"),
+                local_c_name("measure"),
                 local_c_name("value")
             )
         );
