@@ -48701,6 +48701,38 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "linux" => {
+            let binding = crate::linux_bindings::binding_named(name)?;
+            if ty != Type::Bool || arguments.len() != binding.params.len() {
+                return None;
+            }
+
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, parameter) in arguments.iter().zip(binding.params) {
+                let expected = match parameter.ty {
+                    crate::linux_bindings::LinuxBindingType::Str => Type::Str,
+                    crate::linux_bindings::LinuxBindingType::StrCallback => return None,
+                };
+                if !matches!(
+                    argument.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                ) || signatures.canonical_type(&argument.ty) != expected
+                {
+                    return None;
+                }
+                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+            }
+
+            Some(format!(
+                "{}({})",
+                binding.runtime_symbol(),
+                rendered.join(", ")
+            ))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "windows" => {
             match name.as_str() {
                 "processId" if arguments.is_empty() && ty == Type::I64 => {
@@ -55671,6 +55703,101 @@ fn main() -> i64 {
             )
             .is_none(),
             "effect-only time calls should retain their established lowering path"
+        );
+    }
+
+    #[test]
+    fn direct_scalar_linux_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn store(key: str, value: str) -> bool {
+    return linux.secureStore(key, value)
+}
+
+fn remove(key: str) -> bool {
+    return linux.secureRemove(key)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct Linux qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "store",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__linux_secure_store({}, {})",
+                    local_c_name("key"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "remove",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!("flux__linux_secure_remove({})", local_c_name("key")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Linux qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("Linux qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("Linux qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported scalar Linux call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        let unsupported = CfgScalarExpr {
+            ty: Type::Bool,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "linux".to_string(),
+                name: "secureRead".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Name("key".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &unsupported,
+                &HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("callback".to_string(), callback_ty),
+                ]),
+                database.signatures(),
+            )
+            .is_none(),
+            "callback-based Linux calls should retain their established lowering path"
         );
     }
 
