@@ -34216,7 +34216,13 @@ enum CfgAggregateShape {
         condition: Option<(u32, usize, usize, usize)>,
     },
     Set(Vec<(u32, usize, usize, usize)>),
+    Map(Vec<((u32, usize, usize, usize), (u32, usize, usize, usize))>),
     Record(Vec<(Option<String>, (u32, usize, usize, usize))>),
+    Struct {
+        name: String,
+        base: Option<(u32, usize, usize, usize)>,
+        fields: Vec<(String, (u32, usize, usize, usize))>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35391,6 +35397,16 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 .map(|id| cfg.value(*id).map(|item| source_span_key(item.span)))
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateShape::Set),
+            crate::ir::ControlFlowValueKind::Map { entries } => entries
+                .iter()
+                .map(|(key, value)| {
+                    Some((
+                        source_span_key(cfg.value(*key)?.span),
+                        source_span_key(cfg.value(*value)?.span),
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(CfgAggregateShape::Map),
             crate::ir::ControlFlowValueKind::RecordLiteral { fields } => fields
                 .iter()
                 .map(|(name, id)| {
@@ -35399,6 +35415,27 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(CfgAggregateShape::Record),
+            crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields } => {
+                let build_shape = || -> Option<CfgAggregateShape> {
+                    let base = match base {
+                        Some(id) => Some(source_span_key(cfg.value(*id)?.span)),
+                        None => None,
+                    };
+                    let fields = fields
+                        .iter()
+                        .map(|(field, id)| {
+                            cfg.value(*id)
+                                .map(|value| (field.clone(), source_span_key(value.span)))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(CfgAggregateShape::Struct {
+                        name: name.clone(),
+                        base,
+                        fields,
+                    })
+                };
+                build_shape()
+            }
             _ => None,
         };
         let Some(shape) = shape else {
@@ -41665,6 +41702,20 @@ fn cfg_rewrite_expr_as_ast(
     Some(expr)
 }
 
+fn cfg_rewrite_aggregate_child_as_ast(
+    span_key: (u32, usize, usize, usize),
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Expr> {
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span_key)
+        && !cfg_scalar_expr_is_aggregate_reorder_safe(scalar)
+    {
+        return None;
+    }
+    cfg_rewrite_expr_as_ast(span_key, env, signatures, rewrite_facts)
+}
+
 fn cfg_plain_aggregate_shape_as_ast(
     root_span: SourceSpan,
     shape: &CfgAggregateShape,
@@ -41686,6 +41737,15 @@ fn cfg_plain_aggregate_shape_as_ast(
                 .map(|span| cfg_rewrite_expr_as_ast(*span, env, signatures, rewrite_facts))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        CfgAggregateShape::Map(entries) => ExprKind::Map(
+            entries
+                .iter()
+                .flat_map(|(key, value)| [key, value])
+                .map(|span| {
+                    cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
         CfgAggregateShape::Record(fields) => ExprKind::RecordLiteral {
             fields: fields
                 .iter()
@@ -41695,6 +41755,34 @@ fn cfg_plain_aggregate_shape_as_ast(
                         name: name.clone(),
                         name_span: name.as_ref().map(|_| source_span_from_key(*span)),
                         value,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        CfgAggregateShape::Struct { name, base, fields } => ExprKind::StructLiteral {
+            name: name.clone(),
+            name_span: root_span,
+            base: match base {
+                Some(span) => Some(Box::new(cfg_rewrite_aggregate_child_as_ast(
+                    *span,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?)),
+                None => None,
+            },
+            fields: fields
+                .iter()
+                .map(|(name, span)| {
+                    Some(crate::ast::StructLiteralField {
+                        name: name.clone(),
+                        name_span: source_span_from_key(*span),
+                        value: cfg_rewrite_aggregate_child_as_ast(
+                            *span,
+                            env,
+                            signatures,
+                            rewrite_facts,
+                        )?,
                     })
                 })
                 .collect::<Option<Vec<_>>>()?,
@@ -49468,6 +49556,169 @@ fn main() -> i64 {
         assert!(record_code.contains(&local_c_name("right")));
         assert!(record_code.contains(&local_c_name("left")));
         assert!(!record_code.contains("checked-ast-record"));
+    }
+
+    #[test]
+    fn map_and_struct_shapes_emit_without_checked_ast_roots() {
+        let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn exercise(value: i64) -> i64 {
+    let mapping: map<i64, i64> = map{1: 2}
+    let pair: Pair = Pair { left: value, right: value + 2 }
+    drop(mapping)
+    return pair.left
+}
+
+fn main() -> i64 {
+    return exercise(7)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4248))
+            .expect("map/struct typed-IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let map_root = graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Map { .. }))
+            .expect("map literal should have a typed-IR root");
+        let struct_root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral { name, .. } if name == "Pair"
+                )
+            })
+            .expect("struct literal should have a typed-IR root");
+
+        let mut facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.aggregates.get(&source_span_key(map_root.span)),
+            Some(CfgAggregateShape::Map(entries)) if entries.len() == 1
+        ));
+        assert!(matches!(
+            facts.aggregates.get(&source_span_key(struct_root.span)),
+            Some(CfgAggregateShape::Struct { name, base: None, fields }) if name == "Pair" && fields.len() == 2
+        ));
+
+        // Force this regression through the shape bridge rather than the aggregate
+        // value shortcut, proving the checked-AST root is not required.
+        facts
+            .aggregate_constants
+            .remove(&source_span_key(map_root.span));
+        facts
+            .aggregate_constants
+            .remove(&source_span_key(struct_root.span));
+        facts
+            .scalar_exprs
+            .remove(&source_span_key(struct_root.span));
+
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let fake_map = Expr {
+            line: map_root.span.line,
+            span: map_root.span,
+            kind: ExprKind::Str("checked-ast-map-root".to_string()),
+        };
+        let map_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_map,
+            &map_root.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("map shape should emit from typed IR");
+        assert!(map_code.contains("INT64_C(1)"), "{map_code}");
+        assert!(map_code.contains("INT64_C(2)"), "{map_code}");
+        assert!(!map_code.contains("checked-ast-map-root"), "{map_code}");
+
+        let fake_struct = Expr {
+            line: struct_root.span.line,
+            span: struct_root.span,
+            kind: ExprKind::Str("checked-ast-struct-root".to_string()),
+        };
+        let struct_code = emit_expr_for_expected_with_cfg_proofs(
+            &fake_struct,
+            &struct_root.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("struct shape should emit from typed IR");
+        assert!(
+            struct_code.contains(&local_c_name("value")),
+            "{struct_code}"
+        );
+        assert!(struct_code.contains("flux_add_i64"), "{struct_code}");
+        assert!(
+            !struct_code.contains("checked-ast-struct-root"),
+            "{struct_code}"
+        );
+    }
+
+    #[test]
+    fn effectful_struct_shape_stays_on_checked_ast_fallback() {
+        let source = r#"
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn observe(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn exercise(value: i64) -> i64 {
+    let pair: Pair = Pair { left: observe(value), right: value }
+    return pair.left
+}
+
+fn main() -> i64 {
+    return exercise(7)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4249))
+            .expect("effectful struct typed-IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral { name, .. } if name == "Pair"
+                )
+            })
+            .expect("struct literal should have a typed-IR root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("effectful struct should still retain its dependency shape");
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+
+        assert!(
+            cfg_plain_aggregate_shape_as_ast(
+                root.span,
+                shape,
+                &env,
+                database.signatures(),
+                &facts,
+            )
+            .is_none(),
+            "effectful aggregate children must keep the checked-AST fallback"
+        );
     }
 
     #[test]
