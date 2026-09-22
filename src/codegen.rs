@@ -34685,6 +34685,15 @@ fn cfg_borrowed_collection_field_base(
             op: UnaryOp::Borrow,
             operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
         },
+        crate::ir::ControlFlowValueKind::Index {
+            base,
+            index,
+            optional,
+        } => CfgScalarExprKind::Index {
+            base: Box::new(cfg_borrowed_index_base(cfg, *base)?),
+            index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
+            optional: *optional,
+        },
         _ => return None,
     };
     Some(CfgScalarExpr {
@@ -50824,6 +50833,16 @@ fn borrowOptionalIndex(rows: i64[]?[], at: i64) -> i64? {
     return view?.count
 }
 
+fn borrowMapIndex(rows: map<str, i64>[], at: i64) -> i64 {
+    let view: map<str, i64> = borrow rows[at]
+    return view.count
+}
+
+fn borrowSetIndex(rows: set<i64>[], at: i64) -> i64 {
+    let view: set<i64> = borrow rows[at]
+    return view.count
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -50893,6 +50912,31 @@ fn main() -> i64 {
                         Type::List(Box::new(Type::Optional(Box::new(Type::List(Box::new(
                             Type::I64,
                         )))))),
+                    ),
+                    ("at".to_string(), Type::I64),
+                ]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowMapIndex",
+                HashMap::from([
+                    (
+                        "rows".to_string(),
+                        Type::List(Box::new(Type::Map(
+                            Box::new(Type::Str),
+                            Box::new(Type::I64),
+                        ))),
+                    ),
+                    ("at".to_string(), Type::I64),
+                ]),
+                "flux_list_at(".to_string(),
+            ),
+            (
+                "borrowSetIndex",
+                HashMap::from([
+                    (
+                        "rows".to_string(),
+                        Type::List(Box::new(Type::Set(Box::new(Type::I64)))),
                     ),
                     ("at".to_string(), Type::I64),
                 ]),
