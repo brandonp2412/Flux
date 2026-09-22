@@ -38657,7 +38657,14 @@ fn emit_match_expr_into(
     checked_i64_cfg_proofs: &HashMap<(u32, usize, usize, usize), CfgCheckedI64Proof>,
     cfg_rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(), Diagnostic> {
-    if matches!(expr.kind, ExprKind::ListMatch { .. }) {
+    if cfg_rewrite_facts
+        .list_match_exprs
+        .get(&source_span_key(expr.span))
+        .is_some_and(|list_match_expr| {
+            cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
+        })
+        || matches!(expr.kind, ExprKind::ListMatch { .. })
+    {
         return emit_list_match_expr_into(
             out,
             expr,
@@ -50145,14 +50152,7 @@ fn main() -> i64 {
         let fake = Expr {
             line: matched.span.line,
             span: matched.span,
-            kind: ExprKind::ListMatch {
-                value: Box::new(Expr {
-                    line: matched.span.line,
-                    span: matched.span,
-                    kind: ExprKind::Str("checked-ast-list-match".to_string()),
-                }),
-                arms: Vec::new(),
-            },
+            kind: ExprKind::Str("checked-ast-list-match".to_string()),
         };
         let env = HashMap::from([
             ("values".to_string(), Type::List(Box::new(Type::I64))),
