@@ -49365,8 +49365,13 @@ fn emit_cfg_scalar_expr_direct(
             base,
             name,
             optional: false,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+        } if matches!(
+            base.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+        ) =>
+        {
             let base_ty = signatures.canonical_type(&base.ty);
+            let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
             let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
             match &base_ty {
                 Type::List(element) => {
@@ -49380,15 +49385,30 @@ fn emit_cfg_scalar_expr_direct(
                         "isNotEmpty" if ty == Type::Bool => {
                             Some(format!("(({rendered_base}).len != 0)"))
                         }
-                        "first" if ty == element_ty => Some(format!(
-                            "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(0), sizeof({element_c}))))"
-                        )),
-                        "last" if ty == element_ty => Some(format!(
-                            "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(-1), sizeof({element_c}))))"
-                        )),
-                        "single" if ty == element_ty => Some(format!(
-                            "(*(({element_c} *)flux_list_single({rendered_base})))"
-                        )),
+                        "first"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element)) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(0), sizeof({element_c}))))"
+                            ))
+                        }
+                        "last"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element)) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_at({rendered_base}, INT64_C(-1), sizeof({element_c}))))"
+                            ))
+                        }
+                        "single"
+                            if ty == element_ty
+                                && (!aggregate_base || signatures.is_copy_type(element)) =>
+                        {
+                            Some(format!(
+                                "(*(({element_c} *)flux_list_single({rendered_base})))"
+                            ))
+                        }
                         _ => None,
                     }
                 }
@@ -49406,6 +49426,9 @@ fn emit_cfg_scalar_expr_direct(
                     }
                 }
                 Type::Record(fields) => {
+                    if aggregate_base {
+                        return None;
+                    }
                     let index = if let Ok(index) = name.parse::<usize>() {
                         index
                     } else {
@@ -49423,6 +49446,9 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 Type::Named(struct_name) => {
+                    if aggregate_base {
+                        return None;
+                    }
                     let definition = signatures.struct_type(struct_name)?;
                     let field = definition.field(name)?;
                     if signatures.canonical_type(&field.ty) != ty {
@@ -52758,7 +52784,7 @@ fn main() -> i64 {
             ("recordNamed", Some("value"), true),
             ("recordPositional", Some("value"), true),
             ("borrowedMapCount", Some("values"), false),
-            ("temporaryMapCount", None, false),
+            ("temporaryMapCount", None, true),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -52803,7 +52829,7 @@ fn main() -> i64 {
                 "pointX" => field_c_name("x"),
                 "listLength" | "setCount" => ".len".to_string(),
                 "listFirst" => "flux_list_at(".to_string(),
-                "mapCount" => ".keys.len".to_string(),
+                "mapCount" | "temporaryMapCount" => ".keys.len".to_string(),
                 "recordNamed" => record_field_c_name(Some("amount"), 0),
                 "recordPositional" => record_field_c_name(None, 1),
                 _ => unreachable!("direct fixture case"),
@@ -54599,6 +54625,14 @@ fn temporaryListCount() -> i64 {
     return [1, 2, 3].count
 }
 
+fn temporaryDynamicListCount(value: i64) -> i64 {
+    return [value, 2, 3].count
+}
+
+fn temporaryListFirst() -> i64 {
+    return [1, 2, 3].first
+}
+
 fn temporaryMapCount() -> i64 {
     return {"one": 1, "two": 2}.count
 }
@@ -54853,6 +54887,12 @@ fn main() -> i64 {
                 "checked-ast-temporary-list-property",
             ),
             (
+                "temporaryListFirst",
+                Type::I64,
+                "flux_list_at(",
+                "checked-ast-temporary-list-first",
+            ),
+            (
                 "temporaryMapCount",
                 Type::I64,
                 ".keys.len",
@@ -54884,6 +54924,15 @@ fn main() -> i64 {
                 .expect(
                     "temporary collection property should retain its aggregate base in typed IR",
                 );
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(field.span))
+                .expect("temporary collection property should have scalar typed-IR facts");
+            let direct =
+                emit_cfg_scalar_expr_direct(scalar, &HashMap::new(), database.signatures()).expect(
+                    "temporary collection metadata property should render directly from typed IR",
+                );
+            assert!(direct.contains(expected_fragment), "{direct}");
             let fake = Expr {
                 line: field.span.line,
                 span: field.span,
@@ -54898,9 +54947,56 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("temporary collection property should emit from typed IR");
-            assert!(emitted.contains(expected_fragment), "{emitted}");
+            assert_eq!(emitted, direct);
             assert!(!emitted.contains(fake_text));
         }
+
+        let dynamic_graph = database
+            .control_flow_graph("temporaryDynamicListCount")
+            .expect("dynamic temporary list property CFG should exist");
+        let dynamic_facts = cfg_rewrite_facts(dynamic_graph);
+        let dynamic_field = dynamic_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    dynamic_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Field { base, .. },
+                        ..
+                    }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+                )
+            })
+            .expect("dynamic temporary list property should retain its aggregate base");
+        let dynamic_scalar = dynamic_facts
+            .scalar_exprs
+            .get(&source_span_key(dynamic_field.span))
+            .expect("dynamic temporary list property should have scalar typed-IR facts");
+        let dynamic_env = HashMap::from([("value".to_string(), Type::I64)]);
+        let dynamic_direct =
+            emit_cfg_scalar_expr_direct(dynamic_scalar, &dynamic_env, database.signatures())
+                .expect("dynamic temporary list metadata property should render from typed IR");
+        assert!(dynamic_direct.contains(".len"), "{dynamic_direct}");
+        assert!(
+            dynamic_direct.contains(&local_c_name("value")),
+            "{dynamic_direct}"
+        );
+        let fake_dynamic = Expr {
+            line: dynamic_field.span.line,
+            span: dynamic_field.span,
+            kind: ExprKind::Str("checked-ast-dynamic-temporary-list-property".to_string()),
+        };
+        let dynamic_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_dynamic,
+            &Type::I64,
+            &dynamic_env,
+            database.signatures(),
+            &HashMap::new(),
+            &dynamic_facts,
+        )
+        .expect("dynamic temporary list property should bypass the checked-AST root");
+        assert_eq!(dynamic_emitted, dynamic_direct);
+        assert!(!dynamic_emitted.contains("checked-ast-dynamic-temporary-list-property"));
     }
 
     #[test]
