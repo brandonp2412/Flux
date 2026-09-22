@@ -45966,25 +45966,7 @@ fn emit_qualified_call(
                     ));
                 }
                 let unix_millis = emit_expr(&args[0], env, signatures)?;
-                let calendar_type = Type::Record(
-                    [
-                        ("year", Type::I64),
-                        ("month", Type::I64),
-                        ("day", Type::I64),
-                        ("hour", Type::I64),
-                        ("minute", Type::I64),
-                        ("second", Type::I64),
-                        ("millis", Type::I64),
-                        ("weekday", Type::I64),
-                        ("dayOfYear", Type::I64),
-                    ]
-                    .into_iter()
-                    .map(|(name, ty)| crate::ast::RecordTypeField {
-                        name: Some(name.to_string()),
-                        ty,
-                    })
-                    .collect(),
-                );
+                let calendar_type = calendar_type();
                 return Ok((
                     format!("flux__time_calendar({})", unix_millis.code),
                     vec![calendar_type],
@@ -48740,6 +48722,10 @@ fn emit_cfg_scalar_expr_direct(
                         field_c_name("milliseconds"),
                         values[0]
                     ))
+                }
+                "calendar" if ty == calendar_type() => {
+                    let values = render_i64_args(1)?;
+                    Some(format!("flux__time_calendar({})", values[0]))
                 }
                 "unixMillis" if arguments.is_empty() && ty == Type::I64 => {
                     Some("flux__time_unix_millis()".to_string())
@@ -57417,6 +57403,14 @@ fn seconds(value: i64) -> i64 {
     return time.seconds(value)
 }
 
+fn calendar(value: i64) -> i64 {
+    return time.calendar(value).year
+}
+
+fn nestedCalendar(left: i64, right: i64) -> i64 {
+    return time.calendar(left + right).year
+}
+
 fn temporaryDurationSleep(value: i64) -> void {
     time.sleep(time.duration(value))
 }
@@ -57499,6 +57493,23 @@ fn main() -> i64 {
                 format!("flux_mul_i64({}, INT64_C(1000))", local_c_name("value")),
             ),
             (
+                "calendar",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux__time_calendar({})", local_c_name("value")),
+            ),
+            (
+                "nestedCalendar",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_calendar(flux_add_i64({}, {}))",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
+            (
                 "temporaryDurationSleep",
                 HashMap::from([("value".to_string(), Type::I64)]),
                 format!(
@@ -57564,7 +57575,9 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar time call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
-            if function.starts_with("nested") || function == "temporaryDurationSleep" {
+            if function.starts_with("nested")
+                || matches!(function, "calendar" | "temporaryDurationSleep")
+            {
                 let fake = Expr {
                     line: root.span.line,
                     span: root.span,
@@ -60706,6 +60719,28 @@ fn duration_type() -> Type {
         name: Some("milliseconds".to_string()),
         ty: Type::I64,
     }])
+}
+
+fn calendar_type() -> Type {
+    Type::Record(
+        [
+            ("year", Type::I64),
+            ("month", Type::I64),
+            ("day", Type::I64),
+            ("hour", Type::I64),
+            ("minute", Type::I64),
+            ("second", Type::I64),
+            ("millis", Type::I64),
+            ("weekday", Type::I64),
+            ("dayOfYear", Type::I64),
+        ]
+        .into_iter()
+        .map(|(name, ty)| crate::ast::RecordTypeField {
+            name: Some(name.to_string()),
+            ty,
+        })
+        .collect(),
+    )
 }
 
 fn is_duration_type(ty: &Type, signatures: &Signatures) -> bool {
