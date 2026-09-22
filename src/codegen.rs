@@ -47787,7 +47787,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                 let implementation = crate::builtin_names::global_impl(callee);
                 let builtin_arity = match implementation {
                     "contains" | "take" | "skip" => Some(2),
-                    "any" | "every" => Some(1),
+                    "any" | "error" | "every" | "print" => Some(1),
                     _ => None,
                 };
                 if let Some(arity) = builtin_arity {
@@ -51122,6 +51122,91 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+    }
+
+    #[test]
+    fn core_builtin_calls_lower_from_typed_ir() {
+        let source = r#"
+fn makeError(message: str) -> error {
+    return error(message)
+}
+
+fn show(value: i64) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("core builtin typed-IR fixture should typecheck");
+
+        for (function, callee, expected, env, expected_fragment) in [
+            (
+                "makeError",
+                "error",
+                Type::Error,
+                HashMap::from([("message".to_string(), Type::Str)]),
+                local_c_name("message"),
+            ),
+            (
+                "show",
+                "print",
+                Type::Void,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                "flux_print_i64".to_string(),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("core builtin CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call {
+                            callee: actual,
+                            ..
+                        } if crate::builtin_names::global_impl(actual) == callee
+                    )
+                })
+                .expect("typed IR should retain the core builtin call");
+            let facts = cfg_rewrite_facts(graph);
+            assert!(matches!(
+                facts.scalar_exprs.get(&source_span_key(call.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Call {
+                        callee: actual,
+                        ..
+                    },
+                    ..
+                }) if crate::builtin_names::global_impl(actual) == callee
+            ));
+
+            let fake_text = format!("checked-ast-{function}");
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str(fake_text.clone()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("core builtin should emit from typed IR");
+            assert!(
+                emitted.contains(&expected_fragment),
+                "{function}: {emitted}"
+            );
+            assert!(!emitted.contains(&fake_text), "{function}: {emitted}");
+        }
     }
 
     #[test]
