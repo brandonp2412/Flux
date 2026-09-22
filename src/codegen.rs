@@ -48281,6 +48281,52 @@ fn cfg_match_expr_calls_are_reconstructable(
         })
 }
 
+fn cfg_scalar_expr_is_direct_primitive_tree(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> bool {
+    fn visit(
+        expr: &CfgScalarExpr,
+        env: &HashMap<String, Type>,
+        signatures: &Signatures,
+        seen_names: &mut HashSet<String>,
+    ) -> bool {
+        let ty = signatures.canonical_type(&expr.ty);
+        if !matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
+            return false;
+        }
+        match &expr.kind {
+            CfgScalarExprKind::Name(name) => {
+                env.get(name)
+                    .is_some_and(|local_ty| signatures.canonical_type(local_ty) == ty)
+                    && seen_names.insert(name.clone())
+            }
+            CfgScalarExprKind::Unary { operand, .. } => {
+                !matches!(operand.kind, CfgScalarExprKind::Unary { .. })
+                    && visit(operand, env, signatures, seen_names)
+            }
+            CfgScalarExprKind::Binary { left, right, .. } => {
+                left != right
+                    && visit(left, env, signatures, seen_names)
+                    && visit(right, env, signatures, seen_names)
+            }
+            CfgScalarExprKind::Conditional {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                visit(condition, env, signatures, seen_names)
+                    && visit(then_value, env, signatures, seen_names)
+                    && visit(else_value, env, signatures, seen_names)
+            }
+            _ => false,
+        }
+    }
+
+    visit(expr, env, signatures, &mut HashSet::new())
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48464,7 +48510,7 @@ fn emit_cfg_scalar_expr_direct(
             }
         }
         CfgScalarExprKind::Unary { op, operand }
-            if matches!(operand.kind, CfgScalarExprKind::Name(_)) =>
+            if cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures) =>
         {
             let operand_ty = signatures.canonical_type(&operand.ty);
             let rendered = emit_cfg_scalar_expr_direct(operand, env, signatures)?;
@@ -48480,9 +48526,7 @@ fn emit_cfg_scalar_expr_direct(
             }
         }
         CfgScalarExprKind::Binary { op, left, right }
-            if matches!(left.kind, CfgScalarExprKind::Name(_))
-                && matches!(right.kind, CfgScalarExprKind::Name(_))
-                && left != right =>
+            if cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures) =>
         {
             let left_ty = signatures.canonical_type(&left.ty);
             let right_ty = signatures.canonical_type(&right.ty);
@@ -48541,9 +48585,7 @@ fn emit_cfg_scalar_expr_direct(
             condition,
             then_value,
             else_value,
-        } if matches!(condition.kind, CfgScalarExprKind::Name(_))
-            && matches!(then_value.kind, CfgScalarExprKind::Name(_))
-            && matches!(else_value.kind, CfgScalarExprKind::Name(_))
+        } if cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
             && signatures.canonical_type(&condition.ty) == Type::Bool
             && signatures.canonical_type(&then_value.ty) == ty
             && signatures.canonical_type(&else_value.ty) == ty =>
@@ -51088,6 +51130,164 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn direct_typed_ir_nested_primitive_trees_emit_without_synthetic_ast() {
+        let source = r#"
+fn nestedArithmetic(left: i64, right: i64, factor: i64) -> i64 {
+    return (left + right) * factor
+}
+fn nestedComparison(left: i64, right: i64, limit: i64) -> bool {
+    return left + right < limit
+}
+fn nestedNegation(value: i64, offset: i64) -> i64 {
+    return -(value + offset)
+}
+fn nestedLogic(left: bool, right: bool, other: bool) -> bool {
+    return (left && right) || other
+}
+fn constantIdentity(value: i64) -> i64 {
+    return value + 0
+}
+fn reflexive(value: i64) -> bool {
+    return value == value
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested direct primitive fixture should typecheck");
+
+        for (function, expected_ty, env, expected) in [
+            (
+                "nestedArithmetic",
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                    ("factor".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux_mul_i64(flux_add_i64({}, {}), {})",
+                    local_c_name("left"),
+                    local_c_name("right"),
+                    local_c_name("factor")
+                ),
+            ),
+            (
+                "nestedComparison",
+                Type::Bool,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                    ("limit".to_string(), Type::I64),
+                ]),
+                format!(
+                    "(flux_add_i64({}, {}) < {})",
+                    local_c_name("left"),
+                    local_c_name("right"),
+                    local_c_name("limit")
+                ),
+            ),
+            (
+                "nestedNegation",
+                Type::I64,
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux_neg_i64(flux_add_i64({}, {}))",
+                    local_c_name("value"),
+                    local_c_name("offset")
+                ),
+            ),
+            (
+                "nestedLogic",
+                Type::Bool,
+                HashMap::from([
+                    ("left".to_string(), Type::Bool),
+                    ("right".to_string(), Type::Bool),
+                    ("other".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "(({} && {}) || {})",
+                    local_c_name("left"),
+                    local_c_name("right"),
+                    local_c_name("other")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("nested primitive CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| match function {
+                    "nestedArithmetic" => matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: BinOp::Mul, .. }
+                    ),
+                    "nestedComparison" => matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: BinOp::Lt, .. }
+                    ),
+                    "nestedNegation" => matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Unary {
+                            op: UnaryOp::Neg,
+                            ..
+                        }
+                    ),
+                    "nestedLogic" => matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: BinOp::Or, .. }
+                    ),
+                    _ => false,
+                })
+                .expect("nested primitive root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("nested primitive root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                expected_ty,
+                "{function} root type should remain exact"
+            );
+            let emitted = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("nested primitive tree should emit directly from typed IR");
+            assert_eq!(emitted, expected, "{function}");
+        }
+
+        for function in ["constantIdentity"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("fallback boundary CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Binary { .. }))
+                .expect("fallback boundary should retain its typed-IR root");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("fallback boundary should have scalar typed-IR facts");
+            assert!(
+                emit_cfg_scalar_expr_direct(
+                    scalar,
+                    &HashMap::from([("value".to_string(), Type::I64)]),
+                    database.signatures(),
+                )
+                .is_none(),
+                "{function} should preserve the optimization-sensitive synthetic-AST fallback"
+            );
+        }
+    }
+
+    #[test]
     fn checked_i64_cfg_proofs_emit_from_typed_ir_without_ast_operands() {
         let source = r#"
 fn cancelAdd(value: i64, delta: i64) -> i64 {
@@ -51362,6 +51562,70 @@ fn main() -> i64 {
         assert!(emitted.contains('?'), "{emitted}");
         assert!(emitted.contains(':'), "{emitted}");
         assert!(!emitted.contains("checked-ast-conditional-root"));
+
+        let nested = CfgScalarExpr {
+            ty: Type::I64,
+            kind: CfgScalarExprKind::Conditional {
+                condition: Box::new(CfgScalarExpr {
+                    ty: Type::Bool,
+                    kind: CfgScalarExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(CfgScalarExpr {
+                            ty: Type::Bool,
+                            kind: CfgScalarExprKind::Name("enabled".to_string()),
+                        }),
+                        right: Box::new(CfgScalarExpr {
+                            ty: Type::Bool,
+                            kind: CfgScalarExprKind::Name("ready".to_string()),
+                        }),
+                    },
+                }),
+                then_value: Box::new(CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Binary {
+                        op: BinOp::Add,
+                        left: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("value".to_string()),
+                        }),
+                        right: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("delta".to_string()),
+                        }),
+                    },
+                }),
+                else_value: Box::new(CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Binary {
+                        op: BinOp::Sub,
+                        left: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("fallback".to_string()),
+                        }),
+                        right: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Name("offset".to_string()),
+                        }),
+                    },
+                }),
+            },
+        };
+        let nested_env = HashMap::from([
+            ("enabled".to_string(), Type::Bool),
+            ("ready".to_string(), Type::Bool),
+            ("value".to_string(), Type::I64),
+            ("delta".to_string(), Type::I64),
+            ("fallback".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+        ]);
+        let nested_emitted =
+            emit_cfg_scalar_expr_direct(&nested, &nested_env, &Signatures::default())
+                .expect("nested conditional should emit directly from typed IR");
+        assert!(nested_emitted.contains("&&"), "{nested_emitted}");
+        assert!(nested_emitted.contains("flux_add_i64"), "{nested_emitted}");
+        assert!(nested_emitted.contains("flux_sub_i64"), "{nested_emitted}");
+        assert!(nested_emitted.contains('?'), "{nested_emitted}");
+        assert!(nested_emitted.contains(':'), "{nested_emitted}");
     }
 
     #[test]
