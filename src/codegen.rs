@@ -48327,6 +48327,14 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
     visit(expr, env, signatures, &mut HashSet::new())
 }
 
+fn cfg_scalar_result_is_direct(returns: &[Type], ty: &Type, signatures: &Signatures) -> bool {
+    match returns {
+        [] => *ty == Type::Void,
+        [result] => signatures.canonical_type(result) == *ty && signatures.is_copy_type(ty),
+        _ => false,
+    }
+}
+
 fn cfg_interface_dispatch_callee_direct(
     namespace: &str,
     name: &str,
@@ -48576,9 +48584,7 @@ fn emit_cfg_scalar_expr_direct(
             if signature.asynchronous
                 || signature.params.len() != arguments.len()
                 || signature.param_details.len() != arguments.len()
-                || signature.returns.len() != 1
-                || signatures.canonical_type(&signature.returns[0]) != ty
-                || !signatures.is_copy_type(&ty)
+                || !cfg_scalar_result_is_direct(&signature.returns, &ty, signatures)
                 || signature.param_details.iter().any(|param| param.named_only)
             {
                 return None;
@@ -48948,9 +48954,7 @@ fn emit_cfg_scalar_expr_direct(
                     .param_details
                     .iter()
                     .any(|parameter| parameter.named_only)
-                || member.returns.len() != 1
-                || signatures.canonical_type(&member.returns[0]) != ty
-                || !signatures.is_copy_type(&ty)
+                || !cfg_scalar_result_is_direct(&member.returns, &ty, signatures)
             {
                 return None;
             }
@@ -48993,9 +48997,7 @@ fn emit_cfg_scalar_expr_direct(
             if member.asynchronous
                 || member.params.len() + 1 != arguments.len()
                 || member.param_details.len() != member.params.len()
-                || member.returns.len() != 1
-                || signatures.canonical_type(&member.returns[0]) != ty
-                || !signatures.is_copy_type(&ty)
+                || !cfg_scalar_result_is_direct(&member.returns, &ty, signatures)
             {
                 return None;
             }
@@ -49176,9 +49178,7 @@ fn emit_cfg_scalar_expr_direct(
             let signature = signatures.get(implementation)?;
             if signature.asynchronous
                 || signature.param_details.len() != arguments.len()
-                || signature.returns.len() != 1
-                || signatures.canonical_type(&signature.returns[0]) != ty
-                || !signatures.is_copy_type(&ty)
+                || !cfg_scalar_result_is_direct(&signature.returns, &ty, signatures)
             {
                 return None;
             }
@@ -55032,6 +55032,10 @@ fn namedEffect(value: i64) -> void {
     namedSink(value, label: "typed")
 }
 
+fn namedLocalEffect(value: i64, label: str) -> void {
+    namedSink(value, label: label)
+}
+
 fn qualifiedEffect(value: i64) -> void {
     time.sleep(value)
 }
@@ -55089,13 +55093,22 @@ fn main() -> i64 {
             .expect("typed IR should retain the void call root");
         assert!(root.ownership.is_effect_only());
         let facts = cfg_rewrite_facts(direct);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("void call should have scalar typed-IR facts");
         assert!(matches!(
-            facts
-                .scalar_exprs
-                .get(&source_span_key(root.span))
-                .map(|scalar| &scalar.kind),
-            Some(CfgScalarExprKind::Call { callee, .. }) if callee == "sink"
+            &scalar.kind,
+            CfgScalarExprKind::Call { callee, .. } if callee == "sink"
         ));
+        let direct_env = HashMap::from([("value".to_string(), Type::I64)]);
+        let direct_emitted =
+            emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures())
+                .expect("exact Copy void call should emit directly from typed IR");
+        assert_eq!(
+            direct_emitted,
+            format!("{}({})", function_c_name("sink"), local_c_name("value"))
+        );
 
         let fake = Expr {
             line: root.span.line,
@@ -55122,6 +55135,14 @@ fn main() -> i64 {
                 "namedEffect",
                 "named call",
                 HashMap::from([("value".to_string(), Type::I64)]),
+            ),
+            (
+                "namedLocalEffect",
+                "named call",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("label".to_string(), Type::Str),
+                ]),
             ),
             (
                 "qualifiedEffect",
@@ -55195,6 +55216,19 @@ fn main() -> i64 {
                 ) => namespace == "Recorder" && name == "write",
                 _ => false,
             });
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
+            if matches!(function, "namedEffect" | "qualifiedEffect") {
+                assert!(
+                    direct.is_none(),
+                    "{function} should retain its specialized/conservative fallback path"
+                );
+            } else {
+                assert!(
+                    direct.is_some(),
+                    "{expected_ir_kind} should emit directly from typed IR"
+                );
+            }
 
             let fake = Expr {
                 line: root.span.line,
