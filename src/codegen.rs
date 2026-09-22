@@ -48728,6 +48728,39 @@ fn emit_cfg_scalar_expr_direct(
                     let values = render_i64_args(1)?;
                     Some(format!("flux__time_local_offset_safe({})", values[0]))
                 }
+                "sleep" | "sleepMillis" if ty == Type::Void => {
+                    let [duration] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let duration_ty = signatures.canonical_type(&duration.ty);
+                    let duration_code = if duration_ty == Type::I64 {
+                        let direct_argument = matches!(
+                            duration.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            duration, env, signatures,
+                        );
+                        if !direct_argument {
+                            return None;
+                        }
+                        emit_cfg_scalar_expr_direct(duration, env, signatures)?
+                    } else if is_duration_type(&duration_ty, signatures)
+                        && matches!(duration.kind, CfgScalarExprKind::Name(_))
+                    {
+                        format!(
+                            "({}).{}",
+                            emit_cfg_scalar_expr_direct(duration, env, signatures)?,
+                            field_c_name("milliseconds")
+                        )
+                    } else {
+                        return None;
+                    };
+                    Some(format!("flux__time_sleep_millis({duration_code})"))
+                }
+                "sleepUntilMonotonic" if ty == Type::Void => {
+                    let values = render_i64_args(1)?;
+                    Some(format!("flux__time_sleep_until_monotonic({})", values[0]))
+                }
                 _ => None,
             }
         }
@@ -48769,6 +48802,7 @@ fn emit_cfg_scalar_expr_direct(
                     Vec::new(),
                     Type::Bool,
                 ),
+                "exit" => ("flux__process_exit", vec![Type::I64], Type::Void),
                 "hasEnv" => ("flux__process_has_env", vec![Type::Str], Type::Bool),
                 "env" => ("flux__process_env", vec![Type::Str, Type::Str], Type::Str),
                 _ => return None,
@@ -48779,12 +48813,12 @@ fn emit_cfg_scalar_expr_direct(
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, expected) in arguments.iter().zip(expected) {
-                if signatures.canonical_type(&argument.ty) != expected
-                    || !matches!(
+                let direct_argument =
+                    matches!(
                         argument.kind,
                         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    )
-                {
+                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if signatures.canonical_type(&argument.ty) != expected || !direct_argument {
                     return None;
                 }
                 rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
@@ -48910,7 +48944,7 @@ fn emit_cfg_scalar_expr_direct(
         } if namespace == "android" => {
             let binding = crate::android_bindings::binding_named(name)?;
             let expected_return = match binding.returns {
-                crate::android_bindings::AndroidBindingReturn::Void => return None,
+                crate::android_bindings::AndroidBindingReturn::Void => Type::Void,
                 crate::android_bindings::AndroidBindingReturn::I64 => Type::I64,
                 crate::android_bindings::AndroidBindingReturn::Bool => Type::Bool,
             };
@@ -55218,7 +55252,7 @@ fn main() -> i64 {
             });
 
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
-            if matches!(function, "namedEffect" | "qualifiedEffect") {
+            if function == "namedEffect" {
                 assert!(
                     direct.is_none(),
                     "{function} should retain its specialized/conservative fallback path"
@@ -56376,6 +56410,18 @@ fn clock() -> i64 {
     return time.unixMillis()
 }
 
+fn sleep(value: i64) -> void {
+    time.sleep(value)
+}
+
+fn nestedSleep(left: i64, right: i64) -> void {
+    time.sleep(left + right)
+}
+
+fn sleepUntil(value: i64) -> void {
+    time.sleepUntilMonotonic(value)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -56442,6 +56488,31 @@ fn main() -> i64 {
                 HashMap::new(),
                 "flux__time_unix_millis()".to_string(),
             ),
+            (
+                "sleep",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux__time_sleep_millis({})", local_c_name("value")),
+            ),
+            (
+                "nestedSleep",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_sleep_millis(flux_add_i64({}, {}))",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
+            (
+                "sleepUntil",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_sleep_until_monotonic({})",
+                    local_c_name("value")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -56484,25 +56555,30 @@ fn main() -> i64 {
             }
         }
 
-        let unsupported = CfgScalarExpr {
+        let duration = CfgScalarExpr {
             ty: Type::Void,
             kind: CfgScalarExprKind::QualifiedCall {
                 namespace: "time".to_string(),
                 name: "sleep".to_string(),
                 arguments: vec![CfgScalarExpr {
-                    ty: Type::I64,
-                    kind: CfgScalarExprKind::Name("value".to_string()),
+                    ty: duration_type(),
+                    kind: CfgScalarExprKind::Name("duration".to_string()),
                 }],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &unsupported,
-                &HashMap::from([("value".to_string(), Type::I64)]),
-                database.signatures(),
+        let duration_direct = emit_cfg_scalar_expr_direct(
+            &duration,
+            &HashMap::from([("duration".to_string(), duration_type())]),
+            database.signatures(),
+        )
+        .expect("named duration sleep should emit directly from typed IR");
+        assert_eq!(
+            duration_direct,
+            format!(
+                "flux__time_sleep_millis(({}).{})",
+                local_c_name("duration"),
+                field_c_name("milliseconds")
             )
-            .is_none(),
-            "effect-only time calls should retain their established lowering path"
         );
     }
 
@@ -56539,6 +56615,14 @@ fn hasEnv(name: str) -> bool {
 
 fn environment(name: str, fallback: str) -> str {
     return process.env(name, fallback)
+}
+
+fn exitProcess(code: i64) -> void {
+    process.exit(code)
+}
+
+fn nestedExit(left: i64, right: i64) -> void {
+    process.exit(left + right)
 }
 
 fn main() -> i64 {
@@ -56592,6 +56676,23 @@ fn main() -> i64 {
                     local_c_name("fallback")
                 ),
             ),
+            (
+                "exitProcess",
+                HashMap::from([("code".to_string(), Type::I64)]),
+                format!("flux__process_exit({})", local_c_name("code")),
+            ),
+            (
+                "nestedExit",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__process_exit(flux_add_i64({}, {}))",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -56631,14 +56732,15 @@ fn main() -> i64 {
                 }],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &process_exit,
-                &HashMap::from([("code".to_string(), Type::I64)]),
-                database.signatures(),
-            )
-            .is_none(),
-            "effect-only process exit should retain its established lowering path"
+        let process_exit_direct = emit_cfg_scalar_expr_direct(
+            &process_exit,
+            &HashMap::from([("code".to_string(), Type::I64)]),
+            database.signatures(),
+        )
+        .expect("effect-only process exit should emit directly from typed IR");
+        assert_eq!(
+            process_exit_direct,
+            format!("flux__process_exit({})", local_c_name("code"))
         );
 
         let callback_ty = Type::Function {
@@ -56867,6 +56969,18 @@ fn store(key: str, value: str) -> bool {
     return android.secureStore(key, value)
 }
 
+fn vibrate(duration: i64) -> void {
+    android.vibrate(duration)
+}
+
+fn nestedVibrate(left: i64, right: i64) -> void {
+    android.vibrate(left + right)
+}
+
+fn focusNextDefault() -> void {
+    android.focusNext()
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -56931,6 +57045,28 @@ fn main() -> i64 {
                     local_c_name("value")
                 ),
             ),
+            (
+                "vibrate",
+                HashMap::from([("duration".to_string(), Type::I64)]),
+                format!("flux__android_vibrate({})", local_c_name("duration")),
+            ),
+            (
+                "nestedVibrate",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__android_vibrate(flux_add_i64({}, {}))",
+                    local_c_name("left"),
+                    local_c_name("right")
+                ),
+            ),
+            (
+                "focusNextDefault",
+                HashMap::new(),
+                "flux__android_focus_next()".to_string(),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -56973,7 +57109,7 @@ fn main() -> i64 {
         assert!(
             emit_cfg_scalar_expr_direct(
                 &callback_call,
-                &HashMap::from([("callback".to_string(), callback_ty)]),
+                &HashMap::from([("callback".to_string(), callback_ty.clone())]),
                 database.signatures(),
             )
             .is_none(),
@@ -56991,14 +57127,36 @@ fn main() -> i64 {
                 }],
             },
         };
+        let effect_direct = emit_cfg_scalar_expr_direct(
+            &effect_call,
+            &HashMap::from([("duration".to_string(), Type::I64)]),
+            database.signatures(),
+        )
+        .expect("effect-only Android call should emit directly from typed IR");
+        assert_eq!(
+            effect_direct,
+            format!("flux__android_vibrate({})", local_c_name("duration"))
+        );
+
+        let callback_effect_call = CfgScalarExpr {
+            ty: Type::Void,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "android".to_string(),
+                name: "pickFile".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: callback_ty.clone(),
+                    kind: CfgScalarExprKind::Name("callback".to_string()),
+                }],
+            },
+        };
         assert!(
             emit_cfg_scalar_expr_direct(
-                &effect_call,
-                &HashMap::from([("duration".to_string(), Type::I64)]),
+                &callback_effect_call,
+                &HashMap::from([("callback".to_string(), callback_ty)]),
                 database.signatures(),
             )
             .is_none(),
-            "effect-only Android calls should retain their established lowering path"
+            "callback-based Android void calls should retain their established lowering path"
         );
     }
 
