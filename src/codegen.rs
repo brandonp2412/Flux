@@ -39598,13 +39598,7 @@ fn cfg_sequence_expr_calls_are_reconstructable(
         return false;
     }
     arguments.iter().all(|argument| {
-        if matches!(&argument.kind, CfgScalarExprKind::AnonymousFunction { .. }) {
-            // Parent-function typed IR records the callback value and its nested
-            // body, but capture/parameter evaluation belongs to the callback's
-            // own synthetic CFG. Keep the source callback subtree intact until
-            // callback-local typed IR can be embedded in the sequence fact.
-            false
-        } else if matches!(
+        if matches!(
             &argument.kind,
             CfgScalarExprKind::Call { callee, .. }
                 if matches!(
@@ -46739,8 +46733,31 @@ fn emit_cfg_aggregate_constant(
     }
 }
 
-fn cfg_constant_value_as_ast(value: &ConstantValue) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
+#[derive(Debug)]
+struct CfgSyntheticAstSpans {
+    source_id: SourceId,
+    next_column: usize,
+}
+
+impl Default for CfgSyntheticAstSpans {
+    fn default() -> Self {
+        Self {
+            source_id: SourceId::from_name("flux://typed-ir-synthetic-ast"),
+            next_column: 1,
+        }
+    }
+}
+
+impl CfgSyntheticAstSpans {
+    fn next(&mut self) -> SourceSpan {
+        let span = SourceSpan::new(1, self.next_column, 1).with_source(self.source_id);
+        self.next_column = self.next_column.saturating_add(1);
+        span
+    }
+}
+
+fn cfg_constant_value_as_ast(value: &ConstantValue, spans: &mut CfgSyntheticAstSpans) -> Expr {
+    let span = spans.next();
     let kind = match value {
         ConstantValue::I64(value) => ExprKind::Int(*value),
         ConstantValue::Bool(value) => ExprKind::Bool(*value),
@@ -46753,11 +46770,11 @@ fn cfg_constant_value_as_ast(value: &ConstantValue) -> Expr {
     }
 }
 
-fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
+fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue, spans: &mut CfgSyntheticAstSpans) -> Expr {
+    let span = spans.next();
     match value {
-        CfgAggregateValue::Scalar(value) => cfg_constant_value_as_ast(value),
-        CfgAggregateValue::Direct(value) => cfg_scalar_expr_as_ast(value),
+        CfgAggregateValue::Scalar(value) => cfg_constant_value_as_ast(value, spans),
+        CfgAggregateValue::Direct(value) => cfg_scalar_expr_as_ast_with_spans(value, spans),
         CfgAggregateValue::EnumVariant {
             enum_name,
             variant,
@@ -46770,7 +46787,10 @@ fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue) -> Expr {
                 namespace_span: span,
                 name: variant.clone(),
                 name_span: span,
-                args: payloads.iter().map(cfg_aggregate_value_as_ast).collect(),
+                args: payloads
+                    .iter()
+                    .map(|value| cfg_aggregate_value_as_ast(value, spans))
+                    .collect(),
                 named_args: Vec::new(),
             },
         },
@@ -46781,7 +46801,7 @@ fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue) -> Expr {
             span,
             kind: ExprKind::Call {
                 name: interface.clone(),
-                args: vec![cfg_aggregate_value_as_ast(value)],
+                args: vec![cfg_aggregate_value_as_ast(value, spans)],
                 named_args: Vec::new(),
             },
         },
@@ -46790,24 +46810,33 @@ fn cfg_aggregate_value_as_ast(value: &CfgAggregateValue) -> Expr {
             span,
             kind: ExprKind::None,
         },
-        CfgAggregateValue::Aggregate(value) => cfg_aggregate_constant_as_ast(value),
+        CfgAggregateValue::Aggregate(value) => cfg_aggregate_constant_as_ast(value, spans),
     }
 }
 
-fn cfg_aggregate_constant_as_ast(aggregate: &CfgAggregateConstant) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
+fn cfg_aggregate_constant_as_ast(
+    aggregate: &CfgAggregateConstant,
+    spans: &mut CfgSyntheticAstSpans,
+) -> Expr {
+    let span = spans.next();
     let kind = match &aggregate.kind {
-        CfgAggregateConstantKind::List(values) => {
-            ExprKind::List(values.iter().map(cfg_aggregate_value_as_ast).collect())
-        }
-        CfgAggregateConstantKind::Set(values) => {
-            ExprKind::Set(values.iter().map(cfg_aggregate_value_as_ast).collect())
-        }
+        CfgAggregateConstantKind::List(values) => ExprKind::List(
+            values
+                .iter()
+                .map(|value| cfg_aggregate_value_as_ast(value, spans))
+                .collect(),
+        ),
+        CfgAggregateConstantKind::Set(values) => ExprKind::Set(
+            values
+                .iter()
+                .map(|value| cfg_aggregate_value_as_ast(value, spans))
+                .collect(),
+        ),
         CfgAggregateConstantKind::Map(entries) => {
             let mut values = Vec::with_capacity(entries.len() * 2);
             for (key, value) in entries {
-                values.push(cfg_constant_value_as_ast(key));
-                values.push(cfg_aggregate_value_as_ast(value));
+                values.push(cfg_constant_value_as_ast(key, spans));
+                values.push(cfg_aggregate_value_as_ast(value, spans));
             }
             ExprKind::Map(values)
         }
@@ -46817,20 +46846,23 @@ fn cfg_aggregate_constant_as_ast(aggregate: &CfgAggregateConstant) -> Expr {
                 .map(|(name, value)| crate::ast::RecordLiteralField {
                     name: name.clone(),
                     name_span: name.as_ref().map(|_| span),
-                    value: cfg_aggregate_value_as_ast(value),
+                    value: cfg_aggregate_value_as_ast(value, spans),
                 })
                 .collect(),
         },
         CfgAggregateConstantKind::Struct { name, base, fields } => ExprKind::StructLiteral {
             name: name.clone(),
             name_span: span,
-            base: base.as_ref().map(cfg_aggregate_value_as_ast).map(Box::new),
+            base: base
+                .as_ref()
+                .map(|value| cfg_aggregate_value_as_ast(value, spans))
+                .map(Box::new),
             fields: fields
                 .iter()
                 .map(|(field, value)| crate::ast::StructLiteralField {
                     name: field.clone(),
                     name_span: span,
-                    value: cfg_aggregate_value_as_ast(value),
+                    value: cfg_aggregate_value_as_ast(value, spans),
                 })
                 .collect(),
         },
@@ -46843,7 +46875,14 @@ fn cfg_aggregate_constant_as_ast(aggregate: &CfgAggregateConstant) -> Expr {
 }
 
 fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
+    cfg_scalar_expr_as_ast_with_spans(expr, &mut CfgSyntheticAstSpans::default())
+}
+
+fn cfg_scalar_expr_as_ast_with_spans(
+    expr: &CfgScalarExpr,
+    spans: &mut CfgSyntheticAstSpans,
+) -> Expr {
+    let span = spans.next();
     let kind = match &expr.kind {
         CfgScalarExprKind::Constant(constant) => match constant {
             ConstantValue::I64(value) => ExprKind::Int(*value),
@@ -46852,14 +46891,16 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
         },
         CfgScalarExprKind::Nil => ExprKind::Nil,
         CfgScalarExprKind::NoneLiteral => ExprKind::None,
-        CfgScalarExprKind::Aggregate(value) => return cfg_aggregate_constant_as_ast(value),
+        CfgScalarExprKind::Aggregate(value) => {
+            return cfg_aggregate_constant_as_ast(value, spans);
+        }
         CfgScalarExprKind::Name(name) => ExprKind::Var(name.clone()),
         CfgScalarExprKind::Field {
             base,
             name,
             optional,
         } => ExprKind::Field {
-            base: Box::new(cfg_scalar_expr_as_ast(base)),
+            base: Box::new(cfg_scalar_expr_as_ast_with_spans(base, spans)),
             name: name.clone(),
             name_span: span,
             optional: *optional,
@@ -46869,8 +46910,8 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             index,
             optional,
         } => ExprKind::Index {
-            base: Box::new(cfg_scalar_expr_as_ast(base)),
-            index: Box::new(cfg_scalar_expr_as_ast(index)),
+            base: Box::new(cfg_scalar_expr_as_ast_with_spans(base, spans)),
+            index: Box::new(cfg_scalar_expr_as_ast_with_spans(index, spans)),
             optional: *optional,
         },
         CfgScalarExprKind::Slice {
@@ -46879,10 +46920,19 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             end,
             step,
         } => ExprKind::Slice {
-            base: Box::new(cfg_scalar_expr_as_ast(base)),
-            start: start.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
-            end: end.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
-            step: step.as_deref().map(cfg_scalar_expr_as_ast).map(Box::new),
+            base: Box::new(cfg_scalar_expr_as_ast_with_spans(base, spans)),
+            start: start
+                .as_deref()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .map(Box::new),
+            end: end
+                .as_deref()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .map(Box::new),
+            step: step
+                .as_deref()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .map(Box::new),
         },
         CfgScalarExprKind::InterfacePack {
             interface,
@@ -46892,7 +46942,7 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             debug_assert!(matches!(&value.ty, Type::Named(name) if name == target));
             ExprKind::Call {
                 name: interface.clone(),
-                args: vec![cfg_scalar_expr_as_ast(value)],
+                args: vec![cfg_scalar_expr_as_ast_with_spans(value, spans)],
                 named_args: Vec::new(),
             }
         }
@@ -46918,7 +46968,7 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                         })
                         .collect(),
                     return_type: return_type.clone(),
-                    body: Box::new(cfg_scalar_expr_as_ast(body)),
+                    body: Box::new(cfg_scalar_expr_as_ast_with_spans(body, spans)),
                 },
             };
         }
@@ -46931,24 +46981,30 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
                 span: *bind_span,
                 kind: ExprKind::Call {
                     name: "bind".to_string(),
-                    args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+                    args: arguments
+                        .iter()
+                        .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                        .collect(),
                     named_args: Vec::new(),
                 },
             };
         }
         CfgScalarExprKind::Await { value } => {
-            ExprKind::Await(Box::new(cfg_scalar_expr_as_ast(value)))
+            ExprKind::Await(Box::new(cfg_scalar_expr_as_ast_with_spans(value, spans)))
         }
         CfgScalarExprKind::Call { callee, arguments } => ExprKind::Call {
             name: callee.clone(),
-            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            args: arguments
+                .iter()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .collect(),
             named_args: Vec::new(),
         },
         CfgScalarExprKind::NamedCall { callee, arguments } => {
             let mut args = Vec::new();
             let mut named_args = Vec::new();
             for (name, value) in arguments {
-                let value = cfg_scalar_expr_as_ast(value);
+                let value = cfg_scalar_expr_as_ast_with_spans(value, spans);
                 if let Some(name) = name {
                     named_args.push(NamedArg {
                         name: name.clone(),
@@ -46974,7 +47030,10 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             namespace_span: span,
             name: name.clone(),
             name_span: span,
-            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            args: arguments
+                .iter()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .collect(),
             named_args: Vec::new(),
         },
         CfgScalarExprKind::NamedQualifiedCall {
@@ -46985,7 +47044,7 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             let mut args = Vec::new();
             let mut named_args = Vec::new();
             for (argument_name, value) in arguments {
-                let value = cfg_scalar_expr_as_ast(value);
+                let value = cfg_scalar_expr_as_ast_with_spans(value, spans);
                 if let Some(argument_name) = argument_name {
                     named_args.push(NamedArg {
                         name: argument_name.clone(),
@@ -47010,20 +47069,23 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             callee,
             arguments,
         } => ExprKind::Pipe {
-            input: Box::new(cfg_scalar_expr_as_ast(optional)),
+            input: Box::new(cfg_scalar_expr_as_ast_with_spans(optional, spans)),
             name: callee.clone(),
             name_span: span,
-            args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
+            args: arguments
+                .iter()
+                .map(|value| cfg_scalar_expr_as_ast_with_spans(value, spans))
+                .collect(),
             optional: true,
         },
         CfgScalarExprKind::Unary { op, operand } => ExprKind::Unary {
             op: *op,
-            expr: Box::new(cfg_scalar_expr_as_ast(operand)),
+            expr: Box::new(cfg_scalar_expr_as_ast_with_spans(operand, spans)),
         },
         CfgScalarExprKind::Binary { op, left, right } => ExprKind::Binary {
-            left: Box::new(cfg_scalar_expr_as_ast(left)),
+            left: Box::new(cfg_scalar_expr_as_ast_with_spans(left, spans)),
             op: *op,
-            right: Box::new(cfg_scalar_expr_as_ast(right)),
+            right: Box::new(cfg_scalar_expr_as_ast_with_spans(right, spans)),
         },
     };
     Expr {
@@ -47917,6 +47979,93 @@ fn main() -> i64 {
         assert!(out.contains("flux__transform_buffer_"));
         assert!(out.contains(&function_c_name("double")));
         assert!(out.contains(&function_c_name("positive")));
+    }
+
+    #[test]
+    fn inline_sequence_callback_lowers_from_typed_ir_without_ast_root_or_span_aliases() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let factor: i64 = 3
+    let transformed: i64[] = map(values, fn(value: i64) { value * factor })
+    return transformed.length
+}
+
+fn main() -> i64 {
+    let values: i64[] = [1, 2, 3]
+    return exercise(values)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("inline sequence callback typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "map"
+                )
+            })
+            .expect("typed IR should retain the map call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("typed IR should retain the reconstructable sequence root");
+
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        assert!(cfg_sequence_expr_calls_are_reconstructable(
+            sequence,
+            &env,
+            database.signatures()
+        ));
+
+        let reconstructed = cfg_scalar_expr_as_ast(sequence);
+        let ExprKind::Call { name, args, .. } = &reconstructed.kind else {
+            panic!("typed sequence root should reconstruct as a call");
+        };
+        assert_eq!(crate::builtin_names::global_impl(name), "map");
+        let ExprKind::AnonymousFunction { body, .. } = &args[1].kind else {
+            panic!("typed map callback should reconstruct as an anonymous function");
+        };
+        let ExprKind::Binary { left, op, right } = &body.kind else {
+            panic!("typed callback body should preserve multiplication");
+        };
+        assert_eq!(*op, BinOp::Mul);
+        assert!(matches!(&left.kind, ExprKind::Var(name) if name == "value"));
+        assert!(matches!(&right.kind, ExprKind::Int(3)));
+        assert_ne!(body.span, left.span);
+        assert_ne!(body.span, right.span);
+        assert_ne!(left.span, right.span);
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(0),
+        };
+        assert_eq!(
+            sequence_lowering_kind(&fake, &env, database.signatures(), &facts),
+            Some(SequenceLoweringKind::Transform)
+        );
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_transform_binding(
+            &mut out,
+            "",
+            ("transformed", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("inline sequence callback should emit from typed IR");
+        assert!(out.contains("flux_mul_i64(flux__local_value, INT64_C(3))"));
     }
 
     #[test]
