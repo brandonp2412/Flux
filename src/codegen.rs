@@ -48470,6 +48470,125 @@ fn emit_cfg_scalar_expr_direct(
                 .unwrap_or_else(|| function_c_name(implementation));
             Some(format!("{callee}({})", rendered.join(", ")))
         }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "time" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let render_i64_args = |count: usize| -> Option<Vec<String>> {
+                if arguments.len() != count {
+                    return None;
+                }
+                arguments
+                    .iter()
+                    .map(|argument| {
+                        if signatures.canonical_type(&argument.ty) != Type::I64
+                            || !matches!(
+                                argument.kind,
+                                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                            )
+                        {
+                            return None;
+                        }
+                        emit_cfg_scalar_expr_direct(argument, env, signatures)
+                    })
+                    .collect()
+            };
+
+            match name {
+                "unixMillis" if arguments.is_empty() && ty == Type::I64 => {
+                    Some("flux__time_unix_millis()".to_string())
+                }
+                "monotonicMillis" if arguments.is_empty() && ty == Type::I64 => {
+                    Some("flux__time_monotonic_millis()".to_string())
+                }
+                "milliseconds" | "seconds" | "minutes" | "hours" | "days" | "weeks"
+                    if ty == Type::I64 =>
+                {
+                    let values = render_i64_args(1)?;
+                    let value = &values[0];
+                    Some(match name {
+                        "milliseconds" => value.clone(),
+                        "seconds" => format!("flux_mul_i64({value}, INT64_C(1000))"),
+                        "minutes" => format!(
+                            "flux_mul_i64(flux_mul_i64({value}, INT64_C(60)), INT64_C(1000))"
+                        ),
+                        "hours" => format!(
+                            "flux_mul_i64(flux_mul_i64(flux_mul_i64({value}, INT64_C(60)), INT64_C(60)), INT64_C(1000))"
+                        ),
+                        "days" => format!(
+                            "flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64({value}, INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))"
+                        ),
+                        "weeks" => format!(
+                            "flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64(flux_mul_i64({value}, INT64_C(7)), INT64_C(24)), INT64_C(60)), INT64_C(60)), INT64_C(1000))"
+                        ),
+                        _ => unreachable!(),
+                    })
+                }
+                "isLeapYear" if ty == Type::Bool => {
+                    let values = render_i64_args(1)?;
+                    Some(format!("flux__time_is_leap_year({})", values[0]))
+                }
+                "daysInMonth" if ty == Type::I64 => {
+                    let values = render_i64_args(2)?;
+                    Some(format!(
+                        "flux__time_days_in_month({}, {})",
+                        values[0], values[1]
+                    ))
+                }
+                "daysInYear" if ty == Type::I64 => {
+                    let values = render_i64_args(1)?;
+                    Some(format!("flux__time_days_in_year({})", values[0]))
+                }
+                "local" if ty == Type::I64 => {
+                    let values = render_i64_args(7)?;
+                    Some(format!(
+                        "flux__time_local_unix_millis({})",
+                        values.join(", ")
+                    ))
+                }
+                "utcUnixMillis" if ty == Type::I64 => {
+                    let values = render_i64_args(7)?;
+                    Some(format!("flux__time_utc_unix_millis({})", values.join(", ")))
+                }
+                "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
+                | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
+                | "localDay" | "localHour" | "localMinute" | "localSecond" | "localMillisecond"
+                | "localWeekday" | "localDayOfYear"
+                    if ty == Type::I64 =>
+                {
+                    let values = render_i64_args(1)?;
+                    let (helper, part) = match name {
+                        "utcYear" => ("utc", 0),
+                        "utcMonth" => ("utc", 1),
+                        "utcDay" => ("utc", 2),
+                        "utcHour" => ("utc", 3),
+                        "utcMinute" => ("utc", 4),
+                        "utcSecond" => ("utc", 5),
+                        "utcMillisecond" => ("utc", 6),
+                        "utcWeekday" => ("utc", 7),
+                        "utcDayOfYear" => ("utc", 8),
+                        "localYear" => ("local", 0),
+                        "localMonth" => ("local", 1),
+                        "localDay" => ("local", 2),
+                        "localHour" => ("local", 3),
+                        "localMinute" => ("local", 4),
+                        "localSecond" => ("local", 5),
+                        "localMillisecond" => ("local", 6),
+                        "localWeekday" => ("local", 7),
+                        "localDayOfYear" => ("local", 8),
+                        _ => unreachable!(),
+                    };
+                    Some(format!("flux__time_{helper}_part({}, {part})", values[0]))
+                }
+                "localOffset" if ty == Type::I64 => {
+                    let values = render_i64_args(1)?;
+                    Some(format!("flux__time_local_offset_safe({})", values[0]))
+                }
+                _ => None,
+            }
+        }
         CfgScalarExprKind::Index {
             base,
             index,
@@ -54985,6 +55104,115 @@ fn main() -> i64 {
                 local_c_name("offset"),
                 local_c_name("value")
             )
+        );
+    }
+
+    #[test]
+    fn direct_scalar_time_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn utcPart(value: i64) -> i64 {
+    return time.utcYear(value)
+}
+
+fn leapYear(value: i64) -> bool {
+    return time.isLeapYear(value)
+}
+
+fn monthDays(year: i64, month: i64) -> i64 {
+    return time.daysInMonth(year, month)
+}
+
+fn seconds(value: i64) -> i64 {
+    return time.seconds(value)
+}
+
+fn clock() -> i64 {
+    return time.unixMillis()
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct time qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "utcPart",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux__time_utc_part({}, 0)", local_c_name("value")),
+            ),
+            (
+                "leapYear",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux__time_is_leap_year({})", local_c_name("value")),
+            ),
+            (
+                "monthDays",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_days_in_month({}, {})",
+                    local_c_name("year"),
+                    local_c_name("month")
+                ),
+            ),
+            (
+                "seconds",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux_mul_i64({}, INT64_C(1000))", local_c_name("value")),
+            ),
+            (
+                "clock",
+                HashMap::new(),
+                "flux__time_unix_millis()".to_string(),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("time qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("time qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("time qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported scalar time call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+        }
+
+        let unsupported = CfgScalarExpr {
+            ty: Type::Void,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "time".to_string(),
+                name: "sleep".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Name("value".to_string()),
+                }],
+            },
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                &unsupported,
+                &HashMap::from([("value".to_string(), Type::I64)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "effect-only time calls should retain their established lowering path"
         );
     }
 
