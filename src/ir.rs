@@ -573,6 +573,30 @@ impl OwnershipCall {
             .unwrap_or_default()
     }
 
+    /// Return the normalized ownership facts for one immutable-borrow argument.
+    ///
+    /// Keeping the projected path, exact borrowed source definitions, and typed
+    /// value identity together gives future partial-move validation one stable
+    /// boundary for overlap checks without indexing parallel call vectors or
+    /// rebuilding the checked expression tree.
+    pub fn borrowed_argument_at(
+        &self,
+        index: usize,
+    ) -> Option<(
+        &[String],
+        &[ControlFlowDefinitionId],
+        Option<ControlFlowValueId>,
+    )> {
+        if self.argument_kind(index) != Some(OwnershipCallArgumentKind::ImmutableBorrow) {
+            return None;
+        }
+        Some((
+            self.argument_projection_at(index),
+            self.borrowed_argument_definitions_at(index),
+            self.arguments.get(index).copied(),
+        ))
+    }
+
     /// Returns the exact reaching definitions consumed by one argument, if
     /// this call boundary transfers ownership for that argument.
     ///

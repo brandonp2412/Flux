@@ -19560,6 +19560,16 @@ fn main() -> i64 {
         ControlFlowDefinitionId::Parameter(0)
     ));
     assert!(call.argument_definitions[1].is_empty());
+    let (projection, definitions, value) = call
+        .borrowed_argument_at(0)
+        .expect("immutable-borrow argument view should preserve normalized facts");
+    assert!(projection.is_empty());
+    assert_eq!(
+        definitions,
+        call.borrowed_argument_definitions[0].as_slice()
+    );
+    assert_eq!(value, call.arguments.first().copied());
+    assert!(call.borrowed_argument_at(1).is_none());
 }
 
 #[test]
@@ -19632,6 +19642,15 @@ fn main() -> i64 {
         call.argument_definitions[0][0],
         ControlFlowDefinitionId::Parameter(0)
     ));
+    let (projection, definitions, value) = call
+        .borrowed_argument_at(0)
+        .expect("projected immutable borrow should expose one normalized view");
+    assert_eq!(projection, call.argument_projection_at(0));
+    assert_eq!(
+        definitions,
+        call.borrowed_argument_definitions[0].as_slice()
+    );
+    assert_eq!(value, call.arguments.first().copied());
 }
 
 #[test]
