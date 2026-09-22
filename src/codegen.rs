@@ -48447,20 +48447,51 @@ fn emit_cfg_scalar_expr_direct(
                 CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
             ) =>
         {
-            let Type::List(element) = signatures.canonical_type(&base.ty) else {
-                return None;
-            };
-            if signatures.canonical_type(&index.ty) != Type::I64
-                || signatures.canonical_type(&element) != ty
-            {
-                return None;
+            let base_ty = signatures.canonical_type(&base.ty);
+            let index_ty = signatures.canonical_type(&index.ty);
+            let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            let rendered_index = emit_cfg_scalar_expr_direct(index, env, signatures)?;
+            match base_ty {
+                Type::List(element)
+                    if index_ty == Type::I64 && signatures.canonical_type(&element) == ty =>
+                {
+                    let element_c = c_type(&element, signatures);
+                    Some(format!(
+                        "(*(({element_c} *)flux_list_at({rendered_base}, {rendered_index}, sizeof({element_c}))))"
+                    ))
+                }
+                Type::Map(key, value)
+                    if index_ty == signatures.canonical_type(&key)
+                        && ty == Type::Optional(value.clone())
+                        && signatures.is_copy_type(&value) =>
+                {
+                    let key_ty = signatures.canonical_type(&key);
+                    if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
+                        return None;
+                    }
+                    let map_ty = Type::Map(key.clone(), value.clone());
+                    let map_c = c_type(&map_ty, signatures);
+                    let key_c = c_type(&key, signatures);
+                    let value_c = c_type(&value, signatures);
+                    let result_c = c_type(&ty, signatures);
+                    let equality = match key_ty {
+                        Type::Str => format!(
+                            "strcmp(flux__typed_map_index_key, *((const char **)flux_list_at_unchecked(flux__typed_map_index_base.keys, flux__typed_map_index_i, sizeof({key_c})))) == 0"
+                        ),
+                        Type::I64 | Type::Bool => format!(
+                            "flux__typed_map_index_key == *(({key_c} *)flux_list_at_unchecked(flux__typed_map_index_base.keys, flux__typed_map_index_i, sizeof({key_c})))"
+                        ),
+                        _ => unreachable!("map key kind checked above"),
+                    };
+                    let value_read = format!(
+                        "*((({value_c} *)flux_list_at_unchecked(flux__typed_map_index_base.values, flux__typed_map_index_i, sizeof({value_c}))))"
+                    );
+                    Some(format!(
+                        "__extension__ ({{ {map_c} flux__typed_map_index_base = {rendered_base}; {key_c} flux__typed_map_index_key = {rendered_index}; {result_c} flux__typed_map_index_result = ({result_c}){{ .has_value = false }}; for (size_t flux__typed_map_index_i = 0; flux__typed_map_index_i < flux__typed_map_index_base.keys.len; ++flux__typed_map_index_i) {{ if ({equality}) {{ flux__typed_map_index_result.has_value = true; flux__typed_map_index_result.value = {value_read}; break; }} }} flux__typed_map_index_result; }})"
+                    ))
+                }
+                _ => None,
             }
-            let base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
-            let index = emit_cfg_scalar_expr_direct(index, env, signatures)?;
-            let element_c = c_type(&element, signatures);
-            Some(format!(
-                "(*(({element_c} *)flux_list_at({base}, {index}, sizeof({element_c}))))"
-            ))
         }
         CfgScalarExprKind::Slice {
             base,
@@ -52205,6 +52236,38 @@ fn main() -> i64 {
                 ));
             }
 
+            let direct_env = HashMap::from([
+                (
+                    "values".to_string(),
+                    if expected_optional_base {
+                        Type::Optional(Box::new(Type::Map(
+                            Box::new(Type::Str),
+                            Box::new(Type::I64),
+                        )))
+                    } else {
+                        Type::Map(Box::new(Type::Str), Box::new(Type::I64))
+                    },
+                ),
+                ("key".to_string(), Type::Str),
+            ]);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("map index should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &direct_env, database.signatures());
+            if function == "direct" {
+                let direct = direct.expect("named map index should render directly from typed IR");
+                assert!(direct.contains("flux__typed_map_index_"), "{direct}");
+                assert!(direct.contains("strcmp("), "{direct}");
+                assert!(direct.contains(&local_c_name("values")), "{direct}");
+                assert!(direct.contains(&local_c_name("key")), "{direct}");
+            } else {
+                assert!(
+                    direct.is_none(),
+                    "{function} should retain the established map-index fallback"
+                );
+            }
+
             let fake = Expr {
                 line: index.span.line,
                 span: index.span,
@@ -52231,7 +52294,11 @@ fn main() -> i64 {
 
             assert!(emitted.contains(&local_c_name("values")));
             assert!(emitted.contains(&local_c_name("key")));
-            assert!(emitted.contains("flux__map_index_"));
+            if function == "direct" {
+                assert!(emitted.contains("flux__typed_map_index_"), "{emitted}");
+            } else {
+                assert!(emitted.contains("flux__map_index_"), "{emitted}");
+            }
             assert!(emitted.contains("strcmp("));
             assert!(!emitted.contains("checked-ast-map-index"));
             if expected_optional_base {
@@ -52255,6 +52322,18 @@ fn main() -> i64 {
                 ..
             }) if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
         ));
+        assert!(
+            emit_cfg_scalar_expr_direct(
+                facts
+                    .scalar_exprs
+                    .get(&source_span_key(index.span))
+                    .expect("temporary map index should have scalar typed-IR facts"),
+                &HashMap::from([("key".to_string(), Type::Str)]),
+                database.signatures(),
+            )
+            .is_none(),
+            "temporary map bases should retain aggregate-aware map-index lowering"
+        );
         let fake = Expr {
             line: index.span.line,
             span: index.span,
