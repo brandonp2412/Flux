@@ -34724,6 +34724,15 @@ fn cfg_borrowed_collection_value(
                     op: UnaryOp::Borrow,
                     operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
                 },
+                crate::ir::ControlFlowValueKind::Index {
+                    base,
+                    index,
+                    optional,
+                } => CfgScalarExprKind::Index {
+                    base: Box::new(cfg_borrowed_index_base(cfg, *base)?),
+                    index: Box::new(cfg_direct_scalar_expr(cfg, *index)?),
+                    optional: *optional,
+                },
                 _ => return None,
             };
             Some(CfgScalarExpr {
@@ -50810,6 +50819,11 @@ fn borrowOptionalList(values: i64[]?) -> i64 {
     return 0
 }
 
+fn borrowOptionalIndex(rows: i64[]?[], at: i64) -> i64? {
+    let view: i64[]? = borrow rows[at]
+    return view?.count
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -50870,6 +50884,19 @@ fn main() -> i64 {
                     Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
                 )]),
                 local_c_name("values"),
+            ),
+            (
+                "borrowOptionalIndex",
+                HashMap::from([
+                    (
+                        "rows".to_string(),
+                        Type::List(Box::new(Type::Optional(Box::new(Type::List(Box::new(
+                            Type::I64,
+                        )))))),
+                    ),
+                    ("at".to_string(), Type::I64),
+                ]),
+                "flux_list_at(".to_string(),
             ),
         ] {
             let graph = database
