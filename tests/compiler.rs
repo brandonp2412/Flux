@@ -27250,6 +27250,34 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_backend_emits_void_anonymous_function_helpers() {
+    let source = r#"
+type Observer = fn(i64) -> void
+
+fn invoke(observer: Observer, value: i64) -> void {
+    observer(value)
+}
+
+fn main() -> i64 {
+    let observer: Observer = fn(value: i64) { print(value) }
+    invoke(observer, 7)
+    return 0
+}
+"#;
+
+    check_source(source).expect("void anonymous helper should typecheck");
+    let generated = compile_to_c(source).expect("void anonymous helper should compile");
+    assert!(
+        generated.contains("static void flux__lambda_"),
+        "void anonymous functions should lower to native helpers"
+    );
+    assert!(
+        generated.contains("flux__local_value"),
+        "the helper body should retain its typed parameter read"
+    );
+}
+
+#[test]
 fn typed_ir_backend_consumes_constants_inside_inline_sequence_callbacks() {
     let source = r#"
 fn main() -> i64 {

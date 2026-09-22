@@ -26872,19 +26872,18 @@ fn emit_lambda_body_with_cfg(
     let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
     let rewrite_facts = cfg_rewrite_facts(&cfg);
     let proofs = cfg_checked_i64_proofs(&cfg);
-    if let Some(expected) = expected {
-        emit_expr_for_expected_with_cfg_proofs(
-            body,
-            expected,
-            env,
-            signatures,
-            &proofs,
-            &rewrite_facts,
-        )
-    } else {
-        let rewritten = substitute_nested_ir_constant_arguments(body, &rewrite_facts);
-        Ok(emit_expr(&rewritten, env, signatures)?.code)
-    }
+    let body_type = match expected {
+        Some(expected) => signatures.canonical_type(expected),
+        None => signatures.canonical_type(&type_of_expr(body, env, signatures)?),
+    };
+    emit_expr_for_expected_with_cfg_proofs(
+        body,
+        &body_type,
+        env,
+        signatures,
+        &proofs,
+        &rewrite_facts,
+    )
 }
 
 type FunctionIrCache = HashMap<String, crate::ir::ControlFlowGraph>;
