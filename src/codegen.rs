@@ -49482,6 +49482,111 @@ fn emit_cfg_scalar_expr_direct(
         CfgScalarExprKind::Field {
             base,
             name,
+            optional: true,
+        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+            let Type::Optional(inner) = signatures.canonical_type(&base.ty) else {
+                return None;
+            };
+            let base_ty = Type::Optional(inner.clone());
+            let inner_ty = signatures.canonical_type(&inner);
+            let rendered_base = emit_cfg_scalar_expr_direct(base, env, signatures)?;
+            let inner_value = "flux__optional_access_value.value";
+            let (field_ty, field_code) = match &inner_ty {
+                Type::List(element) => {
+                    let field_ty = match crate::builtin_names::list_member_impl(name) {
+                        "length" => Type::I64,
+                        "isEmpty" | "isNotEmpty" => Type::Bool,
+                        "first" | "last" | "single" => (**element).clone(),
+                        _ => return None,
+                    };
+                    let element_c = c_type(element, signatures);
+                    let field_code = match crate::builtin_names::list_member_impl(name) {
+                        "length" => format!("({inner_value}).len"),
+                        "isEmpty" => format!("(({inner_value}).len == 0)"),
+                        "isNotEmpty" => format!("(({inner_value}).len != 0)"),
+                        "first" => format!(
+                            "(*(({element_c} *)flux_list_at({inner_value}, INT64_C(0), sizeof({element_c}))))"
+                        ),
+                        "last" => format!(
+                            "(*(({element_c} *)flux_list_at({inner_value}, INT64_C(-1), sizeof({element_c}))))"
+                        ),
+                        "single" => format!("(*(({element_c} *)flux_list_single({inner_value})))"),
+                        _ => unreachable!("optional list property validated above"),
+                    };
+                    (field_ty, field_code)
+                }
+                Type::Set(_) | Type::Map(_, _) => {
+                    let field_ty = match name.as_str() {
+                        "count" => Type::I64,
+                        "empty" | "nonempty" => Type::Bool,
+                        _ => return None,
+                    };
+                    let length_code = match &inner_ty {
+                        Type::Set(_) => format!("({inner_value}).len"),
+                        Type::Map(_, _) => format!("({inner_value}).keys.len"),
+                        _ => unreachable!("optional collection property branch"),
+                    };
+                    let field_code = match name.as_str() {
+                        "count" => length_code,
+                        "empty" => format!("({length_code} == 0)"),
+                        "nonempty" => format!("({length_code} != 0)"),
+                        _ => unreachable!("optional collection property validated above"),
+                    };
+                    (field_ty, field_code)
+                }
+                Type::Record(fields) => {
+                    let index = if let Ok(index) = name.parse::<usize>() {
+                        index
+                    } else {
+                        fields
+                            .iter()
+                            .position(|field| field.name.as_deref() == Some(name.as_str()))?
+                    };
+                    let field = fields.get(index)?;
+                    (
+                        field.ty.clone(),
+                        format!(
+                            "({inner_value}).{}",
+                            record_field_c_name(field.name.as_deref(), index)
+                        ),
+                    )
+                }
+                Type::Named(struct_name) => {
+                    let definition = signatures.struct_type(struct_name)?;
+                    let field = definition.field(name)?;
+                    (
+                        field.ty.clone(),
+                        format!("{inner_value}.{}", field_c_name(name)),
+                    )
+                }
+                _ => return None,
+            };
+            let field_ty = signatures.canonical_type(&field_ty);
+            if !signatures.is_copy_type(&field_ty) {
+                return None;
+            }
+            let expected = if matches!(field_ty, Type::Optional(_)) {
+                field_ty.clone()
+            } else {
+                Type::Optional(Box::new(field_ty.clone()))
+            };
+            if ty != expected {
+                return None;
+            }
+            let result_c = c_type(&ty, signatures);
+            let base_c = c_type(&base_ty, signatures);
+            let present = if matches!(field_ty, Type::Optional(_)) {
+                field_code
+            } else {
+                format!("({result_c}){{ .has_value = true, .value = {field_code} }}")
+            };
+            Some(format!(
+                "__extension__ ({{ {base_c} flux__optional_access_value = {rendered_base}; flux__optional_access_value.has_value ? {present} : ({result_c}){{ .has_value = false }}; }})"
+            ))
+        }
+        CfgScalarExprKind::Field {
+            base,
+            name,
             optional: false,
         } if matches!(
             base.kind,
@@ -52892,6 +52997,22 @@ fn optionalPointX(point: Point?) -> i64? {
     return point?.x
 }
 
+fn optionalListLength(values: i64[]?) -> i64? {
+    return values?.length
+}
+
+fn optionalListFirst(values: i64[]?) -> i64? {
+    return values?.first
+}
+
+fn optionalMapCount(values: map<i64, str>?) -> i64? {
+    return values?.count
+}
+
+fn optionalRecordAmount(value: (amount: i64, enabled: bool)?) -> i64? {
+    return value?.amount
+}
+
 fn listLength(values: i64[]) -> i64 {
     return values.length
 }
@@ -52943,7 +53064,11 @@ fn main() -> i64 {
             ("pointX", Some("point"), true),
             ("temporaryPointX", None, true),
             ("temporaryDynamicPointX", Some("value"), true),
-            ("optionalPointX", Some("point"), false),
+            ("optionalPointX", Some("point"), true),
+            ("optionalListLength", Some("values"), true),
+            ("optionalListFirst", Some("values"), true),
+            ("optionalMapCount", Some("values"), true),
+            ("optionalRecordAmount", Some("value"), true),
             ("listLength", Some("values"), true),
             ("listFirst", Some("values"), true),
             ("setCount", Some("values"), true),
@@ -52996,6 +53121,11 @@ fn main() -> i64 {
             let direct = direct.expect("named field/property should render directly from typed IR");
             let marker = match function {
                 "pointX" | "temporaryPointX" | "temporaryDynamicPointX" => field_c_name("x"),
+                "optionalPointX"
+                | "optionalListLength"
+                | "optionalListFirst"
+                | "optionalMapCount"
+                | "optionalRecordAmount" => "flux__optional_access_value".to_string(),
                 "listLength" | "setCount" => ".len".to_string(),
                 "listFirst" => "flux_list_at(".to_string(),
                 "mapCount" | "temporaryMapCount" => ".keys.len".to_string(),
