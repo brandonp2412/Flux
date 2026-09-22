@@ -40350,7 +40350,11 @@ fn emit_list_builder_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
+    let rewritten = rewrite_facts
+        .aggregates
+        .get(&source_span_key(expr.span))
+        .and_then(|shape| cfg_list_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts))
+        .unwrap_or_else(|| substitute_direct_ir_constant_arguments(expr, rewrite_facts));
     let ExprKind::List(items) = &rewritten.kind else {
         unreachable!()
     };
@@ -40668,6 +40672,120 @@ fn cfg_rewrite_expr_as_ast(
     expr.line = span.line;
     expr.span = span;
     Some(expr)
+}
+
+fn cfg_list_shape_as_ast(
+    root_span: SourceSpan,
+    shape: &CfgAggregateShape,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Expr> {
+    let CfgAggregateShape::List(items) = shape else {
+        return None;
+    };
+    let mut rewritten = Vec::with_capacity(items.len());
+    for item in items {
+        let expr = match item {
+            CfgListItemShape::Value(value) => {
+                cfg_rewrite_expr_as_ast(*value, env, signatures, rewrite_facts)?
+            }
+            CfgListItemShape::Spread {
+                span,
+                value,
+                optional,
+            } => {
+                let span = source_span_from_key(*span);
+                Expr {
+                    line: span.line,
+                    span,
+                    kind: ExprKind::ListSpread {
+                        value: Box::new(cfg_rewrite_expr_as_ast(
+                            *value,
+                            env,
+                            signatures,
+                            rewrite_facts,
+                        )?),
+                        spread_span: span,
+                        optional: *optional,
+                    },
+                }
+            }
+            CfgListItemShape::Optional { span, value } => {
+                let span = source_span_from_key(*span);
+                Expr {
+                    line: span.line,
+                    span,
+                    kind: ExprKind::ListOptional {
+                        value: Box::new(cfg_rewrite_expr_as_ast(
+                            *value,
+                            env,
+                            signatures,
+                            rewrite_facts,
+                        )?),
+                        question_span: span,
+                    },
+                }
+            }
+            CfgListItemShape::Conditional {
+                span,
+                condition,
+                binding,
+                value,
+                else_value,
+            } => {
+                let span = source_span_from_key(*span);
+                let condition =
+                    cfg_rewrite_expr_as_ast(*condition, env, signatures, rewrite_facts)?;
+                let mut guarded_env = env.clone();
+                let binding = if let Some(name) = binding {
+                    let condition_ty = type_of_expr(&condition, env, signatures).ok()?;
+                    let Type::Optional(inner) = signatures.canonical_type(&condition_ty) else {
+                        return None;
+                    };
+                    if name != "_" {
+                        guarded_env.insert(name.clone(), *inner);
+                    }
+                    Some(crate::ast::PatternBinding {
+                        name: name.clone(),
+                        span,
+                    })
+                } else {
+                    None
+                };
+                let value =
+                    cfg_rewrite_expr_as_ast(*value, &guarded_env, signatures, rewrite_facts)?;
+                let else_value = match else_value {
+                    Some(value) => Some(Box::new(cfg_rewrite_expr_as_ast(
+                        *value,
+                        env,
+                        signatures,
+                        rewrite_facts,
+                    )?)),
+                    None => None,
+                };
+                let else_span = else_value.as_ref().map(|_| span);
+                Expr {
+                    line: span.line,
+                    span,
+                    kind: ExprKind::ListIf {
+                        condition: Box::new(condition),
+                        binding,
+                        value: Box::new(value),
+                        else_value,
+                        if_span: span,
+                        else_span,
+                    },
+                }
+            }
+        };
+        rewritten.push(expr);
+    }
+    Some(Expr {
+        line: root_span.line,
+        span: root_span,
+        kind: ExprKind::List(rewritten),
+    })
 }
 
 fn cfg_list_comprehension_shape_as_ast(
@@ -47049,35 +47167,9 @@ mod cfg_rewrite_fact_tests {
             span: list_span,
             kind: ExprKind::List(vec![
                 unusable(scalar_span),
-                Expr {
-                    line: 1,
-                    span: optional_item_span,
-                    kind: ExprKind::ListOptional {
-                        value: Box::new(unusable(optional_value_span)),
-                        question_span: SourceSpan::new(1, 13, 1).with_source(source),
-                    },
-                },
-                Expr {
-                    line: 1,
-                    span: conditional_span,
-                    kind: ExprKind::ListIf {
-                        condition: Box::new(unusable(condition_span)),
-                        binding: None,
-                        value: Box::new(unusable(then_span)),
-                        else_value: Some(Box::new(unusable(else_span))),
-                        if_span: SourceSpan::new(1, 15, 2).with_source(source),
-                        else_span: Some(SourceSpan::new(1, 29, 4).with_source(source)),
-                    },
-                },
-                Expr {
-                    line: 1,
-                    span: spread_item_span,
-                    kind: ExprKind::ListSpread {
-                        value: Box::new(unusable(spread_value_span)),
-                        spread_span: SourceSpan::new(1, 39, 3).with_source(source),
-                        optional: false,
-                    },
-                },
+                unusable(optional_item_span),
+                unusable(conditional_span),
+                unusable(spread_item_span),
             ]),
         };
         let mut facts = CfgRewriteFacts::default();
