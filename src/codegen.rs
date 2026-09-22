@@ -48642,6 +48642,24 @@ fn emit_cfg_scalar_expr_direct(
                 rendered.join(", ")
             ))
         }
+        CfgScalarExprKind::Call { callee, arguments } if env.contains_key(callee) => {
+            let Type::Function { params, returns } = signatures.canonical_type(env.get(callee)?)
+            else {
+                return None;
+            };
+            if params.len() != arguments.len()
+                || !cfg_scalar_result_is_direct(&returns, &ty, signatures)
+            {
+                return None;
+            }
+            let mut rendered = Vec::with_capacity(arguments.len());
+            for (argument, parameter) in arguments.iter().zip(&params) {
+                rendered.push(emit_cfg_call_argument_direct(
+                    argument, parameter, env, signatures,
+                )?);
+            }
+            Some(format!("{}({})", local_c_name(callee), rendered.join(", ")))
+        }
         CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
             let implementation = crate::builtin_names::global_impl(callee);
             if matches!(
@@ -56678,19 +56696,27 @@ fn main() -> i64 {
             .scalar_exprs
             .get(&source_span_key(call.span))
             .expect("function-value call should have reconstructable value facts");
+        let function_value_env = HashMap::from([
+            (
+                "transform".to_string(),
+                Type::Function {
+                    params: vec![Type::I64],
+                    returns: vec![Type::I64],
+                },
+            ),
+            ("value".to_string(), Type::I64),
+        ]);
+        let direct_function_value =
+            emit_cfg_scalar_expr_direct(scalar, &function_value_env, database.signatures())
+                .expect("Copy function-value call should emit directly from typed IR");
+        assert_eq!(
+            direct_function_value,
+            format!("{}({})", local_c_name("transform"), local_c_name("value"))
+        );
         let emitted = emit_cfg_scalar_expr(
             scalar,
             &Type::I64,
-            &HashMap::from([
-                (
-                    "transform".to_string(),
-                    Type::Function {
-                        params: vec![Type::I64],
-                        returns: vec![Type::I64],
-                    },
-                ),
-                ("value".to_string(), Type::I64),
-            ]),
+            &function_value_env,
             database.signatures(),
         )
         .expect("function-value call should emit from typed IR");
