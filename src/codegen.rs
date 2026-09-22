@@ -47757,6 +47757,26 @@ fn reconstructable_core_builtin_arity(name: &str) -> Option<usize> {
     }
 }
 
+fn positional_call_is_reconstructable(signature: &Signature, argument_count: usize) -> bool {
+    let positional = signature
+        .param_details
+        .iter()
+        .filter(|param| !param.named_only)
+        .collect::<Vec<_>>();
+    if argument_count > positional.len() {
+        return false;
+    }
+
+    signature.param_details.iter().all(|param| {
+        let supplied = !param.named_only
+            && positional
+                .iter()
+                .take(argument_count)
+                .any(|candidate| candidate.name == param.name);
+        supplied || param.default.is_some()
+    })
+}
+
 fn cfg_scalar_expr_calls_are_reconstructable(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -47797,10 +47817,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                     arguments.len() == arity
                 } else {
                     signatures.get(implementation).is_some_and(|signature| {
-                        signature
-                            .param_details
-                            .iter()
-                            .all(|param| !param.named_only)
+                        positional_call_is_reconstructable(signature, arguments.len())
                     })
                 }
             };
@@ -52530,12 +52547,20 @@ fn named(value: i64, *, adjust: i64) -> i64 {
     return value + adjust
 }
 
+fn namedDefault(value: i64, *, adjust: i64 = 4) -> i64 {
+    return value + adjust
+}
+
 fn direct(left: i64, right: i64) -> i64 {
     return add(left, right)
 }
 
 fn defaulted(value: i64) -> i64 {
     return scale(value)
+}
+
+fn namedDefaulted(value: i64) -> i64 {
+    return namedDefault(value)
 }
 
 fn nested(left: i64, right: i64) -> i64 {
@@ -52617,6 +52642,11 @@ fn main() -> i64 {
                 "scale",
                 HashMap::from([("value".to_string(), Type::I64)]),
             ),
+            (
+                "namedDefaulted",
+                "namedDefault",
+                HashMap::from([("value".to_string(), Type::I64)]),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -52665,6 +52695,9 @@ fn main() -> i64 {
             assert!(!emitted.contains("checked-ast-call"));
             if callee == "scale" {
                 assert!(emitted.contains("INT64_C(2)"));
+            }
+            if callee == "namedDefault" {
+                assert!(emitted.contains("INT64_C(4)"));
             }
         }
 
