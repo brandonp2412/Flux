@@ -41702,15 +41702,23 @@ fn cfg_rewrite_expr_as_ast(
     Some(expr)
 }
 
+fn cfg_aggregate_child_is_reorder_safe(
+    span_key: (u32, usize, usize, usize),
+    rewrite_facts: &CfgRewriteFacts,
+) -> bool {
+    rewrite_facts
+        .scalar_exprs
+        .get(&span_key)
+        .is_none_or(cfg_scalar_expr_is_aggregate_reorder_safe)
+}
+
 fn cfg_rewrite_aggregate_child_as_ast(
     span_key: (u32, usize, usize, usize),
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Option<Expr> {
-    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span_key)
-        && !cfg_scalar_expr_is_aggregate_reorder_safe(scalar)
-    {
+    if !cfg_aggregate_child_is_reorder_safe(span_key, rewrite_facts) {
         return None;
     }
     cfg_rewrite_expr_as_ast(span_key, env, signatures, rewrite_facts)
@@ -41725,16 +41733,21 @@ fn cfg_plain_aggregate_shape_as_ast(
 ) -> Option<Expr> {
     let kind = match shape {
         CfgAggregateShape::List(items)
-            if items
-                .iter()
-                .all(|item| matches!(item, CfgListItemShape::Value(_))) =>
+            if items.iter().all(|item| {
+                let CfgListItemShape::Value(span) = item else {
+                    return false;
+                };
+                cfg_aggregate_child_is_reorder_safe(*span, rewrite_facts)
+            }) =>
         {
             return cfg_list_shape_as_ast(root_span, shape, env, signatures, rewrite_facts);
         }
         CfgAggregateShape::Set(items) => ExprKind::Set(
             items
                 .iter()
-                .map(|span| cfg_rewrite_expr_as_ast(*span, env, signatures, rewrite_facts))
+                .map(|span| {
+                    cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)
+                })
                 .collect::<Option<Vec<_>>>()?,
         ),
         CfgAggregateShape::Map(entries) => ExprKind::Map(
@@ -41750,7 +41763,8 @@ fn cfg_plain_aggregate_shape_as_ast(
             fields: fields
                 .iter()
                 .map(|(name, span)| {
-                    let value = cfg_rewrite_expr_as_ast(*span, env, signatures, rewrite_facts)?;
+                    let value =
+                        cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)?;
                     Some(crate::ast::RecordLiteralField {
                         name: name.clone(),
                         name_span: name.as_ref().map(|_| source_span_from_key(*span)),
@@ -54468,6 +54482,11 @@ fn build() -> i64 {
     return values.count
 }
 
+fn buildRecord() -> i64 {
+    let value: (left: i64, right: i64) = (left: effect(1), right: effect(2))
+    return value.left
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -54505,10 +54524,54 @@ fn main() -> i64 {
                 .contains_key(&source_span_key(list.span)),
             "effectful children must not become direct aggregate constants"
         );
+        let list_shape = facts
+            .aggregates
+            .get(&source_span_key(list.span))
+            .expect("structural aggregate facts should remain available for safe fallback");
         assert!(
-            facts.aggregates.contains_key(&source_span_key(list.span)),
-            "structural aggregate facts should remain available for safe fallback"
+            cfg_plain_aggregate_shape_as_ast(
+                list.span,
+                list_shape,
+                &HashMap::new(),
+                database.signatures(),
+                &facts,
+            )
+            .is_none(),
+            "effectful list children must not rebuild a root that could reorder effects"
         );
+
+        for (function, expected_kind) in [("buildRecord", "record")] {
+            let graph = database
+                .control_flow_graph(function)
+                .unwrap_or_else(|| panic!("{function} CFG should exist"));
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| match (expected_kind, &value.kind) {
+                    ("set", crate::ir::ControlFlowValueKind::Set { items }) => items.len() == 2,
+                    ("record", crate::ir::ControlFlowValueKind::RecordLiteral { fields }) => {
+                        fields.len() == 2
+                    }
+                    _ => false,
+                })
+                .unwrap_or_else(|| panic!("typed IR should retain the {expected_kind} root"));
+            let facts = cfg_rewrite_facts(graph);
+            let shape = facts
+                .aggregates
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{expected_kind} structural facts should remain"));
+            assert!(
+                cfg_plain_aggregate_shape_as_ast(
+                    root.span,
+                    shape,
+                    &HashMap::new(),
+                    database.signatures(),
+                    &facts,
+                )
+                .is_none(),
+                "effectful {expected_kind} children must stay on the checked-AST fallback"
+            );
+        }
     }
 
     #[test]
