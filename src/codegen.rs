@@ -26769,7 +26769,9 @@ fn collect_interface_names_from_ir(
         .filter(|value| cfg.is_value_reachable(value.id))
     {
         collect_interface_names_from_type(&value.ty, signatures, reachable, pending);
-        if let crate::ir::ControlFlowValueKind::InterfaceDispatch { interface, .. } = &value.kind {
+        if let crate::ir::ControlFlowValueKind::InterfaceDispatch { interface, .. }
+        | crate::ir::ControlFlowValueKind::NamedInterfaceDispatch { interface, .. } = &value.kind
+        {
             enqueue_interface_name(interface, signatures, reachable, pending);
         }
     }
@@ -28213,6 +28215,12 @@ fn collect_function_reachability_from_ir(
                 direct_functions.insert(callee.clone());
             }
             crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                interface,
+                capability,
+                mapped_function,
+                ..
+            }
+            | crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
                 interface,
                 capability,
                 mapped_function,
@@ -34099,6 +34107,11 @@ enum CfgScalarExprKind {
         name: String,
         arguments: Vec<CfgScalarExpr>,
     },
+    NamedQualifiedCall {
+        namespace: String,
+        name: String,
+        arguments: Vec<(Option<String>, CfgScalarExpr)>,
+    },
     OptionalCascadeCall {
         optional: Box<CfgScalarExpr>,
         callee: String,
@@ -34341,6 +34354,7 @@ fn cfg_scalar_expr_contains_call(expr: &CfgScalarExpr) -> bool {
         CfgScalarExprKind::Call { .. }
         | CfgScalarExprKind::NamedCall { .. }
         | CfgScalarExprKind::QualifiedCall { .. }
+        | CfgScalarExprKind::NamedQualifiedCall { .. }
         | CfgScalarExprKind::OptionalCascadeCall { .. } => true,
         CfgScalarExprKind::Unary { operand, .. } => cfg_scalar_expr_contains_call(operand),
         CfgScalarExprKind::Binary { left, right, .. } => {
@@ -34495,6 +34509,22 @@ fn cfg_direct_scalar_expr(
             arguments: arguments
                 .iter()
                 .map(|id| cfg_direct_scalar_expr(cfg, *id))
+                .collect::<Option<Vec<_>>>()?,
+        },
+        crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+            interface,
+            capability,
+            arguments,
+            argument_names,
+            ..
+        } if arguments.len() == argument_names.len() => CfgScalarExprKind::NamedQualifiedCall {
+            namespace: interface.clone(),
+            name: capability.clone(),
+            arguments: argument_names
+                .iter()
+                .cloned()
+                .zip(arguments.iter().copied())
+                .map(|(name, id)| cfg_direct_scalar_expr(cfg, id).map(|value| (name, value)))
                 .collect::<Option<Vec<_>>>()?,
         },
         crate::ir::ControlFlowValueKind::OptionalCascadeCall {
@@ -45623,6 +45653,34 @@ fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
             args: arguments.iter().map(cfg_scalar_expr_as_ast).collect(),
             named_args: Vec::new(),
         },
+        CfgScalarExprKind::NamedQualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } => {
+            let mut args = Vec::new();
+            let mut named_args = Vec::new();
+            for (argument_name, value) in arguments {
+                let value = cfg_scalar_expr_as_ast(value);
+                if let Some(argument_name) = argument_name {
+                    named_args.push(NamedArg {
+                        name: argument_name.clone(),
+                        name_span: span,
+                        value,
+                    });
+                } else {
+                    args.push(value);
+                }
+            }
+            ExprKind::QualifiedCall {
+                namespace: namespace.clone(),
+                namespace_span: span,
+                name: name.clone(),
+                name_span: span,
+                args,
+                named_args,
+            }
+        }
         CfgScalarExprKind::OptionalCascadeCall {
             optional,
             callee,
@@ -45679,6 +45737,9 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         CfgScalarExprKind::QualifiedCall { arguments, .. } => arguments
             .iter()
             .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
+        CfgScalarExprKind::NamedQualifiedCall { arguments, .. } => arguments
+            .iter()
+            .all(|(_, argument)| cfg_scalar_expr_calls_are_reconstructable(argument, signatures)),
         CfgScalarExprKind::OptionalCascadeCall {
             optional,
             callee,
@@ -47984,6 +48045,7 @@ fn optionalCall(value: i64?) -> i64? {
 
 interface Measure {
     fn apply(value: i64) -> i64
+    fn adjust(value: i64, *, delta: i64) -> i64
 }
 
 struct Offset {
@@ -47994,12 +48056,21 @@ fn offsetApply(offset: Offset, value: i64) -> i64 {
     return offset.amount + value
 }
 
+fn offsetAdjust(offset: Offset, value: i64, *, delta: i64) -> i64 {
+    return offset.amount + value + delta
+}
+
 impl Measure for Offset {
     apply: offsetApply
+    adjust: offsetAdjust
 }
 
 fn interfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.apply(offset, value)
+}
+
+fn namedInterfaceCall(offset: Offset, value: i64) -> i64 {
+    return Measure.adjust(offset, value, delta: 3)
 }
 
 fn main() -> i64 {
@@ -48267,6 +48338,62 @@ fn main() -> i64 {
             format!(
                 "{}({}, {})",
                 function_c_name("offsetApply"),
+                local_c_name("offset"),
+                local_c_name("value")
+            )
+        );
+
+        let named_interface = database
+            .control_flow_graph("namedInterfaceCall")
+            .expect("named interface-call CFG should exist");
+        let call = named_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        argument_names,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "adjust"
+                        && mapped_function.as_deref() == Some("offsetAdjust")
+                        && argument_names
+                            == &[None, None, Some("delta".to_string())]
+                )
+            })
+            .expect("named interface dispatch should retain typed IR argument names");
+        let facts = cfg_rewrite_facts(named_interface);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("named interface dispatch should have reconstructable value facts");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::NamedQualifiedCall {
+                namespace,
+                name,
+                ..
+            } if namespace == "Measure" && name == "adjust"
+        ));
+        let emitted = emit_cfg_scalar_expr(
+            scalar,
+            &Type::I64,
+            &HashMap::from([
+                ("offset".to_string(), Type::Named("Offset".to_string())),
+                ("value".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+        )
+        .expect("named interface dispatch should emit from typed IR");
+        assert_eq!(
+            emitted,
+            format!(
+                "{}({}, {}, INT64_C(3))",
+                function_c_name("offsetAdjust"),
                 local_c_name("offset"),
                 local_c_name("value")
             )

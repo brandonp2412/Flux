@@ -125,6 +125,14 @@ pub enum ControlFlowValueKind {
         mapped_function: Option<String>,
         arguments: Vec<ControlFlowValueId>,
     },
+    NamedInterfaceDispatch {
+        interface: String,
+        capability: String,
+        target: Option<String>,
+        mapped_function: Option<String>,
+        arguments: Vec<ControlFlowValueId>,
+        argument_names: Vec<Option<String>>,
+    },
     Field {
         base: ControlFlowValueId,
         name: String,
@@ -1516,6 +1524,22 @@ impl PersistedIrCodec for ControlFlowValueKind {
                 mapped_function.encode_cache_value(bytes);
                 arguments.encode_cache_value(bytes);
             }
+            Self::NamedInterfaceDispatch {
+                interface,
+                capability,
+                target,
+                mapped_function,
+                arguments,
+                argument_names,
+            } => {
+                29u8.encode_cache_value(bytes);
+                interface.encode_cache_value(bytes);
+                capability.encode_cache_value(bytes);
+                target.encode_cache_value(bytes);
+                mapped_function.encode_cache_value(bytes);
+                arguments.encode_cache_value(bytes);
+                argument_names.encode_cache_value(bytes);
+            }
             Self::Field {
                 base,
                 name,
@@ -1696,6 +1720,14 @@ impl PersistedIrCodec for ControlFlowValueKind {
             }),
             28 => Some(Self::NamedCall {
                 callee: String::decode_cache_value(reader)?,
+                arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
+                argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
+            }),
+            29 => Some(Self::NamedInterfaceDispatch {
+                interface: String::decode_cache_value(reader)?,
+                capability: String::decode_cache_value(reader)?,
+                target: Option::<String>::decode_cache_value(reader)?,
+                mapped_function: Option::<String>::decode_cache_value(reader)?,
                 arguments: Vec::<ControlFlowValueId>::decode_cache_value(reader)?,
                 argument_names: Vec::<Option<String>>::decode_cache_value(reader)?,
             }),
@@ -2524,6 +2556,11 @@ fn persisted_value_kind_is_valid(kind: &ControlFlowValueKind, value_count: usize
             fields.iter().all(|(_, value)| valid(*value))
         }
         ControlFlowValueKind::InterfaceDispatch { arguments, .. } => valid_values(arguments),
+        ControlFlowValueKind::NamedInterfaceDispatch {
+            arguments,
+            argument_names,
+            ..
+        } => arguments.len() == argument_names.len() && valid_values(arguments),
         ControlFlowValueKind::Field { base, .. } => valid(*base),
         ControlFlowValueKind::Match {
             value,
@@ -2967,6 +3004,7 @@ impl ControlFlowGraph {
                 | ControlFlowValueKind::OptionalCascadeCall { .. }
                 | ControlFlowValueKind::QualifiedCall { .. }
                 | ControlFlowValueKind::InterfaceDispatch { .. }
+                | ControlFlowValueKind::NamedInterfaceDispatch { .. }
                 | ControlFlowValueKind::Opaque => ControlFlowValueEffect::MayEffect,
                 ControlFlowValueKind::InterfacePack { value, .. }
                 | ControlFlowValueKind::ListSpread { value, .. }
@@ -3138,6 +3176,11 @@ impl ControlFlowGraph {
                     interface,
                     capability,
                     ..
+                }
+                | ControlFlowValueKind::NamedInterfaceDispatch {
+                    interface,
+                    capability,
+                    ..
                 } => std::iter::once(format!("{interface}.{capability}")).collect(),
                 _ => BTreeSet::new(),
             })
@@ -3158,6 +3201,7 @@ impl ControlFlowGraph {
                     ControlFlowValueKind::Await { .. }
                         | ControlFlowValueKind::Opaque
                         | ControlFlowValueKind::InterfaceDispatch { .. }
+                        | ControlFlowValueKind::NamedInterfaceDispatch { .. }
                 )
         })
     }
@@ -5279,12 +5323,29 @@ impl<'a> ControlFlowBuilder<'a> {
                             .and_then(|implementation| implementation.functions.get(name))
                             .cloned()
                     });
-                    ControlFlowValueKind::InterfaceDispatch {
-                        interface: namespace.clone(),
-                        capability: name.clone(),
-                        target: concrete_target,
-                        mapped_function,
-                        arguments,
+                    if named_args.is_empty() {
+                        ControlFlowValueKind::InterfaceDispatch {
+                            interface: namespace.clone(),
+                            capability: name.clone(),
+                            target: concrete_target,
+                            mapped_function,
+                            arguments,
+                        }
+                    } else {
+                        let mut argument_names = vec![None; args.len()];
+                        argument_names.extend(
+                            named_args
+                                .iter()
+                                .map(|argument| Some(argument.name.clone())),
+                        );
+                        ControlFlowValueKind::NamedInterfaceDispatch {
+                            interface: namespace.clone(),
+                            capability: name.clone(),
+                            target: concrete_target,
+                            mapped_function,
+                            arguments,
+                            argument_names,
+                        }
                     }
                 } else {
                     ControlFlowValueKind::QualifiedCall {
@@ -5726,6 +5787,12 @@ impl<'a> ControlFlowBuilder<'a> {
                         callee, arguments, ..
                     } => (callee.clone(), arguments.clone()),
                     ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        arguments,
+                        ..
+                    }
+                    | ControlFlowValueKind::NamedInterfaceDispatch {
                         interface,
                         capability,
                         arguments,
@@ -6187,7 +6254,8 @@ fn collect_call_argument_definitions(
             }
         }
         ControlFlowValueKind::QualifiedCall { arguments, .. }
-        | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
+        | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
+        | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
             for argument in arguments {
                 collect_call_argument_definitions(*argument, values, visited, definitions);
             }
@@ -6897,7 +6965,8 @@ fn collect_value_uses(
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
-            | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
+            | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
+            | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
                 for argument in arguments {
                     push_value_use(
                         &mut uses,
@@ -7555,7 +7624,8 @@ fn compute_escaping_values(
             ControlFlowValueKind::Call { arguments, .. }
             | ControlFlowValueKind::NamedCall { arguments, .. }
             | ControlFlowValueKind::QualifiedCall { arguments, .. }
-            | ControlFlowValueKind::InterfaceDispatch { arguments, .. } => {
+            | ControlFlowValueKind::InterfaceDispatch { arguments, .. }
+            | ControlFlowValueKind::NamedInterfaceDispatch { arguments, .. } => {
                 pending.extend(arguments.iter().copied());
             }
             ControlFlowValueKind::OptionalCascadeCall {
@@ -8733,6 +8803,63 @@ fn main() -> i64 {
         let encoded = graph.encode_persisted();
         let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
             .expect("named-call CFG should decode");
+        assert_eq!(&decoded, graph);
+    }
+
+    #[test]
+    fn named_interface_dispatch_preserves_argument_names_through_persisted_ir() {
+        let database = crate::semantic::SemanticDatabase::analyze(
+            r#"interface Measure {
+    fn adjust(value: i64, *, delta: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn offsetAdjust(offset: Offset, value: i64, *, delta: i64) -> i64 {
+    return offset.amount + value + delta
+}
+
+impl Measure for Offset {
+    adjust: offsetAdjust
+}
+
+fn apply(offset: Offset, value: i64) -> i64 {
+    return Measure.adjust(offset, value, delta: 3)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#,
+            crate::diagnostic::SourceId::UNKNOWN,
+        )
+        .expect("named interface-dispatch IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("apply")
+            .expect("apply CFG should exist");
+
+        let argument_names = graph
+            .values()
+            .iter()
+            .find_map(|value| match &value.kind {
+                super::ControlFlowValueKind::NamedInterfaceDispatch {
+                    interface,
+                    capability,
+                    argument_names,
+                    ..
+                } if interface == "Measure" && capability == "adjust" => {
+                    Some(argument_names.clone())
+                }
+                _ => None,
+            })
+            .expect("named interface dispatch should retain argument names");
+        assert_eq!(argument_names, vec![None, None, Some("delta".to_string())]);
+
+        let encoded = graph.encode_persisted();
+        let decoded = super::ControlFlowGraph::decode_persisted(&encoded)
+            .expect("named interface-dispatch CFG should decode");
         assert_eq!(&decoded, graph);
     }
 
