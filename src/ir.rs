@@ -597,6 +597,22 @@ impl OwnershipCall {
         ))
     }
 
+    /// Return whether one immutable-borrow argument overlaps a normalized move.
+    ///
+    /// Definition identity must match and the borrowed/moved projection paths
+    /// must overlap by prefix. An empty path represents the complete value, so
+    /// whole-value borrows or moves conservatively conflict with every field.
+    /// This is provenance only; it does not enable partial-move semantics.
+    pub fn borrowed_argument_overlaps_move(&self, index: usize, movement: &OwnershipMove) -> bool {
+        let Some((projection, definitions, _)) = self.borrowed_argument_at(index) else {
+            return false;
+        };
+        definitions
+            .iter()
+            .any(|definition| movement.source_definitions.contains(definition))
+            && movement.overlaps_projection(projection)
+    }
+
     /// Returns the exact reaching definitions consumed by one argument, if
     /// this call boundary transfers ownership for that argument.
     ///
@@ -10049,6 +10065,54 @@ fn main() -> i64 {
 
         assert!(ownership_node_consumes_definition(&ownership, definition));
         assert!(!ownership_node_consumes_definition(&ownership, sibling));
+    }
+
+    #[test]
+    fn borrowed_call_arguments_compare_moves_by_definition_and_projection() {
+        let definition = ControlFlowDefinitionId::Parameter(3);
+        let sibling = ControlFlowDefinitionId::Parameter(4);
+        let span = SourceSpan::new(2, 3, 4);
+        let call = OwnershipCall {
+            callee: "inspect".to_string(),
+            arguments: vec![super::ControlFlowValueId(8)],
+            argument_projections: vec![path(&["payload"])],
+            argument_kinds: vec![OwnershipCallArgumentKind::ImmutableBorrow],
+            argument_definitions: vec![vec![definition]],
+            borrowed_argument_definitions: vec![vec![definition]],
+            span,
+        };
+        let nested = OwnershipMove {
+            source: "record".to_string(),
+            destination: "bytes".to_string(),
+            projection: path(&["payload", "bytes"]),
+            value: Some(super::ControlFlowValueId(9)),
+            source_definitions: vec![definition],
+            span,
+        };
+        let disjoint = OwnershipMove {
+            projection: path(&["other"]),
+            ..nested.clone()
+        };
+        let whole = OwnershipMove {
+            projection: Vec::new(),
+            ..nested.clone()
+        };
+        let sibling_move = OwnershipMove {
+            source_definitions: vec![sibling],
+            ..nested.clone()
+        };
+
+        assert!(call.borrowed_argument_overlaps_move(0, &nested));
+        assert!(call.borrowed_argument_overlaps_move(0, &whole));
+        assert!(!call.borrowed_argument_overlaps_move(0, &disjoint));
+        assert!(!call.borrowed_argument_overlaps_move(0, &sibling_move));
+        assert!(!call.borrowed_argument_overlaps_move(1, &nested));
+
+        let consuming = OwnershipCall {
+            argument_kinds: vec![OwnershipCallArgumentKind::Consuming],
+            ..call.clone()
+        };
+        assert!(!consuming.borrowed_argument_overlaps_move(0, &nested));
     }
 
     #[test]
