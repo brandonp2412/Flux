@@ -48998,8 +48998,10 @@ fn emit_cfg_scalar_expr_direct(
 
             let receiver = arguments.first()?;
             let receiver_ty = signatures.canonical_type(&receiver.ty);
-            if !matches!(receiver.kind, CfgScalarExprKind::Name(_))
-                || !signatures.is_copy_type(&receiver_ty)
+            if !matches!(
+                receiver.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+            ) || !signatures.is_copy_type(&receiver_ty)
             {
                 return None;
             }
@@ -49044,8 +49046,10 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
             let receiver_ty = signatures.canonical_type(&receiver.ty);
-            if !matches!(receiver.kind, CfgScalarExprKind::Name(_))
-                || !signatures.is_copy_type(&receiver_ty)
+            if !matches!(
+                receiver.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+            ) || !signatures.is_copy_type(&receiver_ty)
             {
                 return None;
             }
@@ -55732,6 +55736,10 @@ fn interfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.apply(offset, value)
 }
 
+fn temporaryInterfaceCall(amount: i64, value: i64) -> i64 {
+    return Measure.apply(Offset { amount: amount }, value)
+}
+
 fn nestedInterfaceCall(offset: Offset, left: i64, right: i64) -> i64 {
     return Measure.apply(offset, left + right)
 }
@@ -55742,6 +55750,10 @@ fn dynamicInterfaceCall(measure: Measure, value: i64) -> i64 {
 
 fn namedInterfaceCall(offset: Offset, value: i64) -> i64 {
     return Measure.adjust(offset, value, delta: 3)
+}
+
+fn temporaryNamedInterfaceCall(amount: i64, value: i64) -> i64 {
+    return Measure.adjust(Offset { amount: amount }, value, delta: 3)
 }
 
 fn nestedNamedInterfaceCall(offset: Offset, left: i64, right: i64, delta: i64) -> i64 {
@@ -56520,6 +56532,67 @@ fn main() -> i64 {
         assert_eq!(emitted, direct_interface);
         assert!(!emitted.contains("checked-ast-interface-call"));
 
+        let temporary_interface = database
+            .control_flow_graph("temporaryInterfaceCall")
+            .expect("temporary interface-call CFG should exist");
+        let temporary_call = temporary_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "apply"
+                        && mapped_function.as_deref() == Some("offsetApply")
+                )
+            })
+            .expect("temporary interface dispatch should retain typed IR");
+        let temporary_facts = cfg_rewrite_facts(temporary_interface);
+        let temporary_scalar = temporary_facts
+            .scalar_exprs
+            .get(&source_span_key(temporary_call.span))
+            .expect("temporary interface dispatch should have typed-IR facts");
+        assert!(matches!(
+            &temporary_scalar.kind,
+            CfgScalarExprKind::QualifiedCall { arguments, .. }
+                if matches!(
+                    arguments.first().map(|argument| &argument.kind),
+                    Some(CfgScalarExprKind::Aggregate(_))
+                )
+        ));
+        let temporary_env = HashMap::from([
+            ("amount".to_string(), Type::I64),
+            ("value".to_string(), Type::I64),
+        ]);
+        let temporary_direct =
+            emit_cfg_scalar_expr_direct(temporary_scalar, &temporary_env, database.signatures())
+                .expect("temporary Copy interface receiver should emit directly from typed IR");
+        assert!(temporary_direct.contains(&function_c_name("offsetApply")));
+        assert!(temporary_direct.contains(&struct_c_name("Offset")));
+        assert!(temporary_direct.contains(&local_c_name("amount")));
+        assert!(temporary_direct.contains(&local_c_name("value")));
+        let fake_temporary_interface = Expr {
+            line: temporary_call.span.line,
+            span: temporary_call.span,
+            kind: ExprKind::Str("checked-ast-temporary-interface-call".to_string()),
+        };
+        let temporary_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_temporary_interface,
+            &Type::I64,
+            &temporary_env,
+            database.signatures(),
+            &HashMap::new(),
+            &temporary_facts,
+        )
+        .expect("temporary interface dispatch should bypass the checked-AST root");
+        assert_eq!(temporary_emitted, temporary_direct);
+        assert!(!temporary_emitted.contains("checked-ast-temporary-interface-call"));
+
         let nested_interface = database
             .control_flow_graph("nestedInterfaceCall")
             .expect("nested interface-call CFG should exist");
@@ -56700,6 +56773,71 @@ fn main() -> i64 {
         .expect("named interface dispatch should bypass the checked-AST root");
         assert_eq!(emitted, direct_named_interface);
         assert!(!emitted.contains("checked-ast-named-interface-call"));
+
+        let temporary_named_interface = database
+            .control_flow_graph("temporaryNamedInterfaceCall")
+            .expect("temporary named interface-call CFG should exist");
+        let temporary_named_call = temporary_named_interface
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                        interface,
+                        capability,
+                        mapped_function,
+                        ..
+                    } if interface == "Measure"
+                        && capability == "adjust"
+                        && mapped_function.as_deref() == Some("offsetAdjust")
+                )
+            })
+            .expect("temporary named interface dispatch should retain typed IR");
+        let temporary_named_facts = cfg_rewrite_facts(temporary_named_interface);
+        let temporary_named_scalar = temporary_named_facts
+            .scalar_exprs
+            .get(&source_span_key(temporary_named_call.span))
+            .expect("temporary named interface dispatch should have typed-IR facts");
+        assert!(matches!(
+            &temporary_named_scalar.kind,
+            CfgScalarExprKind::NamedQualifiedCall { arguments, .. }
+                if matches!(
+                    arguments.first().map(|(_, argument)| &argument.kind),
+                    Some(CfgScalarExprKind::Aggregate(_))
+                )
+        ));
+        let temporary_named_env = HashMap::from([
+            ("amount".to_string(), Type::I64),
+            ("value".to_string(), Type::I64),
+        ]);
+        let temporary_named_direct = emit_cfg_scalar_expr_direct(
+            temporary_named_scalar,
+            &temporary_named_env,
+            database.signatures(),
+        )
+        .expect("temporary Copy named interface receiver should emit directly from typed IR");
+        assert!(temporary_named_direct.contains(&function_c_name("offsetAdjust")));
+        assert!(temporary_named_direct.contains(&struct_c_name("Offset")));
+        assert!(temporary_named_direct.contains(&local_c_name("amount")));
+        assert!(temporary_named_direct.contains(&local_c_name("value")));
+        assert!(temporary_named_direct.contains("INT64_C(3)"));
+        let fake_temporary_named_interface = Expr {
+            line: temporary_named_call.span.line,
+            span: temporary_named_call.span,
+            kind: ExprKind::Str("checked-ast-temporary-named-interface-call".to_string()),
+        };
+        let temporary_named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_temporary_named_interface,
+            &Type::I64,
+            &temporary_named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &temporary_named_facts,
+        )
+        .expect("temporary named interface dispatch should bypass the checked-AST root");
+        assert_eq!(temporary_named_emitted, temporary_named_direct);
+        assert!(!temporary_named_emitted.contains("checked-ast-temporary-named-interface-call"));
 
         let nested_named_interface = database
             .control_flow_graph("nestedNamedInterfaceCall")
