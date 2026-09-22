@@ -48561,7 +48561,9 @@ fn emit_cfg_scalar_expr_direct(
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(&signature.params) {
                 let parameter = signatures.canonical_type(parameter);
-                if !matches!(argument.kind, CfgScalarExprKind::Name(_))
+                let direct_argument = matches!(argument.kind, CfgScalarExprKind::Name(_))
+                    || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+                if !direct_argument
                     || signatures.canonical_type(&argument.ty) != parameter
                     || !signatures.is_copy_type(&parameter)
                 {
@@ -54716,6 +54718,18 @@ fn nested(left: i64, right: i64) -> i64 {
     return add(left, right) + scale(left)
 }
 
+fn nestedPrimitiveArgument(left: i64, right: i64, factor: i64) -> i64 {
+    return add(left + right, factor)
+}
+
+fn identityArgument(value: i64, other: i64) -> i64 {
+    return add(value + 0, other)
+}
+
+fn repeatedArgument(value: i64, other: i64) -> i64 {
+    return add(value - value, other)
+}
+
 fn namedCall(value: i64, adjust: i64) -> i64 {
     return named(value, adjust: adjust)
 }
@@ -54865,6 +54879,95 @@ fn main() -> i64 {
             if callee == "namedDefault" {
                 assert!(emitted.contains("INT64_C(4)"));
             }
+        }
+
+        let nested_argument_graph = database
+            .control_flow_graph("nestedPrimitiveArgument")
+            .expect("nested primitive call-argument CFG should exist");
+        let nested_argument_call = nested_argument_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "add"
+                )
+            })
+            .expect("nested primitive call argument should retain the call root");
+        let nested_argument_facts = cfg_rewrite_facts(nested_argument_graph);
+        let nested_argument_scalar = nested_argument_facts
+            .scalar_exprs
+            .get(&source_span_key(nested_argument_call.span))
+            .expect("nested primitive call argument should have typed-IR facts");
+        let nested_argument_env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+            ("factor".to_string(), Type::I64),
+        ]);
+        let nested_argument_direct = emit_cfg_scalar_expr_direct(
+            nested_argument_scalar,
+            &nested_argument_env,
+            database.signatures(),
+        )
+        .expect("safe nested primitive call arguments should render directly from typed IR");
+        assert!(
+            nested_argument_direct.contains(&format!(
+                "{}(flux_add_i64({}, {}), {})",
+                function_c_name("add"),
+                local_c_name("left"),
+                local_c_name("right"),
+                local_c_name("factor"),
+            )),
+            "{nested_argument_direct}"
+        );
+        let fake_nested_argument = Expr {
+            line: nested_argument_call.span.line,
+            span: nested_argument_call.span,
+            kind: ExprKind::Str("checked-ast-nested-call-argument".to_string()),
+        };
+        let nested_argument_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_nested_argument,
+            &Type::I64,
+            &nested_argument_env,
+            database.signatures(),
+            &HashMap::new(),
+            &nested_argument_facts,
+        )
+        .expect("nested primitive call arguments should bypass the checked-AST root");
+        assert_eq!(nested_argument_emitted, nested_argument_direct);
+        assert!(!nested_argument_emitted.contains("checked-ast-nested-call-argument"));
+
+        for function in ["identityArgument", "repeatedArgument"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("optimizer-sensitive call-argument CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "add"
+                    )
+                })
+                .expect("optimizer-sensitive call argument should retain the call root");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("optimizer-sensitive call argument should have typed-IR facts");
+            assert!(
+                emit_cfg_scalar_expr_direct(
+                    scalar,
+                    &HashMap::from([
+                        ("value".to_string(), Type::I64),
+                        ("other".to_string(), Type::I64),
+                    ]),
+                    database.signatures(),
+                )
+                .is_none(),
+                "{function} should preserve the optimizer-sensitive synthetic-AST argument path"
+            );
         }
 
         let borrowed_graph = database
