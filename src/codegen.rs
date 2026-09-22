@@ -34686,16 +34686,24 @@ fn cfg_borrowed_collection_value(
                 Type::List(_) | Type::Set(_) | Type::Map(_, _)
             ) =>
         {
-            let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind
-            else {
-                return None;
+            let kind = match &value.kind {
+                crate::ir::ControlFlowValueKind::NameRead { name, definitions }
+                    if !definitions.is_empty() =>
+                {
+                    CfgScalarExprKind::Name(name.clone())
+                }
+                crate::ir::ControlFlowValueKind::Unary {
+                    op: UnaryOp::Borrow,
+                    operand,
+                } => CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    operand: Box::new(cfg_borrowed_collection_value(cfg, *operand)?),
+                },
+                _ => return None,
             };
-            if definitions.is_empty() {
-                return None;
-            }
             Some(CfgScalarExpr {
                 ty: value.ty.clone(),
-                kind: CfgScalarExprKind::Name(name.clone()),
+                kind,
             })
         }
         _ => None,
@@ -50813,6 +50821,10 @@ fn optionalMapCount(values: map<str, i64>?) -> i64? {
     return values?.count
 }
 
+fn borrowedOptionalMapCount(values: map<str, i64>?) -> i64? {
+    return (borrow values)?.count
+}
+
 fn setNonempty(values: set<i64>) -> bool {
     return values.nonempty
 }
@@ -50940,6 +50952,61 @@ fn main() -> i64 {
             assert!(emitted.contains(expected_fragment), "{emitted}");
             assert!(!emitted.contains("checked-ast-optional-collection-property"));
         }
+
+        let graph = database
+            .control_flow_graph("borrowedOptionalMapCount")
+            .expect("borrowed optional map property CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let field = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Field { optional: true, .. }
+                )
+            })
+            .expect("borrowed optional map property should remain in typed IR");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(field.span))
+            .expect("borrowed optional map property should reconstruct from typed IR");
+        assert!(matches!(
+            scalar.kind,
+            CfgScalarExprKind::Field {
+                ref base,
+                optional: true,
+                ..
+            } if matches!(
+                base.kind,
+                CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
+            )
+        ));
+        let fake = Expr {
+            line: field.span.line,
+            span: field.span,
+            kind: ExprKind::Str("checked-ast-borrowed-optional-map-property".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Optional(Box::new(Type::I64)),
+            &HashMap::from([(
+                "values".to_string(),
+                Type::Optional(Box::new(Type::Map(
+                    Box::new(Type::Str),
+                    Box::new(Type::I64),
+                ))),
+            )]),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("borrowed optional map property should emit from typed IR");
+        assert!(emitted.contains(".keys.len"), "{emitted}");
+        assert!(!emitted.contains("checked-ast-borrowed-optional-map-property"));
 
         for (function, expected, expected_fragment, fake_text, env) in [
             (
