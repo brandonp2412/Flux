@@ -41646,6 +41646,13 @@ fn cfg_rewrite_expr_as_ast(
             kind,
         });
     }
+    if let Some(aggregate) = rewrite_facts.aggregate_constants.get(&span_key) {
+        let mut expr =
+            cfg_aggregate_constant_as_ast(aggregate, &mut CfgSyntheticAstSpans::default());
+        expr.line = span.line;
+        expr.span = span;
+        return Some(expr);
+    }
     let scalar = rewrite_facts.scalar_exprs.get(&span_key)?;
     if !cfg_scalar_expr_calls_are_reconstructable(scalar, env, signatures) {
         return None;
@@ -48959,6 +48966,89 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn list_builder_nested_aggregate_children_use_typed_ir_rewrite_facts() {
+        let source = SourceId::new(4245);
+        let condition_span = SourceSpan::new(1, 5, 7).with_source(source);
+        let then_span = SourceSpan::new(1, 16, 6).with_source(source);
+        let else_span = SourceSpan::new(1, 29, 6).with_source(source);
+        let conditional_span = SourceSpan::new(1, 4, 32).with_source(source);
+        let list_span = SourceSpan::new(1, 1, 38).with_source(source);
+        let poisoned = Expr {
+            line: 1,
+            span: conditional_span,
+            kind: ExprKind::Str("checked-ast-nested-list".to_string()),
+        };
+        let list = Expr {
+            line: 1,
+            span: list_span,
+            kind: ExprKind::List(vec![poisoned]),
+        };
+        let row_ty = Type::List(Box::new(Type::I64));
+        let rows_ty = Type::List(Box::new(row_ty.clone()));
+        let mut facts = CfgRewriteFacts::default();
+        facts.scalar_exprs.insert(
+            source_span_key(condition_span),
+            CfgScalarExpr {
+                ty: Type::Bool,
+                kind: CfgScalarExprKind::Name("enabled".to_string()),
+            },
+        );
+        for (span, values) in [
+            (
+                then_span,
+                vec![ConstantValue::I64(1), ConstantValue::I64(2)],
+            ),
+            (
+                else_span,
+                vec![ConstantValue::I64(3), ConstantValue::I64(4)],
+            ),
+        ] {
+            facts.aggregate_constants.insert(
+                source_span_key(span),
+                CfgAggregateConstant {
+                    ty: row_ty.clone(),
+                    kind: CfgAggregateConstantKind::List(
+                        values.into_iter().map(CfgAggregateValue::Scalar).collect(),
+                    ),
+                },
+            );
+        }
+        facts.aggregates.insert(
+            source_span_key(list_span),
+            CfgAggregateShape::List(vec![CfgListItemShape::Conditional {
+                span: source_span_key(conditional_span),
+                condition: source_span_key(condition_span),
+                binding: None,
+                value: source_span_key(then_span),
+                else_value: Some(source_span_key(else_span)),
+            }]),
+        );
+
+        let mut env = HashMap::from([("enabled".to_string(), Type::Bool)]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("rows", &rows_ty),
+            &list,
+            &mut env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("nested aggregate list children should emit from typed IR facts");
+
+        assert!(out.contains(&local_c_name("enabled")), "{out}");
+        assert!(out.contains("INT64_C(1)"), "{out}");
+        assert!(out.contains("INT64_C(2)"), "{out}");
+        assert!(out.contains("INT64_C(3)"), "{out}");
+        assert!(out.contains("INT64_C(4)"), "{out}");
+        assert!(!out.contains("checked-ast-nested-list"), "{out}");
+    }
+
+    #[test]
     fn list_comprehension_children_use_typed_ir_rewrite_facts() {
         let source_id = SourceId::new(4244);
         let iterable_span = SourceSpan::new(1, 12, 6).with_source(source_id);
@@ -49047,6 +49137,87 @@ fn main() -> i64 {
         assert!(!out.contains(&local_c_name("checkedAstBinding")));
         assert!(out.contains("flux_add_i64"));
         assert!(!out.contains("checked-ast-child"));
+    }
+
+    #[test]
+    fn list_comprehension_aggregate_values_use_typed_ir_rewrite_facts() {
+        let source = SourceId::new(4246);
+        let iterable_span = SourceSpan::new(1, 20, 6).with_source(source);
+        let value_span = SourceSpan::new(1, 2, 6).with_source(source);
+        let comprehension_span = SourceSpan::new(1, 1, 28).with_source(source);
+        let comprehension = Expr {
+            line: 1,
+            span: comprehension_span,
+            kind: ExprKind::ListComprehension {
+                value: Box::new(Expr {
+                    line: 1,
+                    span: value_span,
+                    kind: ExprKind::Str("checked-ast-nested-comprehension".to_string()),
+                }),
+                binding: "checkedAstBinding".to_string(),
+                binding_span: SourceSpan::new(1, 11, 4).with_source(source),
+                iterable: Box::new(Expr {
+                    line: 1,
+                    span: iterable_span,
+                    kind: ExprKind::Str("checked-ast-iterable".to_string()),
+                }),
+                condition: None,
+            },
+        };
+        let row_ty = Type::List(Box::new(Type::I64));
+        let rows_ty = Type::List(Box::new(row_ty.clone()));
+        let mut facts = CfgRewriteFacts::default();
+        facts.aggregates.insert(
+            source_span_key(comprehension_span),
+            CfgAggregateShape::ListComprehension {
+                binding: "item".to_string(),
+                iterable: source_span_key(iterable_span),
+                value: source_span_key(value_span),
+                condition: None,
+            },
+        );
+        facts.scalar_exprs.insert(
+            source_span_key(iterable_span),
+            CfgScalarExpr {
+                ty: Type::List(Box::new(Type::I64)),
+                kind: CfgScalarExprKind::Name("source".to_string()),
+            },
+        );
+        facts.aggregate_constants.insert(
+            source_span_key(value_span),
+            CfgAggregateConstant {
+                ty: row_ty,
+                kind: CfgAggregateConstantKind::List(vec![CfgAggregateValue::Direct(
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Name("item".to_string()),
+                    },
+                )]),
+            },
+        );
+
+        let mut env = HashMap::from([("source".to_string(), Type::List(Box::new(Type::I64)))]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("rows", &rows_ty),
+            &comprehension,
+            &mut env,
+            &Signatures::default(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("aggregate comprehension values should emit from typed IR facts");
+
+        assert!(out.contains(&local_c_name("source")), "{out}");
+        assert!(out.contains(&local_c_name("item")), "{out}");
+        assert!(out.contains("struct flux__list"), "{out}");
+        assert!(!out.contains("checked-ast-nested-comprehension"), "{out}");
+        assert!(!out.contains("checked-ast-iterable"), "{out}");
+        assert!(!out.contains(&local_c_name("checkedAstBinding")), "{out}");
     }
 
     #[test]
