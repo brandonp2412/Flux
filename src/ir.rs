@@ -7875,6 +7875,20 @@ fn populate_immutable_borrows(
         let Some(node) = nodes.get_mut(value.producer.0) else {
             continue;
         };
+        let consumed_by_move = node
+            .ownership
+            .moves
+            .iter()
+            .any(|movement| movement.value == Some(value.id));
+        let consumed_by_call = node.ownership.calls.iter().any(|call| {
+            call.arguments.iter().enumerate().any(|(index, argument)| {
+                *argument == value.id
+                    && call.argument_kind(index) == Some(OwnershipCallArgumentKind::Consuming)
+            })
+        });
+        if consumed_by_move || consumed_by_call {
+            continue;
+        }
         if node.ownership.borrows.iter().any(|borrow| {
             borrow.source == *name
                 && borrow.kind == OwnershipBorrowKind::Immutable

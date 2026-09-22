@@ -559,6 +559,24 @@ fn main() -> i64 {
         "unexpected source drops: {:?}",
         graph.drops()
     );
+    let move_node = graph
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.ownership
+                .moves
+                .iter()
+                .any(|movement| movement.source == "source")
+        })
+        .expect("source move node should be present");
+    assert!(
+        move_node
+            .ownership
+            .borrows
+            .iter()
+            .all(|borrow| borrow.source != "source"),
+        "a consuming move must not also emit an immutable source borrow"
+    );
 }
 
 #[test]
