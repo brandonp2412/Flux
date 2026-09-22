@@ -48377,6 +48377,123 @@ fn cfg_direct_aggregate_list_index(base: &CfgScalarExpr, index: &CfgScalarExpr) 
     (resolved >= 0 && resolved < len).then_some(resolved as usize)
 }
 
+fn emit_cfg_call_argument_direct(
+    argument: &CfgScalarExpr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    let direct_argument = matches!(
+        argument.kind,
+        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+    if !direct_argument
+        || signatures.canonical_type(&argument.ty) != expected
+        || !signatures.is_copy_type(&expected)
+    {
+        return None;
+    }
+    emit_cfg_scalar_expr_direct(argument, env, signatures)
+}
+
+fn emit_cfg_positional_call_arguments_direct(
+    signature: &Signature,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<Vec<String>> {
+    if !positional_call_is_reconstructable(signature, arguments.len()) {
+        return None;
+    }
+
+    let mut rendered = Vec::with_capacity(signature.param_details.len());
+    let mut positional_index = 0usize;
+    for parameter in &signature.param_details {
+        if !parameter.named_only && positional_index < arguments.len() {
+            rendered.push(emit_cfg_call_argument_direct(
+                &arguments[positional_index],
+                &parameter.ty,
+                env,
+                signatures,
+            )?);
+            positional_index += 1;
+            continue;
+        }
+        let default = parameter.default.as_ref()?;
+        let parameter_ty = signatures.canonical_type(&parameter.ty);
+        if signatures.canonical_type(&default.ty()) != parameter_ty
+            || !signatures.is_copy_type(&parameter_ty)
+        {
+            return None;
+        }
+        rendered.push(constant_c_value(default));
+    }
+    (positional_index == arguments.len()).then_some(rendered)
+}
+
+fn emit_cfg_named_call_arguments_direct(
+    signature: &Signature,
+    arguments: &[(Option<String>, CfgScalarExpr)],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<Vec<String>> {
+    let positional = arguments
+        .iter()
+        .filter_map(|(name, argument)| name.is_none().then_some(argument))
+        .collect::<Vec<_>>();
+    let positional_capacity = signature
+        .param_details
+        .iter()
+        .filter(|parameter| !parameter.named_only)
+        .count();
+    if positional.len() > positional_capacity
+        || arguments.iter().any(|(name, _)| {
+            name.as_ref().is_some_and(|name| {
+                !signature
+                    .param_details
+                    .iter()
+                    .any(|parameter| parameter.name == *name)
+            })
+        })
+    {
+        return None;
+    }
+
+    let mut positional_index = 0usize;
+    let mut rendered = Vec::with_capacity(signature.param_details.len());
+    for parameter in &signature.param_details {
+        let supplied = if !parameter.named_only && positional_index < positional.len() {
+            let argument = positional[positional_index];
+            positional_index += 1;
+            Some(argument)
+        } else {
+            arguments.iter().find_map(|(name, argument)| {
+                (name.as_deref() == Some(parameter.name.as_str())).then_some(argument)
+            })
+        };
+        if let Some(argument) = supplied {
+            rendered.push(emit_cfg_call_argument_direct(
+                argument,
+                &parameter.ty,
+                env,
+                signatures,
+            )?);
+            continue;
+        }
+        let default = parameter.default.as_ref()?;
+        let parameter_ty = signatures.canonical_type(&parameter.ty);
+        if signatures.canonical_type(&default.ty()) != parameter_ty
+            || !signatures.is_copy_type(&parameter_ty)
+        {
+            return None;
+        }
+        rendered.push(constant_c_value(default));
+    }
+
+    (positional_index == positional.len()).then_some(rendered)
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48473,9 +48590,6 @@ fn emit_cfg_scalar_expr_direct(
                     let signature = signatures.get(implementation)?;
                     if !signature.asynchronous
                         || signature.foreign_symbol.is_some()
-                        || signature.params.len() != arguments.len()
-                        || signature.param_details.len() != arguments.len()
-                        || signature.param_details.iter().any(|param| param.named_only)
                         || signature.returns.len() > 1
                     {
                         return None;
@@ -48488,23 +48602,9 @@ fn emit_cfg_scalar_expr_direct(
                     if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
                         return None;
                     }
-                    let mut rendered = Vec::with_capacity(arguments.len());
-                    for (argument, parameter) in arguments.iter().zip(&signature.params) {
-                        let parameter = signatures.canonical_type(parameter);
-                        let direct_argument = matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            argument, env, signatures,
-                        );
-                        if !direct_argument
-                            || signatures.canonical_type(&argument.ty) != parameter
-                            || !signatures.is_copy_type(&parameter)
-                        {
-                            return None;
-                        }
-                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-                    }
+                    let rendered = emit_cfg_positional_call_arguments_direct(
+                        signature, arguments, env, signatures,
+                    )?;
                     (implementation, rendered)
                 }
                 CfgScalarExprKind::NamedCall { callee, arguments } if !env.contains_key(callee) => {
@@ -48515,8 +48615,6 @@ fn emit_cfg_scalar_expr_direct(
                     let signature = signatures.get(implementation)?;
                     if !signature.asynchronous
                         || signature.foreign_symbol.is_some()
-                        || signature.params.len() != arguments.len()
-                        || signature.param_details.len() != arguments.len()
                         || signature.returns.len() > 1
                     {
                         return None;
@@ -48530,42 +48628,9 @@ fn emit_cfg_scalar_expr_direct(
                         return None;
                     }
 
-                    let positional = arguments
-                        .iter()
-                        .filter_map(|(name, argument)| name.is_none().then_some(argument))
-                        .collect::<Vec<_>>();
-                    let mut positional_index = 0usize;
-                    let mut rendered = Vec::with_capacity(arguments.len());
-                    for parameter in &signature.param_details {
-                        let argument =
-                            if !parameter.named_only && positional_index < positional.len() {
-                                let argument = positional[positional_index];
-                                positional_index += 1;
-                                argument
-                            } else {
-                                arguments.iter().find_map(|(name, argument)| {
-                                    (name.as_deref() == Some(parameter.name.as_str()))
-                                        .then_some(argument)
-                                })?
-                            };
-                        let parameter_ty = signatures.canonical_type(&parameter.ty);
-                        let direct_argument = matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            argument, env, signatures,
-                        );
-                        if !direct_argument
-                            || signatures.canonical_type(&argument.ty) != parameter_ty
-                            || !signatures.is_copy_type(&parameter_ty)
-                        {
-                            return None;
-                        }
-                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-                    }
-                    if positional_index != positional.len() {
-                        return None;
-                    }
+                    let rendered = emit_cfg_named_call_arguments_direct(
+                        signature, arguments, env, signatures,
+                    )?;
                     (implementation, rendered)
                 }
                 _ => return None,
@@ -48606,30 +48671,13 @@ fn emit_cfg_scalar_expr_direct(
             }
             let signature = signatures.get(implementation)?;
             if signature.asynchronous
-                || signature.params.len() != arguments.len()
-                || signature.param_details.len() != arguments.len()
                 || !cfg_scalar_result_is_direct(&signature.returns, &ty, signatures)
-                || signature.param_details.iter().any(|param| param.named_only)
             {
                 return None;
             }
 
-            let mut rendered = Vec::with_capacity(arguments.len());
-            for (argument, parameter) in arguments.iter().zip(&signature.params) {
-                let parameter = signatures.canonical_type(parameter);
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument
-                    || signatures.canonical_type(&argument.ty) != parameter
-                    || !signatures.is_copy_type(&parameter)
-                {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
+            let rendered =
+                emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?;
 
             let callee = signature
                 .foreign_symbol
@@ -49356,45 +49404,13 @@ fn emit_cfg_scalar_expr_direct(
             }
             let signature = signatures.get(implementation)?;
             if signature.asynchronous
-                || signature.param_details.len() != arguments.len()
                 || !cfg_scalar_result_is_direct(&signature.returns, &ty, signatures)
             {
                 return None;
             }
 
-            let positional = arguments
-                .iter()
-                .filter_map(|(name, argument)| name.is_none().then_some(argument))
-                .collect::<Vec<_>>();
-            let mut positional_index = 0usize;
-            let mut rendered = Vec::with_capacity(arguments.len());
-            for parameter in &signature.param_details {
-                let argument = if !parameter.named_only && positional_index < positional.len() {
-                    let argument = positional[positional_index];
-                    positional_index += 1;
-                    argument
-                } else {
-                    arguments.iter().find_map(|(name, argument)| {
-                        (name.as_deref() == Some(parameter.name.as_str())).then_some(argument)
-                    })?
-                };
-                let parameter_ty = signatures.canonical_type(&parameter.ty);
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument
-                    || signatures.canonical_type(&argument.ty) != parameter_ty
-                    || !signatures.is_copy_type(&parameter_ty)
-                {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
-            if positional_index != positional.len() {
-                return None;
-            }
+            let rendered =
+                emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?;
 
             let callee = signature
                 .foreign_symbol
@@ -49448,33 +49464,51 @@ fn emit_cfg_scalar_expr_direct(
             }
             let signature = signatures.get(implementation)?;
             if signature.asynchronous
-                || signature.params.len() != arguments.len() + 1
                 || signature.param_details.len() != signature.params.len()
+                || signature.param_details.is_empty()
                 || signature.returns.len() != 1
-                || signature.param_details.iter().any(|param| param.named_only)
+                || signature.param_details[0].named_only
                 || signatures.canonical_type(&signature.params[0]) != *input_inner
                 || signatures.canonical_type(&signature.returns[0]) != **result_inner
             {
                 return None;
             }
 
+            let remaining = &signature.param_details[1..];
+            let positional_capacity = remaining
+                .iter()
+                .filter(|parameter| !parameter.named_only)
+                .count();
+            if arguments.len() > positional_capacity {
+                return None;
+            }
+
             let optional_code = emit_cfg_scalar_expr_direct(optional, env, signatures)?;
-            let mut rendered = Vec::with_capacity(arguments.len() + 1);
+            let mut rendered = Vec::with_capacity(signature.param_details.len());
             rendered.push("flux__optional_cascade_value_direct".to_string());
-            for (argument, parameter) in arguments.iter().zip(&signature.params[1..]) {
-                let parameter = signatures.canonical_type(parameter);
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument
-                    || signatures.canonical_type(&argument.ty) != parameter
-                    || !signatures.is_copy_type(&parameter)
+            let mut positional_index = 0usize;
+            for parameter in remaining {
+                if !parameter.named_only && positional_index < arguments.len() {
+                    rendered.push(emit_cfg_call_argument_direct(
+                        &arguments[positional_index],
+                        &parameter.ty,
+                        env,
+                        signatures,
+                    )?);
+                    positional_index += 1;
+                    continue;
+                }
+                let default = parameter.default.as_ref()?;
+                let parameter_ty = signatures.canonical_type(&parameter.ty);
+                if signatures.canonical_type(&default.ty()) != parameter_ty
+                    || !signatures.is_copy_type(&parameter_ty)
                 {
                     return None;
                 }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                rendered.push(constant_c_value(default));
+            }
+            if positional_index != arguments.len() {
+                return None;
             }
 
             let callee = signature
@@ -55944,6 +55978,10 @@ fn namedDefault(value: i64, *, adjust: i64 = 4) -> i64 {
     return value + adjust
 }
 
+fn namedDefaults(value: i64, *, adjust: i64 = 4, factor: i64 = 2) -> i64 {
+    return value + adjust * factor
+}
+
 fn direct(left: i64, right: i64) -> i64 {
     return add(left, right)
 }
@@ -55986,6 +56024,10 @@ fn repeatedArgument(value: i64, other: i64) -> i64 {
 
 fn namedCall(value: i64, adjust: i64) -> i64 {
     return named(value, adjust: adjust)
+}
+
+fn partiallyNamedDefault(value: i64, adjust: i64) -> i64 {
+    return namedDefaults(value, adjust: adjust)
 }
 
 fn literalNamedCall(value: i64) -> i64 {
@@ -56132,18 +56174,21 @@ fn main() -> i64 {
                     ..
                 } if value_callee == callee
             ));
-            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures());
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).expect(
+                "Copy call with compile-time defaults should render directly from typed IR",
+            );
+            assert!(direct.contains(&format!("{}(", function_c_name(callee))));
             if callee == "add" {
-                let direct = direct
-                    .expect("exact-copy positional call should render directly from typed IR");
-                assert!(direct.contains(&format!("{}(", function_c_name(callee))));
                 assert!(direct.contains(&local_c_name("left")));
                 assert!(direct.contains(&local_c_name("right")));
-            } else {
-                assert!(
-                    direct.is_none(),
-                    "calls requiring default-argument synthesis should retain the AST bridge"
-                );
+            }
+            if callee == "scale" {
+                assert!(direct.contains(&local_c_name("value")));
+                assert!(direct.contains("INT64_C(2)"));
+            }
+            if callee == "namedDefault" {
+                assert!(direct.contains(&local_c_name("value")));
+                assert!(direct.contains("INT64_C(4)"));
             }
 
             let fake = Expr {
@@ -56465,6 +56510,42 @@ fn main() -> i64 {
             format!(
                 "{}({}, {})",
                 function_c_name("named"),
+                local_c_name("value"),
+                local_c_name("adjust")
+            )
+        );
+
+        let partial_named = database
+            .control_flow_graph("partiallyNamedDefault")
+            .expect("partially defaulted named-call CFG should exist");
+        let partial_call = partial_named
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::NamedCall { callee, .. }
+                        if callee == "namedDefaults"
+                )
+            })
+            .expect("partially defaulted named call should retain typed IR");
+        let partial_facts = cfg_rewrite_facts(partial_named);
+        let partial_scalar = partial_facts
+            .scalar_exprs
+            .get(&source_span_key(partial_call.span))
+            .expect("partially defaulted named call should have typed-IR facts");
+        let partial_env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("adjust".to_string(), Type::I64),
+        ]);
+        let partial_direct =
+            emit_cfg_scalar_expr_direct(partial_scalar, &partial_env, database.signatures())
+                .expect("partially defaulted named call should emit directly from typed IR");
+        assert_eq!(
+            partial_direct,
+            format!(
+                "{}({}, {}, INT64_C(2))",
+                function_c_name("namedDefaults"),
                 local_c_name("value"),
                 local_c_name("adjust")
             )
@@ -56827,10 +56908,11 @@ fn main() -> i64 {
                 arguments: Vec::new(),
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(&defaulted, &optional_env, database.signatures()).is_none(),
-            "optional cascades requiring default-argument synthesis should retain the AST bridge"
-        );
+        let defaulted_direct =
+            emit_cfg_scalar_expr_direct(&defaulted, &optional_env, database.signatures())
+                .expect("optional cascade defaults should emit directly from typed IR");
+        assert!(defaulted_direct.contains(&function_c_name("scale")));
+        assert!(defaulted_direct.contains("INT64_C(2)"));
 
         let emitted = emit_cfg_scalar_expr(
             scalar,
@@ -58735,12 +58817,28 @@ async fn adjust(value: i64, *, delta: i64) -> i64 {
     return value + delta
 }
 
+async fn defaultDelay(value: i64, offset: i64 = 2) -> i64 {
+    return value + offset
+}
+
+async fn defaultAdjust(value: i64, *, delta: i64 = 3, factor: i64 = 2) -> i64 {
+    return value + delta * factor
+}
+
 async fn directAwait() -> i64 {
     return await delay(4)
 }
 
 async fn namedAwait() -> i64 {
     return await adjust(4, delta: 3)
+}
+
+async fn defaultAwait() -> i64 {
+    return await defaultDelay(4)
+}
+
+async fn namedDefaultAwait() -> i64 {
+    return await defaultAdjust(4, delta: 5)
 }
 
 async fn nestedDirectAwait(left: i64, right: i64) -> i64 {
@@ -58775,6 +58873,24 @@ fn main() -> i64 {
                     "{}({}(INT64_C(4), INT64_C(3)))",
                     async_await_c_name("adjust"),
                     async_start_c_name("adjust")
+                ),
+            ),
+            (
+                "defaultAwait",
+                "defaultDelay",
+                format!(
+                    "{}({}(INT64_C(4), INT64_C(2)))",
+                    async_await_c_name("defaultDelay"),
+                    async_start_c_name("defaultDelay")
+                ),
+            ),
+            (
+                "namedDefaultAwait",
+                "defaultAdjust",
+                format!(
+                    "{}({}(INT64_C(4), INT64_C(5), INT64_C(2)))",
+                    async_await_c_name("defaultAdjust"),
+                    async_start_c_name("defaultAdjust")
                 ),
             ),
         ] {
