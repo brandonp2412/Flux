@@ -48413,6 +48413,112 @@ fn emit_cfg_scalar_expr_direct(
                 interface_pack_helper_name(interface, target)
             ))
         }
+        CfgScalarExprKind::Await { value } => {
+            let (callee, rendered) = match &value.kind {
+                CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
+                    let implementation = crate::builtin_names::global_impl(callee);
+                    if implementation != callee {
+                        return None;
+                    }
+                    let signature = signatures.get(implementation)?;
+                    if !signature.asynchronous
+                        || signature.foreign_symbol.is_some()
+                        || signature.params.len() != arguments.len()
+                        || signature.param_details.len() != arguments.len()
+                        || signature.param_details.iter().any(|param| param.named_only)
+                        || signature.returns.len() > 1
+                    {
+                        return None;
+                    }
+                    let result_ty = signature
+                        .returns
+                        .first()
+                        .map(|ty| signatures.canonical_type(ty))
+                        .unwrap_or(Type::Void);
+                    if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
+                        return None;
+                    }
+                    let mut rendered = Vec::with_capacity(arguments.len());
+                    for (argument, parameter) in arguments.iter().zip(&signature.params) {
+                        let parameter = signatures.canonical_type(parameter);
+                        if !matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || signatures.canonical_type(&argument.ty) != parameter
+                            || !signatures.is_copy_type(&parameter)
+                        {
+                            return None;
+                        }
+                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                    }
+                    (implementation, rendered)
+                }
+                CfgScalarExprKind::NamedCall { callee, arguments } if !env.contains_key(callee) => {
+                    let implementation = crate::builtin_names::global_impl(callee);
+                    if implementation != callee {
+                        return None;
+                    }
+                    let signature = signatures.get(implementation)?;
+                    if !signature.asynchronous
+                        || signature.foreign_symbol.is_some()
+                        || signature.params.len() != arguments.len()
+                        || signature.param_details.len() != arguments.len()
+                        || signature.returns.len() > 1
+                    {
+                        return None;
+                    }
+                    let result_ty = signature
+                        .returns
+                        .first()
+                        .map(|ty| signatures.canonical_type(ty))
+                        .unwrap_or(Type::Void);
+                    if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
+                        return None;
+                    }
+
+                    let positional = arguments
+                        .iter()
+                        .filter_map(|(name, argument)| name.is_none().then_some(argument))
+                        .collect::<Vec<_>>();
+                    let mut positional_index = 0usize;
+                    let mut rendered = Vec::with_capacity(arguments.len());
+                    for parameter in &signature.param_details {
+                        let argument =
+                            if !parameter.named_only && positional_index < positional.len() {
+                                let argument = positional[positional_index];
+                                positional_index += 1;
+                                argument
+                            } else {
+                                arguments.iter().find_map(|(name, argument)| {
+                                    (name.as_deref() == Some(parameter.name.as_str()))
+                                        .then_some(argument)
+                                })?
+                            };
+                        let parameter_ty = signatures.canonical_type(&parameter.ty);
+                        if !matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || signatures.canonical_type(&argument.ty) != parameter_ty
+                            || !signatures.is_copy_type(&parameter_ty)
+                        {
+                            return None;
+                        }
+                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                    }
+                    if positional_index != positional.len() {
+                        return None;
+                    }
+                    (implementation, rendered)
+                }
+                _ => return None,
+            };
+            Some(format!(
+                "{}({}({}))",
+                async_await_c_name(callee),
+                async_start_c_name(callee),
+                rendered.join(", ")
+            ))
+        }
         CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
             let implementation = crate::builtin_names::global_impl(callee);
             if matches!(
@@ -55823,6 +55929,34 @@ fn main() -> i64 {
                     ..
                 } if value_callee == callee
             ));
+            let direct =
+                emit_cfg_scalar_expr_direct(scalar, &HashMap::new(), database.signatures())
+                    .expect("exact Copy await should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            if function == "directAwait" {
+                let missing_argument = CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Await {
+                        value: Box::new(CfgScalarExpr {
+                            ty: Type::I64,
+                            kind: CfgScalarExprKind::Call {
+                                callee: "delay".to_string(),
+                                arguments: Vec::new(),
+                            },
+                        }),
+                    },
+                };
+                assert!(
+                    emit_cfg_scalar_expr_direct(
+                        &missing_argument,
+                        &HashMap::new(),
+                        database.signatures(),
+                    )
+                    .is_none(),
+                    "awaits requiring argument synthesis should retain the AST bridge"
+                );
+            }
 
             let fake = Expr {
                 line: awaited.span.line,
@@ -55838,7 +55972,7 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("await should emit from typed IR");
-            assert_eq!(emitted, expected);
+            assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-await"));
         }
     }
