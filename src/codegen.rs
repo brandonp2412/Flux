@@ -49124,10 +49124,14 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("{helper}({value}, {callback})"))
                 }
                 "hmacSha256" | "hmacSha512" if arguments.len() == 3 => {
-                    let key =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                    let value =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &arguments[..2],
+                        &[Type::Str, Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    let key = &rendered[0];
+                    let value = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &callback_params,
@@ -49152,98 +49156,124 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "request" | "sendTextRequest" if (6..=7).contains(&arguments.len()) => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let method =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    let target =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
-                    let host =
-                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
-                    let content_type =
-                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
-                    let body =
-                        emit_cfg_call_argument_direct(&arguments[5], &Type::Str, env, signatures)?;
-                    let keep_alive = if let Some(keep_alive) = arguments.get(6) {
-                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    let expected = if arguments.len() == 7 {
+                        vec![
+                            Type::I64,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Bool,
+                        ]
                     } else {
-                        "false".to_string()
+                        vec![
+                            Type::I64,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                        ]
                     };
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
+                    let keep_alive = rendered.get(6).map_or("false", String::as_str);
                     Some(profiled_timeline_call(
                         "network",
                         "http.request",
                         format!(
-                            "flux__net_http_send_text_request_v2({socket}, {method}, {target}, {host}, {content_type}, {body}, {keep_alive})"
+                            "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {keep_alive})",
+                            rendered[0],
+                            rendered[1],
+                            rendered[2],
+                            rendered[3],
+                            rendered[4],
+                            rendered[5]
                         ),
                     ))
                 }
                 "requestWithHeaders" | "sendTextRequestWithHeaders"
                     if (7..=8).contains(&arguments.len()) =>
                 {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let method =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    let target =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
-                    let host =
-                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
-                    let content_type =
-                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
-                    let body =
-                        emit_cfg_call_argument_direct(&arguments[5], &Type::Str, env, signatures)?;
-                    let headers =
-                        emit_cfg_call_argument_direct(&arguments[6], &Type::Str, env, signatures)?;
-                    let keep_alive = if let Some(keep_alive) = arguments.get(7) {
-                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    let expected = if arguments.len() == 8 {
+                        vec![
+                            Type::I64,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Bool,
+                        ]
                     } else {
-                        "false".to_string()
+                        vec![
+                            Type::I64,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                        ]
                     };
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
+                    let keep_alive = rendered.get(7).map_or("false", String::as_str);
                     Some(format!(
-                        "flux__net_http_send_text_request_with_headers({socket}, {method}, {target}, {host}, {content_type}, {body}, {headers}, {keep_alive})"
+                        "flux__net_http_send_text_request_with_headers({}, {}, {}, {}, {}, {}, {}, {keep_alive})",
+                        rendered[0],
+                        rendered[1],
+                        rendered[2],
+                        rendered[3],
+                        rendered[4],
+                        rendered[5],
+                        rendered[6]
                     ))
                 }
                 "respondWithHeaders" | "sendTextResponseWithHeaders"
                     if (5..=6).contains(&arguments.len()) =>
                 {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let status =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-                    let content_type =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
-                    let body =
-                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
-                    let headers =
-                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
-                    let keep_alive = if let Some(keep_alive) = arguments.get(5) {
-                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    let expected = if arguments.len() == 6 {
+                        vec![
+                            Type::I64,
+                            Type::I64,
+                            Type::Str,
+                            Type::Str,
+                            Type::Str,
+                            Type::Bool,
+                        ]
                     } else {
-                        "false".to_string()
+                        vec![Type::I64, Type::I64, Type::Str, Type::Str, Type::Str]
                     };
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
+                    let keep_alive = rendered.get(5).map_or("false", String::as_str);
                     Some(format!(
-                        "flux__net_http_send_text_response_with_headers({socket}, {status}, {content_type}, {body}, {headers}, {keep_alive})"
+                        "flux__net_http_send_text_response_with_headers({}, {}, {}, {}, {}, {keep_alive})",
+                        rendered[0], rendered[1], rendered[2], rendered[3], rendered[4]
                     ))
                 }
                 "respond" | "sendTextResponse" if (4..=5).contains(&arguments.len()) => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let status =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-                    let content_type =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
-                    let body =
-                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
-                    let keep_alive = if let Some(keep_alive) = arguments.get(4) {
-                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    let expected = if arguments.len() == 5 {
+                        vec![Type::I64, Type::I64, Type::Str, Type::Str, Type::Bool]
                     } else {
-                        "false".to_string()
+                        vec![Type::I64, Type::I64, Type::Str, Type::Str]
                     };
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
+                    let keep_alive = rendered.get(4).map_or("false", String::as_str);
                     Some(profiled_timeline_call(
                         "network",
                         "http.respond",
                         format!(
-                            "flux__net_http_send_text_response({socket}, {status}, {content_type}, {body}, {keep_alive})"
+                            "flux__net_http_send_text_response({}, {}, {}, {}, {keep_alive})",
+                            rendered[0], rendered[1], rendered[2], rendered[3]
                         ),
                     ))
                 }
@@ -65223,6 +65253,14 @@ fn hmac(key: str, value: str) -> error {
     return crypto.hmacSha512(key, value, converted)
 }
 
+fn hmacKeyCall(key: str, value: str) -> error {
+    return crypto.hmacSha512(stringValue(key), value, converted)
+}
+
+fn hmacValueCall(key: str, value: str) -> error {
+    return crypto.hmacSha512(key, stringValue(value), converted)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65328,6 +65366,34 @@ fn main() -> i64 {
                     function_c_name("converted")
                 ),
             ),
+            (
+                "hmacKeyCall",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__crypto_hmac_sha512({}({}), {}, {})",
+                    function_c_name("stringValue"),
+                    local_c_name("key"),
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
+                "hmacValueCall",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__crypto_hmac_sha512({}, {}({}), {})",
+                    local_c_name("key"),
+                    function_c_name("stringValue"),
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -65377,6 +65443,18 @@ fn requestBasic(socket: i64, method: str, target: str, host: str, contentType: s
     return http.request(socket, method, target, host, contentType, body)
 }
 
+fn httpValue(value: str) -> str {
+    return value
+}
+
+fn requestBodyCall(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error {
+    return http.request(socket, method, target, host, contentType, httpValue(body))
+}
+
+fn requestTwoCalls(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error {
+    return http.request(socket, httpValue(method), target, host, contentType, httpValue(body))
+}
+
 fn requestKeepAlive(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool) -> error {
     return http.request(socket, method, target, host, contentType, body, keepAlive)
 }
@@ -65421,6 +65499,31 @@ fn main() -> i64 {
                         local_c_name("target"),
                         local_c_name("host"),
                         local_c_name("contentType"),
+                        local_c_name("body")
+                    ),
+                ),
+            ),
+            (
+                "requestBodyCall",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("method".to_string(), Type::Str),
+                    ("target".to_string(), Type::Str),
+                    ("host".to_string(), Type::Str),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.request",
+                    format!(
+                        "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}({}), false)",
+                        local_c_name("socket"),
+                        local_c_name("method"),
+                        local_c_name("target"),
+                        local_c_name("host"),
+                        local_c_name("contentType"),
+                        function_c_name("httpValue"),
                         local_c_name("body")
                     ),
                 ),
@@ -65553,6 +65656,37 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-http-call"));
         }
+
+        let graph = database
+            .control_flow_graph("requestTwoCalls")
+            .expect("two-call HTTP CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call HTTP request should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call HTTP request should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("method".to_string(), Type::Str),
+            ("target".to_string(), Type::Str),
+            ("host".to_string(), Type::Str),
+            ("contentType".to_string(), Type::Str),
+            ("body".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible HTTP arguments must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
