@@ -63265,6 +63265,203 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn network_borrowed_send_multi_values_emit_from_typed_ir() {
+        let source = r#"
+fn exercise(
+    socket: i64,
+    bytes: i64[],
+    parts: str[],
+    host: str,
+    port: i64,
+    offset: i64,
+    timeout: i64
+) -> i64 {
+    let (byteCount, _) = net.writeBytes(socket, bytes)
+    let (byteOffset, _, _) = net.writeBytesFrom(socket, bytes, offset)
+    let (timedBytes, _) = net.writeBytesTimeout(socket, bytes, timeout)
+    let (timedOffset, _, _) = net.writeBytesFromTimeout(socket, bytes, offset, timeout)
+    let (partOffset, _, _) = net.writePartsFrom(socket, parts, offset)
+    let (timedParts, _) = net.writePartsTimeout(socket, parts, timeout)
+    let (timedPartOffset, _, _) = net.writePartsFromTimeout(socket, parts, offset, timeout)
+    let (udpBytes, _) = net.writeBytesTo(socket, host, port, bytes)
+    return byteCount + byteOffset + timedBytes + timedOffset + partOffset + timedParts + timedPartOffset + udpBytes
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("network borrowed-send direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("bytes".to_string(), Type::List(Box::new(Type::I64))),
+            ("parts".to_string(), Type::List(Box::new(Type::Str))),
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+            ("timeout".to_string(), Type::I64),
+        ]);
+        let expected = HashMap::from([
+            (
+                "writeBytes".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes({}, {})",
+                        local_c_name("socket"),
+                        local_c_name("bytes")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "writeBytesFrom".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes_progress({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("bytes"),
+                        local_c_name("offset")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                "writeBytesTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes_with_timeout({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("bytes"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "writeBytesFromTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes_progress_with_timeout({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("bytes"),
+                        local_c_name("offset"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                "writePartsFrom".to_string(),
+                (
+                    format!(
+                        "flux__net_send_text_parts_progress({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("parts"),
+                        local_c_name("offset")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                "writePartsTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_send_text_parts_with_timeout({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("parts"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "writePartsFromTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_send_text_parts_progress_with_timeout({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("parts"),
+                        local_c_name("offset"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                "writeBytesTo".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes_to({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("host"),
+                        local_c_name("port"),
+                        local_c_name("bytes")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, name, .. }
+                            if namespace == "net" && expected.contains_key(name)
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall { name, .. } = &root.kind else {
+                unreachable!();
+            };
+            let expected = expected
+                .get(name)
+                .unwrap_or_else(|| panic!("unexpected network borrowed send call: {name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("network borrowed send call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported network borrowed send call should emit directly: {name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, &expected.0, "{name}");
+            assert_eq!(&direct.1, &expected.1, "{name}");
+            assert_eq!(&direct.2, &expected.2, "{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("network borrowed send call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{name}");
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -65875,6 +66072,228 @@ fn emit_cfg_multi_expr_direct(
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
+                        ))
+                    }
+                    "sendBytes" if arguments.len() == 2 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let bytes = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__net_send_bytes({socket}, {bytes})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "sendBytesProgress" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let bytes = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let offset = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__net_send_bytes_progress({socket}, {bytes}, {offset})"),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "sendBytesWithTimeout" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let bytes = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_bytes_with_timeout({socket}, {bytes}, {timeout})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "sendBytesProgressWithTimeout" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let bytes = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let offset = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[3],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_bytes_progress_with_timeout({socket}, {bytes}, {offset}, {timeout})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "sendTextPartsProgress" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let parts = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let offset = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_text_parts_progress({socket}, {parts}, {offset})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "sendTextPartsWithTimeout" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let parts = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_text_parts_with_timeout({socket}, {parts}, {timeout})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "sendTextPartsProgressWithTimeout" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let parts = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let offset = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[3],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_text_parts_progress_with_timeout({socket}, {parts}, {offset}, {timeout})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "sendBytesTo" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let host = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let port = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let bytes = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[3],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__net_send_bytes_to({socket}, {host}, {port}, {bytes})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
                         ))
                     }
                     "receiveBytes" if arguments.len() == 3 => {
