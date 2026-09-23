@@ -49017,13 +49017,12 @@ fn emit_cfg_scalar_expr_direct(
                     signatures,
                 )?]
             } else {
-                arguments
-                    .iter()
-                    .zip(&variant.payloads)
-                    .map(|(argument, expected)| {
-                        emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                    })
-                    .collect::<Option<Vec<_>>>()?
+                emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &variant.payloads,
+                    env,
+                    signatures,
+                )?
             };
             Some(format!(
                 "{}({})",
@@ -58934,6 +58933,7 @@ fn main() -> i64 {
         let source = r#"
 enum Choice {
     One(i64)
+    Two(i64, i64)
     None
 }
 
@@ -58945,12 +58945,24 @@ fn wrap(value: i64) -> Choice {
     return Choice.One(identity(value))
 }
 
+fn wrapTwoLeft(left: i64, right: i64) -> Choice {
+    return Choice.Two(identity(left), right)
+}
+
+fn wrapTwoRight(left: i64, right: i64) -> Choice {
+    return Choice.Two(left, identity(right))
+}
+
+fn wrapTwoCalls(left: i64, right: i64) -> Choice {
+    return Choice.Two(identity(left), identity(right))
+}
+
 fn main() -> i64 {
     return 0
 }
 "#;
         let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
-            .expect("single-payload enum constructor fixture should typecheck");
+            .expect("enum constructor direct-IR fixture should typecheck");
         let graph = database
             .control_flow_graph("wrap")
             .expect("enum constructor CFG should exist");
@@ -59013,6 +59025,90 @@ fn main() -> i64 {
         .expect("single-payload enum constructor should bypass checked AST");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-single-payload-enum"));
+
+        for function in ["wrapTwoLeft", "wrapTwoRight"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("multi-payload enum constructor CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "Choice" && name == "Two"
+                    )
+                })
+                .expect("multi-payload enum constructor should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("multi-payload enum constructor should have scalar typed-IR facts");
+            let env = HashMap::from([
+                ("left".to_string(), Type::I64),
+                ("right".to_string(), Type::I64),
+            ]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("one flexible Copy payload should emit directly from typed IR");
+            assert!(
+                direct.contains(&enum_variant_helper_name("Choice", "Two")),
+                "{direct}"
+            );
+            assert!(direct.contains(&function_c_name("identity")), "{direct}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-multi-payload-enum".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Named("Choice".to_string()),
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("one flexible multi-payload enum constructor should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-multi-payload-enum"));
+        }
+
+        let graph = database
+            .control_flow_graph("wrapTwoCalls")
+            .expect("two-call enum constructor CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "Choice" && name == "Two"
+                )
+            })
+            .expect("two-call enum constructor should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call enum constructor should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible enum payloads must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
