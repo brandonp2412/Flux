@@ -50132,16 +50132,8 @@ fn emit_cfg_scalar_expr_direct(
                     return None;
                 }
                 let mapped = signatures.canonical_type(mapped);
-                let scalar_mapped = matches!(mapped, Type::I64 | Type::Bool | Type::Str)
-                    || matches!(
-                        &mapped,
-                        Type::Optional(inner)
-                            if matches!(
-                                signatures.canonical_type(inner),
-                                Type::I64 | Type::Bool | Type::Str
-                            )
-                    );
-                if is_literal && !scalar_mapped {
+                let temporary_mapped_supported = json_map_value_kind(&mapped, signatures).is_ok();
+                if is_literal && !temporary_mapped_supported {
                     return None;
                 }
                 let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
@@ -61663,6 +61655,101 @@ fn main() -> i64 {
             .expect("nested Copy-list JSON temporary should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-nested-list-temporary"));
+        }
+    }
+
+    #[test]
+    fn json_nested_map_temporaries_emit_from_typed_ir() {
+        let source = r#"
+fn jsonMapTemporaryText(_value: str) -> void {
+}
+
+fn encodeListMapLiteral() -> error {
+    return json.encode(map{"numbers": [1, 2], "more": [3, 4]}, jsonMapTemporaryText)
+}
+
+fn encodeDeepListMapLiteral() -> error {
+    return json.encodeObject(map{"nested": [[1, 5], [6, 7]]}, jsonMapTemporaryText)
+}
+
+fn encodeMapMapLiteral() -> error {
+    return json.encode(map{"outer": map{"inner": 8}}, jsonMapTemporaryText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested map JSON temporary fixture should typecheck");
+
+        for (function, helper) in [
+            ("encodeListMapLiteral", "flux__json_encode_nested_object"),
+            ("encodeDeepListMapLiteral", "flux__json_encode_map_map"),
+            ("encodeMapMapLiteral", "flux__json_encode_map_map"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("nested map JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json"
+                            && matches!(name.as_str(), "encode" | "encodeObject")
+                    )
+                })
+                .expect("nested map JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("nested map JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("nested map JSON root should preserve qualified facts");
+            };
+            assert!(
+                matches!(arguments[0].kind, CfgScalarExprKind::Aggregate(_)),
+                "{function}: {:?}",
+                arguments[0]
+            );
+
+            let env = HashMap::new();
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("nested map JSON temporary should emit directly: {function}: {scalar:?}")
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonMapTemporaryText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-nested-map-temporary".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("nested map JSON temporary should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-nested-map-temporary"));
         }
     }
 
