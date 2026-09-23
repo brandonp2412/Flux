@@ -68280,12 +68280,16 @@ fn header(_socket: i64, _name: str, _value: str) -> void {
 fn body(_socket: i64, _value: str) -> void {
 }
 
+fn multiI64(value: i64) -> i64 {
+    return value
+}
+
 fn exercise(socket: i64, maxHead: i64, maxBody: i64) -> i64 {
-    let (requestBytes, _) = http.readRequest(socket, maxHead, request)
-    let (requestHeaderBytes, _) = http.readRequestHeaders(socket, maxHead, request, header)
-    let (requestBodyBytes, _) = http.readRequestBody(socket, maxHead, maxBody, request, header, body)
-    let (responseHeaderBytes, _) = http.readResponse(socket, maxHead, response, header)
-    let (responseBodyBytes, _) = http.readResponseBody(socket, maxHead, maxBody, response, header, body)
+    let (requestBytes, _) = http.readRequest(multiI64(socket), maxHead, request)
+    let (requestHeaderBytes, _) = http.readRequestHeaders(multiI64(socket), maxHead, request, header)
+    let (requestBodyBytes, _) = http.readRequestBody(multiI64(socket), maxHead, maxBody, request, header, body)
+    let (responseHeaderBytes, _) = http.readResponse(multiI64(socket), maxHead, response, header)
+    let (responseBodyBytes, _) = http.readResponseBody(multiI64(socket), maxHead, maxBody, response, header, body)
     return requestBytes + requestHeaderBytes + requestBodyBytes + responseHeaderBytes + responseBodyBytes
 }
 
@@ -68308,7 +68312,8 @@ fn main() -> i64 {
             (
                 "readRequest".to_string(),
                 format!(
-                    "flux__net_http_receive_request_head({}, {}, {})",
+                    "flux__net_http_receive_request_head({}({}), {}, {})",
+                    function_c_name("multiI64"),
                     local_c_name("socket"),
                     local_c_name("maxHead"),
                     function_c_name("request")
@@ -68317,7 +68322,8 @@ fn main() -> i64 {
             (
                 "readRequestHeaders".to_string(),
                 format!(
-                    "flux__net_http_receive_request_head_with_headers({}, {}, {}, {})",
+                    "flux__net_http_receive_request_head_with_headers({}({}), {}, {}, {})",
+                    function_c_name("multiI64"),
                     local_c_name("socket"),
                     local_c_name("maxHead"),
                     function_c_name("request"),
@@ -68330,7 +68336,8 @@ fn main() -> i64 {
                     "network",
                     "http.receiveRequestWithTextBody",
                     format!(
-                        "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                        "flux__net_http_receive_request_with_text_body_v2({}({}), {}, {}, {}, {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("socket"),
                         local_c_name("maxHead"),
                         local_c_name("maxBody"),
@@ -68343,7 +68350,8 @@ fn main() -> i64 {
             (
                 "readResponse".to_string(),
                 format!(
-                    "flux__net_http_receive_response_head_with_headers({}, {}, {}, {})",
+                    "flux__net_http_receive_response_head_with_headers({}({}), {}, {}, {})",
+                    function_c_name("multiI64"),
                     local_c_name("socket"),
                     local_c_name("maxHead"),
                     function_c_name("response"),
@@ -68356,7 +68364,8 @@ fn main() -> i64 {
                     "network",
                     "http.receiveResponseWithTextBody",
                     format!(
-                        "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                        "flux__net_http_receive_response_with_text_body_v2({}({}), {}, {}, {}, {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("socket"),
                         local_c_name("maxHead"),
                         local_c_name("maxBody"),
@@ -71203,15 +71212,9 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "http" => match name {
                     "receiveRequestHead" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71223,22 +71226,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_http_receive_request_head({socket}, {max_bytes}, {callback})"
+                                "flux__net_http_receive_request_head({}, {}, {callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveRequestHeadWithHeaders" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71256,28 +71254,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_http_receive_request_head_with_headers({socket}, {max_bytes}, {request_callback}, {header_callback})"
+                                "flux__net_http_receive_request_head_with_headers({}, {}, {request_callback}, {header_callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveRequestWithTextBody" if arguments.len() == 6 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_head_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_body_bytes = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71304,7 +71291,8 @@ fn emit_cfg_multi_expr_direct(
                                 "network",
                                 "http.receiveRequestWithTextBody",
                                 format!(
-                                    "flux__net_http_receive_request_with_text_body_v2({socket}, {max_head_bytes}, {max_body_bytes}, {request_callback}, {header_callback}, {body_callback})"
+                                    "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {request_callback}, {header_callback}, {body_callback})",
+                                    rendered[0], rendered[1], rendered[2]
                                 ),
                             ),
                             "flux__net_i64_error".to_string(),
@@ -71312,15 +71300,9 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "receiveResponseHeadWithHeaders" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71338,28 +71320,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_http_receive_response_head_with_headers({socket}, {max_bytes}, {response_callback}, {header_callback})"
+                                "flux__net_http_receive_response_head_with_headers({}, {}, {response_callback}, {header_callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveResponseWithTextBody" if arguments.len() == 6 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_head_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_body_bytes = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71386,7 +71357,8 @@ fn emit_cfg_multi_expr_direct(
                                 "network",
                                 "http.receiveResponseWithTextBody",
                                 format!(
-                                    "flux__net_http_receive_response_with_text_body_v2({socket}, {max_head_bytes}, {max_body_bytes}, {response_callback}, {header_callback}, {body_callback})"
+                                    "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {response_callback}, {header_callback}, {body_callback})",
+                                    rendered[0], rendered[1], rendered[2]
                                 ),
                             ),
                             "flux__net_i64_error".to_string(),
