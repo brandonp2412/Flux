@@ -62491,6 +62491,155 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn http_multi_value_calls_emit_from_typed_ir() {
+        let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+
+fn body(_socket: i64, _value: str) -> void {
+}
+
+fn exercise(socket: i64, maxHead: i64, maxBody: i64) -> i64 {
+    let (requestBytes, _) = http.readRequest(socket, maxHead, request)
+    let (requestHeaderBytes, _) = http.readRequestHeaders(socket, maxHead, request, header)
+    let (requestBodyBytes, _) = http.readRequestBody(socket, maxHead, maxBody, request, header, body)
+    let (responseHeaderBytes, _) = http.readResponse(socket, maxHead, response, header)
+    let (responseBodyBytes, _) = http.readResponseBody(socket, maxHead, maxBody, response, header, body)
+    return requestBytes + requestHeaderBytes + requestBodyBytes + responseHeaderBytes + responseBodyBytes
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("HTTP multi-value direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("maxHead".to_string(), Type::I64),
+            ("maxBody".to_string(), Type::I64),
+        ]);
+        let expected = HashMap::from([
+            (
+                "readRequest".to_string(),
+                format!(
+                    "flux__net_http_receive_request_head({}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("maxHead"),
+                    function_c_name("request")
+                ),
+            ),
+            (
+                "readRequestHeaders".to_string(),
+                format!(
+                    "flux__net_http_receive_request_head_with_headers({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("maxHead"),
+                    function_c_name("request"),
+                    function_c_name("header")
+                ),
+            ),
+            (
+                "readRequestBody".to_string(),
+                profiled_timeline_call(
+                    "network",
+                    "http.receiveRequestWithTextBody",
+                    format!(
+                        "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxHead"),
+                        local_c_name("maxBody"),
+                        function_c_name("request"),
+                        function_c_name("header"),
+                        function_c_name("body")
+                    ),
+                ),
+            ),
+            (
+                "readResponse".to_string(),
+                format!(
+                    "flux__net_http_receive_response_head_with_headers({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("maxHead"),
+                    function_c_name("response"),
+                    function_c_name("header")
+                ),
+            ),
+            (
+                "readResponseBody".to_string(),
+                profiled_timeline_call(
+                    "network",
+                    "http.receiveResponseWithTextBody",
+                    format!(
+                        "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxHead"),
+                        local_c_name("maxBody"),
+                        function_c_name("response"),
+                        function_c_name("header"),
+                        function_c_name("body")
+                    ),
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, .. }
+                            if namespace == "http"
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall { name, .. } = &root.kind else {
+                unreachable!();
+            };
+            let expected_code = expected
+                .get(name)
+                .unwrap_or_else(|| panic!("unexpected HTTP multi-value call: {name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("HTTP multi-value call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported HTTP multi-value call should emit directly: {name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, expected_code, "{name}");
+            assert_eq!(direct.1, "flux__net_i64_error", "{name}");
+            assert_eq!(direct.2, vec![Type::I64, Type::Error], "{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("HTTP multi-value call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{name}");
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -64363,6 +64512,200 @@ fn emit_cfg_multi_expr_direct(
                         Some((
                             format!("flux__sqlite_query({database}, {sql}, {callback})"),
                             "flux__sqlite_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "http" => match name {
+                    "receiveRequestHead" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Str, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_http_receive_request_head({socket}, {max_bytes}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveRequestHeadWithHeaders" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let request_callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Str, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_http_receive_request_head_with_headers({socket}, {max_bytes}, {request_callback}, {header_callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveRequestWithTextBody" if arguments.len() == 6 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_head_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_body_bytes = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let request_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let body_callback = emit_cfg_callback_argument_direct(
+                            &arguments[5],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            profiled_timeline_call(
+                                "network",
+                                "http.receiveRequestWithTextBody",
+                                format!(
+                                    "flux__net_http_receive_request_with_text_body_v2({socket}, {max_head_bytes}, {max_body_bytes}, {request_callback}, {header_callback}, {body_callback})"
+                                ),
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveResponseHeadWithHeaders" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let response_callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Str, Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_http_receive_response_head_with_headers({socket}, {max_bytes}, {response_callback}, {header_callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveResponseWithTextBody" if arguments.len() == 6 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_head_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_body_bytes = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let response_callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let header_callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        let body_callback = emit_cfg_callback_argument_direct(
+                            &arguments[5],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            profiled_timeline_call(
+                                "network",
+                                "http.receiveResponseWithTextBody",
+                                format!(
+                                    "flux__net_http_receive_response_with_text_body_v2({socket}, {max_head_bytes}, {max_body_bytes}, {response_callback}, {header_callback}, {body_callback})"
+                                ),
+                            ),
+                            "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
