@@ -48396,11 +48396,30 @@ fn emit_cfg_borrowed_list_argument_direct(
     signatures: &Signatures,
 ) -> Option<String> {
     let expected = Type::List(Box::new(element.clone()));
-    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
-        || !matches!(argument.kind, CfgScalarExprKind::Name(_))
-    {
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected) {
         return None;
     }
+
+    let has_stable_borrowed_storage = match &argument.kind {
+        CfgScalarExprKind::Name(_) => true,
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } => matches!(operand.kind, CfgScalarExprKind::Name(_)),
+        CfgScalarExprKind::Slice { base, .. } => matches!(
+            base.kind,
+            CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Unary {
+                    op: UnaryOp::Borrow,
+                    ..
+                }
+        ),
+        _ => false,
+    };
+    if !has_stable_borrowed_storage {
+        return None;
+    }
+
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
@@ -60898,6 +60917,68 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-network-call"));
         }
+    }
+
+    #[test]
+    fn borrowed_list_slices_emit_directly_at_qualified_call_boundaries() {
+        let source = r#"
+fn sendSlice(socket: i64, parts: str[], start: i64) -> error {
+    return net.writeParts(socket, parts[start:])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("borrowed slice direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendSlice")
+            .expect("borrowed slice CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("borrowed slice qualified call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("borrowed slice qualified call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("parts".to_string(), Type::List(Box::new(Type::Str))),
+            ("start".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("borrowed list slice should emit directly from typed IR");
+        assert!(direct.starts_with("flux__net_send_text_parts("));
+        assert!(direct.contains("flux_list_slice("));
+        assert!(direct.contains(&local_c_name("parts")));
+        assert!(direct.contains(&local_c_name("start")));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-borrowed-slice".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("borrowed list slice call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-borrowed-slice"));
     }
 
     #[test]
