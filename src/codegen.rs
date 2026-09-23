@@ -49285,6 +49285,61 @@ fn emit_cfg_scalar_expr_direct(
                     let values = render_i64_args(1)?;
                     Some(format!("flux__time_local_offset_safe({})", values[0]))
                 }
+                "formatUtc" | "formatLocal" if ty == Type::Error => {
+                    if arguments.len() != 2 {
+                        return None;
+                    }
+                    let timestamp =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[1],
+                        &[Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    let helper = if name == "formatUtc" {
+                        "flux__time_format_utc"
+                    } else {
+                        "flux__time_format_local"
+                    };
+                    Some(format!("{helper}({timestamp}, {callback})"))
+                }
+                "formatOffset" if ty == Type::Error => {
+                    if arguments.len() != 3 {
+                        return None;
+                    }
+                    let timestamp =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let offset =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[2],
+                        &[Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__time_format_offset({timestamp}, {offset}, {callback})"
+                    ))
+                }
+                "formatZone" if ty == Type::Error => {
+                    if arguments.len() != 3 {
+                        return None;
+                    }
+                    let timestamp =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let zone =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[2],
+                        &[Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__time_format_zone({timestamp}, {zone}, {callback})"
+                    ))
+                }
                 "sleep" | "sleepMillis" if ty == Type::Void => {
                     let [duration] = arguments.as_slice() else {
                         return None;
@@ -58613,6 +58668,25 @@ fn sleepUntil(value: i64) -> void {
     time.sleepUntilMonotonic(value)
 }
 
+fn formatted(_value: str) -> void {
+}
+
+fn formatUtc(value: i64) -> error {
+    return time.format(value, formatted)
+}
+
+fn formatLocal(value: i64) -> error {
+    return time.formatLocal(value, formatted)
+}
+
+fn formatOffset(value: i64, offset: i64) -> error {
+    return time.formatOffset(value, offset, formatted)
+}
+
+fn formatZone(value: i64, zone: str) -> error {
+    return time.formatZone(value, zone, formatted)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -58730,6 +58804,50 @@ fn main() -> i64 {
                 format!(
                     "flux__time_sleep_until_monotonic({})",
                     local_c_name("value")
+                ),
+            ),
+            (
+                "formatUtc",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_format_utc({}, {})",
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "formatLocal",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_format_local({}, {})",
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "formatOffset",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_format_offset({}, {}, {})",
+                    local_c_name("value"),
+                    local_c_name("offset"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "formatZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__time_format_zone({}, {}, {})",
+                    local_c_name("value"),
+                    local_c_name("zone"),
+                    function_c_name("formatted")
                 ),
             ),
         ] {
