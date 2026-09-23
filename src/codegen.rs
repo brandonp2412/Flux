@@ -48742,6 +48742,39 @@ fn emit_cfg_scalar_expr_direct(
             ))
         }
         CfgScalarExprKind::Call { callee, arguments }
+            if crate::builtin_names::global_impl(callee) == "contains"
+                && arguments.len() == 2
+                && ty == Type::Bool =>
+        {
+            let collection = &arguments[0];
+            let searched = &arguments[1];
+            let Type::List(element) = signatures.canonical_type(&collection.ty) else {
+                return None;
+            };
+            let element = signatures.canonical_type(&element);
+            if !matches!(element, Type::I64 | Type::Bool | Type::Str)
+                || signatures.canonical_type(&searched.ty) != element
+            {
+                return None;
+            }
+            let source =
+                emit_cfg_borrowed_list_argument_direct(collection, &element, env, signatures)?;
+            let searched = emit_cfg_call_argument_direct(searched, &element, env, signatures)?;
+            let element_c = c_type(&element, signatures);
+            let equality = match element {
+                Type::Str => format!(
+                    "strcmp(flux__typed_contains_value, *((const char **)flux_list_at_unchecked(flux__typed_contains_source, flux__typed_contains_i, sizeof({element_c})))) == 0"
+                ),
+                Type::Bool | Type::I64 => format!(
+                    "flux__typed_contains_value == *(({element_c} *)flux_list_at_unchecked(flux__typed_contains_source, flux__typed_contains_i, sizeof({element_c})))"
+                ),
+                _ => unreachable!("contains scalar element checked above"),
+            };
+            Some(format!(
+                "__extension__ ({{ struct flux__list flux__typed_contains_source = {source}; {element_c} flux__typed_contains_value = {searched}; bool flux__typed_contains_result = false; for (size_t flux__typed_contains_i = 0; flux__typed_contains_i < flux__typed_contains_source.len; ++flux__typed_contains_i) {{ if ({equality}) {{ flux__typed_contains_result = true; break; }} }} flux__typed_contains_result; }})"
+            ))
+        }
+        CfgScalarExprKind::Call { callee, arguments }
             if matches!(crate::builtin_names::global_impl(callee), "any" | "every")
                 && arguments.len() == 1
                 && ty == Type::Bool =>
@@ -56107,6 +56140,95 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn list_contains_emits_directly_from_typed_ir() {
+        let source = r#"
+fn containsSlice(values: i64[], start: i64, needle: i64) -> bool {
+    return contains(values[start:], needle)
+}
+
+fn containsTake(values: i64[], count: i64, needle: i64) -> bool {
+    return contains(take(values, count), needle)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list contains direct-IR fixture should typecheck");
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        for (function, env, view_fragment) in [
+            (
+                "containsSlice",
+                HashMap::from([
+                    ("values".to_string(), list_ty.clone()),
+                    ("start".to_string(), Type::I64),
+                    ("needle".to_string(), Type::I64),
+                ]),
+                "flux_list_slice(",
+            ),
+            (
+                "containsTake",
+                HashMap::from([
+                    ("values".to_string(), list_ty.clone()),
+                    ("count".to_string(), Type::I64),
+                    ("needle".to_string(), Type::I64),
+                ]),
+                "flux_list_take(",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("list contains CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == "contains"
+                    )
+                })
+                .expect("contains should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("contains should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("contains should emit directly from typed IR");
+            assert!(
+                direct.contains("flux__typed_contains_source"),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains("flux_list_at_unchecked("),
+                "{function}: {direct}"
+            );
+            assert!(direct.contains(view_fragment), "{function}: {direct}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-contains".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("contains should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-contains"));
+        }
+    }
+
+    #[test]
     fn sequence_call_projections_materialize_from_typed_ir() {
         let source = r#"
 fn sortedIndex(values: i64[], at: i64) -> i64 {
@@ -56361,7 +56483,7 @@ fn main() -> i64 {
                     ("values".to_string(), Type::List(Box::new(Type::I64))),
                     ("needle".to_string(), Type::I64),
                 ]),
-                "flux__contains_result_",
+                "flux__typed_contains_result",
             ),
             (
                 "hasAny",
