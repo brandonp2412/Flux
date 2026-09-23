@@ -50703,10 +50703,26 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
+            let scalar_count = binding
+                .params
+                .iter()
+                .filter(|parameter| {
+                    matches!(parameter.ty, crate::linux_bindings::LinuxBindingType::Str)
+                })
+                .count();
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
                 match parameter.ty {
                     crate::linux_bindings::LinuxBindingType::Str => {
+                        if scalar_count == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument,
+                                &Type::Str,
+                                env,
+                                signatures,
+                            )?);
+                            continue;
+                        }
                         if !matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
@@ -50757,6 +50773,17 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
+            let scalar_count = binding
+                .params
+                .iter()
+                .filter(|parameter| {
+                    matches!(
+                        parameter.ty,
+                        crate::windows_bindings::WindowsBindingType::I64
+                            | crate::windows_bindings::WindowsBindingType::Str
+                    )
+                })
+                .count();
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
                 match parameter.ty {
@@ -50777,6 +50804,12 @@ fn emit_cfg_scalar_expr_direct(
                                 unreachable!()
                             }
                         };
+                        if scalar_count == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument, &expected, env, signatures,
+                            )?);
+                            continue;
+                        }
                         let direct_argument = matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
@@ -50812,6 +50845,19 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
             let runtime_symbol = binding.runtime_symbol_for_arity(arguments.len())?;
+            let scalar_count = binding
+                .params
+                .iter()
+                .take(arguments.len())
+                .filter(|parameter| {
+                    matches!(
+                        parameter.ty,
+                        crate::android_bindings::AndroidBindingType::I64
+                            | crate::android_bindings::AndroidBindingType::Bool
+                            | crate::android_bindings::AndroidBindingType::Str
+                    )
+                })
+                .count();
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
@@ -50835,6 +50881,12 @@ fn emit_cfg_scalar_expr_direct(
                                 unreachable!()
                             }
                         };
+                        if scalar_count == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument, &expected, env, signatures,
+                            )?);
+                            continue;
+                        }
                         let direct_argument = matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
@@ -65566,6 +65618,21 @@ fn focusNextDefault() -> void {
     android.focusNext()
 }
 
+fn androidName(name: str) -> str {
+    return name
+}
+
+fn androidRead(_value: str) -> void {
+}
+
+fn featureCall(name: str) -> bool {
+    return android.hasSystemFeature(androidName(name))
+}
+
+fn secureReadCall(key: str) -> bool {
+    return android.secureRead(androidName(key), androidRead)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65652,6 +65719,25 @@ fn main() -> i64 {
                 HashMap::new(),
                 "flux__android_focus_next()".to_string(),
             ),
+            (
+                "featureCall",
+                HashMap::from([("name".to_string(), Type::Str)]),
+                format!(
+                    "flux__android_has_system_feature({}({}))",
+                    function_c_name("androidName"),
+                    local_c_name("name")
+                ),
+            ),
+            (
+                "secureReadCall",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__android_secure_read({}({}), {})",
+                    function_c_name("androidName"),
+                    local_c_name("key"),
+                    function_c_name("androidRead")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -65674,6 +65760,24 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar Android call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
+            if function.ends_with("Call") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-platform-call".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &scalar.ty,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("single-value platform call should bypass the checked-AST root");
+                assert_eq!(emitted, direct, "{function}");
+                assert!(!emitted.contains("checked-ast-platform-call"));
+            }
         }
 
         let callback_ty = Type::Function {
@@ -65758,6 +65862,21 @@ fn remove(key: str) -> bool {
     return linux.secureRemove(key)
 }
 
+fn linuxKey(key: str) -> str {
+    return key
+}
+
+fn readValue(_value: str) -> void {
+}
+
+fn removeCall(key: str) -> bool {
+    return linux.secureRemove(linuxKey(key))
+}
+
+fn readCall(key: str) -> bool {
+    return linux.secureRead(linuxKey(key), readValue)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65783,6 +65902,25 @@ fn main() -> i64 {
                 HashMap::from([("key".to_string(), Type::Str)]),
                 format!("flux__linux_secure_remove({})", local_c_name("key")),
             ),
+            (
+                "removeCall",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__linux_secure_remove({}({}))",
+                    function_c_name("linuxKey"),
+                    local_c_name("key")
+                ),
+            ),
+            (
+                "readCall",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__linux_secure_read({}({}), {})",
+                    function_c_name("linuxKey"),
+                    local_c_name("key"),
+                    function_c_name("readValue")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -65805,6 +65943,24 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar Linux call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
+            if function.ends_with("Call") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-platform-call".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &scalar.ty,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("single-value platform call should bypass the checked-AST root");
+                assert_eq!(emitted, direct, "{function}");
+                assert!(!emitted.contains("checked-ast-platform-call"));
+            }
         }
 
         let callback_ty = Type::Function {
@@ -65878,6 +66034,21 @@ fn store(key: str, value: str) -> bool {
     return windows.secureStore(key, value)
 }
 
+fn windowsTarget(target: str) -> str {
+    return target
+}
+
+fn windowsRead(_value: str) -> void {
+}
+
+fn openTargetCall(target: str) -> bool {
+    return windows.open(windowsTarget(target))
+}
+
+fn secureReadCall(key: str) -> bool {
+    return windows.secureRead(windowsTarget(key), windowsRead)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65943,6 +66114,25 @@ fn main() -> i64 {
                     local_c_name("value")
                 ),
             ),
+            (
+                "openTargetCall",
+                HashMap::from([("target".to_string(), Type::Str)]),
+                format!(
+                    "flux__windows_open({}({}))",
+                    function_c_name("windowsTarget"),
+                    local_c_name("target")
+                ),
+            ),
+            (
+                "secureReadCall",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__windows_secure_read({}({}), {})",
+                    function_c_name("windowsTarget"),
+                    local_c_name("key"),
+                    function_c_name("windowsRead")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -65965,6 +66155,24 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .expect("supported scalar Windows call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
+            if function.ends_with("Call") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-platform-call".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &scalar.ty,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("single-value platform call should bypass the checked-AST root");
+                assert_eq!(emitted, direct, "{function}");
+                assert!(!emitted.contains("checked-ast-platform-call"));
+            }
         }
 
         let unsupported = CfgScalarExpr {
