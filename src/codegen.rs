@@ -51049,25 +51049,40 @@ fn emit_cfg_scalar_expr_direct(
                     {
                         return None;
                     }
-                    let title =
-                        emit_cfg_call_argument_direct(positional[0], &Type::Str, env, signatures)?;
-                    let message =
-                        emit_cfg_call_argument_direct(positional[1], &Type::Str, env, signatures)?;
+                    let cancel_argument = arguments.iter().find_map(|(name, argument)| {
+                        (name.as_deref() == Some("cancelLabel")).then_some(argument)
+                    });
+                    let confirm_argument = arguments.iter().find_map(|(name, argument)| {
+                        (name.as_deref() == Some("confirmLabel")).then_some(argument)
+                    });
+                    let mut scalar_arguments = vec![positional[0].clone(), positional[1].clone()];
+                    if let Some(argument) = cancel_argument {
+                        scalar_arguments.push(argument.clone());
+                    }
+                    if let Some(argument) = confirm_argument {
+                        scalar_arguments.push(argument.clone());
+                    }
+                    let expected = vec![Type::Str; scalar_arguments.len()];
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &scalar_arguments,
+                        &expected,
+                        env,
+                        signatures,
+                    )?;
+                    let title = &rendered[0];
+                    let message = &rendered[1];
                     let callback =
                         emit_cfg_callback_argument_direct(positional[2], &[], env, signatures)?;
-                    let cancel_label = if let Some(argument) =
-                        arguments.iter().find_map(|(name, argument)| {
-                            (name.as_deref() == Some("cancelLabel")).then_some(argument)
-                        }) {
-                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    let mut next_label = 2;
+                    let cancel_label = if cancel_argument.is_some() {
+                        let label = rendered[next_label].clone();
+                        next_label += 1;
+                        label
                     } else {
                         c_string("Cancel")
                     };
-                    let confirm_label = if let Some(argument) =
-                        arguments.iter().find_map(|(name, argument)| {
-                            (name.as_deref() == Some("confirmLabel")).then_some(argument)
-                        }) {
-                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    let confirm_label = if confirm_argument.is_some() {
+                        rendered[next_label].clone()
                     } else {
                         c_string("OK")
                     };
@@ -51088,10 +51103,22 @@ fn emit_cfg_scalar_expr_direct(
                     {
                         return None;
                     }
-                    let title =
-                        emit_cfg_call_argument_direct(positional[0], &Type::Str, env, signatures)?;
-                    let message =
-                        emit_cfg_call_argument_direct(positional[1], &Type::Str, env, signatures)?;
+                    let cancel_argument = arguments.iter().find_map(|(name, argument)| {
+                        (name.as_deref() == Some("cancelLabel")).then_some(argument)
+                    });
+                    let mut scalar_arguments = vec![positional[0].clone(), positional[1].clone()];
+                    if let Some(argument) = cancel_argument {
+                        scalar_arguments.push(argument.clone());
+                    }
+                    let expected = vec![Type::Str; scalar_arguments.len()];
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &scalar_arguments,
+                        &expected,
+                        env,
+                        signatures,
+                    )?;
+                    let title = &rendered[0];
+                    let message = &rendered[1];
                     let options = cfg_static_string_list_direct(positional[2], signatures)?;
                     if options.is_empty() {
                         return None;
@@ -51102,11 +51129,8 @@ fn emit_cfg_scalar_expr_direct(
                         env,
                         signatures,
                     )?;
-                    let cancel_label = if let Some(argument) =
-                        arguments.iter().find_map(|(name, argument)| {
-                            (name.as_deref() == Some("cancelLabel")).then_some(argument)
-                        }) {
-                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    let cancel_label = if cancel_argument.is_some() {
+                        rendered[2].clone()
                     } else {
                         c_string("Cancel")
                     };
@@ -62041,8 +62065,20 @@ fn confirmNamed(title: str, message: str, cancel: str, accept: str) -> void {
     dialog.confirm(title, message, confirmed, cancelLabel: cancel, confirmLabel: accept)
 }
 
+fn confirmNamedCall(title: str, message: str, cancel: str, accept: str) -> void {
+    dialog.confirm(title, message, confirmed, cancelLabel: dialogString(cancel), confirmLabel: accept)
+}
+
+fn doubleConfirmNamedCall(title: str, message: str, cancel: str, accept: str) -> void {
+    dialog.confirm(dialogString(title), message, confirmed, cancelLabel: dialogString(cancel), confirmLabel: accept)
+}
+
 fn chooseNamed(title: str, message: str, cancel: str) -> void {
     dialog.choose(title, message, ["Alpha", "Beta"], selected, cancelLabel: cancel)
+}
+
+fn chooseNamedCall(title: str, message: str, cancel: str) -> void {
+    dialog.choose(title, message, ["Alpha", "Beta"], selected, cancelLabel: dialogString(cancel))
 }
 
 fn main() -> i64 {
@@ -62167,6 +62203,40 @@ fn main() -> i64 {
                     function_c_name("selected")
                 ),
             ),
+            (
+                "confirmNamedCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                    ("cancel".to_string(), Type::Str),
+                    ("accept".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_confirm({}, {}, {}({}), {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    function_c_name("dialogString"),
+                    local_c_name("cancel"),
+                    local_c_name("accept"),
+                    function_c_name("confirmed")
+                ),
+            ),
+            (
+                "chooseNamedCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                    ("cancel".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_choose({}, {}, (const char *[]){{{named_choose_items}}}, INT64_C(2), {}({}), {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    function_c_name("dialogString"),
+                    local_c_name("cancel"),
+                    function_c_name("selected")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -62238,6 +62308,35 @@ fn main() -> i64 {
         assert!(
             emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
             "two flexible dialog string inputs must retain the ordered checked-AST fallback"
+        );
+
+        let graph = database
+            .control_flow_graph("doubleConfirmNamedCall")
+            .expect("two-call named dialog CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::NamedQualifiedCall { .. }
+                )
+            })
+            .expect("two-call named dialog confirm should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call named dialog confirm should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("title".to_string(), Type::Str),
+            ("message".to_string(), Type::Str),
+            ("cancel".to_string(), Type::Str),
+            ("accept".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible named dialog string inputs must retain the ordered checked-AST fallback"
         );
     }
 
