@@ -50203,6 +50203,7 @@ fn emit_cfg_scalar_expr_direct(
                         | CfgScalarExprKind::Call { .. }
                         | CfgScalarExprKind::NamedCall { .. }
                         | CfgScalarExprKind::QualifiedCall { .. }
+                        | CfgScalarExprKind::Field { .. }
                 ) && signatures.is_copy_type(&value_ty);
                 let value = if direct_aggregate {
                     emit_cfg_scalar_expr_direct(value, env, signatures)?
@@ -61310,6 +61311,122 @@ fn main() -> i64 {
             .expect("Copy aggregate-producing JSON call should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-aggregate-call"));
+        }
+    }
+
+    #[test]
+    fn json_copy_aggregate_field_projections_emit_from_typed_ir() {
+        let source = r#"
+struct JsonProjectedUser {
+    name: str
+    age: i64
+}
+struct JsonProjectedHolder {
+    user: JsonProjectedUser
+    maybeUser: JsonProjectedUser?
+}
+fn jsonProjectedText(_value: str) -> void {
+}
+fn encodeProjectedUser(holder: JsonProjectedHolder) -> error {
+    return json.encode(holder.user, jsonProjectedText)
+}
+fn encodeProjectedOptionalUser(holder: JsonProjectedHolder) -> error {
+    return json.encode(holder.maybeUser, jsonProjectedText)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("Copy aggregate field-projection JSON fixture should typecheck");
+        let holder_ty = Type::Named("JsonProjectedHolder".to_string());
+
+        for (function, field) in [
+            ("encodeProjectedUser", "user"),
+            ("encodeProjectedOptionalUser", "maybeUser"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Copy aggregate field-projection JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json" && name == "encode"
+                    )
+                })
+                .expect("Copy aggregate field-projection JSON call should remain in typed IR");
+            let scalar = facts.scalar_exprs.get(&source_span_key(root.span)).expect(
+                "Copy aggregate field-projection JSON call should have scalar typed-IR facts",
+            );
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("Copy aggregate field-projection JSON root should preserve qualified facts");
+            };
+            let value = &arguments[0];
+            assert!(
+                matches!(
+                    &value.kind,
+                    CfgScalarExprKind::Field {
+                        base,
+                        name,
+                        optional: false,
+                    } if matches!(&base.kind, CfgScalarExprKind::Name(name) if name == "holder")
+                        && name == field
+                ),
+                "{function}: {value:?}"
+            );
+            let value_ty = database.signatures().canonical_type(&value.ty);
+            let helper = match &value_ty {
+                Type::Optional(inner) => {
+                    assert!(json_record_supported(inner, database.signatures()));
+                    json_optional_aggregate_helper_name(&value_ty, database.signatures())
+                }
+                ty => {
+                    assert!(json_record_supported(ty, database.signatures()));
+                    json_record_helper_name(ty, database.signatures())
+                }
+            };
+            let env = HashMap::from([("holder".to_string(), holder_ty.clone())]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("Copy aggregate field-projection JSON should emit directly: {function}")
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&local_c_name("holder")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonProjectedText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-aggregate-field".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("Copy aggregate field-projection JSON should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-aggregate-field"));
         }
     }
 
