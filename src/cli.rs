@@ -3130,7 +3130,9 @@ fn msix_block_map_xml(root: &Path) -> Result<String, CliError> {
 
     let mut files = msix_files(root)?;
     files.retain(|path| {
-        path != Path::new("AppxBlockMap.xml") && path != Path::new("AppxSignature.p7x")
+        path != Path::new("AppxBlockMap.xml")
+            && path != Path::new("AppxSignature.p7x")
+            && path != Path::new("[Content_Types].xml")
     });
     files.sort();
     let mut xml = String::from(
@@ -13567,6 +13569,8 @@ app OverlayDemo(title: "Overlay")
         fs::write(root.join("AppxManifest.xml"), b"manifest")
             .expect("manifest fixture should write");
         fs::write(root.join("Assets/icon.png"), b"png").expect("asset fixture should write");
+        fs::write(root.join("[Content_Types].xml"), b"content types")
+            .expect("content types fixture should write");
 
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
@@ -13579,6 +13583,7 @@ app OverlayDemo(title: "Overlay")
         let block_map = msix_block_map_xml(&root).expect("block map should generate");
         assert!(block_map.contains("Name=\"AppxManifest.xml\" Size=\"8\" LfhSize=\"46\""));
         assert!(block_map.contains("Name=\"Assets\\icon.png\" Size=\"3\" LfhSize=\"45\""));
+        assert!(!block_map.contains("[Content_Types].xml"));
         assert!(block_map.contains("Hash=\""));
         assert!(!block_map.contains("5d41402abc4b2a76b9719d911017c592"));
         let _ = fs::remove_dir_all(&root);
