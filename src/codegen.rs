@@ -49013,6 +49013,17 @@ fn emit_cfg_scalar_expr_direct(
                         format!("flux__net_send_text({socket}, {text})"),
                     ))
                 }
+                "sendTextParts" if arguments.len() == 2 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let parts = emit_cfg_borrowed_list_argument_direct(
+                        &arguments[1],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!("flux__net_send_text_parts({socket}, {parts})"))
+                }
                 "sendTextTo" if arguments.len() == 4 => {
                     let socket =
                         emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
@@ -49024,6 +49035,23 @@ fn emit_cfg_scalar_expr_direct(
                         emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
                     Some(format!(
                         "flux__net_send_text_to({socket}, {host}, {port}, {text})"
+                    ))
+                }
+                "sendTextToParts" if arguments.len() == 4 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let host =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let port =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
+                    let parts = emit_cfg_borrowed_list_argument_direct(
+                        &arguments[3],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__net_send_text_to_parts({socket}, {host}, {port}, {parts})"
                     ))
                 }
                 "peerAddress" | "localAddress" if arguments.len() == 2 => {
@@ -49080,6 +49108,17 @@ fn emit_cfg_scalar_expr_direct(
                 let value =
                     emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
                 Some(format!("flux__websocket_write_text({session}, {value})"))
+            }
+            "writeBytes" if arguments.len() == 2 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let bytes = emit_cfg_borrowed_list_argument_direct(
+                    &arguments[1],
+                    &Type::I64,
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__websocket_write_bytes({session}, {bytes})"))
             }
             "ping" | "pong" if arguments.len() == 2 => {
                 let session =
@@ -60491,6 +60530,10 @@ fn writeText(session: i64, value: str) -> error {
     return websocket.writeText(session, value)
 }
 
+fn writeBytes(session: i64, bytes: i64[]) -> error {
+    return websocket.writeBytes(session, bytes)
+}
+
 fn ping(session: i64, payload: str) -> error {
     return websocket.ping(session, payload)
 }
@@ -60525,6 +60568,18 @@ fn main() -> i64 {
                     "flux__websocket_write_text({}, {})",
                     local_c_name("session"),
                     local_c_name("value")
+                ),
+            ),
+            (
+                "writeBytes",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("bytes".to_string(), Type::List(Box::new(Type::I64))),
+                ]),
+                format!(
+                    "flux__websocket_write_bytes({}, {})",
+                    local_c_name("session"),
+                    local_c_name("bytes")
                 ),
             ),
             (
@@ -60630,8 +60685,16 @@ fn sendText(socket: i64, text: str) -> error {
     return net.sendText(socket, text)
 }
 
+fn sendTextParts(socket: i64, parts: str[]) -> error {
+    return net.writeParts(socket, parts)
+}
+
 fn sendTextTo(socket: i64, host: str, port: i64, text: str) -> error {
     return net.sendTextTo(socket, host, port, text)
+}
+
+fn sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error {
+    return net.writePartsTo(socket, host, port, parts)
 }
 
 fn nonblocking(socket: i64, enabled: bool) -> error {
@@ -60701,6 +60764,18 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "sendTextParts",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("parts".to_string(), Type::List(Box::new(Type::Str))),
+                ]),
+                format!(
+                    "flux__net_send_text_parts({}, {})",
+                    local_c_name("socket"),
+                    local_c_name("parts")
+                ),
+            ),
+            (
                 "sendTextTo",
                 HashMap::from([
                     ("socket".to_string(), Type::I64),
@@ -60714,6 +60789,22 @@ fn main() -> i64 {
                     local_c_name("host"),
                     local_c_name("port"),
                     local_c_name("text")
+                ),
+            ),
+            (
+                "sendTextToParts",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("host".to_string(), Type::Str),
+                    ("port".to_string(), Type::I64),
+                    ("parts".to_string(), Type::List(Box::new(Type::Str))),
+                ]),
+                format!(
+                    "flux__net_send_text_to_parts({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("host"),
+                    local_c_name("port"),
+                    local_c_name("parts")
                 ),
             ),
             (
