@@ -63470,6 +63470,9 @@ fn main() -> i64 {
 fn text(_value: str) -> void {
 }
 
+fn bytes(_value: i64[]) -> void {
+}
+
 fn exercise(
     socket: i64,
     session: i64,
@@ -63487,7 +63490,8 @@ fn exercise(
     let (accepted, _) = websocket.accept(socket)
     let (connected, _) = websocket.connect(socket, host)
     let (message, _) = websocket.readText(session, maxBytes, text)
-    return wrapped + listener + read + timedRead + written + accepted + connected + message
+    let (binary, _) = websocket.readBytes(session, maxBytes, bytes)
+    return wrapped + listener + read + timedRead + written + accepted + connected + message + binary
 }
 
 fn main() -> i64 {
@@ -63606,6 +63610,19 @@ fn main() -> i64 {
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         function_c_name("text")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("websocket".to_string(), "readBytes".to_string()),
+                (
+                    format!(
+                        "flux__websocket_read_bytes({}, {}, {})",
+                        local_c_name("session"),
+                        local_c_name("maxBytes"),
+                        function_c_name("bytes")
                     ),
                     "flux__net_i64_error".to_string(),
                     i64_error,
@@ -66968,6 +66985,33 @@ fn emit_cfg_multi_expr_direct(
                         Some((
                             format!(
                                 "flux__websocket_read_text({session}, {max_bytes}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "readBytes" if arguments.len() == 3 => {
+                        let session = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::List(Box::new(Type::I64))],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__websocket_read_bytes({session}, {max_bytes}, {callback})"
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
