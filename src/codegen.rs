@@ -48699,6 +48699,48 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "websocket" && ty == Type::Error => match name.as_str() {
+            "writeText" if arguments.len() == 2 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                Some(format!("flux__websocket_write_text({session}, {value})"))
+            }
+            "ping" | "pong" if arguments.len() == 2 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let payload =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let helper = if name == "ping" {
+                    "flux__websocket_write_ping"
+                } else {
+                    "flux__websocket_write_pong"
+                };
+                Some(format!("{helper}({session}, {payload})"))
+            }
+            "closeWithCode" if arguments.len() == 3 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let code =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                let reason =
+                    emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                Some(format!(
+                    "flux__websocket_close_with_code({session}, {code}, {reason})"
+                ))
+            }
+            "close" if arguments.len() == 1 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                Some(format!("flux__websocket_close({session})"))
+            }
+            _ => None,
+        },
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "sqlite" && ty == Type::Error => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
@@ -58905,6 +58947,134 @@ fn main() -> i64 {
             .expect("SQLite qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-sqlite-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_websocket_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn writeText(session: i64, value: str) -> error {
+    return websocket.writeText(session, value)
+}
+
+fn ping(session: i64, payload: str) -> error {
+    return websocket.ping(session, payload)
+}
+
+fn pong(session: i64, payload: str) -> error {
+    return websocket.pong(session, payload)
+}
+
+fn closeWithCode(session: i64, code: i64, reason: str) -> error {
+    return websocket.closeWithCode(session, code, reason)
+}
+
+fn close(session: i64) -> error {
+    return websocket.close(session)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct WebSocket qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "writeText",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__websocket_write_text({}, {})",
+                    local_c_name("session"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "ping",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("payload".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__websocket_write_ping({}, {})",
+                    local_c_name("session"),
+                    local_c_name("payload")
+                ),
+            ),
+            (
+                "pong",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("payload".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__websocket_write_pong({}, {})",
+                    local_c_name("session"),
+                    local_c_name("payload")
+                ),
+            ),
+            (
+                "closeWithCode",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("code".to_string(), Type::I64),
+                    ("reason".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__websocket_close_with_code({}, {}, {})",
+                    local_c_name("session"),
+                    local_c_name("code"),
+                    local_c_name("reason")
+                ),
+            ),
+            (
+                "close",
+                HashMap::from([("session".to_string(), Type::I64)]),
+                format!("flux__websocket_close({})", local_c_name("session")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("WebSocket qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("WebSocket qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("WebSocket qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported WebSocket call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-websocket-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("WebSocket qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-websocket-call"));
         }
     }
 
