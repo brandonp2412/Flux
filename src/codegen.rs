@@ -50199,7 +50199,10 @@ fn emit_cfg_scalar_expr_direct(
                 };
                 let direct_aggregate = matches!(
                     value.kind,
-                    CfgScalarExprKind::Aggregate(_) | CfgScalarExprKind::QualifiedCall { .. }
+                    CfgScalarExprKind::Aggregate(_)
+                        | CfgScalarExprKind::Call { .. }
+                        | CfgScalarExprKind::NamedCall { .. }
+                        | CfgScalarExprKind::QualifiedCall { .. }
                 ) && signatures.is_copy_type(&value_ty);
                 let value = if direct_aggregate {
                     emit_cfg_scalar_expr_direct(value, env, signatures)?
@@ -61145,6 +61148,168 @@ fn main() -> i64 {
             .expect("literal aggregate JSON call should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-literal-aggregate"));
+        }
+    }
+
+    #[test]
+    fn json_copy_aggregate_calls_emit_from_typed_ir() {
+        let source = r#"
+struct JsonCallUser {
+    name: str
+    age: i64
+}
+
+enum JsonCallChoice {
+    Number(i64)
+    Empty
+}
+
+fn jsonCallText(_value: str) -> void {
+}
+
+fn makeJsonCallUser(value: i64) -> JsonCallUser {
+    return JsonCallUser { name: "Flux", age: value }
+}
+
+fn makeJsonCallChoice(value: i64) -> JsonCallChoice {
+    return JsonCallChoice.Number(value)
+}
+
+fn makeOptionalJsonCallUser(value: i64) -> JsonCallUser? {
+    return JsonCallUser { name: "Maybe", age: value }
+}
+
+fn makeNamedJsonCallUser(value: i64, *, label: str) -> JsonCallUser {
+    return JsonCallUser { name: label, age: value }
+}
+
+fn encodeUserCall(value: i64) -> error {
+    return json.encode(makeJsonCallUser(value), jsonCallText)
+}
+
+fn encodeChoiceCall(value: i64) -> error {
+    return json.encode(makeJsonCallChoice(value), jsonCallText)
+}
+
+fn encodeOptionalUserCall(value: i64) -> error {
+    return json.encode(makeOptionalJsonCallUser(value), jsonCallText)
+}
+
+fn encodeNamedUserCall(value: i64) -> error {
+    return json.encode(makeNamedJsonCallUser(value, label: "Named"), jsonCallText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("Copy aggregate-producing JSON call fixture should typecheck");
+
+        for (function, producer, named) in [
+            ("encodeUserCall", "makeJsonCallUser", false),
+            ("encodeChoiceCall", "makeJsonCallChoice", false),
+            ("encodeOptionalUserCall", "makeOptionalJsonCallUser", false),
+            ("encodeNamedUserCall", "makeNamedJsonCallUser", true),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Copy aggregate-producing JSON call CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json" && name == "encode"
+                    )
+                })
+                .expect("Copy aggregate-producing JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("Copy aggregate-producing JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("Copy aggregate-producing JSON root should preserve qualified facts");
+            };
+            let value = &arguments[0];
+            assert!(
+                if named {
+                    matches!(
+                        &value.kind,
+                        CfgScalarExprKind::NamedCall { callee, .. } if callee == producer
+                    )
+                } else {
+                    matches!(
+                        &value.kind,
+                        CfgScalarExprKind::Call { callee, .. } if callee == producer
+                    )
+                },
+                "{function}: {value:?}"
+            );
+            let value_ty = database.signatures().canonical_type(&value.ty);
+            let helper = match &value_ty {
+                Type::Optional(inner) => {
+                    assert!(
+                        json_record_supported(inner, database.signatures())
+                            || json_enum_supported(inner, database.signatures())
+                    );
+                    json_optional_aggregate_helper_name(&value_ty, database.signatures())
+                }
+                ty if json_record_supported(ty, database.signatures()) => {
+                    json_record_helper_name(ty, database.signatures())
+                }
+                ty => {
+                    assert!(json_enum_supported(ty, database.signatures()));
+                    json_enum_helper_name(ty, database.signatures())
+                }
+            };
+
+            let env = HashMap::from([("value".to_string(), Type::I64)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Copy aggregate-producing JSON call should emit directly: {function}: {scalar:?}"
+                    )
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name(producer)),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&local_c_name("value")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonCallText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-aggregate-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("Copy aggregate-producing JSON call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-aggregate-call"));
         }
     }
 
