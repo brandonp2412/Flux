@@ -61123,6 +61123,69 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn borrowed_nested_list_property_emits_directly_at_qualified_call_boundaries() {
+        let source = r#"
+fn sendFirst(socket: i64, groups: str[][]) -> error {
+    return net.writeParts(socket, groups.first)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("borrowed nested-list property direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendFirst")
+            .expect("borrowed nested-list property CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("borrowed nested-list property qualified call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("borrowed nested-list property call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            (
+                "groups".to_string(),
+                Type::List(Box::new(Type::List(Box::new(Type::Str)))),
+            ),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("borrowed nested-list property should emit directly from typed IR");
+        assert!(direct.starts_with("flux__net_send_text_parts("));
+        assert!(direct.contains("flux_list_at("));
+        assert!(direct.contains(&local_c_name("groups")));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-nested-property".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("borrowed nested-list property call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-nested-property"));
+    }
+
+    #[test]
     fn temporary_copy_list_arguments_emit_directly_at_qualified_call_boundaries() {
         let source = r#"
 fn sendLiteral(socket: i64) -> error {
