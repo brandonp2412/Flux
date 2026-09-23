@@ -50503,6 +50503,13 @@ fn emit_cfg_scalar_expr_direct(
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, expected) in arguments.iter().zip(expected) {
+                if arguments.len() == 1 {
+                    rendered.push(emit_cfg_ordinary_call_argument_direct(
+                        argument, &expected, env, signatures,
+                    )?);
+                    continue;
+                }
+
                 let direct_argument =
                     matches!(
                         argument.kind,
@@ -60640,6 +60647,14 @@ fn hasEnv(name: str) -> bool {
     return process.hasEnv(name)
 }
 
+fn processName(name: str) -> str {
+    return name
+}
+
+fn callHasEnv(name: str) -> bool {
+    return process.hasEnv(processName(name))
+}
+
 fn environment(name: str, fallback: str) -> str {
     return process.env(name, fallback)
 }
@@ -60650,6 +60665,14 @@ fn exitProcess(code: i64) -> void {
 
 fn nestedExit(left: i64, right: i64) -> void {
     process.exit(left + right)
+}
+
+fn processCode(code: i64) -> i64 {
+    return code
+}
+
+fn callExit(code: i64) -> void {
+    process.exit(processCode(code))
 }
 
 fn main() -> i64 {
@@ -60701,6 +60724,15 @@ fn main() -> i64 {
                 format!("flux__process_has_env({})", local_c_name("name")),
             ),
             (
+                "callHasEnv",
+                HashMap::from([("name".to_string(), Type::Str)]),
+                format!(
+                    "flux__process_has_env({}({}))",
+                    function_c_name("processName"),
+                    local_c_name("name")
+                ),
+            ),
+            (
                 "environment",
                 HashMap::from([
                     ("name".to_string(), Type::Str),
@@ -60729,6 +60761,15 @@ fn main() -> i64 {
                     local_c_name("right")
                 ),
             ),
+            (
+                "callExit",
+                HashMap::from([("code".to_string(), Type::I64)]),
+                format!(
+                    "flux__process_exit({}({}))",
+                    function_c_name("processCode"),
+                    local_c_name("code")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -60755,6 +60796,24 @@ fn main() -> i64 {
                     )
                 });
             assert_eq!(direct, expected, "{function}");
+            if function.starts_with("call") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-call-valued-process".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &scalar.ty,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("call-valued core scalar helper should bypass checked AST");
+                assert_eq!(emitted, direct, "{function}");
+                assert!(!emitted.contains("checked-ast-call-valued-process"));
+            }
         }
 
         let process_exit = CfgScalarExpr {
