@@ -50486,8 +50486,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__focus_{runtime_name}({scope}, {wrap})"))
                 }
                 "firstIn" | "lastIn" if arguments.len() == 1 => {
-                    let scope =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let scope = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let runtime_name = if name == "firstIn" {
                         "first_in"
                     } else {
@@ -63484,6 +63488,14 @@ fn firstIn(scope: i64) -> void {
     focus.firstIn(scope)
 }
 
+fn focusScope(scope: i64) -> i64 {
+    return scope
+}
+
+fn callFirstIn(scope: i64) -> void {
+    focus.firstIn(focusScope(scope))
+}
+
 fn lastIn(scope: i64) -> void {
     focus.lastIn(scope)
 }
@@ -63544,6 +63556,15 @@ fn main() -> i64 {
                 "firstIn",
                 HashMap::from([("scope".to_string(), Type::I64)]),
                 format!("flux__focus_first_in({})", local_c_name("scope")),
+            ),
+            (
+                "callFirstIn",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!(
+                    "flux__focus_first_in({}({}))",
+                    function_c_name("focusScope"),
+                    local_c_name("scope")
+                ),
             ),
             (
                 "lastIn",
