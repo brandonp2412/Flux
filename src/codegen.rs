@@ -49011,6 +49011,22 @@ fn emit_cfg_scalar_expr_direct(
                         "flux__net_send_text_to({socket}, {host}, {port}, {text})"
                     ))
                 }
+                "peerAddress" | "localAddress" if arguments.len() == 2 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[1],
+                        &[Type::Str, Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    let helper = if name == "peerAddress" {
+                        "flux__net_peer_address"
+                    } else {
+                        "flux__net_local_address"
+                    };
+                    Some(format!("{helper}({socket}, {callback})"))
+                }
                 "setNonblocking" | "setNoDelay" | "setKeepAlive" if arguments.len() == 2 => {
                     let socket =
                         emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
@@ -60584,6 +60600,17 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_network_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+fn address(_host: str, _port: i64) -> void {
+}
+
+fn peer(socket: i64) -> error {
+    return net.peer(socket, address)
+}
+
+fn local(socket: i64) -> error {
+    return net.local(socket, address)
+}
+
 fn sendText(socket: i64, text: str) -> error {
     return net.sendText(socket, text)
 }
@@ -60624,6 +60651,24 @@ fn main() -> i64 {
             .expect("direct network qualified-call fixture should typecheck");
 
         for (function, env, expected) in [
+            (
+                "peer",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_peer_address({}, {})",
+                    local_c_name("socket"),
+                    function_c_name("address")
+                ),
+            ),
+            (
+                "local",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_local_address({}, {})",
+                    local_c_name("socket"),
+                    function_c_name("address")
+                ),
+            ),
             (
                 "sendText",
                 HashMap::from([
@@ -62640,6 +62685,237 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn network_text_receive_and_readiness_multi_values_emit_from_typed_ir() {
+        let source = r#"
+fn text(_socket: i64, _value: str) -> void {
+}
+
+fn datagram(_socket: i64, _value: str, _host: str, _port: i64) -> void {
+}
+
+fn exercise(socket: i64, maxBytes: i64, maxCount: i64, timeout: i64) -> i64 {
+    let (read, _) = net.read(socket, maxBytes, text)
+    let (timedRead, _, _) = net.readTimeout(socket, maxBytes, timeout, text)
+    let (many, _) = net.readMany(socket, maxBytes, maxCount, text)
+    let (timedMany, _, _) = net.readManyTimeout(socket, maxBytes, maxCount, timeout, text)
+    let (from, _) = net.readFrom(socket, maxBytes, datagram)
+    let (timedFrom, _, _) = net.readFromTimeout(socket, maxBytes, timeout, datagram)
+    let (manyFrom, _) = net.readManyFrom(socket, maxBytes, maxCount, datagram)
+    let (timedManyFrom, _, _) = net.readManyFromTimeout(socket, maxBytes, maxCount, timeout, datagram)
+    let (_readable, _readableError) = net.readable(socket, timeout)
+    let (_writable, _writableError) = net.writable(socket, timeout)
+    return read + timedRead + many + timedMany + from + timedFrom + manyFrom + timedManyFrom
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("network text receive direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("maxBytes".to_string(), Type::I64),
+            ("maxCount".to_string(), Type::I64),
+            ("timeout".to_string(), Type::I64),
+        ]);
+        let i64_error = vec![Type::I64, Type::Error];
+        let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
+        let bool_error = vec![Type::Bool, Type::Error];
+        let expected = HashMap::from([
+            (
+                "read".to_string(),
+                (
+                    profiled_timeline_call(
+                        "network",
+                        "net.receiveText",
+                        format!(
+                            "flux__net_receive_text({}, {}, {})",
+                            local_c_name("socket"),
+                            local_c_name("maxBytes"),
+                            function_c_name("text")
+                        ),
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                "readTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_with_timeout({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("timeout"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error.clone(),
+                ),
+            ),
+            (
+                "readMany".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_many({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("maxCount"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                "readManyTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_many_with_timeout({}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("maxCount"),
+                        local_c_name("timeout"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error.clone(),
+                ),
+            ),
+            (
+                "readFrom".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_from({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        function_c_name("datagram")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                "readFromTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_from_with_timeout({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("timeout"),
+                        function_c_name("datagram")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error.clone(),
+                ),
+            ),
+            (
+                "readManyFrom".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_from_many({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("maxCount"),
+                        function_c_name("datagram")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error,
+                ),
+            ),
+            (
+                "readManyFromTimeout".to_string(),
+                (
+                    format!(
+                        "flux__net_receive_text_from_many_with_timeout({}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("maxBytes"),
+                        local_c_name("maxCount"),
+                        local_c_name("timeout"),
+                        function_c_name("datagram")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error,
+                ),
+            ),
+            (
+                "readable".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_readable({}, {})",
+                        local_c_name("socket"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_bool_error".to_string(),
+                    bool_error.clone(),
+                ),
+            ),
+            (
+                "writable".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_writable({}, {})",
+                        local_c_name("socket"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_bool_error".to_string(),
+                    bool_error,
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, .. }
+                            if namespace == "net"
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall { name, .. } = &root.kind else {
+                unreachable!();
+            };
+            let expected = expected
+                .get(name)
+                .unwrap_or_else(|| panic!("unexpected network text/readiness call: {name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("network text/readiness call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported network text/readiness call should emit directly: {name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, &expected.0, "{name}");
+            assert_eq!(&direct.1, &expected.1, "{name}");
+            assert_eq!(&direct.2, &expected.2, "{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("network text/readiness call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{name}");
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -64387,6 +64663,7 @@ fn emit_cfg_multi_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let i64_error = vec![Type::I64, Type::Error];
             let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
+            let bool_error = vec![Type::Bool, Type::Error];
             match namespace.as_str() {
                 "file" | "directory" if arguments.len() == 1 => {
                     let path =
@@ -65158,6 +65435,298 @@ fn emit_cfg_multi_expr_direct(
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
+                        ))
+                    }
+                    "receiveText" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            profiled_timeline_call(
+                                "network",
+                                "net.receiveText",
+                                format!(
+                                    "flux__net_receive_text({socket}, {max_bytes}, {callback})"
+                                ),
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveTextWithTimeout" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_with_timeout({socket}, {max_bytes}, {timeout}, {callback})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "receiveTextMany" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_count = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_many({socket}, {max_bytes}, {max_count}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveTextManyWithTimeout" if arguments.len() == 5 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_count = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[3],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_many_with_timeout({socket}, {max_bytes}, {max_count}, {timeout}, {callback})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "receiveTextFrom" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Str, Type::Str, Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_from({socket}, {max_bytes}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveTextFromWithTimeout" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str, Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_from_with_timeout({socket}, {max_bytes}, {timeout}, {callback})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "receiveTextFromMany" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_count = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::I64, Type::Str, Type::Str, Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_from_many({socket}, {max_bytes}, {max_count}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receiveTextFromManyWithTimeout" if arguments.len() == 5 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_count = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[3],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[4],
+                            &[Type::I64, Type::Str, Type::Str, Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_receive_text_from_many_with_timeout({socket}, {max_bytes}, {max_count}, {timeout}, {callback})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "waitReadable" | "waitWritable" if arguments.len() == 2 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let helper = if name == "waitReadable" {
+                            "flux__net_wait_readable"
+                        } else {
+                            "flux__net_wait_writable"
+                        };
+                        Some((
+                            format!("{helper}({socket}, {timeout})"),
+                            "flux__net_bool_error".to_string(),
+                            bool_error,
                         ))
                     }
                     _ => None,
