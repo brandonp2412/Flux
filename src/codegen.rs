@@ -50703,18 +50703,37 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
+            let scalar_params = binding
+                .params
+                .iter()
+                .take(arguments.len())
+                .filter(|parameter| {
+                    matches!(parameter.ty, crate::linux_bindings::LinuxBindingType::Str)
+                })
+                .count();
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
                 match parameter.ty {
                     crate::linux_bindings::LinuxBindingType::Str => {
-                        if !matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || signatures.canonical_type(&argument.ty) != Type::Str
-                        {
+                        if signatures.canonical_type(&argument.ty) != Type::Str {
                             return None;
                         }
-                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        if scalar_params == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument,
+                                &Type::Str,
+                                env,
+                                signatures,
+                            )?);
+                        } else {
+                            if !matches!(
+                                argument.kind,
+                                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                            ) {
+                                return None;
+                            }
+                            rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        }
                     }
                     crate::linux_bindings::LinuxBindingType::StrCallback => {
                         rendered.push(emit_cfg_callback_argument_direct(
@@ -50757,6 +50776,18 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
+            let scalar_params = binding
+                .params
+                .iter()
+                .take(arguments.len())
+                .filter(|parameter| {
+                    matches!(
+                        parameter.ty,
+                        crate::windows_bindings::WindowsBindingType::I64
+                            | crate::windows_bindings::WindowsBindingType::Str
+                    )
+                })
+                .count();
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
                 match parameter.ty {
@@ -50777,16 +50808,25 @@ fn emit_cfg_scalar_expr_direct(
                                 unreachable!()
                             }
                         };
-                        let direct_argument = matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            argument, env, signatures,
-                        );
-                        if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                        if signatures.canonical_type(&argument.ty) != expected {
                             return None;
                         }
-                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        if scalar_params == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument, &expected, env, signatures,
+                            )?);
+                        } else {
+                            let direct_argument = matches!(
+                                argument.kind,
+                                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                            ) || cfg_scalar_expr_is_direct_primitive_tree(
+                                argument, env, signatures,
+                            );
+                            if !direct_argument {
+                                return None;
+                            }
+                            rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        }
                     }
                 }
             }
@@ -50813,6 +50853,19 @@ fn emit_cfg_scalar_expr_direct(
             }
             let runtime_symbol = binding.runtime_symbol_for_arity(arguments.len())?;
 
+            let scalar_params = binding
+                .params
+                .iter()
+                .take(arguments.len())
+                .filter(|parameter| {
+                    matches!(
+                        parameter.ty,
+                        crate::android_bindings::AndroidBindingType::I64
+                            | crate::android_bindings::AndroidBindingType::Bool
+                            | crate::android_bindings::AndroidBindingType::Str
+                    )
+                })
+                .count();
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
                 match parameter.ty {
@@ -50835,16 +50888,25 @@ fn emit_cfg_scalar_expr_direct(
                                 unreachable!()
                             }
                         };
-                        let direct_argument = matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            argument, env, signatures,
-                        );
-                        if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                        if signatures.canonical_type(&argument.ty) != expected {
                             return None;
                         }
-                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        if scalar_params == 1 {
+                            rendered.push(emit_cfg_ordinary_call_argument_direct(
+                                argument, &expected, env, signatures,
+                            )?);
+                        } else {
+                            let direct_argument = matches!(
+                                argument.kind,
+                                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                            ) || cfg_scalar_expr_is_direct_primitive_tree(
+                                argument, env, signatures,
+                            );
+                            if !direct_argument {
+                                return None;
+                            }
+                            rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                        }
                     }
                 }
             }
@@ -65414,12 +65476,19 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_android_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+fn androidString(value: str) -> str {
+    return value
+}
+
+fn text(_value: str) -> void {
+}
+
 fn sdk() -> i64 {
     return android.sdkInt()
 }
 
 fn feature(name: str) -> bool {
-    return android.hasSystemFeature(name)
+    return android.hasSystemFeature(androidString(name))
 }
 
 fn schedule(jobId: i64, delay: i64) -> bool {
@@ -65450,6 +65519,10 @@ fn store(key: str, value: str) -> bool {
     return android.secureStore(key, value)
 }
 
+fn read(key: str) -> bool {
+    return android.secureRead(androidString(key), text)
+}
+
 fn vibrate(duration: i64) -> void {
     android.vibrate(duration)
 }
@@ -65474,7 +65547,11 @@ fn main() -> i64 {
             (
                 "feature",
                 HashMap::from([("name".to_string(), Type::Str)]),
-                format!("flux__android_has_system_feature({})", local_c_name("name")),
+                format!(
+                    "flux__android_has_system_feature({}({}))",
+                    function_c_name("androidString"),
+                    local_c_name("name")
+                ),
             ),
             (
                 "schedule",
@@ -65524,6 +65601,16 @@ fn main() -> i64 {
                     "flux__android_secure_store({}, {})",
                     local_c_name("key"),
                     local_c_name("value")
+                ),
+            ),
+            (
+                "read",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__android_secure_read({}({}), {})",
+                    function_c_name("androidString"),
+                    local_c_name("key"),
+                    function_c_name("text")
                 ),
             ),
             (
@@ -65646,12 +65733,23 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_linux_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+fn linuxString(value: str) -> str {
+    return value
+}
+
+fn text(_value: str) -> void {
+}
+
 fn store(key: str, value: str) -> bool {
     return linux.secureStore(key, value)
 }
 
 fn remove(key: str) -> bool {
-    return linux.secureRemove(key)
+    return linux.secureRemove(linuxString(key))
+}
+
+fn read(key: str) -> bool {
+    return linux.secureRead(linuxString(key), text)
 }
 
 fn main() -> i64 {
@@ -65677,7 +65775,21 @@ fn main() -> i64 {
             (
                 "remove",
                 HashMap::from([("key".to_string(), Type::Str)]),
-                format!("flux__linux_secure_remove({})", local_c_name("key")),
+                format!(
+                    "flux__linux_secure_remove({}({}))",
+                    function_c_name("linuxString"),
+                    local_c_name("key")
+                ),
+            ),
+            (
+                "read",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__linux_secure_read({}({}), {})",
+                    function_c_name("linuxString"),
+                    local_c_name("key"),
+                    function_c_name("text")
+                ),
             ),
         ] {
             let graph = database
@@ -65746,6 +65858,13 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_windows_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+fn windowsString(value: str) -> str {
+    return value
+}
+
+fn text(_value: str) -> void {
+}
+
 fn processId() -> i64 {
     return windows.processId()
 }
@@ -65755,7 +65874,7 @@ fn uptime() -> i64 {
 }
 
 fn openTarget(target: str) -> bool {
-    return windows.open(target)
+    return windows.open(windowsString(target))
 }
 
 fn beep(frequency: i64, duration: i64) -> bool {
@@ -65772,6 +65891,10 @@ fn screenWidth() -> i64 {
 
 fn store(key: str, value: str) -> bool {
     return windows.secureStore(key, value)
+}
+
+fn read(key: str) -> bool {
+    return windows.secureRead(windowsString(key), text)
 }
 
 fn main() -> i64 {
@@ -65795,7 +65918,11 @@ fn main() -> i64 {
             (
                 "openTarget",
                 HashMap::from([("target".to_string(), Type::Str)]),
-                format!("flux__windows_open({})", local_c_name("target")),
+                format!(
+                    "flux__windows_open({}({}))",
+                    function_c_name("windowsString"),
+                    local_c_name("target")
+                ),
             ),
             (
                 "beep",
@@ -65837,6 +65964,16 @@ fn main() -> i64 {
                     "flux__windows_secure_store({}, {})",
                     local_c_name("key"),
                     local_c_name("value")
+                ),
+            ),
+            (
+                "read",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__windows_secure_read({}({}), {})",
+                    function_c_name("windowsString"),
+                    local_c_name("key"),
+                    function_c_name("text")
                 ),
             ),
         ] {
