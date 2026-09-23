@@ -50031,6 +50031,12 @@ fn emit_cfg_scalar_expr_direct(
                     Type::I64 => "flux__json_encode_int",
                     Type::Bool => "flux__json_encode_bool",
                     Type::Str => "flux__json_encode_string",
+                    Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                        Type::I64 => "flux__json_encode_optional_i64",
+                        Type::Bool => "flux__json_encode_optional_bool",
+                        Type::Str => "flux__json_encode_optional_str",
+                        _ => return None,
+                    },
                     _ => return None,
                 };
                 let value = emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?;
@@ -60481,6 +60487,18 @@ fn encodeJsonBool(value: bool) -> error {
     return json.encodeBool(value, jsonText)
 }
 
+fn encodeJsonOptionalInt(value: i64?) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonOptionalBool(value: bool?) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonOptionalString(value: str?) -> error {
+    return json.encode(value, jsonText)
+}
+
 fn encodeJsonNull() -> error {
     return json.encodeNull(jsonText)
 }
@@ -60575,6 +60593,33 @@ fn main() -> i64 {
                 HashMap::from([("value".to_string(), Type::Bool)]),
                 format!(
                     "flux__json_encode_bool({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonOptionalInt",
+                HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]),
+                format!(
+                    "flux__json_encode_optional_i64({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonOptionalBool",
+                HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::Bool)))]),
+                format!(
+                    "flux__json_encode_optional_bool({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonOptionalString",
+                HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::Str)))]),
+                format!(
+                    "flux__json_encode_optional_str({}, {})",
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
