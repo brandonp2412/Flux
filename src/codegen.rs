@@ -50071,7 +50071,12 @@ fn emit_cfg_scalar_expr_direct(
                                 Type::I64 | Type::Bool | Type::Str
                             )
                     );
-                if !scalar_element || !matches!(value.kind, CfgScalarExprKind::Name(_)) {
+                if !scalar_element
+                    || !matches!(
+                        value.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+                    )
+                {
                     return None;
                 }
                 let (helper, kind, depth) = json_array_encoding_shape(&element, signatures).ok()?;
@@ -50102,7 +50107,10 @@ fn emit_cfg_scalar_expr_direct(
                     return None;
                 };
                 if signatures.canonical_type(key) != Type::Str
-                    || !matches!(value.kind, CfgScalarExprKind::Name(_))
+                    || !matches!(
+                        value.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+                    )
                 {
                     return None;
                 }
@@ -61252,6 +61260,131 @@ fn main() -> i64 {
             .expect("named scalar collection JSON call should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-named-collection"));
+        }
+    }
+
+    #[test]
+    fn json_scalar_collection_temporaries_emit_from_typed_ir() {
+        let source = r#"
+fn jsonTemporaryText(_value: str) -> void {
+}
+
+fn encodeListLiteral(value: i64) -> error {
+    return json.encode([value, 2], jsonTemporaryText)
+}
+
+fn encodeSetLiteral() -> error {
+    return json.encode({true, false}, jsonTemporaryText)
+}
+
+fn encodeMapLiteral() -> error {
+    return json.encode(map{"one": 1, "two": 2}, jsonTemporaryText)
+}
+
+fn encodeArrayLiteral(value: i64) -> error {
+    return json.encodeArray([value, 3], jsonTemporaryText)
+}
+
+fn encodeObjectLiteral() -> error {
+    return json.encodeObject(map{"answer": 42}, jsonTemporaryText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("scalar collection temporary JSON direct-IR fixture should typecheck");
+
+        for (function, env, helper) in [
+            (
+                "encodeListLiteral",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeSetLiteral",
+                HashMap::new(),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeMapLiteral",
+                HashMap::new(),
+                "flux__json_encode_object",
+            ),
+            (
+                "encodeArrayLiteral",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeObjectLiteral",
+                HashMap::new(),
+                "flux__json_encode_object",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("scalar collection temporary JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json"
+                            && matches!(name.as_str(), "encode" | "encodeArray" | "encodeObject")
+                    )
+                })
+                .expect("scalar collection temporary JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("scalar collection temporary JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("scalar collection temporary JSON root should preserve qualified facts");
+            };
+            assert!(
+                matches!(arguments[0].kind, CfgScalarExprKind::Aggregate(_)),
+                "{function}: {:?}",
+                arguments[0]
+            );
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "scalar collection temporary JSON call should emit directly: {function}: {scalar:?}"
+                    )
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonTemporaryText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-collection-temporary".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("scalar collection temporary JSON call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-collection-temporary"));
         }
     }
 
