@@ -67188,12 +67188,16 @@ fn tick() -> void {
 fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {
 }
 
+fn multiI64(value: i64) -> i64 {
+    return value
+}
+
 fn exercise(path: str, database: i64, delay: i64, timestamp: i64, zone: str) -> i64 {
     let (size, _) = file.size(path)
     let (modified, _) = directory.modified(path)
-    let (offset, _) = time.zoneOffset(timestamp, zone)
+    let (offset, _) = time.zoneOffset(multiI64(timestamp), zone)
     let (opened, _) = sqlite.open(path)
-    let (rows, _) = sqlite.query(database, "SELECT 1", cell)
+    let (rows, _) = sqlite.query(multiI64(database), "SELECT 1", cell)
     let (once, _) = time.after(delay, tick)
     let (repeat, _) = time.every(time.duration(delay), tick)
     return size + modified + offset + opened + rows + once + repeat
@@ -67238,7 +67242,8 @@ fn main() -> i64 {
                 ("time".to_string(), "zoneOffset".to_string()),
                 (
                     format!(
-                        "flux__time_zone_offset({}, {})",
+                        "flux__time_zone_offset({}({}), {})",
+                        function_c_name("multiI64"),
                         local_c_name("timestamp"),
                         local_c_name("zone")
                     ),
@@ -67256,7 +67261,8 @@ fn main() -> i64 {
                 ("sqlite".to_string(), "query".to_string()),
                 (
                     format!(
-                        "flux__sqlite_query({}, {}, {})",
+                        "flux__sqlite_query({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("database"),
                         c_string("SELECT 1"),
                         function_c_name("cell")
@@ -71011,20 +71017,14 @@ fn emit_cfg_multi_expr_direct(
                 }
                 "time" => match name {
                     "zoneOffset" if arguments.len() == 2 => {
-                        let timestamp = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let zone = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str],
                             env,
                             signatures,
                         )?;
                         Some((
-                            format!("flux__time_zone_offset({timestamp}, {zone})"),
+                            format!("flux__time_zone_offset({}, {})", rendered[0], rendered[1]),
                             "flux__time_i64_error".to_string(),
                             i64_error,
                         ))
@@ -71075,15 +71075,9 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "query" if arguments.len() == 3 => {
-                        let database = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let sql = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::Str],
                             env,
                             signatures,
                         )?;
@@ -71094,7 +71088,10 @@ fn emit_cfg_multi_expr_direct(
                             signatures,
                         )?;
                         Some((
-                            format!("flux__sqlite_query({database}, {sql}, {callback})"),
+                            format!(
+                                "flux__sqlite_query({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            ),
                             "flux__sqlite_i64_error".to_string(),
                             i64_error,
                         ))
