@@ -61880,12 +61880,21 @@ fn main() -> i64 {
     #[test]
     fn simple_qualified_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
-fn exercise(path: str, timestamp: i64, zone: str) -> i64 {
+fn tick() -> void {
+}
+
+fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {
+}
+
+fn exercise(path: str, database: i64, delay: i64, timestamp: i64, zone: str) -> i64 {
     let (size, _) = file.size(path)
     let (modified, _) = directory.modified(path)
     let (offset, _) = time.zoneOffset(timestamp, zone)
-    let (database, _) = sqlite.open(path)
-    return size + modified + offset + database
+    let (opened, _) = sqlite.open(path)
+    let (rows, _) = sqlite.query(database, "SELECT 1", cell)
+    let (once, _) = time.after(delay, tick)
+    let (repeat, _) = time.every(time.duration(delay), tick)
+    return size + modified + offset + opened + rows + once + repeat
 }
 
 fn main() -> i64 {
@@ -61900,6 +61909,8 @@ fn main() -> i64 {
         let facts = cfg_rewrite_facts(graph);
         let env = HashMap::from([
             ("path".to_string(), Type::Str),
+            ("database".to_string(), Type::I64),
+            ("delay".to_string(), Type::I64),
             ("timestamp".to_string(), Type::I64),
             ("zone".to_string(), Type::Str),
         ]);
@@ -61937,6 +61948,43 @@ fn main() -> i64 {
                 (
                     format!("flux__sqlite_open({})", local_c_name("path")),
                     "flux__sqlite_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("sqlite".to_string(), "query".to_string()),
+                (
+                    format!(
+                        "flux__sqlite_query({}, {}, {})",
+                        local_c_name("database"),
+                        c_string("SELECT 1"),
+                        function_c_name("cell")
+                    ),
+                    "flux__sqlite_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("time".to_string(), "after".to_string()),
+                (
+                    format!(
+                        "flux__time_start_timer({}, {}, false)",
+                        local_c_name("delay"),
+                        function_c_name("tick")
+                    ),
+                    "flux__worker_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("time".to_string(), "every".to_string()),
+                (
+                    format!(
+                        "flux__time_start_timer((({}){{ .{} = {} }}).{}, {}, true)",
+                        c_type(&duration_type(), database.signatures()),
+                        field_c_name("milliseconds"),
+                        local_c_name("delay"),
+                        field_c_name("milliseconds"),
+                        function_c_name("tick")
+                    ),
+                    "flux__worker_i64_error".to_string(),
                 ),
             ),
         ]);
@@ -63776,26 +63824,98 @@ fn emit_cfg_multi_expr_direct(
                         i64_error,
                     ))
                 }
-                "time" if name == "zoneOffset" && arguments.len() == 2 => {
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let zone =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    Some((
-                        format!("flux__time_zone_offset({timestamp}, {zone})"),
-                        "flux__time_i64_error".to_string(),
-                        i64_error,
-                    ))
-                }
-                "sqlite" if name == "open" && arguments.len() == 1 => {
-                    let path =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                    Some((
-                        format!("flux__sqlite_open({path})"),
-                        "flux__sqlite_i64_error".to_string(),
-                        i64_error,
-                    ))
-                }
+                "time" => match name {
+                    "zoneOffset" if arguments.len() == 2 => {
+                        let timestamp = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let zone = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__time_zone_offset({timestamp}, {zone})"),
+                            "flux__time_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "after" | "every" if arguments.len() == 2 => {
+                        let duration_ty = signatures.canonical_type(&arguments[0].ty);
+                        let duration = if duration_ty == Type::I64 {
+                            emit_cfg_call_argument_direct(
+                                &arguments[0],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?
+                        } else if is_duration_type(&duration_ty, signatures) {
+                            format!(
+                                "({}).{}",
+                                emit_cfg_scalar_expr_direct(&arguments[0], env, signatures)?,
+                                field_c_name("milliseconds")
+                            )
+                        } else {
+                            return None;
+                        };
+                        let callback =
+                            emit_cfg_callback_argument_direct(&arguments[1], &[], env, signatures)?;
+                        Some((
+                            format!(
+                                "flux__time_start_timer({duration}, {callback}, {})",
+                                if name == "every" { "true" } else { "false" }
+                            ),
+                            "flux__worker_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "sqlite" => match name {
+                    "open" if arguments.len() == 1 => {
+                        let path = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__sqlite_open({path})"),
+                            "flux__sqlite_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "query" if arguments.len() == 3 => {
+                        let database = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let sql = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::I64, Type::Str, Type::Str, Type::Bool],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__sqlite_query({database}, {sql}, {callback})"),
+                            "flux__sqlite_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    _ => None,
+                },
                 _ => None,
             }
         }
