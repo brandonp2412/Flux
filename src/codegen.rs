@@ -49982,13 +49982,22 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered = arguments
-                .iter()
-                .zip(&expected)
-                .map(|(argument, expected)| {
-                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                })
-                .collect::<Option<Vec<_>>>()?;
+            let rendered = if arguments.len() == 1 {
+                vec![emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &expected[0],
+                    env,
+                    signatures,
+                )?]
+            } else {
+                arguments
+                    .iter()
+                    .zip(&expected)
+                    .map(|(argument, expected)| {
+                        emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            };
             Some(format!("{helper}({})", rendered.join(", ")))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -61034,6 +61043,14 @@ fn fileExists(path: str) -> bool {
     return file.exists(path)
 }
 
+fn filesystemPath(path: str) -> str {
+    return path
+}
+
+fn callFileExists(path: str) -> bool {
+    return file.exists(filesystemPath(path))
+}
+
 fn fileWrite(path: str, text: str) -> error {
     return file.write(path, text)
 }
@@ -61097,6 +61114,15 @@ fn main() -> i64 {
                 "fileExists",
                 HashMap::from([("path".to_string(), Type::Str)]),
                 format!("flux__fs_is_file({})", local_c_name("path")),
+            ),
+            (
+                "callFileExists",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!(
+                    "flux__fs_is_file({}({}))",
+                    function_c_name("filesystemPath"),
+                    local_c_name("path")
+                ),
             ),
             (
                 "fileWrite",
