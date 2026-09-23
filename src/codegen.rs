@@ -49284,8 +49284,12 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 "peerAddress" | "localAddress" if arguments.len() == 2 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let socket = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::Str, Type::I64],
@@ -64153,6 +64157,14 @@ fn networkSocket(socket: i64) -> i64 {
     return socket
 }
 
+fn callPeer(socket: i64) -> error {
+    return net.peer(networkSocket(socket), address)
+}
+
+fn callLocal(socket: i64) -> error {
+    return net.local(networkSocket(socket), address)
+}
+
 fn callClose(socket: i64) -> error {
     return net.close(networkSocket(socket))
 }
@@ -64179,6 +64191,26 @@ fn main() -> i64 {
                 HashMap::from([("socket".to_string(), Type::I64)]),
                 format!(
                     "flux__net_local_address({}, {})",
+                    local_c_name("socket"),
+                    function_c_name("address")
+                ),
+            ),
+            (
+                "callPeer",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_peer_address({}({}), {})",
+                    function_c_name("networkSocket"),
+                    local_c_name("socket"),
+                    function_c_name("address")
+                ),
+            ),
+            (
+                "callLocal",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_local_address({}({}), {})",
+                    function_c_name("networkSocket"),
                     local_c_name("socket"),
                     function_c_name("address")
                 ),
