@@ -48699,6 +48699,25 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "tls" && ty == Type::Error => match name.as_str() {
+            "write" if arguments.len() == 2 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                Some(format!("flux__tls_write({session}, {value})"))
+            }
+            "close" if arguments.len() == 1 => {
+                let session =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                Some(format!("flux__tls_close({session})"))
+            }
+            _ => None,
+        },
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "net" && ty == Type::Error => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
@@ -59301,6 +59320,84 @@ fn main() -> i64 {
             .expect("network qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-network-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_tls_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn write(session: i64, value: str) -> error {
+    return tls.write(session, value)
+}
+
+fn close(session: i64) -> error {
+    return tls.close(session)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct TLS qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "write",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__tls_write({}, {})",
+                    local_c_name("session"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "close",
+                HashMap::from([("session".to_string(), Type::I64)]),
+                format!("flux__tls_close({})", local_c_name("session")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("TLS qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("TLS qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("TLS qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported TLS call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-tls-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("TLS qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-tls-call"));
         }
     }
 
