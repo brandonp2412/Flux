@@ -50048,6 +50048,92 @@ fn emit_cfg_scalar_expr_direct(
                 )?;
                 Some(format!("flux__json_encode_null({callback})"))
             }
+            "encodeArray" | "encode"
+                if arguments.len() == 2
+                    && (name == "encodeArray"
+                        || matches!(
+                            signatures.canonical_type(&arguments[0].ty),
+                            Type::List(_) | Type::Set(_)
+                        )) =>
+            {
+                let value = &arguments[0];
+                let value_ty = signatures.canonical_type(&value.ty);
+                let element = match &value_ty {
+                    Type::List(element) | Type::Set(element) => signatures.canonical_type(element),
+                    _ => return None,
+                };
+                let scalar_element = matches!(element, Type::I64 | Type::Bool | Type::Str)
+                    || matches!(
+                        &element,
+                        Type::Optional(inner)
+                            if matches!(
+                                signatures.canonical_type(inner),
+                                Type::I64 | Type::Bool | Type::Str
+                            )
+                    );
+                if !scalar_element || !matches!(value.kind, CfgScalarExprKind::Name(_)) {
+                    return None;
+                }
+                let (helper, kind, depth) = json_array_encoding_shape(&element, signatures).ok()?;
+                let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(if helper == "flux__json_encode_recursive_array" {
+                    format!("{helper}({value}, {kind}, {depth}, {callback})")
+                } else {
+                    format!("{helper}({value}, {kind}, {callback})")
+                })
+            }
+            "encodeObject" | "encode"
+                if arguments.len() == 2
+                    && (name == "encodeObject"
+                        || matches!(
+                            signatures.canonical_type(&arguments[0].ty),
+                            Type::Map(_, _)
+                        )) =>
+            {
+                let value = &arguments[0];
+                let value_ty = signatures.canonical_type(&value.ty);
+                let Type::Map(key, mapped) = &value_ty else {
+                    return None;
+                };
+                if signatures.canonical_type(key) != Type::Str
+                    || !matches!(value.kind, CfgScalarExprKind::Name(_))
+                {
+                    return None;
+                }
+                let mapped = signatures.canonical_type(mapped);
+                let scalar_mapped = matches!(mapped, Type::I64 | Type::Bool | Type::Str)
+                    || matches!(
+                        &mapped,
+                        Type::Optional(inner)
+                            if matches!(
+                                signatures.canonical_type(inner),
+                                Type::I64 | Type::Bool | Type::Str
+                            )
+                    );
+                if !scalar_mapped {
+                    return None;
+                }
+                let kind = json_map_value_kind(&mapped, signatures).ok()?;
+                let helper = if kind >= 100000 {
+                    "flux__json_encode_optional_object"
+                } else {
+                    "flux__json_encode_object"
+                };
+                let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("{helper}({value}, {kind}, {callback})"))
+            }
             "encode" if arguments.len() == 2 => {
                 let value = &arguments[0];
                 let value_ty = signatures.canonical_type(&value.ty);
@@ -61023,6 +61109,149 @@ fn main() -> i64 {
             .expect("literal aggregate JSON call should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-literal-aggregate"));
+        }
+    }
+
+    #[test]
+    fn json_named_scalar_collections_emit_from_typed_ir() {
+        let source = r#"
+fn jsonCollectionText(_value: str) -> void {
+}
+
+fn encodeList(values: i64[]) -> error {
+    return json.encode(values, jsonCollectionText)
+}
+
+fn encodeSet(values: set<bool>) -> error {
+    return json.encode(values, jsonCollectionText)
+}
+
+fn encodeMap(values: map<str, str>) -> error {
+    return json.encode(values, jsonCollectionText)
+}
+
+fn encodeOptionalList(values: i64?[]) -> error {
+    return json.encode(values, jsonCollectionText)
+}
+
+fn encodeOptionalMap(values: map<str, bool?>) -> error {
+    return json.encode(values, jsonCollectionText)
+}
+
+fn encodeArrayExplicit(values: i64[]) -> error {
+    return json.encodeArray(values, jsonCollectionText)
+}
+
+fn encodeObjectExplicit(values: map<str, i64>) -> error {
+    return json.encodeObject(values, jsonCollectionText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("named scalar collection JSON direct-IR fixture should typecheck");
+
+        for (function, value_ty, helper) in [
+            (
+                "encodeList",
+                Type::List(Box::new(Type::I64)),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeSet",
+                Type::Set(Box::new(Type::Bool)),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeMap",
+                Type::Map(Box::new(Type::Str), Box::new(Type::Str)),
+                "flux__json_encode_object",
+            ),
+            (
+                "encodeOptionalList",
+                Type::List(Box::new(Type::Optional(Box::new(Type::I64)))),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeOptionalMap",
+                Type::Map(
+                    Box::new(Type::Str),
+                    Box::new(Type::Optional(Box::new(Type::Bool))),
+                ),
+                "flux__json_encode_optional_object",
+            ),
+            (
+                "encodeArrayExplicit",
+                Type::List(Box::new(Type::I64)),
+                "flux__json_encode_array",
+            ),
+            (
+                "encodeObjectExplicit",
+                Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                "flux__json_encode_object",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("named scalar collection JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json"
+                            && matches!(name.as_str(), "encode" | "encodeArray" | "encodeObject")
+                    )
+                })
+                .expect("named scalar collection JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("named scalar collection JSON call should have scalar typed-IR facts");
+            let env = HashMap::from([("values".to_string(), value_ty)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "named scalar collection JSON call should emit directly: {function}: {scalar:?}"
+                    )
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&local_c_name("values")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonCollectionText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-named-collection".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("named scalar collection JSON call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-named-collection"));
         }
     }
 
