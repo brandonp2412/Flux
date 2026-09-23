@@ -48378,7 +48378,9 @@ fn emit_cfg_call_argument_direct(
     let expected = signatures.canonical_type(expected);
     let direct_argument = matches!(
         argument.kind,
-        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        CfgScalarExprKind::Name(_)
+            | CfgScalarExprKind::Constant(_)
+            | CfgScalarExprKind::Aggregate(_)
     ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
     if !direct_argument
         || signatures.canonical_type(&argument.ty) != expected
@@ -58356,6 +58358,68 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-interface-direct-receiver"));
         }
+    }
+
+    #[test]
+    fn ordinary_aggregate_call_arguments_emit_directly_from_typed_ir() {
+        let source = r#"
+struct Input {
+    value: i64
+}
+
+fn consume(input: Input) -> i64 {
+    return input.value
+}
+
+fn ordinary() -> i64 {
+    return consume(Input { value: 4 })
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("aggregate direct-call fixture should typecheck");
+        let graph = database
+            .control_flow_graph("ordinary")
+            .expect("aggregate call CFG should exist");
+        let call = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "consume"
+                )
+            })
+            .expect("aggregate call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(call.span))
+            .expect("aggregate call should have scalar typed-IR facts");
+        let env = HashMap::new();
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("aggregate call should emit directly");
+        assert!(direct.contains("Input"), "{direct}");
+
+        let fake = Expr {
+            line: call.span.line,
+            span: call.span,
+            kind: ExprKind::Str("checked-ast-aggregate-call-argument".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("aggregate call should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-aggregate-call-argument"));
     }
 
     #[test]
