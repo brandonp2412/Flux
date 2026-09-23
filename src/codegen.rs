@@ -48399,6 +48399,13 @@ fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
         CfgScalarExprKind::Slice { base, .. }
         | CfgScalarExprKind::Index { base, .. }
         | CfgScalarExprKind::Field { base, .. } => cfg_borrowed_list_has_named_root(base),
+        CfgScalarExprKind::Call { callee, arguments }
+            if matches!(crate::builtin_names::global_impl(callee), "take" | "skip") =>
+        {
+            arguments
+                .first()
+                .is_some_and(cfg_borrowed_list_has_named_root)
+        }
         _ => false,
     }
 }
@@ -48733,6 +48740,40 @@ fn emit_cfg_scalar_expr_direct(
                 async_start_c_name(callee),
                 rendered.join(", ")
             ))
+        }
+        CfgScalarExprKind::Call { callee, arguments }
+            if matches!(crate::builtin_names::global_impl(callee), "take" | "skip")
+                && arguments.len() == 2 =>
+        {
+            let list = &arguments[0];
+            let count = &arguments[1];
+            let Type::List(element) = signatures.canonical_type(&list.ty) else {
+                return None;
+            };
+            if ty != Type::List(element.clone())
+                || signatures.canonical_type(&count.ty) != Type::I64
+                || !cfg_borrowed_list_has_named_root(list)
+            {
+                return None;
+            }
+            let direct_count =
+                matches!(
+                    count.kind,
+                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                ) || cfg_scalar_expr_is_direct_primitive_tree(count, env, signatures);
+            if !direct_count {
+                return None;
+            }
+            let rendered_list = emit_cfg_scalar_expr_direct(list, env, signatures)?;
+            let rendered_count = emit_cfg_scalar_expr_direct(count, env, signatures)?;
+            if crate::builtin_names::global_impl(callee) == "take" {
+                Some(format!("flux_list_take({rendered_list}, {rendered_count})"))
+            } else {
+                let element_c = c_type(&element, signatures);
+                Some(format!(
+                    "flux_list_skip({rendered_list}, {rendered_count}, sizeof({element_c}))"
+                ))
+            }
         }
         CfgScalarExprKind::Call { callee, arguments } if env.contains_key(callee) => {
             let Type::Function { params, returns } = signatures.canonical_type(env.get(callee)?)
@@ -51086,7 +51127,8 @@ fn emit_cfg_scalar_expr_direct(
                     op: UnaryOp::Borrow,
                     ..
                 }
-        ) =>
+        ) || (matches!(signatures.canonical_type(&base.ty), Type::List(_))
+            && cfg_borrowed_list_has_named_root(base)) =>
         {
             let base_ty = signatures.canonical_type(&base.ty);
             let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
@@ -55866,6 +55908,99 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+    }
+
+    #[test]
+    fn list_view_call_projections_emit_directly_without_synthetic_ast() {
+        let source = r#"
+fn skipCount(values: i64[], count: i64) -> i64 {
+    return skip(values, count).count
+}
+
+fn nestedIndex(
+    values: i64[],
+    takeCount: i64,
+    skipCount: i64,
+    at: i64
+) -> i64 {
+    return skip(take(values, takeCount), skipCount)[at]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct list-view projection fixture should typecheck");
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        for (function, env, expected_fragments) in [
+            (
+                "skipCount",
+                HashMap::from([
+                    ("values".to_string(), list_ty.clone()),
+                    ("count".to_string(), Type::I64),
+                ]),
+                vec!["flux_list_skip(", ".len"],
+            ),
+            (
+                "nestedIndex",
+                HashMap::from([
+                    ("values".to_string(), list_ty.clone()),
+                    ("takeCount".to_string(), Type::I64),
+                    ("skipCount".to_string(), Type::I64),
+                    ("at".to_string(), Type::I64),
+                ]),
+                vec!["flux_list_take(", "flux_list_skip(", "flux_list_at("],
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("list-view projection CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    facts
+                        .scalar_exprs
+                        .get(&source_span_key(value.span))
+                        .is_some_and(|expr| {
+                            matches!(
+                                (&expr.kind, function),
+                                (CfgScalarExprKind::Field { .. }, "skipCount")
+                                    | (CfgScalarExprKind::Index { .. }, "nestedIndex")
+                            )
+                        })
+                })
+                .expect("list-view projection should retain typed-IR root");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("list-view projection should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("list-view projection should render directly without synthetic AST");
+            for fragment in expected_fragments {
+                assert!(direct.contains(fragment), "{function}: {direct}");
+            }
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-list-view-projection".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("list-view projection should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-list-view-projection"));
+        }
     }
 
     #[test]
