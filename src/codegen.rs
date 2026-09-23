@@ -48907,7 +48907,7 @@ fn emit_cfg_scalar_expr_direct(
             }
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(&params) {
-                rendered.push(emit_cfg_call_argument_direct(
+                rendered.push(emit_cfg_ordinary_call_argument_direct(
                     argument, parameter, env, signatures,
                 )?);
             }
@@ -58647,6 +58647,10 @@ fn functionValueCall(transform: fn(i64) -> i64, value: i64) -> i64 {
     return transform(value)
 }
 
+fn functionValueCallResult(transform: fn(i64) -> i64, value: i64) -> i64 {
+    return transform(scale(value))
+}
+
 fn qualifiedCall(value: i64) -> i64 {
     return time.utcYear(value)
 }
@@ -59315,6 +59319,73 @@ fn main() -> i64 {
             emitted,
             format!("{}({})", local_c_name("transform"), local_c_name("value"))
         );
+
+        let function_value_result = database
+            .control_flow_graph("functionValueCallResult")
+            .expect("function-value call-result CFG should exist");
+        let function_value_result_call = function_value_result
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if callee == "transform"
+                )
+            })
+            .expect("function-value call-result should retain typed IR");
+        let function_value_result_facts = cfg_rewrite_facts(function_value_result);
+        let function_value_result_scalar = function_value_result_facts
+            .scalar_exprs
+            .get(&source_span_key(function_value_result_call.span))
+            .expect("function-value call-result should have typed-IR facts");
+        let CfgScalarExprKind::Call { arguments, .. } = &function_value_result_scalar.kind else {
+            panic!("function-value call-result should retain call shape");
+        };
+        assert!(matches!(
+            &arguments[0].kind,
+            CfgScalarExprKind::Call { callee, .. } if callee == "scale"
+        ));
+        let function_value_result_env = HashMap::from([
+            (
+                "transform".to_string(),
+                Type::Function {
+                    params: vec![Type::I64],
+                    returns: vec![Type::I64],
+                },
+            ),
+            ("value".to_string(), Type::I64),
+        ]);
+        let function_value_result_direct = emit_cfg_scalar_expr_direct(
+            function_value_result_scalar,
+            &function_value_result_env,
+            database.signatures(),
+        )
+        .expect("direct Copy call results should feed function-value calls");
+        assert!(
+            function_value_result_direct.contains(&function_c_name("scale")),
+            "{function_value_result_direct}"
+        );
+        assert!(
+            function_value_result_direct.contains(&local_c_name("transform")),
+            "{function_value_result_direct}"
+        );
+        let fake_function_value_result = Expr {
+            line: function_value_result_call.span.line,
+            span: function_value_result_call.span,
+            kind: ExprKind::Str("checked-ast-function-value-call-result".to_string()),
+        };
+        let function_value_result_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_function_value_result,
+            &Type::I64,
+            &function_value_result_env,
+            database.signatures(),
+            &HashMap::new(),
+            &function_value_result_facts,
+        )
+        .expect("function-value call results should bypass the checked-AST root");
+        assert_eq!(function_value_result_emitted, function_value_result_direct);
+        assert!(!function_value_result_emitted.contains("checked-ast-function-value-call-result"));
 
         let qualified = database
             .control_flow_graph("qualifiedCall")
