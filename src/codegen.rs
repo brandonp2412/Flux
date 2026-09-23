@@ -49666,10 +49666,12 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let zone =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[
@@ -49687,8 +49689,12 @@ fn emit_cfg_scalar_expr_direct(
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_calendar_zone({timestamp}, {zone}, {callback})"
+                    Some(emit_cfg_ordered_expression(
+                        &setup,
+                        format!(
+                            "flux__time_calendar_zone({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        ),
                     ))
                 }
                 "formatUtc" | "formatLocal" if ty == Type::Error => {
@@ -49718,36 +49724,48 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let offset =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::I64],
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_format_offset({timestamp}, {offset}, {callback})"
+                    Some(emit_cfg_ordered_expression(
+                        &setup,
+                        format!(
+                            "flux__time_format_offset({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        ),
                     ))
                 }
                 "formatZone" if ty == Type::Error => {
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let zone =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_format_zone({timestamp}, {zone}, {callback})"
+                    Some(emit_cfg_ordered_expression(
+                        &setup,
+                        format!(
+                            "flux__time_format_zone({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        ),
                     ))
                 }
                 "sleep" | "sleepMillis" if ty == Type::Void => {
@@ -49792,13 +49810,20 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 4 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let start = emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-            let end = emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
+            let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                &arguments[..3],
+                &[Type::Str, Type::I64, Type::I64],
+                env,
+                signatures,
+            )?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[3], &[Type::Str], env, signatures)?;
-            Some(format!(
-                "flux__str_slice({value}, {start}, {end}, {callback})"
+            Some(emit_cfg_ordered_expression(
+                &setup,
+                format!(
+                    "flux__str_slice({}, {}, {}, {callback})",
+                    rendered[0], rendered[1], rendered[2]
+                ),
             ))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -50097,18 +50122,24 @@ fn emit_cfg_scalar_expr_direct(
             }
             match name {
                 "get" if arguments.len() == 3 => {
-                    let key =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                    let fallback =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                        &arguments[..2],
+                        &[Type::Str, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__preferences_get({key}, {fallback}, {callback})"
+                    Some(emit_cfg_ordered_expression(
+                        &setup,
+                        format!(
+                            "flux__preferences_get({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        ),
                     ))
                 }
                 "set" | "remove" => {
@@ -50120,23 +50151,22 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != expected.len() {
                         return None;
                     }
-                    let rendered = if arguments.len() == 1 {
-                        vec![emit_cfg_ordinary_call_argument_direct(
+                    if arguments.len() == 1 {
+                        let rendered = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &expected[0],
                             env,
                             signatures,
-                        )?]
-                    } else {
-                        arguments
-                            .iter()
-                            .zip(&expected)
-                            .map(|(argument, expected)| {
-                                emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                            })
-                            .collect::<Option<Vec<_>>>()?
-                    };
-                    Some(format!("{helper}({})", rendered.join(", ")))
+                        )?;
+                        return Some(format!("{helper}({rendered})"));
+                    }
+                    let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
+                    Some(emit_cfg_ordered_expression(
+                        &setup,
+                        format!("{helper}({})", rendered.join(", ")),
+                    ))
                 }
                 _ => None,
             }
@@ -60596,6 +60626,10 @@ fn timeValue(value: i64) -> i64 {
     return value
 }
 
+fn timeZone(value: str) -> str {
+    return value
+}
+
 fn callUtcPart(value: i64) -> i64 {
     return time.utcYear(timeValue(value))
 }
@@ -60657,6 +60691,10 @@ fn calendarZone(value: i64, zone: str) -> error {
     return time.calendarZone(value, zone, calendarParts)
 }
 
+fn callCalendarZone(value: i64, zone: str) -> error {
+    return time.calendarZone(timeValue(value), timeZone(zone), calendarParts)
+}
+
 fn formatUtc(value: i64) -> error {
     return time.format(value, formatted)
 }
@@ -60673,8 +60711,16 @@ fn formatOffset(value: i64, offset: i64) -> error {
     return time.formatOffset(value, offset, formatted)
 }
 
+fn callFormatOffset(value: i64, offset: i64) -> error {
+    return time.formatOffset(timeValue(value), timeValue(offset), formatted)
+}
+
 fn formatZone(value: i64, zone: str) -> error {
     return time.formatZone(value, zone, formatted)
+}
+
+fn callFormatZone(value: i64, zone: str) -> error {
+    return time.formatZone(timeValue(value), timeZone(zone), formatted)
 }
 
 fn main() -> i64 {
@@ -60819,6 +60865,21 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callCalendarZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__time_calendar_zone(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                    function_c_name("timeValue"),
+                    local_c_name("value"),
+                    function_c_name("timeZone"),
+                    local_c_name("zone"),
+                    function_c_name("calendarParts")
+                ),
+            ),
+            (
                 "formatUtc",
                 HashMap::from([("value".to_string(), Type::I64)]),
                 format!(
@@ -60860,6 +60921,21 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callFormatOffset",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__cfg_call_arg_0 = {}({}); int64_t flux__cfg_call_arg_1 = {}({}); flux__time_format_offset(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                    function_c_name("timeValue"),
+                    local_c_name("value"),
+                    function_c_name("timeValue"),
+                    local_c_name("offset"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
                 "formatZone",
                 HashMap::from([
                     ("value".to_string(), Type::I64),
@@ -60868,6 +60944,21 @@ fn main() -> i64 {
                 format!(
                     "flux__time_format_zone({}, {}, {})",
                     local_c_name("value"),
+                    local_c_name("zone"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "callFormatZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__time_format_zone(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                    function_c_name("timeValue"),
+                    local_c_name("value"),
+                    function_c_name("timeZone"),
                     local_c_name("zone"),
                     function_c_name("formatted")
                 ),
@@ -60898,10 +60989,8 @@ fn main() -> i64 {
                 .expect("supported scalar time call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
             if function.starts_with("nested")
-                || matches!(
-                    function,
-                    "calendar" | "temporaryDurationSleep" | "callUtcPart"
-                )
+                || function.starts_with("call")
+                || matches!(function, "calendar" | "temporaryDurationSleep")
             {
                 let fake = Expr {
                     line: root.span.line,
@@ -61214,7 +61303,7 @@ fn main() -> i64 {
                 ("value".to_string(), Type::Str),
                 ("start".to_string(), Type::I64),
                 ("end".to_string(), Type::I64),
-                ("callback".to_string(), callback_ty),
+                ("callback".to_string(), callback_ty.clone()),
             ]),
             database.signatures(),
         )
@@ -61225,6 +61314,74 @@ fn main() -> i64 {
                 "flux__str_slice({}, {}, {}, {})",
                 local_c_name("value"),
                 local_c_name("start"),
+                local_c_name("end"),
+                local_c_name("callback")
+            )
+        );
+
+        let call_string_slice = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "str".to_string(),
+                name: "slice".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Call {
+                            callee: "echo".to_string(),
+                            arguments: vec![CfgScalarExpr {
+                                ty: Type::Str,
+                                kind: CfgScalarExprKind::Name("value".to_string()),
+                            }],
+                        },
+                    },
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Call {
+                            callee: "processCode".to_string(),
+                            arguments: vec![CfgScalarExpr {
+                                ty: Type::I64,
+                                kind: CfgScalarExprKind::Name("start".to_string()),
+                            }],
+                        },
+                    },
+                    CfgScalarExpr {
+                        ty: Type::I64,
+                        kind: CfgScalarExprKind::Call {
+                            callee: "processCode".to_string(),
+                            arguments: vec![CfgScalarExpr {
+                                ty: Type::I64,
+                                kind: CfgScalarExprKind::Name("end".to_string()),
+                            }],
+                        },
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        let call_string_slice_direct = emit_cfg_scalar_expr_direct(
+            &call_string_slice,
+            &HashMap::from([
+                ("value".to_string(), Type::Str),
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+                ("callback".to_string(), callback_ty.clone()),
+            ]),
+            database.signatures(),
+        )
+        .expect("call-valued string slicing should emit directly from typed IR");
+        assert_eq!(
+            call_string_slice_direct,
+            format!(
+                "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); int64_t flux__cfg_call_arg_1 = {}({}); int64_t flux__cfg_call_arg_2 = {}({}); flux__str_slice(flux__cfg_call_arg_0, flux__cfg_call_arg_1, flux__cfg_call_arg_2, {}); }})",
+                function_c_name("echo"),
+                local_c_name("value"),
+                function_c_name("processCode"),
+                local_c_name("start"),
+                function_c_name("processCode"),
                 local_c_name("end"),
                 local_c_name("callback")
             )
@@ -61947,6 +62104,10 @@ fn utilityString(value: str) -> str {
     return value
 }
 
+fn callPreferenceSet(key: str, value: str) -> error {
+    return preferences.set(utilityString(key), utilityString(value))
+}
+
 fn callPreferenceRemove(key: str) -> error {
     return preferences.remove(utilityString(key))
 }
@@ -62098,6 +62259,20 @@ fn main() -> i64 {
                 format!(
                     "flux__preferences_set({}, {})",
                     local_c_name("key"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "callPreferenceSet",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__preferences_set(flux__cfg_call_arg_0, flux__cfg_call_arg_1); }})",
+                    function_c_name("utilityString"),
+                    local_c_name("key"),
+                    function_c_name("utilityString"),
                     local_c_name("value")
                 ),
             ),
@@ -62444,7 +62619,7 @@ fn main() -> i64 {
             &HashMap::from([
                 ("key".to_string(), Type::Str),
                 ("fallback".to_string(), Type::Str),
-                ("callback".to_string(), callback_ty),
+                ("callback".to_string(), callback_ty.clone()),
             ]),
             database.signatures(),
         )
@@ -62454,6 +62629,61 @@ fn main() -> i64 {
             format!(
                 "flux__preferences_get({}, {}, {})",
                 local_c_name("key"),
+                local_c_name("fallback"),
+                local_c_name("callback")
+            )
+        );
+
+        let call_preference_get = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "preferences".to_string(),
+                name: "get".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Call {
+                            callee: "utilityString".to_string(),
+                            arguments: vec![CfgScalarExpr {
+                                ty: Type::Str,
+                                kind: CfgScalarExprKind::Name("key".to_string()),
+                            }],
+                        },
+                    },
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Call {
+                            callee: "utilityString".to_string(),
+                            arguments: vec![CfgScalarExpr {
+                                ty: Type::Str,
+                                kind: CfgScalarExprKind::Name("fallback".to_string()),
+                            }],
+                        },
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        let call_preference_get_direct = emit_cfg_scalar_expr_direct(
+            &call_preference_get,
+            &HashMap::from([
+                ("key".to_string(), Type::Str),
+                ("fallback".to_string(), Type::Str),
+                ("callback".to_string(), callback_ty.clone()),
+            ]),
+            database.signatures(),
+        )
+        .expect("call-valued preference read should emit directly from typed IR");
+        assert_eq!(
+            call_preference_get_direct,
+            format!(
+                "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__preferences_get(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                function_c_name("utilityString"),
+                local_c_name("key"),
+                function_c_name("utilityString"),
                 local_c_name("fallback"),
                 local_c_name("callback")
             )
@@ -65577,7 +65807,7 @@ fn main() -> i64 {
             &unsupported,
             &HashMap::from([
                 ("value".to_string(), Type::I64),
-                ("callback".to_string(), callback_ty),
+                ("callback".to_string(), callback_ty.clone()),
             ]),
             database.signatures(),
         )
@@ -65959,7 +66189,7 @@ fn main() -> i64 {
             &unsupported,
             &HashMap::from([
                 ("key".to_string(), Type::Str),
-                ("callback".to_string(), callback_ty),
+                ("callback".to_string(), callback_ty.clone()),
             ]),
             database.signatures(),
         )
