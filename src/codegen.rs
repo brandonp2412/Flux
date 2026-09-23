@@ -48402,7 +48402,13 @@ fn emit_cfg_borrowed_list_argument_direct(
 
     let has_stable_borrowed_storage = match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
-        CfgScalarExprKind::Aggregate(_) => signatures.is_copy_type(element),
+        CfgScalarExprKind::Aggregate(_) => {
+            signatures.is_copy_type(element)
+                || matches!(
+                    signatures.canonical_type(element),
+                    Type::List(inner) if signatures.is_copy_type(&inner)
+                )
+        }
         CfgScalarExprKind::Unary {
             op: UnaryOp::Borrow,
             operand,
@@ -63793,6 +63799,65 @@ fn main() -> i64 {
                 .expect("network borrowed send call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{name}");
         }
+    }
+
+    #[test]
+    fn nested_copy_list_temporaries_emit_directly_at_borrowed_call_boundaries() {
+        let source = r#"
+fn sendLiteral(socket: i64, host: str, port: i64) -> (i64, error) {
+    return net.writeBytesToParts(socket, host, port, [[1, 2], [3, 4]])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested borrowed-list direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendLiteral")
+            .expect("nested borrowed-list CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "net" && name == "writeBytesToParts"
+                    )
+            })
+            .expect("net.writeBytesToParts should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("nested borrowed-list call should have multi-value typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("nested Copy list temporary should emit directly from typed IR");
+        assert!(direct.0.starts_with("flux__net_send_bytes_to_parts("));
+        assert!(direct.0.contains("struct flux__list"));
+        assert!(direct.0.contains("INT64_C(1)"));
+        assert!(direct.0.contains("INT64_C(4)"));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+            .expect("nested borrowed-list call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
     }
 
     #[test]
