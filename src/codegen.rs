@@ -49285,6 +49285,35 @@ fn emit_cfg_scalar_expr_direct(
                     let values = render_i64_args(1)?;
                     Some(format!("flux__time_local_offset_safe({})", values[0]))
                 }
+                "calendarZone" if ty == Type::Error => {
+                    if arguments.len() != 3 {
+                        return None;
+                    }
+                    let timestamp =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let zone =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[2],
+                        &[
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                            Type::I64,
+                        ],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__time_calendar_zone({timestamp}, {zone}, {callback})"
+                    ))
+                }
                 "formatUtc" | "formatLocal" if ty == Type::Error => {
                     if arguments.len() != 2 {
                         return None;
@@ -58744,6 +58773,24 @@ fn sleepUntil(value: i64) -> void {
 fn formatted(_value: str) -> void {
 }
 
+fn calendarParts(
+    _year: i64,
+    _month: i64,
+    _day: i64,
+    _hour: i64,
+    _minute: i64,
+    _second: i64,
+    _millis: i64,
+    _weekday: i64,
+    _dayOfYear: i64,
+    _offsetMinutes: i64
+) -> void {
+}
+
+fn calendarZone(value: i64, zone: str) -> error {
+    return time.calendarZone(value, zone, calendarParts)
+}
+
 fn formatUtc(value: i64) -> error {
     return time.format(value, formatted)
 }
@@ -58877,6 +58924,19 @@ fn main() -> i64 {
                 format!(
                     "flux__time_sleep_until_monotonic({})",
                     local_c_name("value")
+                ),
+            ),
+            (
+                "calendarZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__time_calendar_zone({}, {}, {})",
+                    local_c_name("value"),
+                    local_c_name("zone"),
+                    function_c_name("calendarParts")
                 ),
             ),
             (
