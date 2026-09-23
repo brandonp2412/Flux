@@ -49390,8 +49390,12 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "join" | "failure" | "cancel" if ty == Type::Error && arguments.len() == 1 => {
-                    let handle =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let handle = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let helper = match name {
                         "join" => "flux__worker_join",
                         "failure" => "flux__worker_failure",
@@ -49427,8 +49431,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__channel_send({handle}, {value})"))
                 }
                 "close" if ty == Type::Error && arguments.len() == 1 => {
-                    let handle =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let handle = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     Some(format!("flux__channel_close({handle})"))
                 }
                 _ => None,
@@ -63071,6 +63079,14 @@ fn join(handle: i64) -> error {
     return worker.join(handle)
 }
 
+fn concurrencyHandle(handle: i64) -> i64 {
+    return handle
+}
+
+fn callJoin(handle: i64) -> error {
+    return worker.join(concurrencyHandle(handle))
+}
+
 fn failure(handle: i64) -> error {
     return worker.failure(handle)
 }
@@ -63099,6 +63115,10 @@ fn close(handle: i64) -> error {
     return channel.close(handle)
 }
 
+fn callClose(handle: i64) -> error {
+    return channel.close(concurrencyHandle(handle))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -63111,6 +63131,15 @@ fn main() -> i64 {
                 "join",
                 HashMap::from([("handle".to_string(), Type::I64)]),
                 format!("flux__worker_join({})", local_c_name("handle")),
+            ),
+            (
+                "callJoin",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!(
+                    "flux__worker_join({}({}))",
+                    function_c_name("concurrencyHandle"),
+                    local_c_name("handle")
+                ),
             ),
             (
                 "failure",
@@ -63153,6 +63182,15 @@ fn main() -> i64 {
                 "close",
                 HashMap::from([("handle".to_string(), Type::I64)]),
                 format!("flux__channel_close({})", local_c_name("handle")),
+            ),
+            (
+                "callClose",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!(
+                    "flux__channel_close({}({}))",
+                    function_c_name("concurrencyHandle"),
+                    local_c_name("handle")
+                ),
             ),
         ] {
             let graph = database
