@@ -48579,6 +48579,142 @@ fn cfg_complementary_boolean_binding_term(left: &CfgScalarExpr, right: &CfgScala
     }
 }
 
+fn cfg_boolean_absorption_operand_is_discardable(expr: &CfgScalarExpr) -> bool {
+    matches!(
+        expr.kind,
+        CfgScalarExprKind::Constant(ConstantValue::Bool(_)) | CfgScalarExprKind::Name(_)
+    ) || matches!(
+        &expr.kind,
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } if matches!(operand.kind, CfgScalarExprKind::Name(_))
+    )
+}
+
+fn emit_cfg_boolean_algebra_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if !matches!(op, BinOp::And | BinOp::Or)
+        || signatures.canonical_type(&expr.ty) != Type::Bool
+        || signatures.canonical_type(&left.ty) != Type::Bool
+        || signatures.canonical_type(&right.ty) != Type::Bool
+    {
+        return None;
+    }
+
+    if let CfgScalarExprKind::Binary {
+        op: nested_op,
+        left: nested_left,
+        right: nested_right,
+    } = &right.kind
+        && matches!(
+            (*op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        )
+    {
+        let absorbed = cfg_same_pure_boolean_expression(left, nested_left, signatures)
+            || (cfg_same_pure_boolean_expression(left, nested_right, signatures)
+                && cfg_boolean_absorption_operand_is_discardable(nested_left));
+        if absorbed {
+            return emit_cfg_scalar_expr_direct(left, env, signatures);
+        }
+    }
+
+    if let CfgScalarExprKind::Binary {
+        op: nested_op,
+        left: nested_left,
+        right: nested_right,
+    } = &left.kind
+        && matches!(
+            (*op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        )
+    {
+        let absorbed = (cfg_same_pure_boolean_expression(right, nested_left, signatures)
+            && cfg_boolean_absorption_operand_is_discardable(nested_right))
+            || (cfg_same_pure_boolean_expression(right, nested_right, signatures)
+                && cfg_boolean_absorption_operand_is_discardable(nested_left));
+        if absorbed {
+            return emit_cfg_scalar_expr_direct(right, env, signatures);
+        }
+    }
+
+    if let CfgScalarExprKind::Binary {
+        op: nested_op,
+        left: nested_left,
+        right: nested_right,
+    } = &right.kind
+        && *nested_op == *op
+    {
+        let nested_complement_is_unconditionally_reached =
+            cfg_complementary_pure_boolean_expression(left, nested_left, signatures);
+        let nested_complement_follows_discardable_work =
+            cfg_complementary_pure_boolean_expression(left, nested_right, signatures)
+                && cfg_boolean_absorption_operand_is_discardable(nested_left);
+        if nested_complement_is_unconditionally_reached
+            || nested_complement_follows_discardable_work
+        {
+            let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            let result = matches!(op, BinOp::Or);
+            return Some(format!("((void)({rendered}), {result})"));
+        }
+    }
+
+    if let CfgScalarExprKind::Binary {
+        op: nested_op,
+        left: nested_left,
+        right: nested_right,
+    } = &right.kind
+        && matches!(
+            (*op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        )
+    {
+        let residual = if cfg_complementary_pure_boolean_expression(left, nested_left, signatures) {
+            Some(nested_right.as_ref())
+        } else if cfg_complementary_pure_boolean_expression(left, nested_right, signatures) {
+            Some(nested_left.as_ref())
+        } else {
+            None
+        };
+        if let Some(residual) = residual {
+            let rendered_left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            let rendered_residual = emit_cfg_scalar_expr_direct(residual, env, signatures)?;
+            return Some(format!(
+                "({rendered_left} {} {rendered_residual})",
+                c_operator(*op)
+            ));
+        }
+    }
+
+    if let CfgScalarExprKind::Binary {
+        op: nested_op,
+        left: nested_left,
+        right: nested_right,
+    } = &left.kind
+        && matches!(
+            (*op, *nested_op),
+            (BinOp::And, BinOp::Or) | (BinOp::Or, BinOp::And)
+        )
+        && cfg_complementary_pure_boolean_expression(nested_left, right, signatures)
+    {
+        let rendered_right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+        let rendered_residual = emit_cfg_scalar_expr_direct(nested_right, env, signatures)?;
+        return Some(format!(
+            "({rendered_right} {} {rendered_residual})",
+            c_operator(*op)
+        ));
+    }
+
+    None
+}
+
 fn emit_cfg_reused_pure_primitive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -49215,6 +49351,9 @@ fn emit_cfg_scalar_expr_direct(
 ) -> Option<String> {
     let ty = signatures.canonical_type(&expr.ty);
     if let Some(rendered) = emit_cfg_optimized_i64_primitive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_boolean_algebra_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_reused_pure_primitive_direct(expr, env, signatures) {
@@ -55563,6 +55702,137 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("equivalent boolean predicate should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_boolean_algebra_bypasses_checked_ast_roots() {
+        let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn absorbRight(value: bool, other: bool) -> bool {
+    return value && (value || observe(other))
+}
+
+fn absorbTail(value: bool, other: bool) -> bool {
+    return value && (other || value)
+}
+
+fn absorbLeft(value: bool, other: bool) -> bool {
+    return (value || other) && value
+}
+
+fn nestedContradiction(value: bool, other: bool) -> bool {
+    return value && (!value && observe(other))
+}
+
+fn nestedSymmetric(value: bool, other: bool) -> bool {
+    return value || (other || !value)
+}
+
+fn resolveRight(value: bool, other: bool) -> bool {
+    return value || (!value && observe(other))
+}
+
+fn resolveRightTail(value: bool, other: bool) -> bool {
+    return value || (observe(other) && !value)
+}
+
+fn resolveLeft(value: bool, other: bool) -> bool {
+    return (!value || observe(other)) && value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("boolean algebra fixture should typecheck");
+        let value = local_c_name("value");
+        let observe_other = format!("flux__fn_observe({})", local_c_name("other"));
+        let env = HashMap::from([
+            ("value".to_string(), Type::Bool),
+            ("other".to_string(), Type::Bool),
+        ]);
+        let cases = [
+            ("absorbRight", BinOp::And, value.clone()),
+            ("absorbTail", BinOp::And, value.clone()),
+            ("absorbLeft", BinOp::And, value.clone()),
+            (
+                "nestedContradiction",
+                BinOp::And,
+                format!("((void)({value}), false)"),
+            ),
+            (
+                "nestedSymmetric",
+                BinOp::Or,
+                format!("((void)({value}), true)"),
+            ),
+            (
+                "resolveRight",
+                BinOp::Or,
+                format!("({value} || {observe_other})"),
+            ),
+            (
+                "resolveRightTail",
+                BinOp::Or,
+                format!("({value} || {observe_other})"),
+            ),
+            (
+                "resolveLeft",
+                BinOp::And,
+                format!("({value} && {observe_other})"),
+            ),
+        ];
+
+        for (function, root_op, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("boolean algebra CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("boolean algebra root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("boolean algebra root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                Type::Bool,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("boolean algebra should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-boolean-algebra".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("boolean algebra should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
