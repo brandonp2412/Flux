@@ -37277,7 +37277,7 @@ fn emit_direct_sequence_projection(
             _ => false,
         })
         .map(|scalar| {
-            let mut reconstructed = cfg_scalar_expr_as_ast(scalar);
+            let mut reconstructed = cfg_scalar_expr_as_ast_for_source(scalar, expr.span.source_id);
             reconstructed.line = expr.line;
             reconstructed.span = expr.span;
             reconstructed
@@ -40211,7 +40211,7 @@ fn sequence_expr_for_lowering(
     if !cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures) {
         return expr.clone();
     }
-    let mut reconstructed = cfg_scalar_expr_as_ast(sequence);
+    let mut reconstructed = cfg_scalar_expr_as_ast_for_source(sequence, expr.span.source_id);
     reconstructed.line = expr.line;
     reconstructed.span = expr.span;
     reconstructed
@@ -41848,7 +41848,7 @@ fn cfg_rewrite_expr_as_ast(
     if !cfg_scalar_expr_calls_are_reconstructable(scalar, env, signatures) {
         return None;
     }
-    let mut expr = cfg_scalar_expr_as_ast(scalar);
+    let mut expr = cfg_scalar_expr_as_ast_for_source(scalar, span.source_id);
     expr.line = span.line;
     expr.span = span;
     Some(expr)
@@ -47593,6 +47593,16 @@ fn cfg_aggregate_constant_as_ast(
 
 fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
     cfg_scalar_expr_as_ast_with_spans(expr, &mut CfgSyntheticAstSpans::default())
+}
+
+fn cfg_scalar_expr_as_ast_for_source(expr: &CfgScalarExpr, source_id: SourceId) -> Expr {
+    cfg_scalar_expr_as_ast_with_spans(
+        expr,
+        &mut CfgSyntheticAstSpans {
+            source_id,
+            next_column: 1,
+        },
+    )
 }
 
 fn cfg_scalar_expr_as_ast_with_spans(

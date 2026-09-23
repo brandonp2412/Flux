@@ -33722,6 +33722,28 @@ fn performance_benchmark_flux_sources_stay_compiler_valid() {
 }
 
 #[test]
+fn collections_performance_benchmark_builds_through_cli() {
+    let root =
+        std::env::temp_dir().join(format!("flux-collections-benchmark-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("benchmark build directory should be writable");
+    let binary = root.join("collections");
+
+    let build = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .args(["build", "benchmarks/perf/collections.flux", "-o"])
+        .arg(&binary)
+        .output()
+        .expect("collections benchmark should invoke flux build");
+    assert!(
+        build.status.success(),
+        "collections benchmark build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn semantic_database_shares_symbols_and_signatures_for_editor_queries() {
     let source = "fn double(value: i64) -> i64 {\n    let result: i64 = value * 2\n    return result\n}\n\nfn main() -> i64 {\n    for i in 0..2:\n        print(double(i))\n    return 0\n}\n";
     let source_id = SourceId::new(101);

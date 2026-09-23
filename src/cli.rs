@@ -2925,7 +2925,7 @@ fn msix_manifest_xml(
     let publisher = xml_escape(publisher_identity);
     let executable = xml_escape(executable);
     Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Dependencies><TargetDeviceFamily Name=\"Windows.Desktop\" MinVersion=\"10.0.14316.0\" MaxVersionTested=\"10.0.19041.0\" /></Dependencies>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\" xmlns:uap=\"http://schemas.microsoft.com/appx/manifest/uap/windows10\" xmlns:rescap=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedCapabilities\">\n  <Identity Name=\"{name}\" Publisher=\"{publisher}\" Version=\"{version}\" />\n  <Properties>\n    <DisplayName>{name}</DisplayName>\n    <PublisherDisplayName>{publisher}</PublisherDisplayName>\n    <Description>{name} built by Flux</Description>\n    <Logo>Assets\\StoreLogo.png</Logo>\n  </Properties>\n  <Resources><Resource Language=\"en-us\" /></Resources>\n  <Dependencies><TargetDeviceFamily Name=\"Windows.Desktop\" MinVersion=\"10.0.14316.0\" MaxVersionTested=\"10.0.19041.0\" /></Dependencies>\n  <Applications>\n    <Application Id=\"App\" Executable=\"{executable}\" EntryPoint=\"Windows.FullTrustApplication\">\n      <uap:VisualElements AppListEntry=\"none\" DisplayName=\"{name}\" Description=\"{name} built by Flux\" Square44x44Logo=\"Assets\\Square44x44Logo.png\" Square150x150Logo=\"Assets\\Square150x150Logo.png\" BackgroundColor=\"transparent\" />\n    </Application>\n  </Applications>\n  <Capabilities><rescap:Capability Name=\"runFullTrust\" /></Capabilities>\n</Package>\n"
     ))
 }
 
@@ -13514,6 +13514,7 @@ app OverlayDemo(title: "Overlay")
         assert!(xml.contains("Executable=\"flux-demo.exe\""));
         assert!(xml.contains("TargetDeviceFamily Name=\"Windows.Desktop\""));
         assert!(xml.contains("EntryPoint=\"Windows.FullTrustApplication\""));
+        assert!(xml.contains("BackgroundColor=\"transparent\""));
         assert!(xml.contains("runFullTrust"));
         assert!(msix_version(&manifest).is_ok());
     }
