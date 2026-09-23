@@ -48699,6 +48699,64 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "net" && ty == Type::Error => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "sendText" if arguments.len() == 2 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let text =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    Some(profiled_timeline_call(
+                        "network",
+                        "net.sendText",
+                        format!("flux__net_send_text({socket}, {text})"),
+                    ))
+                }
+                "sendTextTo" if arguments.len() == 4 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let host =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let port =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
+                    let text =
+                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    Some(format!(
+                        "flux__net_send_text_to({socket}, {host}, {port}, {text})"
+                    ))
+                }
+                "setNonblocking" | "setNoDelay" | "setKeepAlive" if arguments.len() == 2 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let enabled =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Bool, env, signatures)?;
+                    let helper = match name {
+                        "setNonblocking" => "flux__net_set_nonblocking",
+                        "setNoDelay" => "flux__net_set_no_delay",
+                        "setKeepAlive" => "flux__net_set_keep_alive",
+                        _ => unreachable!(),
+                    };
+                    Some(format!("{helper}({socket}, {enabled})"))
+                }
+                "shutdownRead" | "shutdownWrite" | "close" if arguments.len() == 1 => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let helper = match name {
+                        "shutdownRead" => "flux__net_shutdown_read",
+                        "shutdownWrite" => "flux__net_shutdown_write",
+                        "close" => "flux__net_close",
+                        _ => unreachable!(),
+                    };
+                    Some(format!("{helper}({socket})"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "websocket" && ty == Type::Error => match name.as_str() {
             "writeText" if arguments.len() == 2 => {
                 let session =
@@ -59075,6 +59133,174 @@ fn main() -> i64 {
             .expect("WebSocket qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-websocket-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_network_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn sendText(socket: i64, text: str) -> error {
+    return net.sendText(socket, text)
+}
+
+fn sendTextTo(socket: i64, host: str, port: i64, text: str) -> error {
+    return net.sendTextTo(socket, host, port, text)
+}
+
+fn nonblocking(socket: i64, enabled: bool) -> error {
+    return net.setNonblocking(socket, enabled)
+}
+
+fn noDelay(socket: i64, enabled: bool) -> error {
+    return net.setNoDelay(socket, enabled)
+}
+
+fn keepAlive(socket: i64, enabled: bool) -> error {
+    return net.setKeepAlive(socket, enabled)
+}
+
+fn shutdownRead(socket: i64) -> error {
+    return net.shutdownRead(socket)
+}
+
+fn shutdownWrite(socket: i64) -> error {
+    return net.shutdownWrite(socket)
+}
+
+fn close(socket: i64) -> error {
+    return net.close(socket)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct network qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "sendText",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("text".to_string(), Type::Str),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "net.sendText",
+                    format!(
+                        "flux__net_send_text({}, {})",
+                        local_c_name("socket"),
+                        local_c_name("text")
+                    ),
+                ),
+            ),
+            (
+                "sendTextTo",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("host".to_string(), Type::Str),
+                    ("port".to_string(), Type::I64),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__net_send_text_to({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("host"),
+                    local_c_name("port"),
+                    local_c_name("text")
+                ),
+            ),
+            (
+                "nonblocking",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("enabled".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "flux__net_set_nonblocking({}, {})",
+                    local_c_name("socket"),
+                    local_c_name("enabled")
+                ),
+            ),
+            (
+                "noDelay",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("enabled".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "flux__net_set_no_delay({}, {})",
+                    local_c_name("socket"),
+                    local_c_name("enabled")
+                ),
+            ),
+            (
+                "keepAlive",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("enabled".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "flux__net_set_keep_alive({}, {})",
+                    local_c_name("socket"),
+                    local_c_name("enabled")
+                ),
+            ),
+            (
+                "shutdownRead",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!("flux__net_shutdown_read({})", local_c_name("socket")),
+            ),
+            (
+                "shutdownWrite",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!("flux__net_shutdown_write({})", local_c_name("socket")),
+            ),
+            (
+                "close",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!("flux__net_close({})", local_c_name("socket")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("network qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("network qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("network qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported network call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-network-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("network qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-network-call"));
         }
     }
 
