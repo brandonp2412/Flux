@@ -48389,6 +48389,18 @@ fn emit_cfg_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
+    match &argument.kind {
+        CfgScalarExprKind::Name(_) => true,
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Borrow,
+            operand,
+        } => cfg_borrowed_list_has_named_root(operand),
+        CfgScalarExprKind::Slice { base, .. } => cfg_borrowed_list_has_named_root(base),
+        _ => false,
+    }
+}
+
 fn emit_cfg_borrowed_list_argument_direct(
     argument: &CfgScalarExpr,
     element: &Type,
@@ -48400,8 +48412,7 @@ fn emit_cfg_borrowed_list_argument_direct(
         return None;
     }
 
-    let has_stable_borrowed_storage = match &argument.kind {
-        CfgScalarExprKind::Name(_) => true,
+    let aggregate_storage_is_call_scoped = match &argument.kind {
         CfgScalarExprKind::Aggregate(_) => {
             signatures.is_copy_type(element)
                 || matches!(
@@ -48409,22 +48420,14 @@ fn emit_cfg_borrowed_list_argument_direct(
                     Type::List(inner) if signatures.is_copy_type(&inner)
                 )
         }
-        CfgScalarExprKind::Unary {
-            op: UnaryOp::Borrow,
-            operand,
-        } => matches!(operand.kind, CfgScalarExprKind::Name(_)),
-        CfgScalarExprKind::Slice { base, .. } => matches!(
-            base.kind,
-            CfgScalarExprKind::Name(_)
-                | CfgScalarExprKind::Aggregate(_)
-                | CfgScalarExprKind::Unary {
-                    op: UnaryOp::Borrow,
-                    ..
-                }
-        ),
+        CfgScalarExprKind::Slice { base, .. }
+            if matches!(base.kind, CfgScalarExprKind::Aggregate(_)) =>
+        {
+            signatures.is_copy_type(element)
+        }
         _ => false,
     };
-    if !has_stable_borrowed_storage {
+    if !cfg_borrowed_list_has_named_root(argument) && !aggregate_storage_is_call_scoped {
         return None;
     }
 
@@ -51212,7 +51215,9 @@ fn emit_cfg_scalar_expr_direct(
         CfgScalarExprKind::Unary {
             op: UnaryOp::Borrow,
             operand,
-        } if matches!(operand.kind, CfgScalarExprKind::Name(_))
+        } if (matches!(operand.kind, CfgScalarExprKind::Name(_))
+            || (matches!(signatures.canonical_type(&operand.ty), Type::List(_))
+                && cfg_borrowed_list_has_named_root(operand)))
             && ty == signatures.canonical_type(&operand.ty) =>
         {
             emit_cfg_scalar_expr_direct(operand, env, signatures)
@@ -60987,6 +60992,67 @@ fn main() -> i64 {
         .expect("borrowed list slice call should bypass the checked-AST root");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-borrowed-slice"));
+    }
+
+    #[test]
+    fn explicit_reborrowed_list_slices_emit_directly_at_qualified_call_boundaries() {
+        let source = r#"
+fn sendSlice(socket: i64, parts: str[], start: i64) -> error {
+    return net.writeParts(socket, borrow parts[start:])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("explicit reborrowed slice direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendSlice")
+            .expect("explicit reborrowed slice CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("explicit reborrowed slice qualified call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("explicit reborrowed slice call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("parts".to_string(), Type::List(Box::new(Type::Str))),
+            ("start".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("explicit reborrowed list slice should emit directly from typed IR");
+        assert!(direct.starts_with("flux__net_send_text_parts("));
+        assert!(direct.contains("flux_list_slice("));
+        assert!(direct.contains(&local_c_name("parts")));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-explicit-reborrow".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("explicit reborrowed slice call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-explicit-reborrow"));
     }
 
     #[test]
