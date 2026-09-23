@@ -50027,16 +50027,29 @@ fn emit_cfg_scalar_expr_direct(
             }
             "encode" if arguments.len() == 2 => {
                 let value = &arguments[0];
-                let helper = match signatures.canonical_type(&value.ty) {
-                    Type::I64 => "flux__json_encode_int",
-                    Type::Bool => "flux__json_encode_bool",
-                    Type::Str => "flux__json_encode_string",
-                    Type::Optional(inner) => match signatures.canonical_type(&inner) {
-                        Type::I64 => "flux__json_encode_optional_i64",
-                        Type::Bool => "flux__json_encode_optional_bool",
-                        Type::Str => "flux__json_encode_optional_str",
+                let value_ty = signatures.canonical_type(&value.ty);
+                let helper = match &value_ty {
+                    Type::I64 => "flux__json_encode_int".to_string(),
+                    Type::Bool => "flux__json_encode_bool".to_string(),
+                    Type::Str => "flux__json_encode_string".to_string(),
+                    Type::Optional(inner) => match signatures.canonical_type(inner) {
+                        Type::I64 => "flux__json_encode_optional_i64".to_string(),
+                        Type::Bool => "flux__json_encode_optional_bool".to_string(),
+                        Type::Str => "flux__json_encode_optional_str".to_string(),
+                        inner
+                            if json_record_supported(&inner, signatures)
+                                || json_enum_supported(&inner, signatures) =>
+                        {
+                            json_optional_aggregate_helper_name(&value_ty, signatures)
+                        }
                         _ => return None,
                     },
+                    ty if json_record_supported(ty, signatures) => {
+                        json_record_helper_name(ty, signatures)
+                    }
+                    ty if json_enum_supported(ty, signatures) => {
+                        json_enum_helper_name(ty, signatures)
+                    }
                     _ => return None,
                 };
                 let value = emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?;
@@ -60453,6 +60466,16 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_utility_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+struct JsonUser {
+    name: str
+    age: i64
+}
+
+enum JsonChoice {
+    Number(i64)
+    Empty
+}
+
 fn preferenceSet(key: str, value: str) -> error {
     return preferences.set(key, value)
 }
@@ -60496,6 +60519,22 @@ fn encodeJsonOptionalBool(value: bool?) -> error {
 }
 
 fn encodeJsonOptionalString(value: str?) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonUser(value: JsonUser) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonChoice(value: JsonChoice) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonOptionalUser(value: JsonUser?) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonOptionalChoice(value: JsonChoice?) -> error {
     return json.encode(value, jsonText)
 }
 
@@ -60620,6 +60659,64 @@ fn main() -> i64 {
                 HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::Str)))]),
                 format!(
                     "flux__json_encode_optional_str({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonUser",
+                HashMap::from([("value".to_string(), Type::Named("JsonUser".to_string()))]),
+                format!(
+                    "{}({}, {})",
+                    json_record_helper_name(
+                        &Type::Named("JsonUser".to_string()),
+                        database.signatures()
+                    ),
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonChoice",
+                HashMap::from([("value".to_string(), Type::Named("JsonChoice".to_string()))]),
+                format!(
+                    "{}({}, {})",
+                    json_enum_helper_name(
+                        &Type::Named("JsonChoice".to_string()),
+                        database.signatures()
+                    ),
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonOptionalUser",
+                HashMap::from([(
+                    "value".to_string(),
+                    Type::Optional(Box::new(Type::Named("JsonUser".to_string()))),
+                )]),
+                format!(
+                    "{}({}, {})",
+                    json_optional_aggregate_helper_name(
+                        &Type::Optional(Box::new(Type::Named("JsonUser".to_string()))),
+                        database.signatures()
+                    ),
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonOptionalChoice",
+                HashMap::from([(
+                    "value".to_string(),
+                    Type::Optional(Box::new(Type::Named("JsonChoice".to_string()))),
+                )]),
+                format!(
+                    "{}({}, {})",
+                    json_optional_aggregate_helper_name(
+                        &Type::Optional(Box::new(Type::Named("JsonChoice".to_string()))),
+                        database.signatures()
+                    ),
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
