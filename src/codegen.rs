@@ -67791,6 +67791,14 @@ fn main() -> i64 {
 fn accepted(_socket: i64) -> void {
 }
 
+fn networkI64(value: i64) -> i64 {
+    return value
+}
+
+fn networkStr(value: str) -> str {
+    return value
+}
+
 fn exercise(
     host: str,
     port: i64,
@@ -67800,18 +67808,18 @@ fn exercise(
     timeout: i64,
     offset: i64
 ) -> i64 {
-    let (connected, _) = net.connect(host, port)
+    let (connected, _) = net.connect(networkStr(host), port)
     let (udp, _) = net.udp(host, port)
     let (bound, _) = net.bind(host, port)
     let (listening, _) = net.listen(host, port, 8)
     let (acceptedSocket, _) = net.accept(listener)
     let (timedSocket, _, _) = net.acceptTimeout(listener, timeout)
-    let (acceptedCount, _) = net.acceptMany(listener, 2, accepted)
+    let (acceptedCount, _) = net.acceptMany(networkI64(listener), 2, accepted)
     let (timedCount, _, _) = net.acceptManyTimeout(listener, 2, timeout, accepted)
     let (localPort, _) = net.port(socket)
     let (written, _) = net.writeTimeout(socket, text, timeout)
     let (progress, _, _) = net.writeFrom(socket, text, offset)
-    let (timedProgress, _, _) = net.writeFromTimeout(socket, text, offset, timeout)
+    let (timedProgress, _, _) = net.writeFromTimeout(networkI64(socket), text, offset, timeout)
     return connected + udp + bound + listening + acceptedSocket + timedSocket + acceptedCount + timedCount + localPort + written + progress + timedProgress
 }
 
@@ -67844,7 +67852,8 @@ fn main() -> i64 {
                         "network",
                         "net.tcpConnect",
                         format!(
-                            "flux__net_tcp_connect({}, {})",
+                            "flux__net_tcp_connect({}({}), {})",
+                            function_c_name("networkStr"),
                             local_c_name("host"),
                             local_c_name("port")
                         ),
@@ -67921,7 +67930,8 @@ fn main() -> i64 {
                 "acceptMany".to_string(),
                 (
                     format!(
-                        "flux__net_tcp_accept_many({}, INT64_C(2), {})",
+                        "flux__net_tcp_accept_many({}({}), INT64_C(2), {})",
+                        function_c_name("networkI64"),
                         local_c_name("listener"),
                         function_c_name("accepted")
                     ),
@@ -67980,7 +67990,8 @@ fn main() -> i64 {
                 "writeFromTimeout".to_string(),
                 (
                     format!(
-                        "flux__net_send_text_progress_with_timeout({}, {}, {}, {})",
+                        "flux__net_send_text_progress_with_timeout({}({}), {}, {}, {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("text"),
                         local_c_name("offset"),
@@ -71526,15 +71537,9 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "net" => match name {
                     "connect" | "tcpConnect" if arguments.len() == 2 => {
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let port = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::Str, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71542,22 +71547,16 @@ fn emit_cfg_multi_expr_direct(
                             profiled_timeline_call(
                                 "network",
                                 "net.tcpConnect",
-                                format!("flux__net_tcp_connect({host}, {port})"),
+                                format!("flux__net_tcp_connect({}, {})", rendered[0], rendered[1]),
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "udpConnect" | "udpBind" if arguments.len() == 2 => {
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let port = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::Str, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71567,27 +71566,15 @@ fn emit_cfg_multi_expr_direct(
                             "flux__net_udp_bind"
                         };
                         Some((
-                            format!("{helper}({host}, {port})"),
+                            format!("{helper}({}, {})", rendered[0], rendered[1]),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "listen" | "tcpListen" if arguments.len() == 3 => {
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let port = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let backlog = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::Str, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71595,7 +71582,10 @@ fn emit_cfg_multi_expr_direct(
                             profiled_timeline_call(
                                 "network",
                                 "net.tcpListen",
-                                format!("flux__net_tcp_listen({host}, {port}, {backlog})"),
+                                format!(
+                                    "flux__net_tcp_listen({}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                ),
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
@@ -71619,34 +71609,25 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "tcpAcceptWithTimeout" if arguments.len() == 2 => {
-                        let listener = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
                         Some((
-                            format!("flux__net_tcp_accept_with_timeout({listener}, {timeout})"),
+                            format!(
+                                "flux__net_tcp_accept_with_timeout({}, {})",
+                                rendered[0], rendered[1]
+                            ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "acceptMany" | "tcpAcceptMany" if arguments.len() == 3 => {
-                        let listener = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71658,28 +71639,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_tcp_accept_many({listener}, {max_count}, {callback})"
+                                "flux__net_tcp_accept_many({}, {}, {callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "tcpAcceptManyWithTimeout" if arguments.len() == 4 => {
-                        let listener = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71691,7 +71661,8 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_tcp_accept_many_with_timeout({listener}, {max_count}, {timeout}, {callback})"
+                                "flux__net_tcp_accept_many_with_timeout({}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
@@ -71711,85 +71682,48 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "sendTextWithTimeout" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let value = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
                         )?;
                         Some((
                             format!(
-                                "flux__net_send_text_with_timeout({socket}, {value}, {timeout})"
+                                "flux__net_send_text_with_timeout({}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "sendTextProgress" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let value = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        Some((
-                            format!("flux__net_send_text_progress({socket}, {value}, {offset})"),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
-                    }
-                    "sendTextProgressWithTimeout" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let value = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
                         )?;
                         Some((
                             format!(
-                                "flux__net_send_text_progress_with_timeout({socket}, {value}, {offset}, {timeout})"
+                                "flux__net_send_text_progress({}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "sendTextProgressWithTimeout" if arguments.len() == 4 => {
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::I64, Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_text_progress_with_timeout({}, {}, {}, {})",
+                                rendered[0], rendered[1], rendered[2], rendered[3]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
