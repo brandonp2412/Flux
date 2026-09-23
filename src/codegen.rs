@@ -65942,6 +65942,211 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn single_argument_multi_value_calls_trust_direct_emitter() {
+        let source = r#"
+fn stringValue(value: str) -> str {
+    return value
+}
+
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
+fn fileValue(path: str) -> i64 {
+    let (value, _) = file.size(stringValue(path))
+    return value
+}
+
+fn sqliteValue(path: str) -> i64 {
+    let (value, _) = sqlite.open(stringValue(path))
+    return value
+}
+
+fn workerValue(handle: i64) -> bool {
+    let (value, _) = worker.done(intValue(handle))
+    return value
+}
+
+fn channelCreateValue(capacity: i64) -> i64 {
+    let (value, _) = channel.create(intValue(capacity))
+    return value
+}
+
+fn channelReceiveValue(handle: i64) -> i64 {
+    let (value, _) = channel.receive(intValue(handle))
+    return value
+}
+
+fn websocketValue(socket: i64) -> i64 {
+    let (value, _) = websocket.accept(intValue(socket))
+    return value
+}
+
+fn networkAcceptValue(listener: i64) -> i64 {
+    let (value, _) = net.accept(intValue(listener))
+    return value
+}
+
+fn networkPortValue(socket: i64) -> i64 {
+    let (value, _) = net.port(intValue(socket))
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("single-argument multi-value fixture should typecheck");
+
+        let cases = [
+            (
+                "fileValue",
+                "path",
+                Type::Str,
+                format!(
+                    "flux__fs_file_size({}({}))",
+                    function_c_name("stringValue"),
+                    local_c_name("path")
+                ),
+                "flux__fs_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "sqliteValue",
+                "path",
+                Type::Str,
+                format!(
+                    "flux__sqlite_open({}({}))",
+                    function_c_name("stringValue"),
+                    local_c_name("path")
+                ),
+                "flux__sqlite_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "workerValue",
+                "handle",
+                Type::I64,
+                format!(
+                    "flux__worker_done_result({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("handle")
+                ),
+                "flux__worker_bool_error",
+                vec![Type::Bool, Type::Error],
+            ),
+            (
+                "channelCreateValue",
+                "capacity",
+                Type::I64,
+                format!(
+                    "flux__channel_create({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("capacity")
+                ),
+                "flux__channel_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "channelReceiveValue",
+                "handle",
+                Type::I64,
+                format!(
+                    "flux__channel_receive({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("handle")
+                ),
+                "flux__channel_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "websocketValue",
+                "socket",
+                Type::I64,
+                format!(
+                    "flux__websocket_accept({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("socket")
+                ),
+                "flux__net_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "networkAcceptValue",
+                "listener",
+                Type::I64,
+                profiled_timeline_call(
+                    "network",
+                    "net.tcpAccept",
+                    format!(
+                        "flux__net_tcp_accept({}({}))",
+                        function_c_name("intValue"),
+                        local_c_name("listener")
+                    ),
+                ),
+                "flux__net_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+            (
+                "networkPortValue",
+                "socket",
+                Type::I64,
+                format!(
+                    "flux__net_local_port({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("socket")
+                ),
+                "flux__net_i64_error",
+                vec![Type::I64, Type::Error],
+            ),
+        ];
+
+        for (function, parameter, parameter_ty, expected_code, expected_shape, expected_returns) in
+            cases
+        {
+            let graph = database
+                .control_flow_graph(function)
+                .unwrap_or_else(|| panic!("{function}: CFG should exist"));
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            value.kind,
+                            crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                        )
+                })
+                .unwrap_or_else(|| {
+                    panic!("{function}: multi-value root should remain in typed IR")
+                });
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{function}: multi-value typed-IR facts should exist"));
+            let env = HashMap::from([(parameter.to_string(), parameter_ty)]);
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("{function}: directly reconstructable argument should emit")
+                });
+            assert_eq!(direct.0, expected_code, "{function}");
+            assert_eq!(direct.1, expected_shape, "{function}");
+            assert_eq!(direct.2, expected_returns, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .unwrap_or_else(|_| panic!("{function}: checked-AST root should be bypassed"));
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
     fn concurrency_borrowed_list_shapes_emit_from_typed_ir() {
         let source = r#"
 fn waitSlice(handles: i64[], start: i64) -> (i64, error) {
@@ -69214,8 +69419,12 @@ fn emit_cfg_multi_expr_direct(
             let bool_error = vec![Type::Bool, Type::Error];
             match namespace.as_str() {
                 "file" | "directory" if arguments.len() == 1 => {
-                    let path =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let path = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
                     let helper = match (namespace.as_str(), name) {
                         ("file", "size") => "flux__fs_file_size",
                         ("file", "modifiedUnixMillis") => "flux__fs_file_modified_unix_millis",
@@ -69303,7 +69512,7 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "sqlite" => match name {
                     "open" if arguments.len() == 1 => {
-                        let path = emit_cfg_call_argument_direct(
+                        let path = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::Str,
                             env,
@@ -69372,7 +69581,7 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "done" if arguments.len() == 1 => {
-                        let handle = emit_cfg_call_argument_direct(
+                        let handle = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -69406,7 +69615,7 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "channel" => match name {
                     "create" if arguments.len() == 1 => {
-                        let capacity = emit_cfg_call_argument_direct(
+                        let capacity = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -69419,7 +69628,7 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "receive" if arguments.len() == 1 => {
-                        let handle = emit_cfg_call_argument_direct(
+                        let handle = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -69745,7 +69954,7 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "websocket" => match name {
                     "accept" if arguments.len() == 1 => {
-                        let socket = emit_cfg_call_argument_direct(
+                        let socket = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -69910,7 +70119,7 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "accept" | "tcpAccept" if arguments.len() == 1 => {
-                        let listener = emit_cfg_call_argument_direct(
+                        let listener = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
@@ -70006,7 +70215,7 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "localPort" if arguments.len() == 1 => {
-                        let socket = emit_cfg_call_argument_direct(
+                        let socket = emit_cfg_ordinary_call_argument_direct(
                             &arguments[0],
                             &Type::I64,
                             env,
