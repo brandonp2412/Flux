@@ -48415,6 +48415,55 @@ fn emit_cfg_ordinary_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_order_safe_call_arguments_direct(
+    arguments: &[CfgScalarExpr],
+    expected: &[Type],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<Vec<String>> {
+    if arguments.len() != expected.len() {
+        return None;
+    }
+
+    if let Some(rendered) = arguments
+        .iter()
+        .zip(expected)
+        .map(|(argument, expected)| {
+            emit_cfg_call_argument_direct(argument, expected, env, signatures)
+        })
+        .collect::<Option<Vec<_>>>()
+    {
+        return Some(rendered);
+    }
+
+    let mut flexible_index = None;
+    for (index, argument) in arguments.iter().enumerate() {
+        if matches!(
+            argument.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        ) {
+            continue;
+        }
+        if flexible_index.replace(index).is_some() {
+            return None;
+        }
+    }
+    let flexible_index = flexible_index?;
+
+    arguments
+        .iter()
+        .zip(expected)
+        .enumerate()
+        .map(|(index, (argument, expected))| {
+            if index == flexible_index {
+                emit_cfg_ordinary_call_argument_direct(argument, expected, env, signatures)
+            } else {
+                emit_cfg_call_argument_direct(argument, expected, env, signatures)
+            }
+        })
+        .collect()
+}
+
 fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
@@ -49207,11 +49256,13 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "tls" && ty == Type::Error => match name.as_str() {
             "write" if arguments.len() == 2 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                Some(format!("flux__tls_write({session}, {value})"))
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &[Type::I64, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__tls_write({}, {})", rendered[0], rendered[1]))
             }
             "close" if arguments.len() == 1 => {
                 let session = emit_cfg_ordinary_call_argument_direct(
@@ -49232,14 +49283,16 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "sendText" if arguments.len() == 2 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let text =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     Some(profiled_timeline_call(
                         "network",
                         "net.sendText",
-                        format!("flux__net_send_text({socket}, {text})"),
+                        format!("flux__net_send_text({}, {})", rendered[0], rendered[1]),
                     ))
                 }
                 "sendTextParts" if arguments.len() == 2 => {
@@ -49304,10 +49357,14 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("{helper}({socket}, {callback})"))
                 }
                 "setNonblocking" | "setNoDelay" | "setKeepAlive" if arguments.len() == 2 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let enabled =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Bool, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::Bool],
+                        env,
+                        signatures,
+                    )?;
+                    let socket = &rendered[0];
+                    let enabled = &rendered[1];
                     let helper = match name {
                         "setNonblocking" => "flux__net_set_nonblocking",
                         "setNoDelay" => "flux__net_set_no_delay",
@@ -49340,11 +49397,16 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "websocket" && ty == Type::Error => match name.as_str() {
             "writeText" if arguments.len() == 2 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                Some(format!("flux__websocket_write_text({session}, {value})"))
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &[Type::I64, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!(
+                    "flux__websocket_write_text({}, {})",
+                    rendered[0], rendered[1]
+                ))
             }
             "writeBytes" if arguments.len() == 2 => {
                 let session =
@@ -49358,10 +49420,14 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__websocket_write_bytes({session}, {bytes})"))
             }
             "ping" | "pong" if arguments.len() == 2 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                let payload =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &[Type::I64, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let session = &rendered[0];
+                let payload = &rendered[1];
                 let helper = if name == "ping" {
                     "flux__websocket_write_ping"
                 } else {
@@ -49370,14 +49436,15 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("{helper}({session}, {payload})"))
             }
             "closeWithCode" if arguments.len() == 3 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                let code =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-                let reason =
-                    emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &[Type::I64, Type::I64, Type::Str],
+                    env,
+                    signatures,
+                )?;
                 Some(format!(
-                    "flux__websocket_close_with_code({session}, {code}, {reason})"
+                    "flux__websocket_close_with_code({}, {}, {})",
+                    rendered[0], rendered[1], rendered[2]
                 ))
             }
             "close" if arguments.len() == 1 => {
@@ -49408,11 +49475,16 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__sqlite_close({database})"))
                 }
                 "execute" if arguments.len() == 2 => {
-                    let database =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let sql =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    Some(format!("flux__sqlite_execute({database}, {sql})"))
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__sqlite_execute({}, {})",
+                        rendered[0], rendered[1]
+                    ))
                 }
                 _ => None,
             }
@@ -49459,11 +49531,16 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "send" if ty == Type::Error && arguments.len() == 2 => {
-                    let handle =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let value =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-                    Some(format!("flux__channel_send({handle}, {value})"))
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__channel_send({}, {})",
+                        rendered[0], rendered[1]
+                    ))
                 }
                 "close" if ty == Type::Error && arguments.len() == 1 => {
                     let handle = emit_cfg_ordinary_call_argument_direct(
@@ -49484,34 +49561,8 @@ fn emit_cfg_scalar_expr_direct(
         } if namespace == "time" => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let render_i64_args = |count: usize| -> Option<Vec<String>> {
-                if arguments.len() != count {
-                    return None;
-                }
-                arguments
-                    .iter()
-                    .map(|argument| {
-                        if count == 1 {
-                            return emit_cfg_ordinary_call_argument_direct(
-                                argument,
-                                &Type::I64,
-                                env,
-                                signatures,
-                            );
-                        }
-
-                        let direct_argument = matches!(
-                            argument.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            argument, env, signatures,
-                        );
-                        if signatures.canonical_type(&argument.ty) != Type::I64 || !direct_argument
-                        {
-                            return None;
-                        }
-                        emit_cfg_scalar_expr_direct(argument, env, signatures)
-                    })
-                    .collect()
+                let expected = vec![Type::I64; count];
+                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)
             };
 
             match name {
@@ -49621,10 +49672,14 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let zone =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    let timestamp = &rendered[0];
+                    let zone = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[
@@ -49673,10 +49728,14 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let offset =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    let timestamp = &rendered[0];
+                    let offset = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
@@ -49691,10 +49750,14 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let zone =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    let timestamp = &rendered[0];
+                    let zone = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
@@ -49743,13 +49806,17 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 4 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let start = emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-            let end = emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
+            let rendered = emit_cfg_order_safe_call_arguments_direct(
+                &arguments[..3],
+                &[Type::Str, Type::I64, Type::I64],
+                env,
+                signatures,
+            )?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[3], &[Type::Str], env, signatures)?;
             Some(format!(
-                "flux__str_slice({value}, {start}, {end}, {callback})"
+                "flux__str_slice({}, {}, {}, {callback})",
+                rendered[0], rendered[1], rendered[2]
             ))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -49771,13 +49838,17 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let max_bytes =
-                emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+            let rendered = emit_cfg_order_safe_call_arguments_direct(
+                &arguments[..2],
+                &[Type::Str, Type::I64],
+                env,
+                signatures,
+            )?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[2], &[Type::Str], env, signatures)?;
             Some(format!(
-                "flux__fs_read_text({path}, {max_bytes}, {callback})"
+                "flux__fs_read_text({}, {}, {callback})",
+                rendered[0], rendered[1]
             ))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -49800,17 +49871,22 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "path" && ty == Type::Error => match name.as_str() {
             "join" if arguments.len() == 3 => {
-                let base =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                let child =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[2],
                     &[Type::Str],
                     env,
                     signatures,
                 )?;
-                Some(format!("flux__path_join({base}, {child}, {callback})"))
+                Some(format!(
+                    "flux__path_join({}, {}, {callback})",
+                    rendered[0], rendered[1]
+                ))
             }
             "dirname" | "basename" if arguments.len() == 2 => {
                 let value = emit_cfg_ordinary_call_argument_direct(
@@ -50005,22 +50081,8 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered = if arguments.len() == 1 {
-                vec![emit_cfg_ordinary_call_argument_direct(
-                    &arguments[0],
-                    &expected[0],
-                    env,
-                    signatures,
-                )?]
-            } else {
-                arguments
-                    .iter()
-                    .zip(&expected)
-                    .map(|(argument, expected)| {
-                        emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                    })
-                    .collect::<Option<Vec<_>>>()?
-            };
+            let rendered =
+                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
             Some(format!("{helper}({})", rendered.join(", ")))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -50034,10 +50096,12 @@ fn emit_cfg_scalar_expr_direct(
             }
             match name {
                 "get" if arguments.len() == 3 => {
-                    let key =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                    let fallback =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        &arguments[..2],
+                        &[Type::Str, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
@@ -50045,7 +50109,8 @@ fn emit_cfg_scalar_expr_direct(
                         signatures,
                     )?;
                     Some(format!(
-                        "flux__preferences_get({key}, {fallback}, {callback})"
+                        "flux__preferences_get({}, {}, {callback})",
+                        rendered[0], rendered[1]
                     ))
                 }
                 "set" | "remove" => {
@@ -50057,22 +50122,9 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != expected.len() {
                         return None;
                     }
-                    let rendered = if arguments.len() == 1 {
-                        vec![emit_cfg_ordinary_call_argument_direct(
-                            &arguments[0],
-                            &expected[0],
-                            env,
-                            signatures,
-                        )?]
-                    } else {
-                        arguments
-                            .iter()
-                            .zip(&expected)
-                            .map(|(argument, expected)| {
-                                emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                            })
-                            .collect::<Option<Vec<_>>>()?
-                    };
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments, &expected, env, signatures,
+                    )?;
                     Some(format!("{helper}({})", rendered.join(", ")))
                 }
                 _ => None,
@@ -50515,20 +50567,24 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__focus_{name}({wrap})"))
                 }
                 "nextIn" | "previousIn" if (1..=2).contains(&arguments.len()) => {
-                    let scope = if arguments.len() == 1 {
-                        emit_cfg_ordinary_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
+                    let (scope, wrap) = if arguments.len() == 1 {
+                        (
+                            emit_cfg_ordinary_call_argument_direct(
+                                &arguments[0],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?,
+                            "false".to_string(),
+                        )
+                    } else {
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Bool],
                             env,
                             signatures,
-                        )?
-                    } else {
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?
-                    };
-                    let wrap = if let Some(wrap) = arguments.get(1) {
-                        emit_cfg_call_argument_direct(wrap, &Type::Bool, env, signatures)?
-                    } else {
-                        "false".to_string()
+                        )?;
+                        (rendered[0].clone(), rendered[1].clone())
                     };
                     let runtime_name = if name == "nextIn" {
                         "next_in"
@@ -50580,11 +50636,16 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__text_input_set_caret({position})"))
                 }
                 "setSelection" if ty == Type::Bool && arguments.len() == 2 => {
-                    let start =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let end =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
-                    Some(format!("flux__text_input_set_selection({start}, {end})"))
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__text_input_set_selection({}, {})",
+                        rendered[0], rendered[1]
+                    ))
                 }
                 _ => None,
             }
@@ -50617,25 +50678,8 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let mut rendered = Vec::with_capacity(arguments.len());
-            for (argument, expected) in arguments.iter().zip(expected) {
-                if arguments.len() == 1 {
-                    rendered.push(emit_cfg_ordinary_call_argument_direct(
-                        argument, &expected, env, signatures,
-                    )?);
-                    continue;
-                }
-
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if signatures.canonical_type(&argument.ty) != expected || !direct_argument {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
+            let rendered =
+                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
             Some(format!("{helper}({})", rendered.join(", ")))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -50675,19 +50719,8 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let mut rendered = Vec::with_capacity(arguments.len());
-            for (argument, expected) in arguments.iter().zip(expected) {
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
-
+            let rendered =
+                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
             Some(format!("{helper}({})", rendered.join(", ")))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -60532,6 +60565,10 @@ fn nestedMonthDays(year: i64, offset: i64, month: i64) -> i64 {
     return time.daysInMonth(year + offset, month)
 }
 
+fn callMonthDays(year: i64, month: i64) -> i64 {
+    return time.daysInMonth(timeValue(year), month)
+}
+
 fn seconds(value: i64) -> i64 {
     return time.seconds(value)
 }
@@ -60675,6 +60712,19 @@ fn main() -> i64 {
                     "flux__time_days_in_month(flux_add_i64({}, {}), {})",
                     local_c_name("year"),
                     local_c_name("offset"),
+                    local_c_name("month")
+                ),
+            ),
+            (
+                "callMonthDays",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__time_days_in_month({}({}), {})",
+                    function_c_name("timeValue"),
+                    local_c_name("year"),
                     local_c_name("month")
                 ),
             ),
@@ -60861,6 +60911,7 @@ fn main() -> i64 {
                         | "callFormatUtc"
                         | "callFormatLocal"
                         | "callSleep"
+                        | "callMonthDays"
                 )
             {
                 let fake = Expr {
@@ -61210,6 +61261,10 @@ fn fileWrite(path: str, text: str) -> error {
     return file.write(path, text)
 }
 
+fn fileWriteCall(path: str, text: str) -> error {
+    return file.write(filesystemPath(path), text)
+}
+
 fn fileTruncate(path: str, size: i64) -> error {
     return file.truncate(path, size)
 }
@@ -61245,8 +61300,16 @@ fn fileRead(path: str, maxBytes: i64) -> error {
     return file.read(path, maxBytes, text)
 }
 
+fn fileReadCall(path: str, maxBytes: i64) -> error {
+    return file.read(filesystemPath(path), maxBytes, text)
+}
+
 fn pathJoin(base: str, child: str) -> error {
     return path.join(base, child, text)
+}
+
+fn pathJoinCall(base: str, child: str) -> error {
+    return path.join(filesystemPath(base), child, text)
 }
 
 fn pathDirname(value: str) -> error {
@@ -61311,6 +61374,19 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__fs_write_text({}, {})",
+                    local_c_name("path"),
+                    local_c_name("text")
+                ),
+            ),
+            (
+                "fileWriteCall",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__fs_write_text({}({}), {})",
+                    function_c_name("filesystemPath"),
                     local_c_name("path"),
                     local_c_name("text")
                 ),
@@ -61392,6 +61468,20 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "fileReadCall",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("maxBytes".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__fs_read_text({}({}), {}, {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("path"),
+                    local_c_name("maxBytes"),
+                    function_c_name("text")
+                ),
+            ),
+            (
                 "pathJoin",
                 HashMap::from([
                     ("base".to_string(), Type::Str),
@@ -61399,6 +61489,20 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__path_join({}, {}, {})",
+                    local_c_name("base"),
+                    local_c_name("child"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathJoinCall",
+                HashMap::from([
+                    ("base".to_string(), Type::Str),
+                    ("child".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__path_join({}({}), {}, {})",
+                    function_c_name("filesystemPath"),
                     local_c_name("base"),
                     local_c_name("child"),
                     function_c_name("text")
@@ -64911,6 +65015,22 @@ fn tlsSession(session: i64) -> i64 {
     return session
 }
 
+fn tlsValue(value: str) -> str {
+    return value
+}
+
+fn callWriteSession(session: i64, value: str) -> error {
+    return tls.write(tlsSession(session), value)
+}
+
+fn callWriteValue(session: i64, value: str) -> error {
+    return tls.write(session, tlsValue(value))
+}
+
+fn doubleCallWrite(session: i64, value: str) -> error {
+    return tls.write(tlsSession(session), tlsValue(value))
+}
+
 fn callClose(session: i64) -> error {
     return tls.close(tlsSession(session))
 }
@@ -64932,6 +65052,32 @@ fn main() -> i64 {
                 format!(
                     "flux__tls_write({}, {})",
                     local_c_name("session"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "callWriteSession",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__tls_write({}({}), {})",
+                    function_c_name("tlsSession"),
+                    local_c_name("session"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "callWriteValue",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__tls_write({}, {}({}))",
+                    local_c_name("session"),
+                    function_c_name("tlsValue"),
                     local_c_name("value")
                 ),
             ),
@@ -64989,6 +65135,33 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-tls-call"));
         }
+
+        let graph = database
+            .control_flow_graph("doubleCallWrite")
+            .expect("double-call TLS CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("double-call TLS write should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("double-call TLS write should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("session".to_string(), Type::I64),
+            ("value".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible arguments must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
