@@ -48828,7 +48828,8 @@ fn emit_cfg_scalar_expr_direct(
             {
                 return None;
             }
-            let searched = emit_cfg_call_argument_direct(searched, &element, env, signatures)?;
+            let searched =
+                emit_cfg_ordinary_call_argument_direct(searched, &element, env, signatures)?;
             let element_c = c_type(&element, signatures);
             let equality = match element {
                 Type::Str => format!(
@@ -56371,6 +56372,14 @@ fn containsTake(values: i64[], count: i64, needle: i64) -> bool {
     return contains(take(values, count), needle)
 }
 
+fn makeNeedle(needle: i64) -> i64 {
+    return needle
+}
+
+fn containsCall(values: i64[], needle: i64) -> bool {
+    return contains(values, makeNeedle(needle))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -56447,6 +56456,65 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-contains"));
         }
+
+        let call_graph = database
+            .control_flow_graph("containsCall")
+            .expect("call-valued contains CFG should exist");
+        let call_facts = cfg_rewrite_facts(call_graph);
+        let call_root = call_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "contains"
+                )
+            })
+            .expect("call-valued contains should remain in typed IR");
+        let call_scalar = call_facts
+            .scalar_exprs
+            .get(&source_span_key(call_root.span))
+            .expect("call-valued contains should have scalar typed-IR facts");
+        let CfgScalarExprKind::Call { arguments, .. } = &call_scalar.kind else {
+            panic!("call-valued contains should retain call shape");
+        };
+        assert!(matches!(
+            &arguments[1].kind,
+            CfgScalarExprKind::Call { callee, .. } if callee == "makeNeedle"
+        ));
+        let call_env = HashMap::from([
+            ("values".to_string(), list_ty),
+            ("needle".to_string(), Type::I64),
+        ]);
+        let call_direct =
+            emit_cfg_scalar_expr_direct(call_scalar, &call_env, database.signatures())
+                .expect("direct Copy search values should emit inside contains");
+        assert!(
+            call_direct.contains(&function_c_name("makeNeedle")),
+            "{call_direct}"
+        );
+        assert!(
+            call_direct.contains("flux__typed_contains_value"),
+            "{call_direct}"
+        );
+
+        let fake_call = Expr {
+            line: call_root.span.line,
+            span: call_root.span,
+            kind: ExprKind::Str("checked-ast-call-valued-contains".to_string()),
+        };
+        let call_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_call,
+            &Type::Bool,
+            &call_env,
+            database.signatures(),
+            &HashMap::new(),
+            &call_facts,
+        )
+        .expect("call-valued contains should bypass checked AST");
+        assert_eq!(call_emitted, call_direct);
+        assert!(!call_emitted.contains("checked-ast-call-valued-contains"));
     }
 
     #[test]
