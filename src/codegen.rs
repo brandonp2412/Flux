@@ -61878,6 +61878,120 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn simple_qualified_multi_value_calls_emit_from_typed_ir() {
+        let source = r#"
+fn exercise(path: str, timestamp: i64, zone: str) -> i64 {
+    let (size, _) = file.size(path)
+    let (modified, _) = directory.modified(path)
+    let (offset, _) = time.zoneOffset(timestamp, zone)
+    let (database, _) = sqlite.open(path)
+    return size + modified + offset + database
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("simple qualified multi-value fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("path".to_string(), Type::Str),
+            ("timestamp".to_string(), Type::I64),
+            ("zone".to_string(), Type::Str),
+        ]);
+        let expected = HashMap::from([
+            (
+                ("file".to_string(), "size".to_string()),
+                (
+                    format!("flux__fs_file_size({})", local_c_name("path")),
+                    "flux__fs_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("directory".to_string(), "modified".to_string()),
+                (
+                    format!(
+                        "flux__fs_directory_modified_unix_millis({})",
+                        local_c_name("path")
+                    ),
+                    "flux__fs_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("time".to_string(), "zoneOffset".to_string()),
+                (
+                    format!(
+                        "flux__time_zone_offset({}, {})",
+                        local_c_name("timestamp"),
+                        local_c_name("zone")
+                    ),
+                    "flux__time_i64_error".to_string(),
+                ),
+            ),
+            (
+                ("sqlite".to_string(), "open".to_string()),
+                (
+                    format!("flux__sqlite_open({})", local_c_name("path")),
+                    "flux__sqlite_i64_error".to_string(),
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall {
+                namespace, name, ..
+            } = &root.kind
+            else {
+                unreachable!();
+            };
+            let (expected_code, expected_shape) = expected
+                .get(&(namespace.clone(), name.clone()))
+                .unwrap_or_else(|| {
+                    panic!("unexpected qualified multi-value call: {namespace}.{name}")
+                });
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("qualified multi-value call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported qualified multi-value call should emit directly: {namespace}.{name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, expected_code);
+            assert_eq!(&direct.1, expected_shape);
+            assert_eq!(direct.2, vec![Type::I64, Type::Error]);
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("qualified multi-value call should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -63616,6 +63730,74 @@ fn emit_cfg_multi_expr_direct(
         CfgScalarExprKind::Call { callee, arguments } => emit_call(callee, arguments, None, false),
         CfgScalarExprKind::NamedCall { callee, arguments } => {
             emit_call(callee, &[], Some(arguments), false)
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let i64_error = vec![Type::I64, Type::Error];
+            match namespace.as_str() {
+                "file" | "directory" if arguments.len() == 1 => {
+                    let path =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let helper = match (namespace.as_str(), name) {
+                        ("file", "size") => "flux__fs_file_size",
+                        ("file", "modifiedUnixMillis") => "flux__fs_file_modified_unix_millis",
+                        ("file", "accessed") => "flux__fs_file_accessed_unix_millis",
+                        ("file", "changed") => "flux__fs_file_changed_unix_millis",
+                        ("file", "permissions") => "flux__fs_file_permissions",
+                        ("file", "owner") => "flux__fs_file_owner",
+                        ("file", "group") => "flux__fs_file_group",
+                        ("file", "inode") => "flux__fs_file_inode",
+                        ("file", "device") => "flux__fs_file_device",
+                        ("file", "hardLinks") => "flux__fs_file_hard_links",
+                        ("file", "blockSize") => "flux__fs_file_block_size",
+                        ("file", "allocatedSize") => "flux__fs_file_allocated_size",
+                        ("directory", "modifiedUnixMillis") => {
+                            "flux__fs_directory_modified_unix_millis"
+                        }
+                        ("directory", "accessed") => "flux__fs_directory_accessed_unix_millis",
+                        ("directory", "changed") => "flux__fs_directory_changed_unix_millis",
+                        ("directory", "permissions") => "flux__fs_directory_permissions",
+                        ("directory", "owner") => "flux__fs_directory_owner",
+                        ("directory", "group") => "flux__fs_directory_group",
+                        ("directory", "inode") => "flux__fs_directory_inode",
+                        ("directory", "device") => "flux__fs_directory_device",
+                        ("directory", "hardLinks") => "flux__fs_directory_hard_links",
+                        ("directory", "blockSize") => "flux__fs_directory_block_size",
+                        ("directory", "allocatedSize") => "flux__fs_directory_allocated_size",
+                        _ => return None,
+                    };
+                    Some((
+                        format!("{helper}({path})"),
+                        "flux__fs_i64_error".to_string(),
+                        i64_error,
+                    ))
+                }
+                "time" if name == "zoneOffset" && arguments.len() == 2 => {
+                    let timestamp =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let zone =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    Some((
+                        format!("flux__time_zone_offset({timestamp}, {zone})"),
+                        "flux__time_i64_error".to_string(),
+                        i64_error,
+                    ))
+                }
+                "sqlite" if name == "open" && arguments.len() == 1 => {
+                    let path =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    Some((
+                        format!("flux__sqlite_open({path})"),
+                        "flux__sqlite_i64_error".to_string(),
+                        i64_error,
+                    ))
+                }
+                _ => None,
+            }
         }
         CfgScalarExprKind::Await { value } => match &value.kind {
             CfgScalarExprKind::Call { callee, arguments } => {
