@@ -68047,6 +68047,10 @@ fn text(_value: str) -> void {
 fn bytes(_value: i64[]) -> void {
 }
 
+fn multiI64(value: i64) -> i64 {
+    return value
+}
+
 fn exercise(
     socket: i64,
     session: i64,
@@ -68056,15 +68060,15 @@ fn exercise(
     maxBytes: i64,
     timeout: i64
 ) -> i64 {
-    let (wrapped, _) = tls.wrap(socket, host, certificate)
-    let (listener, _) = tls.listen(socket, certificate, key)
-    let (read, _) = tls.read(session, maxBytes, text)
-    let (timedRead, _, _) = tls.readTimeout(session, maxBytes, timeout, text)
-    let (written, _, _) = tls.writeTimeout(session, host, timeout)
+    let (wrapped, _) = tls.wrap(multiI64(socket), host, certificate)
+    let (listener, _) = tls.listen(multiI64(socket), certificate, key)
+    let (read, _) = tls.read(multiI64(session), maxBytes, text)
+    let (timedRead, _, _) = tls.readTimeout(multiI64(session), maxBytes, timeout, text)
+    let (written, _, _) = tls.writeTimeout(multiI64(session), host, timeout)
     let (accepted, _) = websocket.accept(socket)
-    let (connected, _) = websocket.connect(socket, host)
-    let (message, _) = websocket.readText(session, maxBytes, text)
-    let (binary, _) = websocket.readBytes(session, maxBytes, bytes)
+    let (connected, _) = websocket.connect(multiI64(socket), host)
+    let (message, _) = websocket.readText(multiI64(session), maxBytes, text)
+    let (binary, _) = websocket.readBytes(multiI64(session), maxBytes, bytes)
     return wrapped + listener + read + timedRead + written + accepted + connected + message + binary
 }
 
@@ -68094,7 +68098,8 @@ fn main() -> i64 {
                 ("tls".to_string(), "wrap".to_string()),
                 (
                     format!(
-                        "flux__tls_wrap({}, {}, {})",
+                        "flux__tls_wrap({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("socket"),
                         local_c_name("host"),
                         local_c_name("certificate")
@@ -68107,7 +68112,8 @@ fn main() -> i64 {
                 ("tls".to_string(), "listen".to_string()),
                 (
                     format!(
-                        "flux__tls_listen({}, {}, {})",
+                        "flux__tls_listen({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("socket"),
                         local_c_name("certificate"),
                         local_c_name("key")
@@ -68120,7 +68126,8 @@ fn main() -> i64 {
                 ("tls".to_string(), "read".to_string()),
                 (
                     format!(
-                        "flux__tls_read({}, {}, {})",
+                        "flux__tls_read({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         function_c_name("text")
@@ -68133,7 +68140,8 @@ fn main() -> i64 {
                 ("tls".to_string(), "readTimeout".to_string()),
                 (
                     format!(
-                        "flux__tls_read_timeout({}, {}, {}, {})",
+                        "flux__tls_read_timeout({}({}), {}, {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         local_c_name("timeout"),
@@ -68147,7 +68155,8 @@ fn main() -> i64 {
                 ("tls".to_string(), "writeTimeout".to_string()),
                 (
                     format!(
-                        "flux__tls_write_timeout({}, {}, {})",
+                        "flux__tls_write_timeout({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("session"),
                         local_c_name("host"),
                         local_c_name("timeout")
@@ -68168,7 +68177,8 @@ fn main() -> i64 {
                 ("websocket".to_string(), "connect".to_string()),
                 (
                     format!(
-                        "flux__websocket_connect({}, {})",
+                        "flux__websocket_connect({}({}), {})",
+                        function_c_name("multiI64"),
                         local_c_name("socket"),
                         local_c_name("host")
                     ),
@@ -68180,7 +68190,8 @@ fn main() -> i64 {
                 ("websocket".to_string(), "readText".to_string()),
                 (
                     format!(
-                        "flux__websocket_read_text({}, {}, {})",
+                        "flux__websocket_read_text({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         function_c_name("text")
@@ -68193,7 +68204,8 @@ fn main() -> i64 {
                 ("websocket".to_string(), "readBytes".to_string()),
                 (
                     format!(
-                        "flux__websocket_read_bytes({}, {}, {})",
+                        "flux__websocket_read_bytes({}({}), {}, {})",
+                        function_c_name("multiI64"),
                         local_c_name("session"),
                         local_c_name("maxBytes"),
                         function_c_name("bytes")
@@ -71385,21 +71397,9 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "tls" => match name {
                     "wrap" | "listen" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let first = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let second = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::Str,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::Str],
                             env,
                             signatures,
                         )?;
@@ -71409,21 +71409,18 @@ fn emit_cfg_multi_expr_direct(
                             "flux__tls_listen"
                         };
                         Some((
-                            format!("{helper}({socket}, {first}, {second})"),
+                            format!(
+                                "{helper}({}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
+                            ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "read" if arguments.len() == 3 => {
-                        let session = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71434,27 +71431,18 @@ fn emit_cfg_multi_expr_direct(
                             signatures,
                         )?;
                         Some((
-                            format!("flux__tls_read({session}, {max_bytes}, {callback})"),
+                            format!(
+                                "flux__tls_read({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "readTimeout" if arguments.len() == 4 => {
-                        let session = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71466,33 +71454,25 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__tls_read_timeout({session}, {max_bytes}, {timeout}, {callback})"
+                                "flux__tls_read_timeout({}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "writeTimeout" if arguments.len() == 3 => {
-                        let session = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let value = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
                         )?;
                         Some((
-                            format!("flux__tls_write_timeout({session}, {value}, {timeout})"),
+                            format!(
+                                "flux__tls_write_timeout({}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
+                            ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
@@ -71514,34 +71494,22 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "connect" if arguments.len() == 2 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            arguments,
+                            &[Type::I64, Type::Str],
                             env,
                             signatures,
                         )?;
                         Some((
-                            format!("flux__websocket_connect({socket}, {host})"),
+                            format!("flux__websocket_connect({}, {})", rendered[0], rendered[1]),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "readText" if arguments.len() == 3 => {
-                        let session = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71553,22 +71521,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__websocket_read_text({session}, {max_bytes}, {callback})"
+                                "flux__websocket_read_text({}, {}, {callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "readBytes" if arguments.len() == 3 => {
-                        let session = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71580,7 +71543,8 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__websocket_read_bytes({session}, {max_bytes}, {callback})"
+                                "flux__websocket_read_bytes({}, {}, {callback})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
