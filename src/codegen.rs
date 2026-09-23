@@ -48991,7 +48991,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let value =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
             let (helper, callback_params) = match name {
                 "parse" | "parseHttp" => (
                     "flux__url_parse_http",
@@ -49026,7 +49027,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let value =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
             let (helper, callback_params) = match name.as_str() {
                 "parse" => (
                     "flux__uri_parse",
@@ -49053,8 +49055,12 @@ fn emit_cfg_scalar_expr_direct(
             let callback_params = [Type::Str];
             match name.as_str() {
                 "sha256" | "sha384" | "sha512" if arguments.len() == 2 => {
-                    let value =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let value = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &callback_params,
@@ -64594,12 +64600,20 @@ fn parsedUrl(_scheme: str, _host: str, _port: i64, _target: str) -> void {
 fn parsedUri(_scheme: str, _authority: str, _path: str, _query: str, _fragment: str) -> void {
 }
 
+fn stringValue(value: str) -> str {
+    return value
+}
+
 fn parseUrl(value: str) -> error {
     return url.parse(value, parsedUrl)
 }
 
 fn encodeUrl(value: str) -> error {
     return url.encode(value, converted)
+}
+
+fn encodeUrlCall(value: str) -> error {
+    return url.encode(stringValue(value), converted)
 }
 
 fn queryUrl(value: str) -> error {
@@ -64614,8 +64628,16 @@ fn normalizeUri(value: str) -> error {
     return uri.normalize(value, converted)
 }
 
+fn normalizeUriCall(value: str) -> error {
+    return uri.normalize(stringValue(value), converted)
+}
+
 fn hash(value: str) -> error {
     return crypto.sha256(value, converted)
+}
+
+fn hashCall(value: str) -> error {
+    return crypto.sha256(stringValue(value), converted)
 }
 
 fn hmac(key: str, value: str) -> error {
@@ -64649,6 +64671,16 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "encodeUrlCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__url_encode_component({}({}), {})",
+                    function_c_name("stringValue"),
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
                 "queryUrl",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!(
@@ -64676,10 +64708,30 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "normalizeUriCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__uri_normalize({}({}), {})",
+                    function_c_name("stringValue"),
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
                 "hash",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!(
                     "flux__crypto_sha256({}, {})",
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
+                "hashCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__crypto_sha256({}({}), {})",
+                    function_c_name("stringValue"),
                     local_c_name("value"),
                     function_c_name("converted")
                 ),
