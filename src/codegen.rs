@@ -49336,16 +49336,15 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__net_send_text_parts({socket}, {parts})"))
                 }
                 "sendTextTo" if arguments.len() == 4 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let host =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    let port =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
-                    let text =
-                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        arguments,
+                        &[Type::I64, Type::Str, Type::I64, Type::Str],
+                        env,
+                        signatures,
+                    )?;
                     Some(format!(
-                        "flux__net_send_text_to({socket}, {host}, {port}, {text})"
+                        "flux__net_send_text_to({}, {}, {}, {})",
+                        rendered[0], rendered[1], rendered[2], rendered[3]
                     ))
                 }
                 "sendTextToParts" if arguments.len() == 4 => {
@@ -64527,6 +64526,18 @@ fn networkSocket(socket: i64) -> i64 {
     return socket
 }
 
+fn networkText(value: str) -> str {
+    return value
+}
+
+fn callSendTextTo(socket: i64, host: str, port: i64, text: str) -> error {
+    return net.sendTextTo(networkSocket(socket), host, port, text)
+}
+
+fn doubleCallSendTextTo(socket: i64, host: str, port: i64, text: str) -> error {
+    return net.sendTextTo(networkSocket(socket), host, port, networkText(text))
+}
+
 fn callPeer(socket: i64) -> error {
     return net.peer(networkSocket(socket), address)
 }
@@ -64623,6 +64634,23 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__net_send_text_to({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("host"),
+                    local_c_name("port"),
+                    local_c_name("text")
+                ),
+            ),
+            (
+                "callSendTextTo",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("host".to_string(), Type::Str),
+                    ("port".to_string(), Type::I64),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__net_send_text_to({}({}), {}, {}, {})",
+                    function_c_name("networkSocket"),
                     local_c_name("socket"),
                     local_c_name("host"),
                     local_c_name("port"),
@@ -64745,6 +64773,35 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-network-call"));
         }
+
+        let graph = database
+            .control_flow_graph("doubleCallSendTextTo")
+            .expect("two-call UDP text CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call UDP text send should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call UDP text send should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+            ("text".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible UDP text arguments must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
