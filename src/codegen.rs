@@ -49298,8 +49298,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("{helper}({socket}, {enabled})"))
                 }
                 "shutdownRead" | "shutdownWrite" | "close" if arguments.len() == 1 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let socket = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let helper = match name {
                         "shutdownRead" => "flux__net_shutdown_read",
                         "shutdownWrite" => "flux__net_shutdown_write",
@@ -49376,8 +49380,12 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "close" if arguments.len() == 1 => {
-                    let database =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let database = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     Some(format!("flux__sqlite_close({database})"))
                 }
                 "execute" if arguments.len() == 2 => {
@@ -63395,6 +63403,14 @@ fn close(database: i64) -> error {
     return sqlite.close(database)
 }
 
+fn sqliteHandle(database: i64) -> i64 {
+    return database
+}
+
+fn callClose(database: i64) -> error {
+    return sqlite.close(sqliteHandle(database))
+}
+
 fn execute(database: i64, sql: str) -> error {
     return sqlite.execute(database, sql)
 }
@@ -63411,6 +63427,15 @@ fn main() -> i64 {
                 "close",
                 HashMap::from([("database".to_string(), Type::I64)]),
                 format!("flux__sqlite_close({})", local_c_name("database")),
+            ),
+            (
+                "callClose",
+                HashMap::from([("database".to_string(), Type::I64)]),
+                format!(
+                    "flux__sqlite_close({}({}))",
+                    function_c_name("sqliteHandle"),
+                    local_c_name("database")
+                ),
             ),
             (
                 "execute",
@@ -63681,6 +63706,14 @@ fn close(socket: i64) -> error {
     return net.close(socket)
 }
 
+fn networkSocket(socket: i64) -> i64 {
+    return socket
+}
+
+fn callClose(socket: i64) -> error {
+    return net.close(networkSocket(socket))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -63817,6 +63850,15 @@ fn main() -> i64 {
                 "close",
                 HashMap::from([("socket".to_string(), Type::I64)]),
                 format!("flux__net_close({})", local_c_name("socket")),
+            ),
+            (
+                "callClose",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_close({}({}))",
+                    function_c_name("networkSocket"),
+                    local_c_name("socket")
+                ),
             ),
         ] {
             let graph = database
