@@ -50343,8 +50343,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__frame_request({callback})"))
                 }
                 "timeline" if arguments.len() == 2 => {
-                    let duration =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let duration = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::I64],
@@ -50651,7 +50655,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+            let value =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
             Some(format!("{helper}({value}, {callback})"))
@@ -61481,6 +61486,14 @@ fn frameTimeline(duration: i64) -> void {
     frame.timeline(duration, progress)
 }
 
+fn frameDuration(duration: i64) -> i64 {
+    return duration
+}
+
+fn frameTimelineCall(duration: i64) -> void {
+    frame.timeline(frameDuration(duration), progress)
+}
+
 fn clipboardRead() -> void {
     clipboard.read(text)
 }
@@ -61519,6 +61532,16 @@ fn main() -> i64 {
                 HashMap::from([("duration".to_string(), Type::I64)]),
                 format!(
                     "flux__frame_timeline({}, {})",
+                    local_c_name("duration"),
+                    function_c_name("progress")
+                ),
+            ),
+            (
+                "frameTimelineCall",
+                HashMap::from([("duration".to_string(), Type::I64)]),
+                format!(
+                    "flux__frame_timeline({}({}), {})",
+                    function_c_name("frameDuration"),
                     local_c_name("duration"),
                     function_c_name("progress")
                 ),
@@ -65301,6 +65324,25 @@ fn plural(key: str, count: i64, offset: i64, fallback: str) -> str {
     return locale.plural(key, count + offset, fallback)
 }
 
+fn localeValue(value: i64) -> i64 {
+    return value
+}
+
+fn formatted(_value: str) -> void {
+}
+
+fn callFormatNumber(value: i64) -> error {
+    return locale.formatNumber(localeValue(value), formatted)
+}
+
+fn callFormatDateTime(value: i64) -> error {
+    return locale.formatDateTime(localeValue(value), formatted)
+}
+
+fn callFormatCurrency(value: i64) -> error {
+    return locale.formatCurrency(localeValue(value), formatted)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65361,6 +65403,36 @@ fn main() -> i64 {
                     local_c_name("fallback")
                 ),
             ),
+            (
+                "callFormatNumber",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__locale_format_number({}({}), {})",
+                    function_c_name("localeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "callFormatDateTime",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__locale_format_date_time({}({}), {})",
+                    function_c_name("localeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "callFormatCurrency",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__locale_format_currency({}({}), {})",
+                    function_c_name("localeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -65383,6 +65455,24 @@ fn main() -> i64 {
             let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
                 .unwrap_or_else(|| panic!("supported scalar locale call should emit directly from typed IR: {function}: {scalar:?}"));
             assert_eq!(direct, expected, "{function}");
+            if function.starts_with("callFormat") {
+                let fake = Expr {
+                    line: root.span.line,
+                    span: root.span,
+                    kind: ExprKind::Str("checked-ast-locale-format-call".to_string()),
+                };
+                let emitted = emit_expr_for_expected_with_cfg_proofs(
+                    &fake,
+                    &Type::Error,
+                    &env,
+                    database.signatures(),
+                    &HashMap::new(),
+                    &facts,
+                )
+                .expect("locale formatter call should bypass the checked-AST root");
+                assert_eq!(emitted, direct, "{function}");
+                assert!(!emitted.contains("checked-ast-locale-format-call"));
+            }
         }
 
         let callback_ty = Type::Function {
