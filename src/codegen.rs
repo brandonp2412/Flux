@@ -69261,6 +69261,10 @@ fn main() -> i64 {
     #[test]
     fn network_named_readiness_multi_values_emit_from_typed_ir() {
         let source = r#"
+fn networkI64(value: i64) -> i64 {
+    return value
+}
+
 fn ready(_socket: i64) -> void {
 }
 
@@ -69268,10 +69272,10 @@ fn state(_socket: i64, _readable: bool, _writable: bool) -> void {
 }
 
 fn exercise(sockets: i64[], timeout: i64) -> i64 {
-    let (readable, _) = net.readableMany(sockets, timeout, ready)
-    let (writable, _) = net.writableMany(sockets, timeout, ready)
-    let (combined, _) = net.readyMany(sockets, timeout, state)
-    let (handle, _, _) = net.waitAny(sockets, timeout)
+    let (readable, _) = net.readableMany(sockets, networkI64(timeout), ready)
+    let (writable, _) = net.writableMany(sockets, networkI64(timeout), ready)
+    let (combined, _) = net.readyMany(sockets, networkI64(timeout), state)
+    let (handle, _, _) = net.waitAny(sockets, networkI64(timeout))
     return readable + writable + combined + handle
 }
 
@@ -69289,6 +69293,11 @@ fn main() -> i64 {
             ("sockets".to_string(), Type::List(Box::new(Type::I64))),
             ("timeout".to_string(), Type::I64),
         ]);
+        let computed_timeout = format!(
+            "{}({})",
+            function_c_name("networkI64"),
+            local_c_name("timeout")
+        );
         let expected = HashMap::from([
             (
                 "readableMany".to_string(),
@@ -69296,7 +69305,7 @@ fn main() -> i64 {
                     format!(
                         "flux__net_wait_readable_many({}, {}, {})",
                         local_c_name("sockets"),
-                        local_c_name("timeout"),
+                        computed_timeout,
                         function_c_name("ready")
                     ),
                     "flux__net_i64_error".to_string(),
@@ -69309,7 +69318,7 @@ fn main() -> i64 {
                     format!(
                         "flux__net_wait_writable_many({}, {}, {})",
                         local_c_name("sockets"),
-                        local_c_name("timeout"),
+                        computed_timeout,
                         function_c_name("ready")
                     ),
                     "flux__net_i64_error".to_string(),
@@ -69322,7 +69331,7 @@ fn main() -> i64 {
                     format!(
                         "flux__net_wait_ready_many({}, {}, {})",
                         local_c_name("sockets"),
-                        local_c_name("timeout"),
+                        computed_timeout,
                         function_c_name("state")
                     ),
                     "flux__net_i64_error".to_string(),
@@ -69335,7 +69344,7 @@ fn main() -> i64 {
                     format!(
                         "flux__net_wait_any({}, {})",
                         local_c_name("sockets"),
-                        local_c_name("timeout")
+                        computed_timeout
                     ),
                     "flux__net_i64_bool_error".to_string(),
                     vec![Type::I64, Type::Bool, Type::Error],
@@ -72394,18 +72403,16 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "waitReadableMany" | "waitWritableMany" if arguments.len() == 3 => {
-                        let sockets = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[1].clone()];
+                        let (rendered, sockets) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64],
+                                &arguments[0],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64],
@@ -72418,24 +72425,22 @@ fn emit_cfg_multi_expr_direct(
                             "flux__net_wait_writable_many"
                         };
                         Some((
-                            format!("{helper}({sockets}, {timeout}, {callback})"),
+                            format!("{helper}({sockets}, {}, {callback})", rendered[0]),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "waitReadyMany" if arguments.len() == 3 => {
-                        let sockets = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[1].clone()];
+                        let (rendered, sockets) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64],
+                                &arguments[0],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Bool, Type::Bool],
@@ -72443,26 +72448,27 @@ fn emit_cfg_multi_expr_direct(
                             signatures,
                         )?;
                         Some((
-                            format!("flux__net_wait_ready_many({sockets}, {timeout}, {callback})"),
+                            format!(
+                                "flux__net_wait_ready_many({sockets}, {}, {callback})",
+                                rendered[0]
+                            ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "waitAny" if arguments.len() == 2 => {
-                        let sockets = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[1].clone()];
+                        let (rendered, sockets) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64],
+                                &arguments[0],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
-                            format!("flux__net_wait_any({sockets}, {timeout})"),
+                            format!("flux__net_wait_any({sockets}, {})", rendered[0]),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
