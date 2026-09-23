@@ -50204,6 +50204,7 @@ fn emit_cfg_scalar_expr_direct(
                         | CfgScalarExprKind::NamedCall { .. }
                         | CfgScalarExprKind::QualifiedCall { .. }
                         | CfgScalarExprKind::Field { .. }
+                        | CfgScalarExprKind::Index { .. }
                 ) && signatures.is_copy_type(&value_ty);
                 let value = if direct_aggregate {
                     emit_cfg_scalar_expr_direct(value, env, signatures)?
@@ -61427,6 +61428,128 @@ fn main() -> i64 {
             .expect("Copy aggregate field-projection JSON should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-aggregate-field"));
+        }
+    }
+
+    #[test]
+    fn json_copy_aggregate_indexes_emit_from_typed_ir() {
+        let source = r#"
+struct JsonIndexedUser {
+    name: str
+    age: i64
+}
+fn jsonIndexedText(_value: str) -> void {
+}
+fn encodeListIndex(users: JsonIndexedUser[], index: i64) -> error {
+    return json.encode(users[index], jsonIndexedText)
+}
+fn encodeLiteralListIndex(value: i64) -> error {
+    return json.encode([JsonIndexedUser { name: "Flux", age: value }][0], jsonIndexedText)
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("Copy aggregate index JSON fixture should typecheck");
+
+        for function in ["encodeListIndex", "encodeLiteralListIndex"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("Copy aggregate index JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json" && name == "encode"
+                    )
+                })
+                .expect("Copy aggregate index JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("Copy aggregate index JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("Copy aggregate index JSON root should preserve qualified facts");
+            };
+            let value = &arguments[0];
+            assert!(
+                matches!(
+                    &value.kind,
+                    CfgScalarExprKind::Index {
+                        optional: false,
+                        ..
+                    }
+                ),
+                "{function}: {value:?}"
+            );
+            let value_ty = database.signatures().canonical_type(&value.ty);
+            let helper = match &value_ty {
+                Type::Optional(inner) => {
+                    assert!(json_record_supported(inner, database.signatures()));
+                    json_optional_aggregate_helper_name(&value_ty, database.signatures())
+                }
+                ty => {
+                    assert!(json_record_supported(ty, database.signatures()));
+                    json_record_helper_name(ty, database.signatures())
+                }
+            };
+            let env = if function == "encodeListIndex" {
+                HashMap::from([
+                    (
+                        "users".to_string(),
+                        Type::List(Box::new(Type::Named("JsonIndexedUser".to_string()))),
+                    ),
+                    ("index".to_string(), Type::I64),
+                ])
+            } else {
+                HashMap::from([("value".to_string(), Type::I64)])
+            };
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("Copy aggregate index JSON should emit: {function}"));
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            if function == "encodeListIndex" {
+                assert!(
+                    direct.contains(&local_c_name("users")),
+                    "{function}: {direct}"
+                );
+            } else {
+                assert!(
+                    direct.contains(&local_c_name("value")),
+                    "{function}: {direct}"
+                );
+            }
+            assert!(
+                direct.contains(&function_c_name("jsonIndexedText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-aggregate-index".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("Copy aggregate index JSON should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-aggregate-index"));
         }
     }
 
