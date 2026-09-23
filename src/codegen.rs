@@ -49808,8 +49808,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__path_join({base}, {child}, {callback})"))
             }
             "dirname" | "basename" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -49822,8 +49826,12 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "extension" | "stem" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -49836,8 +49844,12 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "normalize" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -61128,8 +61140,28 @@ fn pathJoin(base: str, child: str) -> error {
     return path.join(base, child, text)
 }
 
+fn pathDirname(value: str) -> error {
+    return path.dirname(value, text)
+}
+
+fn pathDirnameCall(value: str) -> error {
+    return path.dirname(filesystemPath(value), text)
+}
+
+fn pathExtension(value: str) -> error {
+    return path.extension(value, text)
+}
+
+fn pathExtensionCall(value: str) -> error {
+    return path.extension(filesystemPath(value), text)
+}
+
 fn pathNormalize(value: str) -> error {
     return path.normalize(value, text)
+}
+
+fn pathNormalizeCall(value: str) -> error {
+    return path.normalize(filesystemPath(value), text)
 }
 
 fn directoryList(path: str) -> error {
@@ -61260,10 +61292,58 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "pathDirname",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_component({}, false, {})",
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathDirnameCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_component({}({}), false, {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathExtension",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_extension_or_stem({}, true, {})",
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathExtensionCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_extension_or_stem({}({}), true, {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
                 "pathNormalize",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!(
                     "flux__path_normalize({}, {})",
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathNormalizeCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_normalize({}({}), {})",
+                    function_c_name("filesystemPath"),
                     local_c_name("value"),
                     function_c_name("text")
                 ),
