@@ -49447,6 +49447,15 @@ fn emit_cfg_scalar_expr_direct(
                 arguments
                     .iter()
                     .map(|argument| {
+                        if count == 1 {
+                            return emit_cfg_ordinary_call_argument_direct(
+                                argument,
+                                &Type::I64,
+                                env,
+                                signatures,
+                            );
+                        }
+
                         let direct_argument = matches!(
                             argument.kind,
                             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
@@ -60249,6 +60258,14 @@ fn nestedUtcPart(left: i64, right: i64) -> i64 {
     return time.utcYear(left + right)
 }
 
+fn timeValue(value: i64) -> i64 {
+    return value
+}
+
+fn callUtcPart(value: i64) -> i64 {
+    return time.utcYear(timeValue(value))
+}
+
 fn nestedMonthDays(year: i64, offset: i64, month: i64) -> i64 {
     return time.daysInMonth(year + offset, month)
 }
@@ -60362,6 +60379,15 @@ fn main() -> i64 {
                     "flux__time_utc_part(flux_add_i64({}, {}), 0)",
                     local_c_name("left"),
                     local_c_name("right")
+                ),
+            ),
+            (
+                "callUtcPart",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_utc_part({}({}), 0)",
+                    function_c_name("timeValue"),
+                    local_c_name("value")
                 ),
             ),
             (
@@ -60524,7 +60550,10 @@ fn main() -> i64 {
                 .expect("supported scalar time call should emit directly from typed IR");
             assert_eq!(direct, expected, "{function}");
             if function.starts_with("nested")
-                || matches!(function, "calendar" | "temporaryDurationSleep")
+                || matches!(
+                    function,
+                    "calendar" | "temporaryDurationSleep" | "callUtcPart"
+                )
             {
                 let fake = Expr {
                     line: root.span.line,
