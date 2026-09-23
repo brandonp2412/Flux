@@ -48715,6 +48715,45 @@ fn emit_cfg_boolean_algebra_direct(
     None
 }
 
+fn emit_cfg_double_unary_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Unary { op, operand } = &expr.kind else {
+        return None;
+    };
+    let CfgScalarExprKind::Unary {
+        op: inner_op,
+        operand: inner,
+    } = &operand.kind
+    else {
+        return None;
+    };
+    if op != inner_op {
+        return None;
+    }
+
+    match op {
+        UnaryOp::Not
+            if signatures.canonical_type(&expr.ty) == Type::Bool
+                && signatures.canonical_type(&operand.ty) == Type::Bool
+                && signatures.canonical_type(&inner.ty) == Type::Bool =>
+        {
+            emit_cfg_scalar_expr_direct(inner, env, signatures)
+        }
+        UnaryOp::Neg
+            if signatures.canonical_type(&expr.ty) == Type::I64
+                && signatures.canonical_type(&operand.ty) == Type::I64
+                && signatures.canonical_type(&inner.ty) == Type::I64 =>
+        {
+            let rendered = emit_cfg_scalar_expr_direct(inner, env, signatures)?;
+            Some(format!("(-flux_neg_i64({rendered}))"))
+        }
+        _ => None,
+    }
+}
+
 fn emit_cfg_reused_pure_primitive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -49351,6 +49390,9 @@ fn emit_cfg_scalar_expr_direct(
 ) -> Option<String> {
     let ty = signatures.canonical_type(&expr.ty);
     if let Some(rendered) = emit_cfg_optimized_i64_primitive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_double_unary_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_boolean_algebra_direct(expr, env, signatures) {
@@ -55833,6 +55875,122 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("boolean algebra should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_double_unary_bypasses_checked_ast_roots() {
+        let source = r#"
+fn observeBool(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn observeI64(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn collapseBool(value: bool) -> bool {
+    return !!value
+}
+
+fn collapseBoolEffect(value: bool) -> bool {
+    return !!observeBool(value)
+}
+
+fn collapseI64(value: i64) -> i64 {
+    return -(-value)
+}
+
+fn collapseI64Effect(value: i64) -> i64 {
+    return -(-observeI64(value))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("double-unary fixture should typecheck");
+        let bool_value = local_c_name("value");
+        let i64_value = local_c_name("value");
+        let cases = [
+            (
+                "collapseBool",
+                UnaryOp::Not,
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                bool_value.clone(),
+            ),
+            (
+                "collapseBoolEffect",
+                UnaryOp::Not,
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!("flux__fn_observeBool({bool_value})"),
+            ),
+            (
+                "collapseI64",
+                UnaryOp::Neg,
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(-flux_neg_i64({i64_value}))"),
+            ),
+            (
+                "collapseI64Effect",
+                UnaryOp::Neg,
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(-flux_neg_i64(flux__fn_observeI64({i64_value})))"),
+            ),
+        ];
+
+        for (function, root_op, expected_ty, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("double-unary CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Unary { op, .. } if op == root_op
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("double-unary root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("double-unary root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                expected_ty,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("double-unary expression should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-double-unary".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("double-unary expression should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
