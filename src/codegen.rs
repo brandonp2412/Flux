@@ -49708,15 +49708,7 @@ fn emit_cfg_scalar_expr_direct(
             let [value] = arguments.as_slice() else {
                 return None;
             };
-            if signatures.canonical_type(&value.ty) != Type::Str
-                || !matches!(
-                    value.kind,
-                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                )
-            {
-                return None;
-            }
-            let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+            let value = emit_cfg_ordinary_call_argument_direct(value, &Type::Str, env, signatures)?;
             Some(format!("flux__str_length({value})"))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -60587,6 +60579,14 @@ fn stringLength(value: str) -> i64 {
     return str.length(value)
 }
 
+fn echo(value: str) -> str {
+    return value
+}
+
+fn callStringLength(value: str) -> i64 {
+    return str.length(echo(value))
+}
+
 fn pid() -> i64 {
     return process.pid()
 }
@@ -60635,6 +60635,15 @@ fn main() -> i64 {
                 "stringLength",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!("flux__str_length({})", local_c_name("value")),
+            ),
+            (
+                "callStringLength",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__str_length({}({}))",
+                    function_c_name("echo"),
+                    local_c_name("value")
+                ),
             ),
             ("pid", HashMap::new(), "flux__process_pid()".to_string()),
             (
