@@ -49845,18 +49845,26 @@ fn emit_cfg_scalar_expr_direct(
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
-                let expected = match parameter.ty {
-                    crate::linux_bindings::LinuxBindingType::Str => Type::Str,
-                    crate::linux_bindings::LinuxBindingType::StrCallback => return None,
-                };
-                if !matches!(
-                    argument.kind,
-                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                ) || signatures.canonical_type(&argument.ty) != expected
-                {
-                    return None;
+                match parameter.ty {
+                    crate::linux_bindings::LinuxBindingType::Str => {
+                        if !matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || signatures.canonical_type(&argument.ty) != Type::Str
+                        {
+                            return None;
+                        }
+                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                    }
+                    crate::linux_bindings::LinuxBindingType::StrCallback => {
+                        rendered.push(emit_cfg_callback_argument_direct(
+                            argument,
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?);
+                    }
                 }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
             }
 
             Some(format!(
@@ -49891,20 +49899,36 @@ fn emit_cfg_scalar_expr_direct(
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
-                let expected = match parameter.ty {
-                    crate::windows_bindings::WindowsBindingType::I64 => Type::I64,
-                    crate::windows_bindings::WindowsBindingType::Str => Type::Str,
-                    crate::windows_bindings::WindowsBindingType::StrCallback => return None,
-                };
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
-                    return None;
+                match parameter.ty {
+                    crate::windows_bindings::WindowsBindingType::StrCallback => {
+                        rendered.push(emit_cfg_callback_argument_direct(
+                            argument,
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?);
+                    }
+                    crate::windows_bindings::WindowsBindingType::I64
+                    | crate::windows_bindings::WindowsBindingType::Str => {
+                        let expected = match parameter.ty {
+                            crate::windows_bindings::WindowsBindingType::I64 => Type::I64,
+                            crate::windows_bindings::WindowsBindingType::Str => Type::Str,
+                            crate::windows_bindings::WindowsBindingType::StrCallback => {
+                                unreachable!()
+                            }
+                        };
+                        let direct_argument = matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            argument, env, signatures,
+                        );
+                        if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                            return None;
+                        }
+                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                    }
                 }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
             }
 
             Some(format!(
@@ -49931,21 +49955,38 @@ fn emit_cfg_scalar_expr_direct(
 
             let mut rendered = Vec::with_capacity(arguments.len());
             for (argument, parameter) in arguments.iter().zip(binding.params) {
-                let expected = match parameter.ty {
-                    crate::android_bindings::AndroidBindingType::I64 => Type::I64,
-                    crate::android_bindings::AndroidBindingType::Bool => Type::Bool,
-                    crate::android_bindings::AndroidBindingType::Str => Type::Str,
-                    crate::android_bindings::AndroidBindingType::StrCallback => return None,
-                };
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
-                    return None;
+                match parameter.ty {
+                    crate::android_bindings::AndroidBindingType::StrCallback => {
+                        rendered.push(emit_cfg_callback_argument_direct(
+                            argument,
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?);
+                    }
+                    crate::android_bindings::AndroidBindingType::I64
+                    | crate::android_bindings::AndroidBindingType::Bool
+                    | crate::android_bindings::AndroidBindingType::Str => {
+                        let expected = match parameter.ty {
+                            crate::android_bindings::AndroidBindingType::I64 => Type::I64,
+                            crate::android_bindings::AndroidBindingType::Bool => Type::Bool,
+                            crate::android_bindings::AndroidBindingType::Str => Type::Str,
+                            crate::android_bindings::AndroidBindingType::StrCallback => {
+                                unreachable!()
+                            }
+                        };
+                        let direct_argument = matches!(
+                            argument.kind,
+                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+                        ) || cfg_scalar_expr_is_direct_primitive_tree(
+                            argument, env, signatures,
+                        );
+                        if !direct_argument || signatures.canonical_type(&argument.ty) != expected {
+                            return None;
+                        }
+                        rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
+                    }
                 }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
             }
 
             Some(format!("{runtime_symbol}({})", rendered.join(", ")))
@@ -60868,14 +60909,15 @@ fn main() -> i64 {
                 }],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &callback_call,
-                &HashMap::from([("callback".to_string(), callback_ty.clone())]),
-                database.signatures(),
-            )
-            .is_none(),
-            "callback-based Android calls should retain their established lowering path"
+        let callback_direct = emit_cfg_scalar_expr_direct(
+            &callback_call,
+            &HashMap::from([("callback".to_string(), callback_ty.clone())]),
+            database.signatures(),
+        )
+        .expect("callback-based Android call should emit directly from typed IR");
+        assert_eq!(
+            callback_direct,
+            format!("flux__android_camera({})", local_c_name("callback"))
         );
 
         let effect_call = CfgScalarExpr {
@@ -60911,14 +60953,15 @@ fn main() -> i64 {
                 }],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &callback_effect_call,
-                &HashMap::from([("callback".to_string(), callback_ty)]),
-                database.signatures(),
-            )
-            .is_none(),
-            "callback-based Android void calls should retain their established lowering path"
+        let callback_effect_direct = emit_cfg_scalar_expr_direct(
+            &callback_effect_call,
+            &HashMap::from([("callback".to_string(), callback_ty)]),
+            database.signatures(),
+        )
+        .expect("callback-based Android void call should emit directly from typed IR");
+        assert_eq!(
+            callback_effect_direct,
+            format!("flux__android_pick_file({})", local_c_name("callback"))
         );
     }
 
@@ -61003,17 +61046,22 @@ fn main() -> i64 {
                 ],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &unsupported,
-                &HashMap::from([
-                    ("key".to_string(), Type::Str),
-                    ("callback".to_string(), callback_ty),
-                ]),
-                database.signatures(),
+        let direct = emit_cfg_scalar_expr_direct(
+            &unsupported,
+            &HashMap::from([
+                ("key".to_string(), Type::Str),
+                ("callback".to_string(), callback_ty),
+            ]),
+            database.signatures(),
+        )
+        .expect("callback-based Linux calls should emit directly from typed IR");
+        assert_eq!(
+            direct,
+            format!(
+                "flux__linux_secure_read({}, {})",
+                local_c_name("key"),
+                local_c_name("callback")
             )
-            .is_none(),
-            "callback-based Linux calls should retain their established lowering path"
         );
     }
 
@@ -61157,23 +61205,28 @@ fn main() -> i64 {
                 ],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &unsupported,
-                &HashMap::from([
-                    ("key".to_string(), Type::Str),
-                    (
-                        "callback".to_string(),
-                        Type::Function {
-                            params: vec![Type::Str],
-                            returns: Vec::new(),
-                        },
-                    ),
-                ]),
-                database.signatures(),
+        let direct = emit_cfg_scalar_expr_direct(
+            &unsupported,
+            &HashMap::from([
+                ("key".to_string(), Type::Str),
+                (
+                    "callback".to_string(),
+                    Type::Function {
+                        params: vec![Type::Str],
+                        returns: Vec::new(),
+                    },
+                ),
+            ]),
+            database.signatures(),
+        )
+        .expect("callback-based Windows calls should emit directly from typed IR");
+        assert_eq!(
+            direct,
+            format!(
+                "flux__windows_secure_read({}, {})",
+                local_c_name("key"),
+                local_c_name("callback")
             )
-            .is_none(),
-            "callback-based Windows calls should retain their established lowering path"
         );
     }
 
