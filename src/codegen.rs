@@ -61856,18 +61856,24 @@ fn main() -> i64 {
         let env = HashMap::from([("value".to_string(), Type::I64)]);
 
         for root in roots {
-            assert!(facts.multi_exprs.contains_key(&source_span_key(root.span)));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("multi-value call should have direct typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .expect("ordinary multi-value call should emit directly from typed IR");
+            assert!(direct.0.contains(&function_c_name("pair")));
+            assert_eq!(direct.1, multi_return_struct_name("pair"));
+            assert_eq!(direct.2, vec![Type::I64, Type::Bool]);
+
             let fake = Expr {
                 line: root.span.line,
                 span: root.span,
                 kind: ExprKind::Bool(false),
             };
-            let (code, shape, returns) =
-                emit_multi_expr(&fake, &env, database.signatures(), &facts)
-                    .expect("multi-value call should emit from typed IR");
-            assert!(code.contains(&function_c_name("pair")));
-            assert_eq!(shape, multi_return_struct_name("pair"));
-            assert_eq!(returns, vec![Type::I64, Type::Bool]);
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("multi-value call should emit from typed IR");
+            assert_eq!(emitted, direct);
         }
     }
 
@@ -61901,23 +61907,26 @@ async fn main() -> i64 {
             })
             .expect("typed IR should retain the multi-value await root");
         let facts = cfg_rewrite_facts(graph);
-        assert!(facts.multi_exprs.contains_key(&source_span_key(root.span)));
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("multi-value await should have direct typed-IR facts");
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("ordinary multi-value await should emit directly from typed IR");
+        assert!(direct.0.contains(&async_await_c_name("pair")));
+        assert!(direct.0.contains(&async_start_c_name("pair")));
+        assert_eq!(direct.1, multi_return_struct_name("pair"));
+        assert_eq!(direct.2, vec![Type::I64, Type::Bool]);
+
         let fake = Expr {
             line: root.span.line,
             span: root.span,
             kind: ExprKind::Bool(false),
         };
-        let (code, shape, returns) = emit_multi_expr(
-            &fake,
-            &HashMap::from([("value".to_string(), Type::I64)]),
-            database.signatures(),
-            &facts,
-        )
-        .expect("multi-value await should emit from typed IR");
-        assert!(code.contains(&async_await_c_name("pair")));
-        assert!(code.contains(&async_start_c_name("pair")));
-        assert_eq!(shape, multi_return_struct_name("pair"));
-        assert_eq!(returns, vec![Type::I64, Type::Bool]);
+        let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+            .expect("multi-value await should emit from typed IR");
+        assert_eq!(emitted, direct);
     }
 
     #[test]
@@ -63561,17 +63570,80 @@ fn emit_call_arguments(
     Ok(rendered)
 }
 
+fn emit_cfg_multi_expr_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, String, Vec<Type>)> {
+    let emit_call = |callee: &str,
+                     arguments: &[CfgScalarExpr],
+                     named_arguments: Option<&[(Option<String>, CfgScalarExpr)]>,
+                     asynchronous: bool|
+     -> Option<(String, String, Vec<Type>)> {
+        if env.contains_key(callee) {
+            return None;
+        }
+        let signature = signatures.get(callee)?;
+        if signature.asynchronous != asynchronous || signature.returns.len() < 2 {
+            return None;
+        }
+        let rendered = match named_arguments {
+            Some(arguments) => {
+                emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?
+            }
+            None => {
+                emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?
+            }
+        };
+        let code = if asynchronous {
+            format!(
+                "{}({}({}))",
+                async_await_c_name(callee),
+                async_start_c_name(callee),
+                rendered.join(", ")
+            )
+        } else {
+            format!("{}({})", function_c_name(callee), rendered.join(", "))
+        };
+        Some((
+            code,
+            multi_return_struct_name(callee),
+            signature.returns.clone(),
+        ))
+    };
+
+    match &expr.kind {
+        CfgScalarExprKind::Call { callee, arguments } => emit_call(callee, arguments, None, false),
+        CfgScalarExprKind::NamedCall { callee, arguments } => {
+            emit_call(callee, &[], Some(arguments), false)
+        }
+        CfgScalarExprKind::Await { value } => match &value.kind {
+            CfgScalarExprKind::Call { callee, arguments } => {
+                emit_call(callee, arguments, None, true)
+            }
+            CfgScalarExprKind::NamedCall { callee, arguments } => {
+                emit_call(callee, &[], Some(arguments), true)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn emit_multi_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
-    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span))
-        && cfg_scalar_expr_calls_are_reconstructable(multi, env, signatures)
-    {
-        let reconstructed = cfg_scalar_expr_as_ast(multi);
-        return emit_multi_expr_from_ast(&reconstructed, env, signatures, rewrite_facts);
+    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span)) {
+        if let Some(direct) = emit_cfg_multi_expr_direct(multi, env, signatures) {
+            return Ok(direct);
+        }
+        if cfg_scalar_expr_calls_are_reconstructable(multi, env, signatures) {
+            let reconstructed = cfg_scalar_expr_as_ast(multi);
+            return emit_multi_expr_from_ast(&reconstructed, env, signatures, rewrite_facts);
+        }
     }
 
     // Keep the checked-AST fallback for values whose normalized call shape
