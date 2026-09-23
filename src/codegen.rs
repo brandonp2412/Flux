@@ -48699,6 +48699,28 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "sqlite" && ty == Type::Error => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "close" if arguments.len() == 1 => {
+                    let database =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    Some(format!("flux__sqlite_close({database})"))
+                }
+                "execute" if arguments.len() == 2 => {
+                    let database =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let sql =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    Some(format!("flux__sqlite_execute({database}, {sql})"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "worker" => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
@@ -58805,6 +58827,84 @@ fn main() -> i64 {
             .expect("focus qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-focus-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_sqlite_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn close(database: i64) -> error {
+    return sqlite.close(database)
+}
+
+fn execute(database: i64, sql: str) -> error {
+    return sqlite.execute(database, sql)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct SQLite qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "close",
+                HashMap::from([("database".to_string(), Type::I64)]),
+                format!("flux__sqlite_close({})", local_c_name("database")),
+            ),
+            (
+                "execute",
+                HashMap::from([
+                    ("database".to_string(), Type::I64),
+                    ("sql".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__sqlite_execute({}, {})",
+                    local_c_name("database"),
+                    local_c_name("sql")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("SQLite qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("SQLite qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("SQLite qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported SQLite call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-sqlite-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("SQLite qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-sqlite-call"));
         }
     }
 
