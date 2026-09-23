@@ -48518,6 +48518,42 @@ fn emit_cfg_borrowed_list_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+    scalar_arguments: &[CfgScalarExpr],
+    expected_scalars: &[Type],
+    borrowed_argument: &CfgScalarExpr,
+    borrowed_element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(Vec<String>, String)> {
+    let borrowed = emit_cfg_borrowed_list_argument_direct(
+        borrowed_argument,
+        borrowed_element,
+        env,
+        signatures,
+    )?;
+    let rendered_scalars = if cfg_scalar_expr_is_aggregate_reorder_safe(borrowed_argument) {
+        emit_cfg_order_safe_call_arguments_direct(
+            scalar_arguments,
+            expected_scalars,
+            env,
+            signatures,
+        )?
+    } else {
+        if scalar_arguments.len() != expected_scalars.len() {
+            return None;
+        }
+        scalar_arguments
+            .iter()
+            .zip(expected_scalars)
+            .map(|(argument, expected)| {
+                emit_cfg_call_argument_direct(argument, expected, env, signatures)
+            })
+            .collect::<Option<Vec<_>>>()?
+    };
+    Some((rendered_scalars, borrowed))
+}
+
 fn emit_cfg_callback_argument_direct(
     argument: &CfgScalarExpr,
     params: &[Type],
@@ -49325,15 +49361,19 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 "sendTextParts" if arguments.len() == 2 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let parts = emit_cfg_borrowed_list_argument_direct(
-                        &arguments[1],
-                        &Type::Str,
-                        env,
-                        signatures,
-                    )?;
-                    Some(format!("flux__net_send_text_parts({socket}, {parts})"))
+                    let (rendered, parts) =
+                        emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                            &arguments[..1],
+                            &[Type::I64],
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                    Some(format!(
+                        "flux__net_send_text_parts({}, {parts})",
+                        rendered[0]
+                    ))
                 }
                 "sendTextTo" if arguments.len() == 4 => {
                     let rendered = emit_cfg_order_safe_call_arguments_direct(
@@ -49348,20 +49388,18 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 "sendTextToParts" if arguments.len() == 4 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                    let host =
-                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-                    let port =
-                        emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
-                    let parts = emit_cfg_borrowed_list_argument_direct(
-                        &arguments[3],
-                        &Type::Str,
-                        env,
-                        signatures,
-                    )?;
+                    let (rendered, parts) =
+                        emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::Str, Type::I64],
+                            &arguments[3],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
                     Some(format!(
-                        "flux__net_send_text_to_parts({socket}, {host}, {port}, {parts})"
+                        "flux__net_send_text_to_parts({}, {}, {}, {parts})",
+                        rendered[0], rendered[1], rendered[2]
                     ))
                 }
                 "peerAddress" | "localAddress" if arguments.len() == 2 => {
@@ -49437,15 +49475,19 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "writeBytes" if arguments.len() == 2 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
-                let bytes = emit_cfg_borrowed_list_argument_direct(
-                    &arguments[1],
-                    &Type::I64,
-                    env,
-                    signatures,
-                )?;
-                Some(format!("flux__websocket_write_bytes({session}, {bytes})"))
+                let (rendered, bytes) =
+                    emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                        &arguments[..1],
+                        &[Type::I64],
+                        &arguments[1],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
+                Some(format!(
+                    "flux__websocket_write_bytes({}, {bytes})",
+                    rendered[0]
+                ))
             }
             "ping" | "pong" if arguments.len() == 2 => {
                 let rendered = emit_cfg_order_safe_call_arguments_direct(
@@ -64597,6 +64639,10 @@ fn writeBytes(session: i64, bytes: i64[]) -> error {
     return websocket.writeBytes(session, bytes)
 }
 
+fn callWriteBytes(session: i64, bytes: i64[]) -> error {
+    return websocket.writeBytes(websocketSession(session), bytes)
+}
+
 fn ping(session: i64, payload: str) -> error {
     return websocket.ping(session, payload)
 }
@@ -64649,6 +64695,19 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__websocket_write_bytes({}, {})",
+                    local_c_name("session"),
+                    local_c_name("bytes")
+                ),
+            ),
+            (
+                "callWriteBytes",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("bytes".to_string(), Type::List(Box::new(Type::I64))),
+                ]),
+                format!(
+                    "flux__websocket_write_bytes({}({}), {})",
+                    function_c_name("websocketSession"),
                     local_c_name("session"),
                     local_c_name("bytes")
                 ),
@@ -64769,12 +64828,24 @@ fn sendTextParts(socket: i64, parts: str[]) -> error {
     return net.writeParts(socket, parts)
 }
 
+fn callSendTextParts(socket: i64, parts: str[]) -> error {
+    return net.writeParts(networkSocket(socket), parts)
+}
+
 fn sendTextTo(socket: i64, host: str, port: i64, text: str) -> error {
     return net.sendTextTo(socket, host, port, text)
 }
 
 fn sendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error {
     return net.writePartsTo(socket, host, port, parts)
+}
+
+fn callSendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error {
+    return net.writePartsTo(networkSocket(socket), host, port, parts)
+}
+
+fn doubleCallSendTextToParts(socket: i64, host: str, port: i64, parts: str[]) -> error {
+    return net.writePartsTo(networkSocket(socket), networkText(host), port, parts)
 }
 
 fn nonblocking(socket: i64, enabled: bool) -> error {
@@ -64904,6 +64975,19 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callSendTextParts",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("parts".to_string(), Type::List(Box::new(Type::Str))),
+                ]),
+                format!(
+                    "flux__net_send_text_parts({}({}), {})",
+                    function_c_name("networkSocket"),
+                    local_c_name("socket"),
+                    local_c_name("parts")
+                ),
+            ),
+            (
                 "sendTextTo",
                 HashMap::from([
                     ("socket".to_string(), Type::I64),
@@ -64946,6 +65030,23 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__net_send_text_to_parts({}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("host"),
+                    local_c_name("port"),
+                    local_c_name("parts")
+                ),
+            ),
+            (
+                "callSendTextToParts",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("host".to_string(), Type::Str),
+                    ("port".to_string(), Type::I64),
+                    ("parts".to_string(), Type::List(Box::new(Type::Str))),
+                ]),
+                format!(
+                    "flux__net_send_text_to_parts({}({}), {}, {}, {})",
+                    function_c_name("networkSocket"),
                     local_c_name("socket"),
                     local_c_name("host"),
                     local_c_name("port"),
@@ -65080,6 +65181,35 @@ fn main() -> i64 {
         assert!(
             emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
             "two flexible UDP text arguments must retain the ordered checked-AST fallback"
+        );
+
+        let graph = database
+            .control_flow_graph("doubleCallSendTextToParts")
+            .expect("two-call borrowed UDP parts CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call borrowed UDP parts send should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call borrowed UDP parts send should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+            ("parts".to_string(), Type::List(Box::new(Type::Str))),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible scalars beside an inert borrowed list must retain the ordered fallback"
         );
     }
 
