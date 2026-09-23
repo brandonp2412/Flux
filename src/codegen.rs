@@ -48748,30 +48748,63 @@ fn emit_cfg_scalar_expr_direct(
         {
             let collection = &arguments[0];
             let searched = &arguments[1];
-            let Type::List(element) = signatures.canonical_type(&collection.ty) else {
-                return None;
+            let collection_ty = signatures.canonical_type(&collection.ty);
+            let (source_c, source, element, list_source, length) = match collection_ty {
+                Type::List(element) => {
+                    let element = signatures.canonical_type(&element);
+                    let source = emit_cfg_borrowed_list_argument_direct(
+                        collection, &element, env, signatures,
+                    )?;
+                    (
+                        "struct flux__list",
+                        source,
+                        element,
+                        "flux__typed_contains_source".to_string(),
+                        "flux__typed_contains_source.len".to_string(),
+                    )
+                }
+                Type::Set(element) if matches!(collection.kind, CfgScalarExprKind::Name(_)) => {
+                    let element = signatures.canonical_type(&element);
+                    let source = emit_cfg_scalar_expr_direct(collection, env, signatures)?;
+                    (
+                        "struct flux__list",
+                        source,
+                        element,
+                        "flux__typed_contains_source".to_string(),
+                        "flux__typed_contains_source.len".to_string(),
+                    )
+                }
+                Type::Map(key, _) if matches!(collection.kind, CfgScalarExprKind::Name(_)) => {
+                    let key = signatures.canonical_type(&key);
+                    let source = emit_cfg_scalar_expr_direct(collection, env, signatures)?;
+                    (
+                        "struct flux__map",
+                        source,
+                        key,
+                        "flux__typed_contains_source.keys".to_string(),
+                        "flux__typed_contains_source.keys.len".to_string(),
+                    )
+                }
+                _ => return None,
             };
-            let element = signatures.canonical_type(&element);
             if !matches!(element, Type::I64 | Type::Bool | Type::Str)
                 || signatures.canonical_type(&searched.ty) != element
             {
                 return None;
             }
-            let source =
-                emit_cfg_borrowed_list_argument_direct(collection, &element, env, signatures)?;
             let searched = emit_cfg_call_argument_direct(searched, &element, env, signatures)?;
             let element_c = c_type(&element, signatures);
             let equality = match element {
                 Type::Str => format!(
-                    "strcmp(flux__typed_contains_value, *((const char **)flux_list_at_unchecked(flux__typed_contains_source, flux__typed_contains_i, sizeof({element_c})))) == 0"
+                    "strcmp(flux__typed_contains_value, *((const char **)flux_list_at_unchecked({list_source}, flux__typed_contains_i, sizeof({element_c})))) == 0"
                 ),
                 Type::Bool | Type::I64 => format!(
-                    "flux__typed_contains_value == *(({element_c} *)flux_list_at_unchecked(flux__typed_contains_source, flux__typed_contains_i, sizeof({element_c})))"
+                    "flux__typed_contains_value == *(({element_c} *)flux_list_at_unchecked({list_source}, flux__typed_contains_i, sizeof({element_c})))"
                 ),
                 _ => unreachable!("contains scalar element checked above"),
             };
             Some(format!(
-                "__extension__ ({{ struct flux__list flux__typed_contains_source = {source}; {element_c} flux__typed_contains_value = {searched}; bool flux__typed_contains_result = false; for (size_t flux__typed_contains_i = 0; flux__typed_contains_i < flux__typed_contains_source.len; ++flux__typed_contains_i) {{ if ({equality}) {{ flux__typed_contains_result = true; break; }} }} flux__typed_contains_result; }})"
+                "__extension__ ({{ {source_c} flux__typed_contains_source = {source}; {element_c} flux__typed_contains_value = {searched}; bool flux__typed_contains_result = false; for (size_t flux__typed_contains_i = 0; flux__typed_contains_i < {length}; ++flux__typed_contains_i) {{ if ({equality}) {{ flux__typed_contains_result = true; break; }} }} flux__typed_contains_result; }})"
             ))
         }
         CfgScalarExprKind::Call { callee, arguments }
@@ -56225,6 +56258,96 @@ fn main() -> i64 {
             .expect("contains should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-contains"));
+        }
+    }
+
+    #[test]
+    fn set_and_map_contains_emit_directly_from_typed_ir() {
+        let source = r#"
+fn containsSet(values: set<i64>, needle: i64) -> bool {
+    return contains(values, needle)
+}
+
+fn containsMap(values: map<str, i64>, needle: str) -> bool {
+    return contains(values, needle)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("set/map contains direct-IR fixture should typecheck");
+
+        for (function, env, source_c, length_fragment, equality_fragment) in [
+            (
+                "containsSet",
+                HashMap::from([
+                    ("values".to_string(), Type::Set(Box::new(Type::I64))),
+                    ("needle".to_string(), Type::I64),
+                ]),
+                "struct flux__list",
+                "flux__typed_contains_source.len",
+                "flux__typed_contains_value ==",
+            ),
+            (
+                "containsMap",
+                HashMap::from([
+                    (
+                        "values".to_string(),
+                        Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                    ),
+                    ("needle".to_string(), Type::Str),
+                ]),
+                "struct flux__map",
+                "flux__typed_contains_source.keys.len",
+                "strcmp(flux__typed_contains_value",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("set/map contains CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == "contains"
+                    )
+                })
+                .expect("set/map contains should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("set/map contains should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("set/map contains should emit directly from typed IR");
+            assert!(
+                direct.contains(&format!("{source_c} flux__typed_contains_source")),
+                "{function}: {direct}"
+            );
+            assert!(direct.contains(length_fragment), "{function}: {direct}");
+            assert!(direct.contains(equality_fragment), "{function}: {direct}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-set-map-contains".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("set/map contains should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-set-map-contains"));
         }
     }
 
