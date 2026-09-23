@@ -63271,6 +63271,7 @@ fn exercise(
     socket: i64,
     bytes: i64[],
     parts: str[],
+    byteParts: i64[][],
     host: str,
     port: i64,
     offset: i64,
@@ -63284,7 +63285,8 @@ fn exercise(
     let (timedParts, _) = net.writePartsTimeout(socket, parts, timeout)
     let (timedPartOffset, _, _) = net.writePartsFromTimeout(socket, parts, offset, timeout)
     let (udpBytes, _) = net.writeBytesTo(socket, host, port, bytes)
-    return byteCount + byteOffset + timedBytes + timedOffset + partOffset + timedParts + timedPartOffset + udpBytes
+    let (udpByteParts, _) = net.writeBytesToParts(socket, host, port, byteParts)
+    return byteCount + byteOffset + timedBytes + timedOffset + partOffset + timedParts + timedPartOffset + udpBytes + udpByteParts
 }
 
 fn main() -> i64 {
@@ -63301,6 +63303,10 @@ fn main() -> i64 {
             ("socket".to_string(), Type::I64),
             ("bytes".to_string(), Type::List(Box::new(Type::I64))),
             ("parts".to_string(), Type::List(Box::new(Type::Str))),
+            (
+                "byteParts".to_string(),
+                Type::List(Box::new(Type::List(Box::new(Type::I64)))),
+            ),
             ("host".to_string(), Type::Str),
             ("port".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -63408,6 +63414,20 @@ fn main() -> i64 {
                         local_c_name("host"),
                         local_c_name("port"),
                         local_c_name("bytes")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "writeBytesToParts".to_string(),
+                (
+                    format!(
+                        "flux__net_send_bytes_to_parts({}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("host"),
+                        local_c_name("port"),
+                        local_c_name("byteParts")
                     ),
                     "flux__net_i64_error".to_string(),
                     vec![Type::I64, Type::Error],
@@ -66394,6 +66414,39 @@ fn emit_cfg_multi_expr_direct(
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
+                        ))
+                    }
+                    "sendBytesToParts" if arguments.len() == 4 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let host = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let port = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let parts = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[3],
+                            &Type::List(Box::new(Type::I64)),
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__net_send_bytes_to_parts({socket}, {host}, {port}, {parts})"
+                            ),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
                         ))
                     }
                     "sendBytesTo" if arguments.len() == 4 => {
