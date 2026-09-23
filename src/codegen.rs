@@ -62085,6 +62085,137 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn concurrency_multi_value_calls_emit_from_typed_ir() {
+        let source = r#"
+fn work() -> void {
+}
+
+fn workWith(_value: i64) -> void {
+}
+
+fn exercise(handle: i64, capacity: i64) -> i64 {
+    let (started, _) = worker.start(work)
+    let (startedWith, _) = worker.startWith(workWith, handle)
+    let (done, _) = worker.done(handle)
+    let (channelHandle, _) = channel.create(capacity)
+    let (received, _) = channel.receive(handle)
+    print(done)
+    return started + startedWith + channelHandle + received
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("concurrency multi-value direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("handle".to_string(), Type::I64),
+            ("capacity".to_string(), Type::I64),
+        ]);
+        let expected = HashMap::from([
+            (
+                ("worker".to_string(), "start".to_string()),
+                (
+                    format!("flux__worker_start({})", function_c_name("work")),
+                    "flux__worker_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                ("worker".to_string(), "startWith".to_string()),
+                (
+                    format!(
+                        "flux__worker_start_with({}, {})",
+                        function_c_name("workWith"),
+                        local_c_name("handle")
+                    ),
+                    "flux__worker_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                ("worker".to_string(), "done".to_string()),
+                (
+                    format!("flux__worker_done_result({})", local_c_name("handle")),
+                    "flux__worker_bool_error".to_string(),
+                    vec![Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                ("channel".to_string(), "create".to_string()),
+                (
+                    format!("flux__channel_create({})", local_c_name("capacity")),
+                    "flux__channel_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                ("channel".to_string(), "receive".to_string()),
+                (
+                    format!("flux__channel_receive({})", local_c_name("handle")),
+                    "flux__channel_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, .. }
+                            if namespace == "worker" || namespace == "channel"
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall {
+                namespace, name, ..
+            } = &root.kind
+            else {
+                unreachable!();
+            };
+            let expected = expected
+                .get(&(namespace.clone(), name.clone()))
+                .unwrap_or_else(|| {
+                    panic!("unexpected concurrency multi-value call: {namespace}.{name}")
+                });
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("concurrency multi-value call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported concurrency multi-value call should emit directly: {namespace}.{name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, &expected.0, "{namespace}.{name}");
+            assert_eq!(&direct.1, &expected.1, "{namespace}.{name}");
+            assert_eq!(&direct.2, &expected.2, "{namespace}.{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("concurrency multi-value call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{namespace}.{name}");
+        }
+    }
+
+    #[test]
     fn network_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
 fn accepted(_socket: i64) -> void {
@@ -64789,6 +64920,79 @@ fn emit_cfg_multi_expr_direct(
                         Some((
                             format!("flux__sqlite_query({database}, {sql}, {callback})"),
                             "flux__sqlite_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "worker" => match name {
+                    "start" if arguments.len() == 1 => {
+                        let callback =
+                            emit_cfg_callback_argument_direct(&arguments[0], &[], env, signatures)?;
+                        Some((
+                            format!("flux__worker_start({callback})"),
+                            "flux__worker_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "startWith" if arguments.len() == 2 => {
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[0],
+                            &[Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        let argument = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__worker_start_with({callback}, {argument})"),
+                            "flux__worker_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "done" if arguments.len() == 1 => {
+                        let handle = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__worker_done_result({handle})"),
+                            "flux__worker_bool_error".to_string(),
+                            bool_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "channel" => match name {
+                    "create" if arguments.len() == 1 => {
+                        let capacity = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__channel_create({capacity})"),
+                            "flux__channel_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "receive" if arguments.len() == 1 => {
+                        let handle = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__channel_receive({handle})"),
+                            "flux__channel_i64_error".to_string(),
                             i64_error,
                         ))
                     }
