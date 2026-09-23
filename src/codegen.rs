@@ -50046,7 +50046,8 @@ fn emit_cfg_scalar_expr_direct(
                 let [value] = arguments.as_slice() else {
                     return None;
                 };
-                let value = emit_cfg_call_argument_direct(value, &Type::Str, env, signatures)?;
+                let value =
+                    emit_cfg_ordinary_call_argument_direct(value, &Type::Str, env, signatures)?;
                 Some(format!("flux__json_validate({value})"))
             }
             "parse" if arguments.len() == 2 => {
@@ -61574,6 +61575,14 @@ fn validate(value: str) -> error {
     return json.validate(value)
 }
 
+fn jsonValue(value: str) -> str {
+    return value
+}
+
+fn callValidate(value: str) -> error {
+    return json.validate(jsonValue(value))
+}
+
 fn jsonField(_key: str, _value: str) -> void {
 }
 
@@ -61685,6 +61694,15 @@ fn main() -> i64 {
                 "validate",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!("flux__json_validate({})", local_c_name("value")),
+            ),
+            (
+                "callValidate",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_validate({}({}))",
+                    function_c_name("jsonValue"),
+                    local_c_name("value")
+                ),
             ),
             (
                 "parseJson",
