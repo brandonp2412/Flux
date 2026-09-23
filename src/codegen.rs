@@ -50075,8 +50075,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_validate({value})"))
             }
             "parse" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str, Type::Str],
@@ -50086,8 +50090,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_parse({value}, {callback})"))
             }
             "encodeString" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50097,8 +50105,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_encode_string({value}, {callback})"))
             }
             "encodeInt" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::I64,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50108,8 +50120,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_encode_int({value}, {callback})"))
             }
             "encodeBool" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Bool, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Bool,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -61662,16 +61678,40 @@ fn parseJson(value: str) -> error {
     return json.parse(value, jsonField)
 }
 
+fn parseJsonCall(value: str) -> error {
+    return json.parse(jsonValue(value), jsonField)
+}
+
 fn encodeJsonString(value: str) -> error {
     return json.encode(value, jsonText)
+}
+
+fn encodeJsonStringCall(value: str) -> error {
+    return json.encode(jsonValue(value), jsonText)
+}
+
+fn jsonInt(value: i64) -> i64 {
+    return value
 }
 
 fn encodeJsonInt(value: i64) -> error {
     return json.encodeInt(value, jsonText)
 }
 
+fn encodeJsonIntCall(value: i64) -> error {
+    return json.encodeInt(jsonInt(value), jsonText)
+}
+
+fn jsonBool(value: bool) -> bool {
+    return value
+}
+
 fn encodeJsonBool(value: bool) -> error {
     return json.encodeBool(value, jsonText)
+}
+
+fn encodeJsonBoolCall(value: bool) -> error {
+    return json.encodeBool(jsonBool(value), jsonText)
 }
 
 fn encodeJsonOptionalInt(value: i64?) -> error {
@@ -61804,10 +61844,30 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "parseJsonCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_parse({}({}), {})",
+                    function_c_name("jsonValue"),
+                    local_c_name("value"),
+                    function_c_name("jsonField")
+                ),
+            ),
+            (
                 "encodeJsonString",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!(
                     "flux__json_encode_string({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonStringCall",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_encode_string({}({}), {})",
+                    function_c_name("jsonValue"),
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
@@ -61822,10 +61882,30 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "encodeJsonIntCall",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__json_encode_int({}({}), {})",
+                    function_c_name("jsonInt"),
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
                 "encodeJsonBool",
                 HashMap::from([("value".to_string(), Type::Bool)]),
                 format!(
                     "flux__json_encode_bool({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonBoolCall",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!(
+                    "flux__json_encode_bool({}({}), {})",
+                    function_c_name("jsonBool"),
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
