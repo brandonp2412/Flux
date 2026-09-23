@@ -49784,7 +49784,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let path =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
             Some(format!("flux__fs_list_directory({path}, {callback})"))
@@ -61168,6 +61169,10 @@ fn directoryList(path: str) -> error {
     return directory.list(path, text)
 }
 
+fn directoryListCall(path: str) -> error {
+    return directory.list(filesystemPath(path), text)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -61353,6 +61358,16 @@ fn main() -> i64 {
                 HashMap::from([("path".to_string(), Type::Str)]),
                 format!(
                     "flux__fs_list_directory({}, {})",
+                    local_c_name("path"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "directoryListCall",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!(
+                    "flux__fs_list_directory({}({}), {})",
+                    function_c_name("filesystemPath"),
                     local_c_name("path"),
                     function_c_name("text")
                 ),
