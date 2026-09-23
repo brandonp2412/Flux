@@ -62293,6 +62293,204 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn tls_and_websocket_multi_value_calls_emit_from_typed_ir() {
+        let source = r#"
+fn text(_value: str) -> void {
+}
+
+fn exercise(
+    socket: i64,
+    session: i64,
+    host: str,
+    certificate: str,
+    key: str,
+    maxBytes: i64,
+    timeout: i64
+) -> i64 {
+    let (wrapped, _) = tls.wrap(socket, host, certificate)
+    let (listener, _) = tls.listen(socket, certificate, key)
+    let (read, _) = tls.read(session, maxBytes, text)
+    let (timedRead, _, _) = tls.readTimeout(session, maxBytes, timeout, text)
+    let (written, _, _) = tls.writeTimeout(session, host, timeout)
+    let (accepted, _) = websocket.accept(socket)
+    let (connected, _) = websocket.connect(socket, host)
+    let (message, _) = websocket.readText(session, maxBytes, text)
+    return wrapped + listener + read + timedRead + written + accepted + connected + message
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("TLS/websocket multi-value direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("session".to_string(), Type::I64),
+            ("host".to_string(), Type::Str),
+            ("certificate".to_string(), Type::Str),
+            ("key".to_string(), Type::Str),
+            ("maxBytes".to_string(), Type::I64),
+            ("timeout".to_string(), Type::I64),
+        ]);
+        let i64_error = vec![Type::I64, Type::Error];
+        let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
+        let expected = HashMap::from([
+            (
+                ("tls".to_string(), "wrap".to_string()),
+                (
+                    format!(
+                        "flux__tls_wrap({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("host"),
+                        local_c_name("certificate")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("tls".to_string(), "listen".to_string()),
+                (
+                    format!(
+                        "flux__tls_listen({}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("certificate"),
+                        local_c_name("key")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("tls".to_string(), "read".to_string()),
+                (
+                    format!(
+                        "flux__tls_read({}, {}, {})",
+                        local_c_name("session"),
+                        local_c_name("maxBytes"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("tls".to_string(), "readTimeout".to_string()),
+                (
+                    format!(
+                        "flux__tls_read_timeout({}, {}, {}, {})",
+                        local_c_name("session"),
+                        local_c_name("maxBytes"),
+                        local_c_name("timeout"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error.clone(),
+                ),
+            ),
+            (
+                ("tls".to_string(), "writeTimeout".to_string()),
+                (
+                    format!(
+                        "flux__tls_write_timeout({}, {}, {})",
+                        local_c_name("session"),
+                        local_c_name("host"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    i64_bool_error,
+                ),
+            ),
+            (
+                ("websocket".to_string(), "accept".to_string()),
+                (
+                    format!("flux__websocket_accept({})", local_c_name("socket")),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("websocket".to_string(), "connect".to_string()),
+                (
+                    format!(
+                        "flux__websocket_connect({}, {})",
+                        local_c_name("socket"),
+                        local_c_name("host")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error.clone(),
+                ),
+            ),
+            (
+                ("websocket".to_string(), "readText".to_string()),
+                (
+                    format!(
+                        "flux__websocket_read_text({}, {}, {})",
+                        local_c_name("session"),
+                        local_c_name("maxBytes"),
+                        function_c_name("text")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    i64_error,
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, .. }
+                            if matches!(namespace.as_str(), "tls" | "websocket")
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall {
+                namespace, name, ..
+            } = &root.kind
+            else {
+                unreachable!();
+            };
+            let expected = expected
+                .get(&(namespace.clone(), name.clone()))
+                .unwrap_or_else(|| panic!("unexpected TLS/websocket call: {namespace}.{name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("TLS/websocket multi-value call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported TLS/websocket multi-value call should emit directly: {namespace}.{name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, &expected.0, "{namespace}.{name}");
+            assert_eq!(&direct.1, &expected.1, "{namespace}.{name}");
+            assert_eq!(&direct.2, &expected.2, "{namespace}.{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("TLS/websocket call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{namespace}.{name}");
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -64165,6 +64363,184 @@ fn emit_cfg_multi_expr_direct(
                         Some((
                             format!("flux__sqlite_query({database}, {sql}, {callback})"),
                             "flux__sqlite_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "tls" => match name {
+                    "wrap" | "listen" if arguments.len() == 3 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let first = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let second = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let helper = if name == "wrap" {
+                            "flux__tls_wrap"
+                        } else {
+                            "flux__tls_listen"
+                        };
+                        Some((
+                            format!("{helper}({socket}, {first}, {second})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "read" if arguments.len() == 3 => {
+                        let session = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__tls_read({session}, {max_bytes}, {callback})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "readTimeout" if arguments.len() == 4 => {
+                        let session = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[3],
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__tls_read_timeout({session}, {max_bytes}, {timeout}, {callback})"
+                            ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "writeTimeout" if arguments.len() == 3 => {
+                        let session = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let value = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[2],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__tls_write_timeout({session}, {value}, {timeout})"),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    _ => None,
+                },
+                "websocket" => match name {
+                    "accept" if arguments.len() == 1 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__websocket_accept({socket})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "connect" if arguments.len() == 2 => {
+                        let socket = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let host = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__websocket_connect({socket}, {host})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "readText" if arguments.len() == 3 => {
+                        let session = emit_cfg_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let max_bytes = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::Str],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!(
+                                "flux__websocket_read_text({session}, {max_bytes}, {callback})"
+                            ),
+                            "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
