@@ -48202,6 +48202,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         } => {
             let implementation = crate::builtin_names::global_impl(callee);
             let callable = (implementation == "error" && arguments.is_empty())
+                || (signatures.interface(implementation).is_some() && arguments.is_empty())
                 || signatures.get(implementation).is_some();
             callable
                 && cfg_scalar_expr_calls_are_reconstructable(optional, env, signatures)
@@ -52457,6 +52458,40 @@ fn emit_cfg_scalar_expr_direct(
             }
 
             let implementation = crate::builtin_names::global_impl(callee);
+            if implementation == "error" {
+                if !arguments.is_empty()
+                    || *input_inner != Type::Str
+                    || **result_inner != Type::Error
+                {
+                    return None;
+                }
+                let optional_code = emit_cfg_scalar_expr_direct(optional, env, signatures)?;
+                let optional_c = c_type(&Type::Optional(input_inner.clone()), signatures);
+                let result_c = c_type(&ty, signatures);
+                return Some(format!(
+                    "__extension__ ({{ {optional_c} flux__optional_cascade_input_direct = {optional_code}; {result_c} flux__optional_cascade_result_direct = ({result_c}){{ .has_value = false }}; if (flux__optional_cascade_input_direct.has_value) {{ flux__optional_cascade_result_direct = ({result_c}){{ .has_value = true, .value = flux__optional_cascade_input_direct.value }}; }} flux__optional_cascade_result_direct; }})"
+                ));
+            }
+            if signatures.interface(implementation).is_some() {
+                if !arguments.is_empty()
+                    || **result_inner != Type::Named(implementation.to_string())
+                {
+                    return None;
+                }
+                let Type::Named(target) = &*input_inner else {
+                    return None;
+                };
+                if signatures.implementation(implementation, target).is_none() {
+                    return None;
+                }
+                let optional_code = emit_cfg_scalar_expr_direct(optional, env, signatures)?;
+                let optional_c = c_type(&Type::Optional(input_inner.clone()), signatures);
+                let result_c = c_type(&ty, signatures);
+                let pack = interface_pack_helper_name(implementation, target);
+                return Some(format!(
+                    "__extension__ ({{ {optional_c} flux__optional_cascade_input_direct = {optional_code}; {result_c} flux__optional_cascade_result_direct = ({result_c}){{ .has_value = false }}; if (flux__optional_cascade_input_direct.has_value) {{ flux__optional_cascade_result_direct = ({result_c}){{ .has_value = true, .value = {pack}(flux__optional_cascade_input_direct.value) }}; }} flux__optional_cascade_result_direct; }})"
+                ));
+            }
             if matches!(
                 implementation,
                 "bind"
@@ -59135,6 +59170,19 @@ fn main() -> i64 {
                 && arguments.is_empty()
         ));
 
+        let env = HashMap::from([("message".to_string(), Type::Optional(Box::new(Type::Str)))]);
+        let direct = emit_cfg_scalar_expr_direct(
+            facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("optional error cascade should retain scalar facts"),
+            &env,
+            database.signatures(),
+        )
+        .expect("optional error cascade should emit directly from typed IR");
+        assert!(direct.contains("has_value"), "{direct}");
+        assert!(direct.contains(&local_c_name("message")), "{direct}");
+
         let fake = Expr {
             line: root.span.line,
             span: root.span,
@@ -59143,15 +59191,95 @@ fn main() -> i64 {
         let emitted = emit_expr_for_expected_with_cfg_proofs(
             &fake,
             &Type::Optional(Box::new(Type::Error)),
-            &HashMap::from([("message".to_string(), Type::Optional(Box::new(Type::Str)))]),
+            &env,
             database.signatures(),
             &HashMap::new(),
             &facts,
         )
         .expect("optional error cascade should emit from typed IR");
-        assert!(emitted.contains("has_value"), "{emitted}");
-        assert!(emitted.contains(&local_c_name("message")), "{emitted}");
+        assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-maybe-error"));
+    }
+
+    #[test]
+    fn interface_optional_cascades_lower_directly_from_typed_ir() {
+        let source = r#"
+interface Storage {
+    fn label() -> str
+}
+
+struct MemoryStorage {
+    name: str
+}
+
+impl Storage for MemoryStorage {
+    label: memory_label
+}
+
+fn memory_label(storage: MemoryStorage) -> str {
+    return storage.name
+}
+
+fn maybeStorage(storage: MemoryStorage?) -> Storage? {
+    return storage ?.. Storage
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("interface optional-cascade typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("maybeStorage")
+            .expect("interface optional-cascade CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall {
+                        callee,
+                        arguments,
+                        ..
+                    } if callee == "Storage" && arguments.is_empty()
+                )
+            })
+            .expect("typed IR should retain the optional interface cascade");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("optional interface cascade should retain scalar facts");
+        let env = HashMap::from([(
+            "storage".to_string(),
+            Type::Optional(Box::new(Type::Named("MemoryStorage".to_string()))),
+        )]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("optional interface cascade should emit directly from typed IR");
+        assert!(
+            direct.contains(&interface_pack_helper_name("Storage", "MemoryStorage")),
+            "{direct}"
+        );
+        assert!(direct.contains(&local_c_name("storage")), "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-interface-cascade".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Optional(Box::new(Type::Named("Storage".to_string()))),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("optional interface cascade should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-interface-cascade"));
     }
 
     #[test]
