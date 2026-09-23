@@ -48699,6 +48699,112 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "http" && ty == Type::Error => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "request" | "sendTextRequest" if (6..=7).contains(&arguments.len()) => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let method =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let target =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                    let host =
+                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    let content_type =
+                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
+                    let body =
+                        emit_cfg_call_argument_direct(&arguments[5], &Type::Str, env, signatures)?;
+                    let keep_alive = if let Some(keep_alive) = arguments.get(6) {
+                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    Some(profiled_timeline_call(
+                        "network",
+                        "http.request",
+                        format!(
+                            "flux__net_http_send_text_request_v2({socket}, {method}, {target}, {host}, {content_type}, {body}, {keep_alive})"
+                        ),
+                    ))
+                }
+                "requestWithHeaders" | "sendTextRequestWithHeaders"
+                    if (7..=8).contains(&arguments.len()) =>
+                {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let method =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let target =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                    let host =
+                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    let content_type =
+                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
+                    let body =
+                        emit_cfg_call_argument_direct(&arguments[5], &Type::Str, env, signatures)?;
+                    let headers =
+                        emit_cfg_call_argument_direct(&arguments[6], &Type::Str, env, signatures)?;
+                    let keep_alive = if let Some(keep_alive) = arguments.get(7) {
+                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    Some(format!(
+                        "flux__net_http_send_text_request_with_headers({socket}, {method}, {target}, {host}, {content_type}, {body}, {headers}, {keep_alive})"
+                    ))
+                }
+                "respondWithHeaders" | "sendTextResponseWithHeaders"
+                    if (5..=6).contains(&arguments.len()) =>
+                {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let status =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    let content_type =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                    let body =
+                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    let headers =
+                        emit_cfg_call_argument_direct(&arguments[4], &Type::Str, env, signatures)?;
+                    let keep_alive = if let Some(keep_alive) = arguments.get(5) {
+                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    Some(format!(
+                        "flux__net_http_send_text_response_with_headers({socket}, {status}, {content_type}, {body}, {headers}, {keep_alive})"
+                    ))
+                }
+                "respond" | "sendTextResponse" if (4..=5).contains(&arguments.len()) => {
+                    let socket =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let status =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    let content_type =
+                        emit_cfg_call_argument_direct(&arguments[2], &Type::Str, env, signatures)?;
+                    let body =
+                        emit_cfg_call_argument_direct(&arguments[3], &Type::Str, env, signatures)?;
+                    let keep_alive = if let Some(keep_alive) = arguments.get(4) {
+                        emit_cfg_call_argument_direct(keep_alive, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    Some(profiled_timeline_call(
+                        "network",
+                        "http.respond",
+                        format!(
+                            "flux__net_http_send_text_response({socket}, {status}, {content_type}, {body}, {keep_alive})"
+                        ),
+                    ))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "tls" && ty == Type::Error => match name.as_str() {
             "write" if arguments.len() == 2 => {
                 let session =
@@ -59398,6 +59504,191 @@ fn main() -> i64 {
             .expect("TLS qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-tls-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_http_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn requestBasic(socket: i64, method: str, target: str, host: str, contentType: str, body: str) -> error {
+    return http.request(socket, method, target, host, contentType, body)
+}
+
+fn requestKeepAlive(socket: i64, method: str, target: str, host: str, contentType: str, body: str, keepAlive: bool) -> error {
+    return http.request(socket, method, target, host, contentType, body, keepAlive)
+}
+
+fn requestHeaders(socket: i64, method: str, target: str, host: str, contentType: str, body: str, headers: str) -> error {
+    return http.requestWithHeaders(socket, method, target, host, contentType, body, headers)
+}
+
+fn respondBasic(socket: i64, status: i64, contentType: str, body: str) -> error {
+    return http.respond(socket, status, contentType, body)
+}
+
+fn respondHeaders(socket: i64, status: i64, contentType: str, body: str, headers: str, keepAlive: bool) -> error {
+    return http.respondWithHeaders(socket, status, contentType, body, headers, keepAlive)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct HTTP qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "requestBasic",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("method".to_string(), Type::Str),
+                    ("target".to_string(), Type::Str),
+                    ("host".to_string(), Type::Str),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.request",
+                    format!(
+                        "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, false)",
+                        local_c_name("socket"),
+                        local_c_name("method"),
+                        local_c_name("target"),
+                        local_c_name("host"),
+                        local_c_name("contentType"),
+                        local_c_name("body")
+                    ),
+                ),
+            ),
+            (
+                "requestKeepAlive",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("method".to_string(), Type::Str),
+                    ("target".to_string(), Type::Str),
+                    ("host".to_string(), Type::Str),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                    ("keepAlive".to_string(), Type::Bool),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.request",
+                    format!(
+                        "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {})",
+                        local_c_name("socket"),
+                        local_c_name("method"),
+                        local_c_name("target"),
+                        local_c_name("host"),
+                        local_c_name("contentType"),
+                        local_c_name("body"),
+                        local_c_name("keepAlive")
+                    ),
+                ),
+            ),
+            (
+                "requestHeaders",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("method".to_string(), Type::Str),
+                    ("target".to_string(), Type::Str),
+                    ("host".to_string(), Type::Str),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                    ("headers".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__net_http_send_text_request_with_headers({}, {}, {}, {}, {}, {}, {}, false)",
+                    local_c_name("socket"),
+                    local_c_name("method"),
+                    local_c_name("target"),
+                    local_c_name("host"),
+                    local_c_name("contentType"),
+                    local_c_name("body"),
+                    local_c_name("headers")
+                ),
+            ),
+            (
+                "respondBasic",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("status".to_string(), Type::I64),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                ]),
+                profiled_timeline_call(
+                    "network",
+                    "http.respond",
+                    format!(
+                        "flux__net_http_send_text_response({}, {}, {}, {}, false)",
+                        local_c_name("socket"),
+                        local_c_name("status"),
+                        local_c_name("contentType"),
+                        local_c_name("body")
+                    ),
+                ),
+            ),
+            (
+                "respondHeaders",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("status".to_string(), Type::I64),
+                    ("contentType".to_string(), Type::Str),
+                    ("body".to_string(), Type::Str),
+                    ("headers".to_string(), Type::Str),
+                    ("keepAlive".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "flux__net_http_send_text_response_with_headers({}, {}, {}, {}, {}, {})",
+                    local_c_name("socket"),
+                    local_c_name("status"),
+                    local_c_name("contentType"),
+                    local_c_name("body"),
+                    local_c_name("headers"),
+                    local_c_name("keepAlive")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("HTTP qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("HTTP qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("HTTP qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported HTTP call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-http-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("HTTP qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-http-call"));
         }
     }
 
