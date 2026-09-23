@@ -49650,8 +49650,12 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 2 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let timestamp = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::Str],
@@ -60535,6 +60539,14 @@ fn formatLocal(value: i64) -> error {
     return time.formatLocal(value, formatted)
 }
 
+fn callFormatUtc(value: i64) -> error {
+    return time.format(timeValue(value), formatted)
+}
+
+fn callFormatLocal(value: i64) -> error {
+    return time.formatLocal(timeValue(value), formatted)
+}
+
 fn formatOffset(value: i64, offset: i64) -> error {
     return time.formatOffset(value, offset, formatted)
 }
@@ -60703,6 +60715,26 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callFormatUtc",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_format_utc({}({}), {})",
+                    function_c_name("timeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "callFormatLocal",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_format_local({}({}), {})",
+                    function_c_name("timeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
                 "formatOffset",
                 HashMap::from([
                     ("value".to_string(), Type::I64),
@@ -60756,7 +60788,11 @@ fn main() -> i64 {
             if function.starts_with("nested")
                 || matches!(
                     function,
-                    "calendar" | "temporaryDurationSleep" | "callUtcPart"
+                    "calendar"
+                        | "temporaryDurationSleep"
+                        | "callUtcPart"
+                        | "callFormatUtc"
+                        | "callFormatLocal"
                 )
             {
                 let fake = Expr {
