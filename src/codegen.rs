@@ -50470,15 +50470,23 @@ fn emit_cfg_scalar_expr_direct(
             match name {
                 "next" | "previous" if arguments.len() <= 1 => {
                     let wrap = if let Some(wrap) = arguments.first() {
-                        emit_cfg_call_argument_direct(wrap, &Type::Bool, env, signatures)?
+                        emit_cfg_ordinary_call_argument_direct(wrap, &Type::Bool, env, signatures)?
                     } else {
                         "false".to_string()
                     };
                     Some(format!("flux__focus_{name}({wrap})"))
                 }
                 "nextIn" | "previousIn" if (1..=2).contains(&arguments.len()) => {
-                    let scope =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let scope = if arguments.len() == 1 {
+                        emit_cfg_ordinary_call_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?
+                    } else {
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?
+                    };
                     let wrap = if let Some(wrap) = arguments.get(1) {
                         emit_cfg_call_argument_direct(wrap, &Type::Bool, env, signatures)?
                     } else {
@@ -50492,8 +50500,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__focus_{runtime_name}({scope}, {wrap})"))
                 }
                 "firstIn" | "lastIn" if arguments.len() == 1 => {
-                    let scope =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let scope = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let runtime_name = if name == "firstIn" {
                         "first_in"
                     } else {
@@ -63466,12 +63478,24 @@ fn main() -> i64 {
     #[test]
     fn direct_scalar_focus_qualified_calls_emit_from_typed_ir() {
         let source = r#"
+fn boolValue(value: bool) -> bool {
+    return value
+}
+
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
 fn next() -> void {
     focus.next()
 }
 
 fn nextWrapped(wrap: bool) -> void {
     focus.next(wrap)
+}
+
+fn nextWrappedCall(wrap: bool) -> void {
+    focus.next(boolValue(wrap))
 }
 
 fn previous() -> void {
@@ -63482,12 +63506,20 @@ fn nextIn(scope: i64) -> void {
     focus.nextIn(scope)
 }
 
+fn nextInCall(scope: i64) -> void {
+    focus.nextIn(intValue(scope))
+}
+
 fn previousIn(scope: i64, wrap: bool) -> void {
     focus.previousIn(scope, wrap)
 }
 
 fn firstIn(scope: i64) -> void {
     focus.firstIn(scope)
+}
+
+fn firstInCall(scope: i64) -> void {
+    focus.firstIn(intValue(scope))
 }
 
 fn lastIn(scope: i64) -> void {
@@ -63525,6 +63557,15 @@ fn main() -> i64 {
                 format!("flux__focus_next({})", local_c_name("wrap")),
             ),
             (
+                "nextWrappedCall",
+                HashMap::from([("wrap".to_string(), Type::Bool)]),
+                format!(
+                    "flux__focus_next({}({}))",
+                    function_c_name("boolValue"),
+                    local_c_name("wrap")
+                ),
+            ),
+            (
                 "previous",
                 HashMap::new(),
                 "flux__focus_previous(false)".to_string(),
@@ -63533,6 +63574,15 @@ fn main() -> i64 {
                 "nextIn",
                 HashMap::from([("scope".to_string(), Type::I64)]),
                 format!("flux__focus_next_in({}, false)", local_c_name("scope")),
+            ),
+            (
+                "nextInCall",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!(
+                    "flux__focus_next_in({}({}), false)",
+                    function_c_name("intValue"),
+                    local_c_name("scope")
+                ),
             ),
             (
                 "previousIn",
@@ -63550,6 +63600,15 @@ fn main() -> i64 {
                 "firstIn",
                 HashMap::from([("scope".to_string(), Type::I64)]),
                 format!("flux__focus_first_in({})", local_c_name("scope")),
+            ),
+            (
+                "firstInCall",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!(
+                    "flux__focus_first_in({}({}))",
+                    function_c_name("intValue"),
+                    local_c_name("scope")
+                ),
             ),
             (
                 "lastIn",
