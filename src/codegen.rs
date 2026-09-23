@@ -48389,6 +48389,29 @@ fn emit_cfg_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_callback_argument_direct(
+    argument: &CfgScalarExpr,
+    params: &[Type],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = Type::Function {
+        params: params.to_vec(),
+        returns: Vec::new(),
+    };
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
+        || !matches!(
+            argument.kind,
+            CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Bind { .. }
+                | CfgScalarExprKind::AnonymousFunction { .. }
+        )
+    {
+        return None;
+    }
+    emit_cfg_scalar_expr_direct(argument, env, signatures)
+}
+
 fn emit_cfg_positional_call_arguments_direct(
     signature: &Signature,
     arguments: &[CfgScalarExpr],
@@ -48694,6 +48717,113 @@ fn emit_cfg_scalar_expr_direct(
                 .clone()
                 .unwrap_or_else(|| function_c_name(implementation));
             Some(format!("{callee}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "url" && ty == Type::Error => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            if arguments.len() != 2 {
+                return None;
+            }
+            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let (helper, callback_params) = match name {
+                "parse" | "parseHttp" => (
+                    "flux__url_parse_http",
+                    vec![Type::Str, Type::Str, Type::I64, Type::Str],
+                ),
+                "decode" | "decodeComponent" => ("flux__url_decode_component", vec![Type::Str]),
+                "encode" | "encodeComponent" => ("flux__url_encode_component", vec![Type::Str]),
+                "decodeForm" | "decodeFormComponent" => {
+                    ("flux__url_decode_form_component", vec![Type::Str])
+                }
+                "encodeForm" | "encodeFormComponent" => {
+                    ("flux__url_encode_form_component", vec![Type::Str])
+                }
+                "query" | "parseFormQuery" => {
+                    ("flux__url_parse_form_query", vec![Type::Str, Type::Str])
+                }
+                _ => return None,
+            };
+            let callback = emit_cfg_callback_argument_direct(
+                &arguments[1],
+                &callback_params,
+                env,
+                signatures,
+            )?;
+            Some(format!("{helper}({value}, {callback})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "uri" && ty == Type::Error => {
+            if arguments.len() != 2 {
+                return None;
+            }
+            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let (helper, callback_params) = match name.as_str() {
+                "parse" => (
+                    "flux__uri_parse",
+                    vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
+                ),
+                "decode" => ("flux__url_decode_component", vec![Type::Str]),
+                "encode" => ("flux__url_encode_component", vec![Type::Str]),
+                "normalize" => ("flux__uri_normalize", vec![Type::Str]),
+                _ => return None,
+            };
+            let callback = emit_cfg_callback_argument_direct(
+                &arguments[1],
+                &callback_params,
+                env,
+                signatures,
+            )?;
+            Some(format!("{helper}({value}, {callback})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "crypto" && ty == Type::Error => {
+            let callback_params = [Type::Str];
+            match name.as_str() {
+                "sha256" | "sha384" | "sha512" if arguments.len() == 2 => {
+                    let value =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[1],
+                        &callback_params,
+                        env,
+                        signatures,
+                    )?;
+                    let helper = match name.as_str() {
+                        "sha256" => "flux__crypto_sha256",
+                        "sha384" => "flux__crypto_sha384",
+                        _ => "flux__crypto_sha512",
+                    };
+                    Some(format!("{helper}({value}, {callback})"))
+                }
+                "hmacSha256" | "hmacSha512" if arguments.len() == 3 => {
+                    let key =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let value =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[2],
+                        &callback_params,
+                        env,
+                        signatures,
+                    )?;
+                    let helper = if name == "hmacSha256" {
+                        "flux__crypto_hmac_sha256"
+                    } else {
+                        "flux__crypto_hmac_sha512"
+                    };
+                    Some(format!("{helper}({key}, {value}, {callback})"))
+                }
+                _ => None,
+            }
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -59504,6 +59634,166 @@ fn main() -> i64 {
             .expect("TLS qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-tls-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_callback_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn converted(_value: str) -> void {
+}
+
+fn field(_name: str, _value: str) -> void {
+}
+
+fn parsedUrl(_scheme: str, _host: str, _port: i64, _target: str) -> void {
+}
+
+fn parsedUri(_scheme: str, _authority: str, _path: str, _query: str, _fragment: str) -> void {
+}
+
+fn parseUrl(value: str) -> error {
+    return url.parse(value, parsedUrl)
+}
+
+fn encodeUrl(value: str) -> error {
+    return url.encode(value, converted)
+}
+
+fn queryUrl(value: str) -> error {
+    return url.query(value, field)
+}
+
+fn parseUri(value: str) -> error {
+    return uri.parse(value, parsedUri)
+}
+
+fn normalizeUri(value: str) -> error {
+    return uri.normalize(value, converted)
+}
+
+fn hash(value: str) -> error {
+    return crypto.sha256(value, converted)
+}
+
+fn hmac(key: str, value: str) -> error {
+    return crypto.hmacSha512(key, value, converted)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("callback-qualified direct-IR fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "parseUrl",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__url_parse_http({}, {})",
+                    local_c_name("value"),
+                    function_c_name("parsedUrl")
+                ),
+            ),
+            (
+                "encodeUrl",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__url_encode_component({}, {})",
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
+                "queryUrl",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__url_parse_form_query({}, {})",
+                    local_c_name("value"),
+                    function_c_name("field")
+                ),
+            ),
+            (
+                "parseUri",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__uri_parse({}, {})",
+                    local_c_name("value"),
+                    function_c_name("parsedUri")
+                ),
+            ),
+            (
+                "normalizeUri",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__uri_normalize({}, {})",
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
+                "hash",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__crypto_sha256({}, {})",
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+            (
+                "hmac",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__crypto_hmac_sha512({}, {}, {})",
+                    local_c_name("key"),
+                    local_c_name("value"),
+                    function_c_name("converted")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("callback-qualified CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("callback-qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("callback-qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("supported callback-qualified call should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-callback-qualified-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("callback-qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-callback-qualified-call"));
         }
     }
 
