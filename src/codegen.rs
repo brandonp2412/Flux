@@ -49323,6 +49323,23 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "str" && name == "slice" && ty == Type::Error => {
+            if arguments.len() != 4 {
+                return None;
+            }
+            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let start = emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+            let end = emit_cfg_call_argument_direct(&arguments[2], &Type::I64, env, signatures)?;
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[3], &[Type::Str], env, signatures)?;
+            Some(format!(
+                "flux__str_slice({value}, {start}, {end}, {callback})"
+            ))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "str" && name == "length" && ty == Type::I64 => {
             let [value] = arguments.as_slice() else {
                 return None;
@@ -49493,22 +49510,45 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "preferences" => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
-            let (helper, expected) = match name {
-                "set" => ("flux__preferences_set", vec![Type::Str, Type::Str]),
-                "remove" => ("flux__preferences_remove", vec![Type::Str]),
-                _ => return None,
-            };
-            if ty != Type::Error || arguments.len() != expected.len() {
+            if ty != Type::Error {
                 return None;
             }
-            let rendered = arguments
-                .iter()
-                .zip(&expected)
-                .map(|(argument, expected)| {
-                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(format!("{helper}({})", rendered.join(", ")))
+            match name {
+                "get" if arguments.len() == 3 => {
+                    let key =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                    let fallback =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[2],
+                        &[Type::Str],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!(
+                        "flux__preferences_get({key}, {fallback}, {callback})"
+                    ))
+                }
+                "set" | "remove" => {
+                    let (helper, expected) = if name == "set" {
+                        ("flux__preferences_set", vec![Type::Str, Type::Str])
+                    } else {
+                        ("flux__preferences_remove", vec![Type::Str])
+                    };
+                    if arguments.len() != expected.len() {
+                        return None;
+                    }
+                    let rendered = arguments
+                        .iter()
+                        .zip(&expected)
+                        .map(|(argument, expected)| {
+                            emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(format!("{helper}({})", rendered.join(", ")))
+                }
+                _ => None,
+            }
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -49800,6 +49840,25 @@ fn emit_cfg_scalar_expr_direct(
                 rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
             }
             Some(format!("{helper}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "locale" && ty == Type::Error => {
+            let helper = match name.as_str() {
+                "formatNumber" => "flux__locale_format_number",
+                "formatDateTime" => "flux__locale_format_date_time",
+                "formatCurrency" => "flux__locale_format_currency",
+                _ => return None,
+            };
+            if arguments.len() != 2 {
+                return None;
+            }
+            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
+            Some(format!("{helper}({value}, {callback})"))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -58848,19 +58907,26 @@ fn main() -> i64 {
                 ],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &string_slice,
-                &HashMap::from([
-                    ("value".to_string(), Type::Str),
-                    ("start".to_string(), Type::I64),
-                    ("end".to_string(), Type::I64),
-                    ("callback".to_string(), callback_ty),
-                ]),
-                database.signatures(),
+        let string_slice_direct = emit_cfg_scalar_expr_direct(
+            &string_slice,
+            &HashMap::from([
+                ("value".to_string(), Type::Str),
+                ("start".to_string(), Type::I64),
+                ("end".to_string(), Type::I64),
+                ("callback".to_string(), callback_ty),
+            ]),
+            database.signatures(),
+        )
+        .expect("callback-based string slicing should emit directly from typed IR");
+        assert_eq!(
+            string_slice_direct,
+            format!(
+                "flux__str_slice({}, {}, {}, {})",
+                local_c_name("value"),
+                local_c_name("start"),
+                local_c_name("end"),
+                local_c_name("callback")
             )
-            .is_none(),
-            "callback-based string slicing should retain its established lowering path"
         );
     }
 
@@ -59514,6 +59580,51 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-utility-call"));
         }
+
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: Vec::new(),
+        };
+        let preference_get = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "preferences".to_string(),
+                name: "get".to_string(),
+                arguments: vec![
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Name("key".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: Type::Str,
+                        kind: CfgScalarExprKind::Name("fallback".to_string()),
+                    },
+                    CfgScalarExpr {
+                        ty: callback_ty.clone(),
+                        kind: CfgScalarExprKind::Name("callback".to_string()),
+                    },
+                ],
+            },
+        };
+        let preference_get_direct = emit_cfg_scalar_expr_direct(
+            &preference_get,
+            &HashMap::from([
+                ("key".to_string(), Type::Str),
+                ("fallback".to_string(), Type::Str),
+                ("callback".to_string(), callback_ty),
+            ]),
+            database.signatures(),
+        )
+        .expect("callback-based preference read should emit directly from typed IR");
+        assert_eq!(
+            preference_get_direct,
+            format!(
+                "flux__preferences_get({}, {}, {})",
+                local_c_name("key"),
+                local_c_name("fallback"),
+                local_c_name("callback")
+            )
+        );
     }
 
     #[test]
@@ -60719,17 +60830,22 @@ fn main() -> i64 {
                 ],
             },
         };
-        assert!(
-            emit_cfg_scalar_expr_direct(
-                &unsupported,
-                &HashMap::from([
-                    ("value".to_string(), Type::I64),
-                    ("callback".to_string(), callback_ty),
-                ]),
-                database.signatures(),
+        let direct = emit_cfg_scalar_expr_direct(
+            &unsupported,
+            &HashMap::from([
+                ("value".to_string(), Type::I64),
+                ("callback".to_string(), callback_ty),
+            ]),
+            database.signatures(),
+        )
+        .expect("callback-based locale formatting should emit directly from typed IR");
+        assert_eq!(
+            direct,
+            format!(
+                "flux__locale_format_number({}, {})",
+                local_c_name("value"),
+                local_c_name("callback")
             )
-            .is_none(),
-            "callback-based locale formatting should retain its established lowering path"
         );
     }
 
