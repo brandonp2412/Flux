@@ -72488,7 +72488,7 @@ fn main() -> i64 {
 "#;
     check_source(source).expect("contains should typecheck for all collections");
     let generated = compile_to_c(source).expect("contains should lower natively");
-    assert!(generated.contains("flux__contains_result_"));
+    assert!(generated.contains("flux__typed_contains_result"));
     assert!(generated.contains("strcmp("));
     assert!(generated.contains("flux_list_at_unchecked"));
 
