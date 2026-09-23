@@ -68668,6 +68668,10 @@ fn main() -> i64 {
     #[test]
     fn network_byte_receive_multi_values_emit_from_typed_ir() {
         let source = r#"
+fn networkI64(value: i64) -> i64 {
+    return value
+}
+
 fn bytes(_socket: i64, _value: i64[]) -> void {
 }
 
@@ -68675,14 +68679,19 @@ fn datagram(_socket: i64, _value: i64[], _host: str, _port: i64) -> void {
 }
 
 fn exercise(socket: i64, maxBytes: i64, maxCount: i64, timeout: i64) -> i64 {
-    let (single, _) = net.readBytes(socket, maxBytes, bytes)
-    let (timed, _, _) = net.readBytesTimeout(socket, maxBytes, timeout, bytes)
-    let (many, _) = net.readBytesMany(socket, maxBytes, maxCount, bytes)
-    let (manyTimed, _, _) = net.readBytesManyTimeout(socket, maxBytes, maxCount, timeout, bytes)
-    let (fromTimed, _, _) = net.readBytesFromTimeout(socket, maxBytes, timeout, datagram)
-    let (fromMany, _) = net.readBytesFromMany(socket, maxBytes, maxCount, datagram)
-    let (fromManyTimed, _, _) = net.readBytesFromManyTimeout(socket, maxBytes, maxCount, timeout, datagram)
+    let (single, _) = net.readBytes(networkI64(socket), maxBytes, bytes)
+    let (timed, _, _) = net.readBytesTimeout(networkI64(socket), maxBytes, timeout, bytes)
+    let (many, _) = net.readBytesMany(networkI64(socket), maxBytes, maxCount, bytes)
+    let (manyTimed, _, _) = net.readBytesManyTimeout(networkI64(socket), maxBytes, maxCount, timeout, bytes)
+    let (fromTimed, _, _) = net.readBytesFromTimeout(networkI64(socket), maxBytes, timeout, datagram)
+    let (fromMany, _) = net.readBytesFromMany(networkI64(socket), maxBytes, maxCount, datagram)
+    let (fromManyTimed, _, _) = net.readBytesFromManyTimeout(networkI64(socket), maxBytes, maxCount, timeout, datagram)
     return single + timed + many + manyTimed + fromTimed + fromMany + fromManyTimed
+}
+
+fn doubleReadBytes(socket: i64, maxBytes: i64) -> i64 {
+    let (count, _) = net.readBytes(networkI64(socket), networkI64(maxBytes), bytes)
+    return count
 }
 
 fn main() -> i64 {
@@ -68701,13 +68710,18 @@ fn main() -> i64 {
             ("maxCount".to_string(), Type::I64),
             ("timeout".to_string(), Type::I64),
         ]);
+        let computed_socket = format!(
+            "{}({})",
+            function_c_name("networkI64"),
+            local_c_name("socket")
+        );
         let expected = HashMap::from([
             (
                 "readBytes".to_string(),
                 (
                     format!(
                         "flux__net_receive_bytes({}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         function_c_name("bytes")
                     ),
@@ -68720,7 +68734,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_with_timeout({}, {}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("timeout"),
                         function_c_name("bytes")
@@ -68734,7 +68748,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_many({}, {}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("maxCount"),
                         function_c_name("bytes")
@@ -68748,7 +68762,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_many_with_timeout({}, {}, {}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("maxCount"),
                         local_c_name("timeout"),
@@ -68763,7 +68777,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_from_many_with_timeout({}, {}, 1, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("timeout"),
                         function_c_name("datagram")
@@ -68777,7 +68791,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_from_many({}, {}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("maxCount"),
                         function_c_name("datagram")
@@ -68791,7 +68805,7 @@ fn main() -> i64 {
                 (
                     format!(
                         "flux__net_receive_bytes_from_many_with_timeout({}, {}, {}, {}, {})",
-                        local_c_name("socket"),
+                        computed_socket,
                         local_c_name("maxBytes"),
                         local_c_name("maxCount"),
                         local_c_name("timeout"),
@@ -68847,6 +68861,34 @@ fn main() -> i64 {
                 .expect("network byte receive call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{name}");
         }
+
+        let graph = database
+            .control_flow_graph("doubleReadBytes")
+            .expect("two-flex byte receive CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "net" && name == "readBytes"
+                    )
+            })
+            .expect("two-flex byte receive should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-flex byte receive should have typed multi-value facts");
+        assert!(
+            emit_cfg_multi_expr_direct(multi, &env, database.signatures()).is_none(),
+            "two flexible byte receive scalars must retain ordered fallback"
+        );
     }
 
     #[test]
@@ -71961,15 +72003,9 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "receiveBytes" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -71980,27 +72016,18 @@ fn emit_cfg_multi_expr_direct(
                             signatures,
                         )?;
                         Some((
-                            format!("flux__net_receive_bytes({socket}, {max_bytes}, {callback})"),
+                            format!(
+                                "flux__net_receive_bytes({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveBytesMany" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72012,34 +72039,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_many({socket}, {max_bytes}, {max_count}, {callback})"
+                                "flux__net_receive_bytes_many({}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveBytesManyWithTimeout" if arguments.len() == 5 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..4],
+                            &[Type::I64, Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72051,28 +72061,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_many_with_timeout({socket}, {max_bytes}, {max_count}, {timeout}, {callback})"
+                                "flux__net_receive_bytes_many_with_timeout({}, {}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2], rendered[3]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "receiveBytesFromWithTimeout" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72089,28 +72088,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_from_many_with_timeout({socket}, {max_bytes}, 1, {timeout}, {callback})"
+                                "flux__net_receive_bytes_from_many_with_timeout({}, {}, 1, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "receiveBytesFromMany" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72127,34 +72115,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_from_many({socket}, {max_bytes}, {max_count}, {callback})"
+                                "flux__net_receive_bytes_from_many({}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "receiveBytesFromManyWithTimeout" if arguments.len() == 5 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_count = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..4],
+                            &[Type::I64, Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72171,28 +72142,17 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_from_many_with_timeout({socket}, {max_bytes}, {max_count}, {timeout}, {callback})"
+                                "flux__net_receive_bytes_from_many_with_timeout({}, {}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2], rendered[3]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "receiveBytesWithTimeout" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let max_bytes = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
+                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
                         )?;
@@ -72204,7 +72164,8 @@ fn emit_cfg_multi_expr_direct(
                         )?;
                         Some((
                             format!(
-                                "flux__net_receive_bytes_with_timeout({socket}, {max_bytes}, {timeout}, {callback})"
+                                "flux__net_receive_bytes_with_timeout({}, {}, {}, {callback})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
