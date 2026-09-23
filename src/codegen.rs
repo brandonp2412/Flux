@@ -49151,6 +49151,52 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "focus" && ty == Type::Void => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "next" | "previous" if arguments.len() <= 1 => {
+                    let wrap = if let Some(wrap) = arguments.first() {
+                        emit_cfg_call_argument_direct(wrap, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    Some(format!("flux__focus_{name}({wrap})"))
+                }
+                "nextIn" | "previousIn" if (1..=2).contains(&arguments.len()) => {
+                    let scope =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let wrap = if let Some(wrap) = arguments.get(1) {
+                        emit_cfg_call_argument_direct(wrap, &Type::Bool, env, signatures)?
+                    } else {
+                        "false".to_string()
+                    };
+                    let runtime_name = if name == "nextIn" {
+                        "next_in"
+                    } else {
+                        "previous_in"
+                    };
+                    Some(format!("flux__focus_{runtime_name}({scope}, {wrap})"))
+                }
+                "firstIn" | "lastIn" if arguments.len() == 1 => {
+                    let scope =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let runtime_name = if name == "firstIn" {
+                        "first_in"
+                    } else {
+                        "last_in"
+                    };
+                    Some(format!("flux__focus_{runtime_name}({scope})"))
+                }
+                "first" | "last" | "clear" if arguments.is_empty() => {
+                    Some(format!("flux__focus_{name}()"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "textInput" => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
@@ -58617,6 +58663,148 @@ fn main() -> i64 {
             .expect("concurrency qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-concurrency-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_focus_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn next() -> void {
+    focus.next()
+}
+
+fn nextWrapped(wrap: bool) -> void {
+    focus.next(wrap)
+}
+
+fn previous() -> void {
+    focus.previous()
+}
+
+fn nextIn(scope: i64) -> void {
+    focus.nextIn(scope)
+}
+
+fn previousIn(scope: i64, wrap: bool) -> void {
+    focus.previousIn(scope, wrap)
+}
+
+fn firstIn(scope: i64) -> void {
+    focus.firstIn(scope)
+}
+
+fn lastIn(scope: i64) -> void {
+    focus.lastIn(scope)
+}
+
+fn first() -> void {
+    focus.first()
+}
+
+fn last() -> void {
+    focus.last()
+}
+
+fn clear() -> void {
+    focus.clear()
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct focus qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "next",
+                HashMap::new(),
+                "flux__focus_next(false)".to_string(),
+            ),
+            (
+                "nextWrapped",
+                HashMap::from([("wrap".to_string(), Type::Bool)]),
+                format!("flux__focus_next({})", local_c_name("wrap")),
+            ),
+            (
+                "previous",
+                HashMap::new(),
+                "flux__focus_previous(false)".to_string(),
+            ),
+            (
+                "nextIn",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!("flux__focus_next_in({}, false)", local_c_name("scope")),
+            ),
+            (
+                "previousIn",
+                HashMap::from([
+                    ("scope".to_string(), Type::I64),
+                    ("wrap".to_string(), Type::Bool),
+                ]),
+                format!(
+                    "flux__focus_previous_in({}, {})",
+                    local_c_name("scope"),
+                    local_c_name("wrap")
+                ),
+            ),
+            (
+                "firstIn",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!("flux__focus_first_in({})", local_c_name("scope")),
+            ),
+            (
+                "lastIn",
+                HashMap::from([("scope".to_string(), Type::I64)]),
+                format!("flux__focus_last_in({})", local_c_name("scope")),
+            ),
+            ("first", HashMap::new(), "flux__focus_first()".to_string()),
+            ("last", HashMap::new(), "flux__focus_last()".to_string()),
+            ("clear", HashMap::new(), "flux__focus_clear()".to_string()),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("focus qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("focus qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("focus qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported focus call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-focus-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Void,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("focus qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-focus-call"));
         }
     }
 
