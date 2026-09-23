@@ -50076,7 +50076,11 @@ fn emit_cfg_scalar_expr_direct(
                                 Type::I64 | Type::Bool | Type::Str
                             )
                     );
-                if is_literal && !scalar_element {
+                let nested_copy_list_element = matches!(
+                    &element,
+                    Type::List(inner) if signatures.is_copy_type(inner)
+                );
+                if is_literal && !scalar_element && !nested_copy_list_element {
                     return None;
                 }
                 let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
@@ -61553,6 +61557,100 @@ fn main() -> i64 {
             .expect("scalar collection temporary JSON call should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-collection-temporary"));
+        }
+    }
+
+    #[test]
+    fn json_nested_copy_list_temporaries_emit_from_typed_ir() {
+        let source = r#"
+fn jsonNestedTemporaryText(_value: str) -> void {
+}
+
+fn encodeNestedListLiteral(value: i64) -> error {
+    return json.encode([[value, 2], [3, 4]], jsonNestedTemporaryText)
+}
+
+fn encodeNestedArrayLiteral(value: i64) -> error {
+    return json.encodeArray([[value, 5], [6, 7]], jsonNestedTemporaryText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("nested Copy-list JSON temporary fixture should typecheck");
+
+        for function in ["encodeNestedListLiteral", "encodeNestedArrayLiteral"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("nested Copy-list JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json"
+                            && matches!(name.as_str(), "encode" | "encodeArray")
+                    )
+                })
+                .expect("nested Copy-list JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("nested Copy-list JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("nested Copy-list JSON root should preserve qualified facts");
+            };
+            assert!(
+                matches!(arguments[0].kind, CfgScalarExprKind::Aggregate(_)),
+                "{function}: {:?}",
+                arguments[0]
+            );
+
+            let env = HashMap::from([("value".to_string(), Type::I64)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "nested Copy-list JSON temporary should emit directly: {function}: {scalar:?}"
+                    )
+                });
+            assert!(
+                direct.starts_with("flux__json_encode_recursive_array("),
+                "{function}: {direct}"
+            );
+            assert!(direct.contains("struct flux__list"), "{function}: {direct}");
+            assert!(
+                direct.contains(&local_c_name("value")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name("jsonNestedTemporaryText")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-nested-list-temporary".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("nested Copy-list JSON temporary should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-nested-list-temporary"));
         }
     }
 
