@@ -49819,6 +49819,34 @@ fn emit_cfg_scalar_expr_direct(
             ))
         }
         CfgScalarExprKind::Call { callee, arguments }
+            if crate::builtin_names::global_impl(callee) == "error"
+                && arguments.len() == 1
+                && ty == Type::Error =>
+        {
+            emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)
+        }
+        CfgScalarExprKind::Call { callee, arguments }
+            if crate::builtin_names::global_impl(callee) == "print"
+                && arguments.len() == 1
+                && ty == Type::Void =>
+        {
+            let argument_ty = signatures.canonical_type(&arguments[0].ty);
+            let helper = match argument_ty {
+                Type::I64 => "flux_print_i64",
+                Type::Bool => "flux_print_bool",
+                Type::Str => "flux_print_str",
+                Type::Error => "flux_print_error",
+                _ => return None,
+            };
+            let rendered = emit_cfg_ordinary_call_argument_direct(
+                &arguments[0],
+                &argument_ty,
+                env,
+                signatures,
+            )?;
+            Some(format!("{helper}({rendered})"))
+        }
+        CfgScalarExprKind::Call { callee, arguments }
             if crate::builtin_names::global_impl(callee) == "contains"
                 && arguments.len() == 2
                 && ty == Type::Bool =>
@@ -59441,6 +59469,10 @@ fn show(value: i64) -> void {
     print(value)
 }
 
+fn showError(message: str) -> void {
+    print(error(message))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -59463,6 +59495,13 @@ fn main() -> i64 {
                 HashMap::from([("value".to_string(), Type::I64)]),
                 "flux_print_i64".to_string(),
             ),
+            (
+                "showError",
+                "print",
+                Type::Void,
+                HashMap::from([("message".to_string(), Type::Str)]),
+                "flux_print_error".to_string(),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -59481,16 +59520,23 @@ fn main() -> i64 {
                 })
                 .expect("typed IR should retain the core builtin call");
             let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("core builtin call should retain scalar typed-IR facts");
             assert!(matches!(
-                facts.scalar_exprs.get(&source_span_key(call.span)),
-                Some(CfgScalarExpr {
+                scalar,
+                CfgScalarExpr {
                     kind: CfgScalarExprKind::Call {
                         callee: actual,
                         ..
                     },
                     ..
-                }) if crate::builtin_names::global_impl(actual) == callee
+                } if crate::builtin_names::global_impl(actual) == callee
             ));
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("core builtin should emit directly from typed IR");
+            assert!(direct.contains(&expected_fragment), "{function}: {direct}");
 
             let fake_text = format!("checked-ast-{function}");
             let fake = Expr {
@@ -59507,10 +59553,7 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("core builtin should emit from typed IR");
-            assert!(
-                emitted.contains(&expected_fragment),
-                "{function}: {emitted}"
-            );
+            assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains(&fake_text), "{function}: {emitted}");
         }
     }
