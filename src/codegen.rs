@@ -48273,6 +48273,141 @@ fn cfg_match_expr_calls_are_reconstructable(
         })
 }
 
+fn cfg_scalar_expr_is_reusable_pure_primitive(
+    expr: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> bool {
+    let ty = signatures.canonical_type(&expr.ty);
+    if !matches!(ty, Type::I64 | Type::Bool | Type::Str | Type::Error) {
+        return false;
+    }
+
+    match &expr.kind {
+        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
+        CfgScalarExprKind::Unary { op, operand } => {
+            matches!(op, UnaryOp::Neg | UnaryOp::Not)
+                && cfg_scalar_expr_is_reusable_pure_primitive(operand, signatures)
+        }
+        CfgScalarExprKind::Binary { op, left, right } => {
+            matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or
+            ) && cfg_scalar_expr_is_reusable_pure_primitive(left, signatures)
+                && cfg_scalar_expr_is_reusable_pure_primitive(right, signatures)
+        }
+        CfgScalarExprKind::Conditional {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            cfg_scalar_expr_is_reusable_pure_primitive(condition, signatures)
+                && cfg_scalar_expr_is_reusable_pure_primitive(then_value, signatures)
+                && cfg_scalar_expr_is_reusable_pure_primitive(else_value, signatures)
+        }
+        _ => false,
+    }
+}
+
+fn emit_cfg_reused_pure_primitive_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if left != right || !cfg_scalar_expr_is_reusable_pure_primitive(left, signatures) {
+        return None;
+    }
+
+    let operand_ty = signatures.canonical_type(&left.ty);
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let repeated_checked_subtree = matches!(
+        left.kind,
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Neg,
+            ..
+        } | CfgScalarExprKind::Binary { .. }
+            | CfgScalarExprKind::Conditional { .. }
+    );
+    let trivial_boolean_term = match &left.kind {
+        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => matches!(
+            operand.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        ),
+        _ => false,
+    };
+
+    match op {
+        BinOp::Add
+            if operand_ty == Type::I64 && result_ty == Type::I64 && repeated_checked_subtree =>
+        {
+            Some(format!(
+                "__extension__ ({{ int64_t flux__checked_reuse = {rendered}; flux_add_i64(flux__checked_reuse, flux__checked_reuse); }})"
+            ))
+        }
+        BinOp::Sub if operand_ty == Type::I64 && result_ty == Type::I64 => {
+            Some(format!("((void)({rendered}), INT64_C(0))"))
+        }
+        BinOp::Mul
+            if operand_ty == Type::I64 && result_ty == Type::I64 && repeated_checked_subtree =>
+        {
+            Some(format!(
+                "__extension__ ({{ int64_t flux__checked_reuse = {rendered}; flux_mul_i64(flux__checked_reuse, flux__checked_reuse); }})"
+            ))
+        }
+        BinOp::Div if operand_ty == Type::I64 && result_ty == Type::I64 => {
+            Some(format!("flux_div_self_i64({rendered})"))
+        }
+        BinOp::Eq
+            if result_ty == Type::Bool
+                && matches!(operand_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) =>
+        {
+            if trivial_boolean_term {
+                Some("true".to_string())
+            } else {
+                Some(format!("((void)({rendered}), true)"))
+            }
+        }
+        BinOp::Ne
+            if result_ty == Type::Bool
+                && matches!(operand_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) =>
+        {
+            if trivial_boolean_term {
+                Some("false".to_string())
+            } else {
+                Some(format!("((void)({rendered}), false)"))
+            }
+        }
+        BinOp::Lt | BinOp::Gt if result_ty == Type::Bool && operand_ty == Type::I64 => {
+            Some(format!("((void)({rendered}), false)"))
+        }
+        BinOp::Le | BinOp::Ge if result_ty == Type::Bool && operand_ty == Type::I64 => {
+            Some(format!("((void)({rendered}), true)"))
+        }
+        BinOp::And | BinOp::Or if result_ty == Type::Bool && operand_ty == Type::Bool => {
+            Some(rendered)
+        }
+        _ => None,
+    }
+}
+
 fn cfg_scalar_i64_constant(expr: &CfgScalarExpr) -> Option<i64> {
     match &expr.kind {
         CfgScalarExprKind::Constant(ConstantValue::I64(value)) => Some(*value),
@@ -48784,6 +48919,9 @@ fn emit_cfg_scalar_expr_direct(
 ) -> Option<String> {
     let ty = signatures.canonical_type(&expr.ty);
     if let Some(rendered) = emit_cfg_optimized_i64_primitive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_reused_pure_primitive_direct(expr, env, signatures) {
         return Some(rendered);
     }
     match &expr.kind {
@@ -54710,6 +54848,169 @@ fn main() -> i64 {
         )
         .expect("constant identity should bypass the checked-AST root");
         assert_eq!(emitted, local_c_name("value"));
+    }
+
+    #[test]
+    fn direct_typed_ir_reuses_identical_pure_primitive_subtrees() {
+        let source = r#"
+fn repeatedAdd(left: i64, right: i64) -> i64 {
+    return (left - right) + (left - right)
+}
+
+fn repeatedSub(left: i64, right: i64) -> i64 {
+    return (left + right) - (left + right)
+}
+
+fn repeatedMul(left: i64, right: i64) -> i64 {
+    return (left + right) * (left + right)
+}
+
+fn repeatedDiv(left: i64, right: i64) -> i64 {
+    return (left + right) / (left + right)
+}
+
+fn repeatedCompare(left: i64, right: i64) -> bool {
+    return (left + right) >= (left + right)
+}
+
+fn repeatedLogic(left: bool, right: bool) -> bool {
+    return (left && right) || (left && right)
+}
+
+fn reflexiveText(value: str) -> bool {
+    return value == value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("reused primitive fixture should typecheck");
+
+        let left = local_c_name("left");
+        let right = local_c_name("right");
+        let add = format!("flux_add_i64({left}, {right})");
+        let sub = format!("flux_sub_i64({left}, {right})");
+        let cases = [
+            (
+                "repeatedAdd",
+                BinOp::Add,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__checked_reuse = {sub}; flux_add_i64(flux__checked_reuse, flux__checked_reuse); }})"
+                ),
+            ),
+            (
+                "repeatedSub",
+                BinOp::Sub,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("((void)({add}), INT64_C(0))"),
+            ),
+            (
+                "repeatedMul",
+                BinOp::Mul,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__checked_reuse = {add}; flux_mul_i64(flux__checked_reuse, flux__checked_reuse); }})"
+                ),
+            ),
+            (
+                "repeatedDiv",
+                BinOp::Div,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("flux_div_self_i64({add})"),
+            ),
+            (
+                "repeatedCompare",
+                BinOp::Ge,
+                Type::Bool,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("((void)({add}), true)"),
+            ),
+            (
+                "repeatedLogic",
+                BinOp::Or,
+                Type::Bool,
+                HashMap::from([
+                    ("left".to_string(), Type::Bool),
+                    ("right".to_string(), Type::Bool),
+                ]),
+                format!("({} && {})", local_c_name("left"), local_c_name("right")),
+            ),
+            (
+                "reflexiveText",
+                BinOp::Eq,
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::Str)]),
+                "true".to_string(),
+            ),
+        ];
+
+        for (function, root_op, expected_ty, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("reused primitive CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .expect("reused primitive root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("reused primitive root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                expected_ty,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("reused pure primitive should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-reused-pure-primitive".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("reused pure primitive should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
     }
 
     #[test]
