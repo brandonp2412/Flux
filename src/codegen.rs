@@ -50516,10 +50516,17 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let icon = emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+            let rendered = emit_cfg_order_safe_call_arguments_direct(
+                &arguments[..2],
+                &[Type::Str, Type::Str],
+                env,
+                signatures,
+            )?;
             let callback = emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
-            Some(format!("flux__tray_show({title}, {icon}, {callback})"))
+            Some(format!(
+                "flux__tray_show({}, {}, {callback})",
+                rendered[0], rendered[1]
+            ))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -50527,10 +50534,14 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "dialog" && ty == Type::Void => match name.as_str() {
             "alert" | "sheet" if arguments.len() == 2 => {
-                let title =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                let message =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    arguments,
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let title = &rendered[0];
+                let message = &rendered[1];
                 let helper = if name == "alert" {
                     "flux__dialog_alert"
                 } else {
@@ -50539,10 +50550,14 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("{helper}({title}, {message})"))
             }
             "confirm" if arguments.len() == 3 => {
-                let title =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                let message =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let title = &rendered[0];
+                let message = &rendered[1];
                 let callback =
                     emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
                 Some(format!(
@@ -50552,10 +50567,14 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "choose" if arguments.len() == 4 => {
-                let title =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                let message =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let title = &rendered[0];
+                let message = &rendered[1];
                 let options = cfg_static_string_list_direct(&arguments[2], signatures)?;
                 if options.is_empty() {
                     return None;
@@ -61770,6 +61789,10 @@ fn text(_value: str) -> void {
 fn activated() -> void {
 }
 
+fn uiString(value: str) -> str {
+    return value
+}
+
 fn frameNext() -> void {
     frame.next(tick)
 }
@@ -61804,6 +61827,14 @@ fn fileFolder() -> void {
 
 fn trayShow(title: str, icon: str) -> void {
     tray.show(title, icon, activated)
+}
+
+fn trayShowCall(title: str, icon: str) -> void {
+    tray.show(uiString(title), icon, activated)
+}
+
+fn doubleTrayShowCall(title: str, icon: str) -> void {
+    tray.show(uiString(title), uiString(icon), activated)
 }
 
 fn main() -> i64 {
@@ -61874,6 +61905,20 @@ fn main() -> i64 {
                     function_c_name("activated")
                 ),
             ),
+            (
+                "trayShowCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("icon".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__tray_show({}({}), {}, {})",
+                    function_c_name("uiString"),
+                    local_c_name("title"),
+                    local_c_name("icon"),
+                    function_c_name("activated")
+                ),
+            ),
         ] {
             let graph = database
                 .control_flow_graph(function)
@@ -61918,6 +61963,33 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-callback-ui-call"));
         }
+
+        let graph = database
+            .control_flow_graph("doubleTrayShowCall")
+            .expect("two-call tray CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call tray show should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call tray show should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("title".to_string(), Type::Str),
+            ("icon".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible tray string inputs must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
@@ -61927,6 +61999,10 @@ fn selected(_index: i64) -> void {
 }
 
 fn confirmed() -> void {
+}
+
+fn dialogString(value: str) -> str {
+    return value
 }
 
 fn menuShow(title: str) -> void {
@@ -61945,8 +62021,20 @@ fn confirmDefault(title: str, message: str) -> void {
     dialog.confirm(title, message, confirmed)
 }
 
+fn confirmDefaultCall(title: str, message: str) -> void {
+    dialog.confirm(dialogString(title), message, confirmed)
+}
+
+fn doubleConfirmDefaultCall(title: str, message: str) -> void {
+    dialog.confirm(dialogString(title), dialogString(message), confirmed)
+}
+
 fn chooseDefault(title: str, message: str) -> void {
     dialog.choose(title, message, ["One", "Two"], selected)
+}
+
+fn chooseDefaultCall(title: str, message: str) -> void {
+    dialog.choose(dialogString(title), message, ["One", "Two"], selected)
 }
 
 fn confirmNamed(title: str, message: str, cancel: str, accept: str) -> void {
@@ -62003,6 +62091,22 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "confirmDefaultCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_confirm({}({}), {}, {}, {}, {})",
+                    function_c_name("dialogString"),
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    c_string("Cancel"),
+                    c_string("OK"),
+                    function_c_name("confirmed")
+                ),
+            ),
+            (
                 "chooseDefault",
                 HashMap::from([
                     ("title".to_string(), Type::Str),
@@ -62010,6 +62114,21 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__dialog_choose({}, {}, (const char *[]){{{choose_items}}}, INT64_C(2), {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    c_string("Cancel"),
+                    function_c_name("selected")
+                ),
+            ),
+            (
+                "chooseDefaultCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_choose({}({}), {}, (const char *[]){{{choose_items}}}, INT64_C(2), {}, {})",
+                    function_c_name("dialogString"),
                     local_c_name("title"),
                     local_c_name("message"),
                     c_string("Cancel"),
@@ -62093,6 +62212,33 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-static-list-dialog-call"));
         }
+
+        let graph = database
+            .control_flow_graph("doubleConfirmDefaultCall")
+            .expect("two-call dialog CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call dialog confirm should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call dialog confirm should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("title".to_string(), Type::Str),
+            ("message".to_string(), Type::Str),
+        ]);
+        assert!(
+            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
+            "two flexible dialog string inputs must retain the ordered checked-AST fallback"
+        );
     }
 
     #[test]
@@ -62226,8 +62372,16 @@ fn alert(title: str, message: str) -> void {
     dialog.alert(title, message)
 }
 
+fn alertCall(title: str, message: str) -> void {
+    dialog.alert(utilityString(title), message)
+}
+
 fn sheet(title: str, message: str) -> void {
     dialog.sheet(title, message)
+}
+
+fn sheetCall(title: str, message: str) -> void {
+    dialog.sheet(utilityString(title), message)
 }
 
 fn selectionStart() -> i64 {
@@ -62502,6 +62656,32 @@ fn main() -> i64 {
                 ]),
                 format!(
                     "flux__dialog_sheet({}, {})",
+                    local_c_name("title"),
+                    local_c_name("message")
+                ),
+            ),
+            (
+                "alertCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_alert({}({}), {})",
+                    function_c_name("utilityString"),
+                    local_c_name("title"),
+                    local_c_name("message")
+                ),
+            ),
+            (
+                "sheetCall",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_sheet({}({}), {})",
+                    function_c_name("utilityString"),
                     local_c_name("title"),
                     local_c_name("message")
                 ),
