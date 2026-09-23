@@ -49359,6 +49359,95 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "file" && name == "read" && ty == Type::Error => {
+            if arguments.len() != 3 {
+                return None;
+            }
+            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let max_bytes =
+                emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[2], &[Type::Str], env, signatures)?;
+            Some(format!(
+                "flux__fs_read_text({path}, {max_bytes}, {callback})"
+            ))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "directory" && name == "list" && ty == Type::Error => {
+            if arguments.len() != 2 {
+                return None;
+            }
+            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
+            Some(format!("flux__fs_list_directory({path}, {callback})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "path" && ty == Type::Error => match name.as_str() {
+            "join" if arguments.len() == 3 => {
+                let base =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let child =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__path_join({base}, {child}, {callback})"))
+            }
+            "dirname" | "basename" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let basename = if name == "basename" { "true" } else { "false" };
+                Some(format!(
+                    "flux__path_component({value}, {basename}, {callback})"
+                ))
+            }
+            "extension" | "stem" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                let extension = if name == "extension" { "true" } else { "false" };
+                Some(format!(
+                    "flux__path_extension_or_stem({value}, {extension}, {callback})"
+                ))
+            }
+            "normalize" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__path_normalize({value}, {callback})"))
+            }
+            _ => None,
+        },
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if matches!(namespace.as_str(), "file" | "path" | "directory" | "fs") => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let (helper, expected, result) = match (namespace.as_str(), name) {
@@ -58969,6 +59058,25 @@ fn fsCopy(source: str, destination: str) -> error {
     return fs.copyFile(source, destination)
 }
 
+fn text(_value: str) -> void {
+}
+
+fn fileRead(path: str, maxBytes: i64) -> error {
+    return file.read(path, maxBytes, text)
+}
+
+fn pathJoin(base: str, child: str) -> error {
+    return path.join(base, child, text)
+}
+
+fn pathNormalize(value: str) -> error {
+    return path.normalize(value, text)
+}
+
+fn directoryList(path: str) -> error {
+    return directory.list(path, text)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -59055,6 +59163,50 @@ fn main() -> i64 {
                     "flux__fs_copy_file({}, {})",
                     local_c_name("source"),
                     local_c_name("destination")
+                ),
+            ),
+            (
+                "fileRead",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("maxBytes".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__fs_read_text({}, {}, {})",
+                    local_c_name("path"),
+                    local_c_name("maxBytes"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathJoin",
+                HashMap::from([
+                    ("base".to_string(), Type::Str),
+                    ("child".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__path_join({}, {}, {})",
+                    local_c_name("base"),
+                    local_c_name("child"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "pathNormalize",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_normalize({}, {})",
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "directoryList",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!(
+                    "flux__fs_list_directory({}, {})",
+                    local_c_name("path"),
+                    function_c_name("text")
                 ),
             ),
         ] {
