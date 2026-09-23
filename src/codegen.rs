@@ -50076,11 +50076,10 @@ fn emit_cfg_scalar_expr_direct(
                                 Type::I64 | Type::Bool | Type::Str
                             )
                     );
-                let nested_copy_list_element = matches!(
-                    &element,
-                    Type::List(inner) if signatures.is_copy_type(inner)
-                );
-                if is_literal && !scalar_element && !nested_copy_list_element {
+                let nested_scalar_collection_element =
+                    matches!(&element, Type::List(_) | Type::Set(_))
+                        && json_array_encoding_shape(&element, signatures).is_ok();
+                if is_literal && !scalar_element && !nested_scalar_collection_element {
                     return None;
                 }
                 let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
@@ -61574,6 +61573,14 @@ fn encodeNestedArrayLiteral(value: i64) -> error {
     return json.encodeArray([[value, 5], [6, 7]], jsonNestedTemporaryText)
 }
 
+fn encodeDeepNestedListLiteral(value: i64) -> error {
+    return json.encode([[[value, 8]], [[9, 10]]], jsonNestedTemporaryText)
+}
+
+fn encodeDeepNestedArrayLiteral(value: i64) -> error {
+    return json.encodeArray([[[value, 11]], [[12, 13]]], jsonNestedTemporaryText)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -61581,7 +61588,12 @@ fn main() -> i64 {
         let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
             .expect("nested Copy-list JSON temporary fixture should typecheck");
 
-        for function in ["encodeNestedListLiteral", "encodeNestedArrayLiteral"] {
+        for function in [
+            "encodeNestedListLiteral",
+            "encodeNestedArrayLiteral",
+            "encodeDeepNestedListLiteral",
+            "encodeDeepNestedArrayLiteral",
+        ] {
             let graph = database
                 .control_flow_graph(function)
                 .expect("nested Copy-list JSON CFG should exist");
