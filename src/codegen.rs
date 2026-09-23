@@ -48273,6 +48273,77 @@ fn cfg_match_expr_calls_are_reconstructable(
         })
 }
 
+fn cfg_scalar_i64_constant(expr: &CfgScalarExpr) -> Option<i64> {
+    match &expr.kind {
+        CfgScalarExprKind::Constant(ConstantValue::I64(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn emit_cfg_optimized_i64_primitive_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    if signatures.canonical_type(&expr.ty) != Type::I64 {
+        return None;
+    }
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&left.ty) != Type::I64
+        || signatures.canonical_type(&right.ty) != Type::I64
+    {
+        return None;
+    }
+
+    if let (CfgScalarExprKind::Name(left_name), CfgScalarExprKind::Name(right_name)) =
+        (&left.kind, &right.kind)
+        && left_name == right_name
+    {
+        let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+        return match op {
+            BinOp::Sub => Some("INT64_C(0)".to_string()),
+            BinOp::Div => Some(format!("flux_div_self_i64({rendered})")),
+            _ => None,
+        };
+    }
+
+    let left_constant = cfg_scalar_i64_constant(left);
+    let right_constant = cfg_scalar_i64_constant(right);
+    match (op, left_constant, right_constant) {
+        (BinOp::Add, Some(0), _) => emit_cfg_scalar_expr_direct(right, env, signatures),
+        (BinOp::Add | BinOp::Sub, _, Some(0)) => emit_cfg_scalar_expr_direct(left, env, signatures),
+        (BinOp::Sub, Some(0), _) => {
+            let rendered = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+            Some(format!("flux_neg_i64({rendered})"))
+        }
+        (BinOp::Mul, Some(0), _) => {
+            let rendered = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+            Some(format!("((void)({rendered}), INT64_C(0))"))
+        }
+        (BinOp::Mul, _, Some(0)) => {
+            let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            Some(format!("((void)({rendered}), INT64_C(0))"))
+        }
+        (BinOp::Mul, Some(1), _) => emit_cfg_scalar_expr_direct(right, env, signatures),
+        (BinOp::Mul | BinOp::Div, _, Some(1)) => emit_cfg_scalar_expr_direct(left, env, signatures),
+        (BinOp::Mul, Some(-1), _) => {
+            let rendered = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+            Some(format!("flux_neg_i64({rendered})"))
+        }
+        (BinOp::Mul | BinOp::Div, _, Some(-1)) => {
+            let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            Some(format!("flux_neg_i64({rendered})"))
+        }
+        (BinOp::Div, _, Some(divisor)) if divisor != 0 => {
+            let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            Some(format!("(({rendered}) / INT64_C({divisor}))"))
+        }
+        _ => None,
+    }
+}
+
 fn cfg_scalar_expr_is_direct_primitive_tree(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48381,7 +48452,8 @@ fn emit_cfg_call_argument_direct(
         CfgScalarExprKind::Name(_)
             | CfgScalarExprKind::Constant(_)
             | CfgScalarExprKind::Aggregate(_)
-    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
+    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures)
+        || emit_cfg_optimized_i64_primitive_direct(argument, env, signatures).is_some();
     if !direct_argument
         || signatures.canonical_type(&argument.ty) != expected
         || !signatures.is_copy_type(&expected)
@@ -48408,6 +48480,7 @@ fn emit_cfg_ordinary_call_argument_direct(
             | CfgScalarExprKind::Binary { .. }
             | CfgScalarExprKind::Conditional { .. }
     ) && !cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures)
+        && emit_cfg_optimized_i64_primitive_direct(argument, env, signatures).is_none()
     {
         return None;
     }
@@ -48710,6 +48783,9 @@ fn emit_cfg_scalar_expr_direct(
     signatures: &Signatures,
 ) -> Option<String> {
     let ty = signatures.canonical_type(&expr.ty);
+    if let Some(rendered) = emit_cfg_optimized_i64_primitive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
     match &expr.kind {
         CfgScalarExprKind::Constant(constant)
             if signatures.canonical_type(&constant.ty()) == ty =>
@@ -54601,29 +54677,151 @@ fn main() -> i64 {
             assert_eq!(emitted, expected, "{function}");
         }
 
-        for function in ["constantIdentity"] {
+        let graph = database
+            .control_flow_graph("constantIdentity")
+            .expect("constant-identity CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Binary { .. }))
+            .expect("constant identity should retain its typed-IR root");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("constant identity should have scalar typed-IR facts");
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let emitted = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("constant identity should optimize directly from typed IR");
+        assert_eq!(emitted, local_c_name("value"));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-constant-identity".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("constant identity should bypass the checked-AST root");
+        assert_eq!(emitted, local_c_name("value"));
+    }
+
+    #[test]
+    fn direct_typed_ir_checked_i64_identity_reductions_preserve_optimized_codegen() {
+        let source = r#"
+fn addLeftZero(value: i64) -> i64 {
+    return 0 + value
+}
+
+fn subtractZero(value: i64) -> i64 {
+    return value - 0
+}
+
+fn zeroMinus(value: i64) -> i64 {
+    return 0 - value
+}
+
+fn multiplyZero(value: i64) -> i64 {
+    return value * 0
+}
+
+fn oneMultiply(value: i64) -> i64 {
+    return 1 * value
+}
+
+fn negOneMultiply(value: i64) -> i64 {
+    return -1 * value
+}
+
+fn divideOne(value: i64) -> i64 {
+    return value / 1
+}
+
+fn divideNegOne(value: i64) -> i64 {
+    return value / -1
+}
+
+fn divideThree(value: i64) -> i64 {
+    return value / 3
+}
+
+fn selfSubtract(value: i64) -> i64 {
+    return value - value
+}
+
+fn selfDivide(value: i64) -> i64 {
+    return value / value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("checked i64 identity fixture should typecheck");
+        let value = local_c_name("value");
+        let expected = [
+            ("addLeftZero", value.clone()),
+            ("subtractZero", value.clone()),
+            ("zeroMinus", format!("flux_neg_i64({value})")),
+            ("multiplyZero", format!("((void)({value}), INT64_C(0))")),
+            ("oneMultiply", value.clone()),
+            ("negOneMultiply", format!("flux_neg_i64({value})")),
+            ("divideOne", value.clone()),
+            ("divideNegOne", format!("flux_neg_i64({value})")),
+            ("divideThree", format!("(({value}) / INT64_C(3))")),
+            ("selfSubtract", "INT64_C(0)".to_string()),
+            ("selfDivide", format!("flux_div_self_i64({value})")),
+        ];
+
+        for (function, expected) in expected {
             let graph = database
                 .control_flow_graph(function)
-                .expect("fallback boundary CFG should exist");
+                .expect("checked i64 identity CFG should exist");
             let root = graph
                 .values()
                 .iter()
-                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Binary { .. }))
-                .expect("fallback boundary should retain its typed-IR root");
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary {
+                            op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                            ..
+                        }
+                    )
+                })
+                .expect("checked i64 identity should retain its typed-IR root");
             let facts = cfg_rewrite_facts(graph);
             let scalar = facts
                 .scalar_exprs
                 .get(&source_span_key(root.span))
-                .expect("fallback boundary should have scalar typed-IR facts");
-            assert!(
-                emit_cfg_scalar_expr_direct(
-                    scalar,
-                    &HashMap::from([("value".to_string(), Type::I64)]),
-                    database.signatures(),
-                )
-                .is_none(),
-                "{function} should preserve the optimization-sensitive synthetic-AST fallback"
-            );
+                .expect("checked i64 identity should have scalar typed-IR facts");
+            let env = HashMap::from([("value".to_string(), Type::I64)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("checked i64 identity should optimize directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-i64-identity".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("checked i64 identity should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
         }
     }
 
@@ -59566,7 +59764,10 @@ fn main() -> i64 {
         assert_eq!(nested_argument_emitted, nested_argument_direct);
         assert!(!nested_argument_emitted.contains("checked-ast-nested-call-argument"));
 
-        for function in ["identityArgument", "repeatedArgument"] {
+        for (function, first_argument) in [
+            ("identityArgument", local_c_name("value")),
+            ("repeatedArgument", "INT64_C(0)".to_string()),
+        ] {
             let graph = database
                 .control_flow_graph(function)
                 .expect("optimizer-sensitive call-argument CFG should exist");
@@ -59585,18 +59786,38 @@ fn main() -> i64 {
                 .scalar_exprs
                 .get(&source_span_key(call.span))
                 .expect("optimizer-sensitive call argument should have typed-IR facts");
-            assert!(
-                emit_cfg_scalar_expr_direct(
-                    scalar,
-                    &HashMap::from([
-                        ("value".to_string(), Type::I64),
-                        ("other".to_string(), Type::I64),
-                    ]),
-                    database.signatures(),
-                )
-                .is_none(),
-                "{function} should preserve the optimizer-sensitive synthetic-AST argument path"
+            let env = HashMap::from([
+                ("value".to_string(), Type::I64),
+                ("other".to_string(), Type::I64),
+            ]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("optimizer-sensitive call argument should optimize directly from typed IR");
+            assert_eq!(
+                direct,
+                format!(
+                    "{}({}, {})",
+                    function_c_name("add"),
+                    first_argument,
+                    local_c_name("other")
+                ),
+                "{function}"
             );
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str("checked-ast-optimized-call-argument".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("optimized call argument should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
         }
 
         let borrowed_graph = database
