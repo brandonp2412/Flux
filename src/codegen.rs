@@ -52489,8 +52489,13 @@ fn emit_cfg_scalar_expr_direct(
                 || signature.returns.len() != 1
                 || signature.param_details[0].named_only
                 || signatures.canonical_type(&signature.params[0]) != *input_inner
-                || signatures.canonical_type(&signature.returns[0]) != **result_inner
             {
+                return None;
+            }
+            let call_result_ty = signatures.canonical_type(&signature.returns[0]);
+            let returns_optional = call_result_ty == ty;
+            let returns_inner = call_result_ty == **result_inner;
+            if !returns_optional && !returns_inner {
                 return None;
             }
 
@@ -52539,8 +52544,15 @@ fn emit_cfg_scalar_expr_direct(
             let input_c = c_type(&input_inner, signatures);
             let result_c = c_type(&ty, signatures);
             let result_value = format!("{callee}({})", rendered.join(", "));
+            let present_assignment = if returns_optional {
+                format!("flux__optional_cascade_result_direct = {result_value};")
+            } else {
+                format!(
+                    "flux__optional_cascade_result_direct = ({result_c}){{ .has_value = true, .value = {result_value} }};"
+                )
+            };
             Some(format!(
-                "__extension__ ({{ {optional_c} flux__optional_cascade_input_direct = {optional_code}; {result_c} flux__optional_cascade_result_direct = ({result_c}){{ .has_value = false }}; if (flux__optional_cascade_input_direct.has_value) {{ {input_c} flux__optional_cascade_value_direct = flux__optional_cascade_input_direct.value; flux__optional_cascade_result_direct = ({result_c}){{ .has_value = true, .value = {result_value} }}; }} flux__optional_cascade_result_direct; }})"
+                "__extension__ ({{ {optional_c} flux__optional_cascade_input_direct = {optional_code}; {result_c} flux__optional_cascade_result_direct = ({result_c}){{ .has_value = false }}; if (flux__optional_cascade_input_direct.has_value) {{ {input_c} flux__optional_cascade_value_direct = flux__optional_cascade_input_direct.value; {present_assignment} }} flux__optional_cascade_result_direct; }})"
             ))
         }
         CfgScalarExprKind::Field {
@@ -62757,6 +62769,74 @@ fn main() -> i64 {
         .expect("nested named interface dispatch should bypass the checked-AST root");
         assert_eq!(nested_named_emitted, nested_named_direct);
         assert!(!nested_named_emitted.contains("checked-ast-nested-named-interface-call"));
+    }
+
+    #[test]
+    fn optional_cascade_optional_results_flatten_directly_from_typed_ir() {
+        let source = r#"
+fn maybeAdd(value: i64, amount: i64) -> i64? {
+    return value + amount
+}
+
+fn flattenMaybe(value: i64?) -> i64? {
+    return value ?.. maybeAdd(2)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("optional-return cascade fixture should typecheck");
+        let graph = database
+            .control_flow_graph("flattenMaybe")
+            .expect("flattenMaybe CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
+                        if callee == "maybeAdd"
+                )
+            })
+            .expect("optional-return cascade should retain typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("optional-return cascade should have typed-IR facts");
+        let env = HashMap::from([("value".to_string(), Type::Optional(Box::new(Type::I64)))]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("optional-return cascade should emit directly from typed IR");
+        assert!(direct.contains(&function_c_name("maybeAdd")), "{direct}");
+        assert!(
+            direct.contains("flux__optional_cascade_result_direct = flux__fn_maybeAdd("),
+            "{direct}"
+        );
+        assert!(
+            !direct.contains(".has_value = true, .value = flux__fn_maybeAdd("),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-optional-flatten".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Optional(Box::new(Type::I64)),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("optional-return cascade should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-optional-flatten"));
     }
 
     #[test]
