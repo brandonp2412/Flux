@@ -62481,6 +62481,89 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn concurrency_borrowed_list_shapes_emit_from_typed_ir() {
+        let source = r#"
+fn waitSlice(handles: i64[], start: i64) -> (i64, error) {
+    return worker.waitAny(handles[start:])
+}
+
+fn joinLiteral(first: i64, second: i64) -> (i64, error) {
+    return worker.joinAny([first, second])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("concurrency borrowed-list direct-IR fixture should typecheck");
+
+        for (function, call_name, helper, env, expected_fragment) in [
+            (
+                "waitSlice",
+                "waitAny",
+                "flux__worker_wait_any(",
+                HashMap::from([
+                    ("handles".to_string(), Type::List(Box::new(Type::I64))),
+                    ("start".to_string(), Type::I64),
+                ]),
+                "flux_list_slice",
+            ),
+            (
+                "joinLiteral",
+                "joinAny",
+                "flux__worker_join_any(",
+                HashMap::from([
+                    ("first".to_string(), Type::I64),
+                    ("second".to_string(), Type::I64),
+                ]),
+                "struct flux__list",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("concurrency borrowed-list CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::QualifiedCall {
+                                namespace,
+                                name,
+                                ..
+                            } if namespace == "worker" && name == call_name
+                        )
+                })
+                .expect("worker wait/join-any should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("worker wait/join-any should have multi-value typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .expect("borrowed-list worker wait/join-any should emit directly from typed IR");
+            assert!(direct.0.starts_with(helper), "{function}: {}", direct.0);
+            assert!(
+                direct.0.contains(expected_fragment),
+                "{function}: {}",
+                direct.0
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("worker wait/join-any should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
     fn network_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
 fn accepted(_socket: i64) -> void {
