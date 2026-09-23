@@ -48458,6 +48458,133 @@ fn cfg_same_pure_i64_expression(
     }
 }
 
+fn cfg_i64_expr_result_excludes_min(expr: &CfgScalarExpr, signatures: &Signatures) -> bool {
+    if let Some(value) = cfg_scalar_i64_constant(expr) {
+        return value != i64::MIN;
+    }
+
+    match &expr.kind {
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Neg, ..
+        } => true,
+        CfgScalarExprKind::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+        } => {
+            cfg_scalar_i64_constant(left).is_some_and(|value| value > 0)
+                || cfg_scalar_i64_constant(right).is_some_and(|value| value > 0)
+        }
+        CfgScalarExprKind::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+        } => {
+            cfg_scalar_i64_constant(left).is_some_and(|value| value >= 0)
+                || cfg_scalar_i64_constant(right).is_some_and(|value| value < 0)
+                || cfg_same_pure_i64_expression(left, right, signatures)
+        }
+        CfgScalarExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } => {
+            let constant_factor_excludes_min = |factor: i64| {
+                factor == 0 || factor == -1 || !factor.unsigned_abs().is_power_of_two()
+            };
+            cfg_same_pure_i64_expression(left, right, signatures)
+                || cfg_scalar_i64_constant(left).is_some_and(constant_factor_excludes_min)
+                || cfg_scalar_i64_constant(right).is_some_and(constant_factor_excludes_min)
+        }
+        CfgScalarExprKind::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+        } => {
+            cfg_same_pure_i64_expression(left, right, signatures)
+                || cfg_scalar_i64_constant(right)
+                    .is_some_and(|divisor| divisor != 0 && divisor != 1)
+        }
+        _ => false,
+    }
+}
+
+fn cfg_i64_additive_shift(expr: &CfgScalarExpr) -> Option<i64> {
+    match &expr.kind {
+        CfgScalarExprKind::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+        } => match (
+            cfg_scalar_i64_constant(left).filter(|value| *value != 0),
+            cfg_scalar_i64_constant(right).filter(|value| *value != 0),
+        ) {
+            (Some(shift), None) | (None, Some(shift)) => Some(shift),
+            _ => None,
+        },
+        CfgScalarExprKind::Binary {
+            op: BinOp::Sub,
+            right,
+            ..
+        } => cfg_scalar_i64_constant(right)
+            .filter(|value| *value != 0)
+            .and_then(i64::checked_neg),
+        _ => None,
+    }
+}
+
+fn cfg_i64_additive_shift_composition_is_safe(inner: &CfgScalarExpr, outer_shift: i64) -> bool {
+    cfg_i64_additive_shift(inner).is_some_and(|inner_shift| {
+        ((inner_shift > 0 && outer_shift < 0) || (inner_shift < 0 && outer_shift > 0))
+            && outer_shift.unsigned_abs() <= inner_shift.unsigned_abs()
+    })
+}
+
+fn emit_cfg_partial_constant_additive_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&expr.ty) != Type::I64
+        || signatures.canonical_type(&left.ty) != Type::I64
+        || signatures.canonical_type(&right.ty) != Type::I64
+    {
+        return None;
+    }
+
+    let safe = match op {
+        BinOp::Sub => cfg_scalar_i64_constant(right)
+            .filter(|value| *value != 0)
+            .and_then(i64::checked_neg)
+            .is_some_and(|outer_shift| {
+                cfg_i64_additive_shift_composition_is_safe(left, outer_shift)
+            }),
+        BinOp::Add => {
+            cfg_scalar_i64_constant(right)
+                .filter(|value| *value != 0)
+                .is_some_and(|outer_shift| {
+                    cfg_i64_additive_shift_composition_is_safe(left, outer_shift)
+                })
+                || cfg_scalar_i64_constant(left)
+                    .filter(|value| *value != 0)
+                    .is_some_and(|outer_shift| {
+                        cfg_i64_additive_shift_composition_is_safe(right, outer_shift)
+                    })
+        }
+        _ => false,
+    };
+    if !safe {
+        return None;
+    }
+
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    Some(format!("(({left}) {} ({right}))", c_operator(*op)))
+}
+
 fn cfg_scalar_bool_constant(expr: &CfgScalarExpr) -> Option<bool> {
     match &expr.kind {
         CfgScalarExprKind::Constant(ConstantValue::Bool(value)) => Some(*value),
@@ -48754,6 +48881,30 @@ fn emit_cfg_double_unary_direct(
     }
 }
 
+fn emit_cfg_range_safe_i64_negation_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Unary {
+        op: UnaryOp::Neg,
+        operand,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if signatures.canonical_type(&expr.ty) != Type::I64
+        || signatures.canonical_type(&operand.ty) != Type::I64
+        || matches!(operand.kind, CfgScalarExprKind::Constant(_))
+        || !cfg_i64_expr_result_excludes_min(operand, signatures)
+    {
+        return None;
+    }
+
+    let rendered = emit_cfg_scalar_expr_direct(operand, env, signatures)?;
+    Some(format!("(-({rendered}))"))
+}
+
 fn emit_cfg_reused_pure_primitive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48966,6 +49117,7 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
             return false;
         }
         match &expr.kind {
+            CfgScalarExprKind::Constant(ConstantValue::I64(_)) if ty == Type::I64 => true,
             CfgScalarExprKind::Name(name) => {
                 env.get(name)
                     .is_some_and(|local_ty| signatures.canonical_type(local_ty) == ty)
@@ -48993,7 +49145,8 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
         }
     }
 
-    visit(expr, env, signatures, &mut HashSet::new())
+    let mut seen_names = HashSet::new();
+    visit(expr, env, signatures, &mut seen_names) && !seen_names.is_empty()
 }
 
 fn cfg_scalar_result_is_direct(returns: &[Type], ty: &Type, signatures: &Signatures) -> bool {
@@ -49392,7 +49545,13 @@ fn emit_cfg_scalar_expr_direct(
     if let Some(rendered) = emit_cfg_optimized_i64_primitive_direct(expr, env, signatures) {
         return Some(rendered);
     }
+    if let Some(rendered) = emit_cfg_partial_constant_additive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
     if let Some(rendered) = emit_cfg_double_unary_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_range_safe_i64_negation_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_boolean_algebra_direct(expr, env, signatures) {
@@ -55991,6 +56150,136 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("double-unary expression should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_constant_bearing_i64_trees_preserve_range_guards() {
+        let source = r#"
+fn addLiteral(value: i64) -> i64 {
+    return value + 2
+}
+
+fn nestedLiteral(value: i64, factor: i64) -> i64 {
+    return (value + 2) * factor
+}
+
+fn compareLiteral(value: i64) -> bool {
+    return value + 2 < 10
+}
+
+fn rangeSafeAddNeg(value: i64) -> i64 {
+    return -(value + 1)
+}
+
+fn rangeSafeMulNeg(value: i64) -> i64 {
+    return -(value * 3)
+}
+
+fn rangeSafeDivNeg(value: i64) -> i64 {
+    return -(value / 2)
+}
+
+fn guardedIdentityNeg(value: i64) -> i64 {
+    return -(value + 0)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("constant-bearing primitive fixture should typecheck");
+        let value = local_c_name("value");
+        let factor = local_c_name("factor");
+        let cases = [
+            (
+                "addLiteral",
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux_add_i64({value}, INT64_C(2))"),
+            ),
+            (
+                "nestedLiteral",
+                Type::I64,
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("factor".to_string(), Type::I64),
+                ]),
+                format!("flux_mul_i64(flux_add_i64({value}, INT64_C(2)), {factor})"),
+            ),
+            (
+                "compareLiteral",
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(flux_add_i64({value}, INT64_C(2)) < INT64_C(10))"),
+            ),
+            (
+                "rangeSafeAddNeg",
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(-(flux_add_i64({value}, INT64_C(1))))"),
+            ),
+            (
+                "rangeSafeMulNeg",
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(-(flux_mul_i64({value}, INT64_C(3))))"),
+            ),
+            (
+                "rangeSafeDivNeg",
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("(-((({value}) / INT64_C(2))))"),
+            ),
+            (
+                "guardedIdentityNeg",
+                Type::I64,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("flux_neg_i64({value})"),
+            ),
+        ];
+
+        for (function, expected_ty, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("constant-bearing primitive CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| value.ty == expected_ty)
+                .max_by_key(|value| value.span.length)
+                .expect("constant-bearing primitive root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("constant-bearing primitive root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                expected_ty,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("constant-bearing primitive should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-constant-bearing-i64".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("constant-bearing primitive should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
