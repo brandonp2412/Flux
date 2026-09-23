@@ -48592,6 +48592,82 @@ fn cfg_scalar_bool_constant(expr: &CfgScalarExpr) -> Option<bool> {
     }
 }
 
+fn cfg_scalar_bool_constant_with_signatures(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<bool> {
+    if let Some(value) = cfg_scalar_bool_constant(expr) {
+        return Some(value);
+    }
+    let CfgScalarExprKind::Name(name) = &expr.kind else {
+        return None;
+    };
+    if env.contains_key(name) {
+        return None;
+    }
+    match &signatures.constant(name)?.value {
+        ConstantValue::Bool(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn emit_cfg_boolean_constant_identity_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&expr.ty) != Type::Bool
+        || signatures.canonical_type(&left.ty) != Type::Bool
+        || signatures.canonical_type(&right.ty) != Type::Bool
+        || !matches!(op, BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or)
+    {
+        return None;
+    }
+
+    let left_constant = cfg_scalar_bool_constant_with_signatures(left, env, signatures);
+    let right_constant = cfg_scalar_bool_constant_with_signatures(right, env, signatures);
+    if left_constant.is_none() && right_constant.is_none() {
+        return None;
+    }
+
+    let negate = |code: String| format!("(!({code}))");
+    match (*op, left_constant, right_constant) {
+        (BinOp::Eq, Some(true), _) | (BinOp::Ne, Some(false), _) => {
+            emit_cfg_scalar_expr_direct(right, env, signatures)
+        }
+        (BinOp::Eq, Some(false), _) | (BinOp::Ne, Some(true), _) => {
+            emit_cfg_scalar_expr_direct(right, env, signatures).map(negate)
+        }
+        (BinOp::Eq, _, Some(true)) | (BinOp::Ne, _, Some(false)) => {
+            emit_cfg_scalar_expr_direct(left, env, signatures)
+        }
+        (BinOp::Eq, _, Some(false)) | (BinOp::Ne, _, Some(true)) => {
+            emit_cfg_scalar_expr_direct(left, env, signatures).map(negate)
+        }
+        (BinOp::And, Some(false), _) => Some("false".to_string()),
+        (BinOp::Or, Some(true), _) => Some("true".to_string()),
+        (BinOp::And, Some(true), _) | (BinOp::Or, Some(false), _) => {
+            emit_cfg_scalar_expr_direct(right, env, signatures)
+        }
+        (BinOp::And, _, Some(true)) | (BinOp::Or, _, Some(false)) => {
+            emit_cfg_scalar_expr_direct(left, env, signatures)
+        }
+        (BinOp::And, _, Some(false)) => {
+            let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            Some(format!("((void)({left}), false)"))
+        }
+        (BinOp::Or, _, Some(true)) => {
+            let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            Some(format!("((void)({left}), true)"))
+        }
+        _ => None,
+    }
+}
+
 fn cfg_same_pure_boolean_expression(
     left: &CfgScalarExpr,
     right: &CfgScalarExpr,
@@ -49118,10 +49194,25 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
         }
         match &expr.kind {
             CfgScalarExprKind::Constant(ConstantValue::I64(_)) if ty == Type::I64 => true,
+            CfgScalarExprKind::Constant(ConstantValue::Bool(_)) if ty == Type::Bool => true,
+            CfgScalarExprKind::Constant(ConstantValue::Str(_)) if ty == Type::Str => true,
             CfgScalarExprKind::Name(name) => {
-                env.get(name)
+                if env
+                    .get(name)
                     .is_some_and(|local_ty| signatures.canonical_type(local_ty) == ty)
-                    && seen_names.insert(name.clone())
+                {
+                    seen_names.insert(name.clone())
+                } else {
+                    signatures.constant(name).is_some_and(|constant| {
+                        signatures.canonical_type(&constant.ty) == ty
+                            && matches!(
+                                &constant.value,
+                                ConstantValue::I64(_)
+                                    | ConstantValue::Bool(_)
+                                    | ConstantValue::Str(_)
+                            )
+                    })
+                }
             }
             CfgScalarExprKind::Unary { operand, .. } => {
                 !matches!(operand.kind, CfgScalarExprKind::Unary { .. })
@@ -49552,6 +49643,9 @@ fn emit_cfg_scalar_expr_direct(
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_range_safe_i64_negation_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_boolean_constant_identity_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_boolean_algebra_direct(expr, env, signatures) {
@@ -56280,6 +56374,134 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("constant-bearing primitive should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_primitive_bool_and_string_constants_preserve_identities() {
+        let source = r#"
+fn observe(value: bool) -> bool {
+    print(value)
+    return value
+}
+
+fn equalTrue(value: bool) -> bool {
+    return value == true
+}
+
+fn falseEqual(value: bool) -> bool {
+    return false == value
+}
+
+fn andFalseEffect(value: bool) -> bool {
+    return observe(value) && false
+}
+
+fn skipAndEffect(value: bool) -> bool {
+    return false && observe(value)
+}
+
+fn orTrueEffect(value: bool) -> bool {
+    return observe(value) || true
+}
+
+fn skipOrEffect(value: bool) -> bool {
+    return true || observe(value)
+}
+
+fn textEqual(value: str) -> bool {
+    return value == "Flux"
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("primitive constant fixture should typecheck");
+        let bool_value = local_c_name("value");
+        let string_value = local_c_name("value");
+        let observed = format!("flux__fn_observe({bool_value})");
+        let cases = [
+            (
+                "equalTrue",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                bool_value.clone(),
+            ),
+            (
+                "falseEqual",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!("(!({bool_value}))"),
+            ),
+            (
+                "andFalseEffect",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!("((void)({observed}), false)"),
+            ),
+            (
+                "skipAndEffect",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                "false".to_string(),
+            ),
+            (
+                "orTrueEffect",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!("((void)({observed}), true)"),
+            ),
+            (
+                "skipOrEffect",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                "true".to_string(),
+            ),
+            (
+                "textEqual",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(r#"(strcmp({string_value}, "Flux") == 0)"#),
+            ),
+        ];
+
+        for (function, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("primitive constant CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| value.ty == Type::Bool)
+                .max_by_key(|value| value.span.length)
+                .expect("primitive constant root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| {
+                    panic!("{function} primitive constant root should have scalar typed-IR facts")
+                });
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                Type::Bool,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("primitive constant expression should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-primitive-constant".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("primitive constant expression should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
