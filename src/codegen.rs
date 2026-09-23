@@ -49495,16 +49495,82 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
-        } if namespace == "clipboard" => {
+        } if namespace == "frame" && ty == Type::Void => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
-            if !matches!(name, "write" | "setText") || ty != Type::Void {
-                return None;
+            match name {
+                "request" | "next" if arguments.len() == 1 => {
+                    let callback =
+                        emit_cfg_callback_argument_direct(&arguments[0], &[], env, signatures)?;
+                    Some(format!("flux__frame_request({callback})"))
+                }
+                "timeline" if arguments.len() == 2 => {
+                    let duration =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let callback = emit_cfg_callback_argument_direct(
+                        &arguments[1],
+                        &[Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    Some(format!("flux__frame_timeline({duration}, {callback})"))
+                }
+                _ => None,
             }
-            let [text] = arguments.as_slice() else {
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "clipboard" && ty == Type::Void => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let [argument] = arguments.as_slice() else {
                 return None;
             };
-            let text = emit_cfg_call_argument_direct(text, &Type::Str, env, signatures)?;
-            Some(format!("flux__clipboard_set_text({text})"))
+            match name {
+                "write" | "setText" => {
+                    let text =
+                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?;
+                    Some(format!("flux__clipboard_set_text({text})"))
+                }
+                "read" | "readText" => {
+                    let callback =
+                        emit_cfg_callback_argument_direct(argument, &[Type::Str], env, signatures)?;
+                    Some(format!("flux__clipboard_read_text({callback})"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "fileDialog" && ty == Type::Void => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let [callback] = arguments.as_slice() else {
+                return None;
+            };
+            let callback =
+                emit_cfg_callback_argument_direct(callback, &[Type::Str], env, signatures)?;
+            let helper = match name {
+                "open" | "openFile" => "flux__file_dialog_open_file",
+                "save" | "saveFile" => "flux__file_dialog_save_file",
+                "folder" | "selectDirectory" => "flux__file_dialog_select_directory",
+                _ => return None,
+            };
+            Some(format!("{helper}({callback})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "tray" && name == "show" && ty == Type::Void => {
+            if arguments.len() != 3 {
+                return None;
+            }
+            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let icon = emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+            let callback = emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
+            Some(format!("flux__tray_show({title}, {icon}, {callback})"))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -58729,6 +58795,153 @@ fn main() -> i64 {
             .expect("filesystem qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-filesystem-call"));
+        }
+    }
+
+    #[test]
+    fn direct_callback_ui_effects_emit_from_typed_ir() {
+        let source = r#"
+fn tick() -> void {
+}
+
+fn progress(_value: i64) -> void {
+}
+
+fn text(_value: str) -> void {
+}
+
+fn activated() -> void {
+}
+
+fn frameNext() -> void {
+    frame.next(tick)
+}
+
+fn frameTimeline(duration: i64) -> void {
+    frame.timeline(duration, progress)
+}
+
+fn clipboardRead() -> void {
+    clipboard.read(text)
+}
+
+fn fileOpen() -> void {
+    fileDialog.open(text)
+}
+
+fn fileSave() -> void {
+    fileDialog.save(text)
+}
+
+fn fileFolder() -> void {
+    fileDialog.folder(text)
+}
+
+fn trayShow(title: str, icon: str) -> void {
+    tray.show(title, icon, activated)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("callback UI direct-IR fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "frameNext",
+                HashMap::new(),
+                format!("flux__frame_request({})", function_c_name("tick")),
+            ),
+            (
+                "frameTimeline",
+                HashMap::from([("duration".to_string(), Type::I64)]),
+                format!(
+                    "flux__frame_timeline({}, {})",
+                    local_c_name("duration"),
+                    function_c_name("progress")
+                ),
+            ),
+            (
+                "clipboardRead",
+                HashMap::new(),
+                format!("flux__clipboard_read_text({})", function_c_name("text")),
+            ),
+            (
+                "fileOpen",
+                HashMap::new(),
+                format!("flux__file_dialog_open_file({})", function_c_name("text")),
+            ),
+            (
+                "fileSave",
+                HashMap::new(),
+                format!("flux__file_dialog_save_file({})", function_c_name("text")),
+            ),
+            (
+                "fileFolder",
+                HashMap::new(),
+                format!(
+                    "flux__file_dialog_select_directory({})",
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "trayShow",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("icon".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__tray_show({}, {}, {})",
+                    local_c_name("title"),
+                    local_c_name("icon"),
+                    function_c_name("activated")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("callback UI CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("callback UI call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("callback UI call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported callback UI call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-callback-ui-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("callback UI call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-callback-ui-call"));
         }
     }
 
