@@ -49032,6 +49032,101 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "preferences" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let (helper, expected) = match name {
+                "set" => ("flux__preferences_set", vec![Type::Str, Type::Str]),
+                "remove" => ("flux__preferences_remove", vec![Type::Str]),
+                _ => return None,
+            };
+            if ty != Type::Error || arguments.len() != expected.len() {
+                return None;
+            }
+            let rendered = arguments
+                .iter()
+                .zip(&expected)
+                .map(|(argument, expected)| {
+                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!("{helper}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "json" && name == "validate" && ty == Type::Error => {
+            let [value] = arguments.as_slice() else {
+                return None;
+            };
+            let value = emit_cfg_call_argument_direct(value, &Type::Str, env, signatures)?;
+            Some(format!("flux__json_validate({value})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "clipboard" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            if !matches!(name, "write" | "setText") || ty != Type::Void {
+                return None;
+            }
+            let [text] = arguments.as_slice() else {
+                return None;
+            };
+            let text = emit_cfg_call_argument_direct(text, &Type::Str, env, signatures)?;
+            Some(format!("flux__clipboard_set_text({text})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "dialog" && matches!(name.as_str(), "alert" | "sheet") => {
+            if ty != Type::Void || arguments.len() != 2 {
+                return None;
+            }
+            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let message =
+                emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+            let helper = if name == "alert" {
+                "flux__dialog_alert"
+            } else {
+                "flux__dialog_sheet"
+            };
+            Some(format!("{helper}({title}, {message})"))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "textInput" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "selectionStart" if ty == Type::I64 && arguments.is_empty() => {
+                    Some("flux__text_input_selection_start()".to_string())
+                }
+                "selectionEnd" if ty == Type::I64 && arguments.is_empty() => {
+                    Some("flux__text_input_selection_end()".to_string())
+                }
+                "setCaret" if ty == Type::Bool && arguments.len() == 1 => {
+                    let position =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    Some(format!("flux__text_input_set_caret({position})"))
+                }
+                "setSelection" if ty == Type::Bool && arguments.len() == 2 => {
+                    let start =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let end =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    Some(format!("flux__text_input_set_selection({start}, {end})"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "process" => {
             let (helper, expected, result) = match name.as_str() {
                 "pid" => ("flux__process_pid", Vec::new(), Type::I64),
@@ -58159,6 +58254,181 @@ fn main() -> i64 {
             .expect("filesystem qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-filesystem-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_utility_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn preferenceSet(key: str, value: str) -> error {
+    return preferences.set(key, value)
+}
+
+fn preferenceRemove(key: str) -> error {
+    return preferences.remove(key)
+}
+
+fn validate(value: str) -> error {
+    return json.validate(value)
+}
+
+fn clipboardWrite(value: str) -> void {
+    clipboard.setText(value)
+}
+
+fn alert(title: str, message: str) -> void {
+    dialog.alert(title, message)
+}
+
+fn sheet(title: str, message: str) -> void {
+    dialog.sheet(title, message)
+}
+
+fn selectionStart() -> i64 {
+    return textInput.selectionStart()
+}
+
+fn selectionEnd() -> i64 {
+    return textInput.selectionEnd()
+}
+
+fn setCaret(position: i64) -> bool {
+    return textInput.setCaret(position)
+}
+
+fn setSelection(start: i64, end: i64) -> bool {
+    return textInput.setSelection(start, end)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct utility qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "preferenceSet",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__preferences_set({}, {})",
+                    local_c_name("key"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "preferenceRemove",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!("flux__preferences_remove({})", local_c_name("key")),
+            ),
+            (
+                "validate",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!("flux__json_validate({})", local_c_name("value")),
+            ),
+            (
+                "clipboardWrite",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!("flux__clipboard_set_text({})", local_c_name("value")),
+            ),
+            (
+                "alert",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_alert({}, {})",
+                    local_c_name("title"),
+                    local_c_name("message")
+                ),
+            ),
+            (
+                "sheet",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_sheet({}, {})",
+                    local_c_name("title"),
+                    local_c_name("message")
+                ),
+            ),
+            (
+                "selectionStart",
+                HashMap::new(),
+                "flux__text_input_selection_start()".to_string(),
+            ),
+            (
+                "selectionEnd",
+                HashMap::new(),
+                "flux__text_input_selection_end()".to_string(),
+            ),
+            (
+                "setCaret",
+                HashMap::from([("position".to_string(), Type::I64)]),
+                format!("flux__text_input_set_caret({})", local_c_name("position")),
+            ),
+            (
+                "setSelection",
+                HashMap::from([
+                    ("start".to_string(), Type::I64),
+                    ("end".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__text_input_set_selection({}, {})",
+                    local_c_name("start"),
+                    local_c_name("end")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("utility qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("utility qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("utility qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported scalar utility call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-utility-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("utility qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-utility-call"));
         }
     }
 
