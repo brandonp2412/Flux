@@ -48412,6 +48412,36 @@ fn emit_cfg_callback_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn cfg_static_string_list_direct(
+    argument: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> Option<Vec<String>> {
+    if signatures.canonical_type(&argument.ty) != Type::List(Box::new(Type::Str)) {
+        return None;
+    }
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    let CfgAggregateConstantKind::List(items) = &aggregate.kind else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            CfgAggregateValue::Scalar(ConstantValue::Str(value)) => Some(value.clone()),
+            CfgAggregateValue::Direct(value)
+                if signatures.canonical_type(&value.ty) == Type::Str =>
+            {
+                match &value.kind {
+                    CfgScalarExprKind::Constant(ConstantValue::Str(value)) => Some(value.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn emit_cfg_positional_call_arguments_direct(
     signature: &Signature,
     arguments: &[CfgScalarExpr],
@@ -49563,6 +49593,31 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "menu" && name == "show" && ty == Type::Void => {
+            if arguments.len() != 3 {
+                return None;
+            }
+            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let items = cfg_static_string_list_direct(&arguments[1], signatures)?;
+            if items.is_empty() {
+                return None;
+            }
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[2], &[Type::I64], env, signatures)?;
+            let values = items
+                .iter()
+                .map(|value| c_string(value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!(
+                "flux__menu_show({title}, (const char *[]){{{values}}}, INT64_C({}), {callback})",
+                items.len()
+            ))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "tray" && name == "show" && ty == Type::Void => {
             if arguments.len() != 3 {
                 return None;
@@ -49576,20 +49631,60 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
-        } if namespace == "dialog" && matches!(name.as_str(), "alert" | "sheet") => {
-            if ty != Type::Void || arguments.len() != 2 {
-                return None;
+        } if namespace == "dialog" && ty == Type::Void => match name.as_str() {
+            "alert" | "sheet" if arguments.len() == 2 => {
+                let title =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let message =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let helper = if name == "alert" {
+                    "flux__dialog_alert"
+                } else {
+                    "flux__dialog_sheet"
+                };
+                Some(format!("{helper}({title}, {message})"))
             }
-            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let message =
-                emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
-            let helper = if name == "alert" {
-                "flux__dialog_alert"
-            } else {
-                "flux__dialog_sheet"
-            };
-            Some(format!("{helper}({title}, {message})"))
-        }
+            "confirm" if arguments.len() == 3 => {
+                let title =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let message =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let callback =
+                    emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
+                Some(format!(
+                    "flux__dialog_confirm({title}, {message}, {}, {}, {callback})",
+                    c_string("Cancel"),
+                    c_string("OK")
+                ))
+            }
+            "choose" if arguments.len() == 4 => {
+                let title =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let message =
+                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let options = cfg_static_string_list_direct(&arguments[2], signatures)?;
+                if options.is_empty() {
+                    return None;
+                }
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[3],
+                    &[Type::I64],
+                    env,
+                    signatures,
+                )?;
+                let values = options
+                    .iter()
+                    .map(|value| c_string(value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "flux__dialog_choose({title}, {message}, (const char *[]){{{values}}}, INT64_C({}), {}, {callback})",
+                    options.len(),
+                    c_string("Cancel")
+                ))
+            }
+            _ => None,
+        },
         CfgScalarExprKind::QualifiedCall {
             namespace,
             name,
@@ -49903,6 +49998,109 @@ fn emit_cfg_scalar_expr_direct(
                 rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
             }
             Some(format!("{callee}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::NamedQualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "dialog" && ty == Type::Void => {
+            let positional = arguments
+                .iter()
+                .filter_map(|(name, argument)| name.is_none().then_some(argument))
+                .collect::<Vec<_>>();
+            match name.as_str() {
+                "confirm" => {
+                    if positional.len() != 3
+                        || arguments.iter().any(|(name, _)| {
+                            name.as_deref()
+                                .is_some_and(|name| !matches!(name, "cancelLabel" | "confirmLabel"))
+                        })
+                        || arguments
+                            .iter()
+                            .filter(|(name, _)| name.as_deref() == Some("cancelLabel"))
+                            .count()
+                            > 1
+                        || arguments
+                            .iter()
+                            .filter(|(name, _)| name.as_deref() == Some("confirmLabel"))
+                            .count()
+                            > 1
+                    {
+                        return None;
+                    }
+                    let title =
+                        emit_cfg_call_argument_direct(positional[0], &Type::Str, env, signatures)?;
+                    let message =
+                        emit_cfg_call_argument_direct(positional[1], &Type::Str, env, signatures)?;
+                    let callback =
+                        emit_cfg_callback_argument_direct(positional[2], &[], env, signatures)?;
+                    let cancel_label = if let Some(argument) =
+                        arguments.iter().find_map(|(name, argument)| {
+                            (name.as_deref() == Some("cancelLabel")).then_some(argument)
+                        }) {
+                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    } else {
+                        c_string("Cancel")
+                    };
+                    let confirm_label = if let Some(argument) =
+                        arguments.iter().find_map(|(name, argument)| {
+                            (name.as_deref() == Some("confirmLabel")).then_some(argument)
+                        }) {
+                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    } else {
+                        c_string("OK")
+                    };
+                    Some(format!(
+                        "flux__dialog_confirm({title}, {message}, {cancel_label}, {confirm_label}, {callback})"
+                    ))
+                }
+                "choose" => {
+                    if positional.len() != 4
+                        || arguments.iter().any(|(name, _)| {
+                            name.as_deref().is_some_and(|name| name != "cancelLabel")
+                        })
+                        || arguments
+                            .iter()
+                            .filter(|(name, _)| name.as_deref() == Some("cancelLabel"))
+                            .count()
+                            > 1
+                    {
+                        return None;
+                    }
+                    let title =
+                        emit_cfg_call_argument_direct(positional[0], &Type::Str, env, signatures)?;
+                    let message =
+                        emit_cfg_call_argument_direct(positional[1], &Type::Str, env, signatures)?;
+                    let options = cfg_static_string_list_direct(positional[2], signatures)?;
+                    if options.is_empty() {
+                        return None;
+                    }
+                    let callback = emit_cfg_callback_argument_direct(
+                        positional[3],
+                        &[Type::I64],
+                        env,
+                        signatures,
+                    )?;
+                    let cancel_label = if let Some(argument) =
+                        arguments.iter().find_map(|(name, argument)| {
+                            (name.as_deref() == Some("cancelLabel")).then_some(argument)
+                        }) {
+                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?
+                    } else {
+                        c_string("Cancel")
+                    };
+                    let values = options
+                        .iter()
+                        .map(|value| c_string(value))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Some(format!(
+                        "flux__dialog_choose({title}, {message}, (const char *[]){{{values}}}, INT64_C({}), {cancel_label}, {callback})",
+                        options.len()
+                    ))
+                }
+                _ => None,
+            }
         }
         CfgScalarExprKind::NamedQualifiedCall {
             namespace,
@@ -58942,6 +59140,163 @@ fn main() -> i64 {
             .expect("callback UI call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-callback-ui-call"));
+        }
+    }
+
+    #[test]
+    fn direct_static_list_and_named_dialog_effects_emit_from_typed_ir() {
+        let source = r#"
+fn selected(_index: i64) -> void {
+}
+
+fn confirmed() -> void {
+}
+
+fn menuShow(title: str) -> void {
+    menu.show(title, ["Open", "Quit"], selected)
+}
+
+fn confirmDefault(title: str, message: str) -> void {
+    dialog.confirm(title, message, confirmed)
+}
+
+fn chooseDefault(title: str, message: str) -> void {
+    dialog.choose(title, message, ["One", "Two"], selected)
+}
+
+fn confirmNamed(title: str, message: str, cancel: str, accept: str) -> void {
+    dialog.confirm(title, message, confirmed, cancelLabel: cancel, confirmLabel: accept)
+}
+
+fn chooseNamed(title: str, message: str, cancel: str) -> void {
+    dialog.choose(title, message, ["Alpha", "Beta"], selected, cancelLabel: cancel)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("static-list and named-dialog direct-IR fixture should typecheck");
+        let menu_items = [c_string("Open"), c_string("Quit")].join(", ");
+        let choose_items = [c_string("One"), c_string("Two")].join(", ");
+        let named_choose_items = [c_string("Alpha"), c_string("Beta")].join(", ");
+
+        for (function, env, expected) in [
+            (
+                "menuShow",
+                HashMap::from([("title".to_string(), Type::Str)]),
+                format!(
+                    "flux__menu_show({}, (const char *[]){{{menu_items}}}, INT64_C(2), {})",
+                    local_c_name("title"),
+                    function_c_name("selected")
+                ),
+            ),
+            (
+                "confirmDefault",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_confirm({}, {}, {}, {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    c_string("Cancel"),
+                    c_string("OK"),
+                    function_c_name("confirmed")
+                ),
+            ),
+            (
+                "chooseDefault",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_choose({}, {}, (const char *[]){{{choose_items}}}, INT64_C(2), {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    c_string("Cancel"),
+                    function_c_name("selected")
+                ),
+            ),
+            (
+                "confirmNamed",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                    ("cancel".to_string(), Type::Str),
+                    ("accept".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_confirm({}, {}, {}, {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    local_c_name("cancel"),
+                    local_c_name("accept"),
+                    function_c_name("confirmed")
+                ),
+            ),
+            (
+                "chooseNamed",
+                HashMap::from([
+                    ("title".to_string(), Type::Str),
+                    ("message".to_string(), Type::Str),
+                    ("cancel".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__dialog_choose({}, {}, (const char *[]){{{named_choose_items}}}, INT64_C(2), {}, {})",
+                    local_c_name("title"),
+                    local_c_name("message"),
+                    local_c_name("cancel"),
+                    function_c_name("selected")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("static-list/dialog CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                            | crate::ir::ControlFlowValueKind::NamedQualifiedCall { .. }
+                    )
+                })
+                .expect("static-list/dialog call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("static-list/dialog call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported static-list/dialog call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-static-list-dialog-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("static-list/dialog call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-static-list-dialog-call"));
         }
     }
 
