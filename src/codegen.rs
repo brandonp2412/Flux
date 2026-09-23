@@ -48719,6 +48719,43 @@ fn cfg_boolean_absorption_operand_is_discardable(expr: &CfgScalarExpr) -> bool {
     )
 }
 
+fn emit_cfg_boolean_literal_comparison_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if !matches!(op, BinOp::Eq | BinOp::Ne)
+        || signatures.canonical_type(&expr.ty) != Type::Bool
+        || signatures.canonical_type(&left.ty) != Type::Bool
+        || signatures.canonical_type(&right.ty) != Type::Bool
+    {
+        return None;
+    }
+
+    let (constant, dynamic) = match (
+        cfg_scalar_bool_constant(left),
+        cfg_scalar_bool_constant(right),
+    ) {
+        (Some(constant), None) if matches!(right.kind, CfgScalarExprKind::Name(_)) => {
+            (constant, right.as_ref())
+        }
+        (None, Some(constant)) if matches!(left.kind, CfgScalarExprKind::Name(_)) => {
+            (constant, left.as_ref())
+        }
+        _ => return None,
+    };
+    let rendered = emit_cfg_scalar_expr_direct(dynamic, env, signatures)?;
+    let negate = matches!((op, constant), (BinOp::Eq, false) | (BinOp::Ne, true));
+    if negate {
+        Some(format!("(!({rendered}))"))
+    } else {
+        Some(rendered)
+    }
+}
+
 fn emit_cfg_boolean_algebra_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48733,6 +48770,20 @@ fn emit_cfg_boolean_algebra_direct(
         || signatures.canonical_type(&right.ty) != Type::Bool
     {
         return None;
+    }
+
+    match (
+        op,
+        cfg_scalar_bool_constant(left),
+        cfg_scalar_bool_constant(right),
+    ) {
+        (BinOp::And, Some(true), _) | (BinOp::Or, Some(false), _) => {
+            return emit_cfg_scalar_expr_direct(right, env, signatures);
+        }
+        (BinOp::And, _, Some(true)) | (BinOp::Or, _, Some(false)) => {
+            return emit_cfg_scalar_expr_direct(left, env, signatures);
+        }
+        _ => {}
     }
 
     if let CfgScalarExprKind::Binary {
@@ -49117,7 +49168,12 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
             return false;
         }
         match &expr.kind {
-            CfgScalarExprKind::Constant(ConstantValue::I64(_)) if ty == Type::I64 => true,
+            CfgScalarExprKind::Constant(constant)
+                if signatures.canonical_type(&constant.ty()) == ty
+                    && matches!(ty, Type::I64 | Type::Bool | Type::Str) =>
+            {
+                true
+            }
             CfgScalarExprKind::Name(name) => {
                 env.get(name)
                     .is_some_and(|local_ty| signatures.canonical_type(local_ty) == ty)
@@ -49552,6 +49608,9 @@ fn emit_cfg_scalar_expr_direct(
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_range_safe_i64_negation_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_boolean_literal_comparison_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_boolean_algebra_direct(expr, env, signatures) {
@@ -56280,6 +56339,75 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("constant-bearing primitive should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_bool_and_string_literals_bypass_checked_ast_roots() {
+        let source = r#"
+fn compareBool(value: bool) -> bool {
+    return value == true
+}
+
+fn compareString(value: str) -> bool {
+    return value != "flux"
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("mixed literal primitive fixture should typecheck");
+        let value = local_c_name("value");
+        let cases = [
+            (
+                "compareBool",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                value.clone(),
+            ),
+            (
+                "compareString",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(r#"(strcmp({value}, "flux") != 0)"#),
+            ),
+        ];
+
+        for (function, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("mixed literal primitive CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| value.ty == Type::Bool)
+                .max_by_key(|value| value.span.length)
+                .expect("mixed literal primitive root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("mixed literal primitive root should have scalar typed-IR facts");
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("mixed literal primitive should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Int(99),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("mixed literal primitive should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
