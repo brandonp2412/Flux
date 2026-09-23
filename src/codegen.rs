@@ -49284,8 +49284,12 @@ fn emit_cfg_scalar_expr_direct(
                     ))
                 }
                 "peerAddress" | "localAddress" if arguments.len() == 2 => {
-                    let socket =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let socket = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::Str, Type::I64],
@@ -49646,8 +49650,12 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 2 {
                         return None;
                     }
-                    let timestamp =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let timestamp = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::Str],
@@ -49784,7 +49792,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let path =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
             Some(format!("flux__fs_list_directory({path}, {callback})"))
@@ -49808,8 +49817,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__path_join({base}, {child}, {callback})"))
             }
             "dirname" | "basename" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -49822,8 +49835,12 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "extension" | "stem" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -49836,8 +49853,12 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "normalize" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50075,8 +50096,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_validate({value})"))
             }
             "parse" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str, Type::Str],
@@ -50086,8 +50111,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_parse({value}, {callback})"))
             }
             "encodeString" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Str,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50097,8 +50126,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_encode_string({value}, {callback})"))
             }
             "encodeInt" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::I64,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50108,8 +50141,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__json_encode_int({value}, {callback})"))
             }
             "encodeBool" if arguments.len() == 2 => {
-                let value =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Bool, env, signatures)?;
+                let value = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::Bool,
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -50306,8 +50343,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__frame_request({callback})"))
                 }
                 "timeline" if arguments.len() == 2 => {
-                    let duration =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let duration = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[1],
                         &[Type::I64],
@@ -50614,7 +50655,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 2 {
                 return None;
             }
-            let value = emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+            let value =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[1], &[Type::Str], env, signatures)?;
             Some(format!("{helper}({value}, {callback})"))
@@ -60498,6 +60540,10 @@ fn formatUtc(value: i64) -> error {
     return time.format(value, formatted)
 }
 
+fn callFormatUtc(value: i64) -> error {
+    return time.format(timeValue(value), formatted)
+}
+
 fn formatLocal(value: i64) -> error {
     return time.formatLocal(value, formatted)
 }
@@ -60656,6 +60702,16 @@ fn main() -> i64 {
                 HashMap::from([("value".to_string(), Type::I64)]),
                 format!(
                     "flux__time_format_utc({}, {})",
+                    local_c_name("value"),
+                    function_c_name("formatted")
+                ),
+            ),
+            (
+                "callFormatUtc",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_format_utc({}({}), {})",
+                    function_c_name("timeValue"),
                     local_c_name("value"),
                     function_c_name("formatted")
                 ),
@@ -61116,8 +61172,24 @@ fn pathNormalize(value: str) -> error {
     return path.normalize(value, text)
 }
 
+fn callPathBasename(value: str) -> error {
+    return path.basename(filesystemPath(value), text)
+}
+
+fn callPathExtension(value: str) -> error {
+    return path.extension(filesystemPath(value), text)
+}
+
+fn callPathNormalize(value: str) -> error {
+    return path.normalize(filesystemPath(value), text)
+}
+
 fn directoryList(path: str) -> error {
     return directory.list(path, text)
+}
+
+fn callDirectoryList(path: str) -> error {
+    return directory.list(filesystemPath(path), text)
 }
 
 fn main() -> i64 {
@@ -61253,10 +61325,50 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callPathBasename",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_component({}({}), true, {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "callPathExtension",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_extension_or_stem({}({}), true, {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "callPathNormalize",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__path_normalize({}({}), {})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("value"),
+                    function_c_name("text")
+                ),
+            ),
+            (
                 "directoryList",
                 HashMap::from([("path".to_string(), Type::Str)]),
                 format!(
                     "flux__fs_list_directory({}, {})",
+                    local_c_name("path"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "callDirectoryList",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!(
+                    "flux__fs_list_directory({}({}), {})",
+                    function_c_name("filesystemPath"),
                     local_c_name("path"),
                     function_c_name("text")
                 ),
@@ -61330,6 +61442,14 @@ fn frameTimeline(duration: i64) -> void {
     frame.timeline(duration, progress)
 }
 
+fn uiDuration(value: i64) -> i64 {
+    return value
+}
+
+fn callFrameTimeline(duration: i64) -> void {
+    frame.timeline(uiDuration(duration), progress)
+}
+
 fn clipboardRead() -> void {
     clipboard.read(text)
 }
@@ -61368,6 +61488,16 @@ fn main() -> i64 {
                 HashMap::from([("duration".to_string(), Type::I64)]),
                 format!(
                     "flux__frame_timeline({}, {})",
+                    local_c_name("duration"),
+                    function_c_name("progress")
+                ),
+            ),
+            (
+                "callFrameTimeline",
+                HashMap::from([("duration".to_string(), Type::I64)]),
+                format!(
+                    "flux__frame_timeline({}({}), {})",
+                    function_c_name("uiDuration"),
                     local_c_name("duration"),
                     function_c_name("progress")
                 ),
@@ -61648,6 +61778,14 @@ fn jsonValue(value: str) -> str {
     return value
 }
 
+fn jsonInt(value: i64) -> i64 {
+    return value
+}
+
+fn jsonBool(value: bool) -> bool {
+    return value
+}
+
 fn callValidate(value: str) -> error {
     return json.validate(jsonValue(value))
 }
@@ -61662,16 +61800,32 @@ fn parseJson(value: str) -> error {
     return json.parse(value, jsonField)
 }
 
+fn callParseJson(value: str) -> error {
+    return json.parse(jsonValue(value), jsonField)
+}
+
 fn encodeJsonString(value: str) -> error {
     return json.encode(value, jsonText)
+}
+
+fn callEncodeJsonString(value: str) -> error {
+    return json.encode(jsonValue(value), jsonText)
 }
 
 fn encodeJsonInt(value: i64) -> error {
     return json.encodeInt(value, jsonText)
 }
 
+fn callEncodeJsonInt(value: i64) -> error {
+    return json.encodeInt(jsonInt(value), jsonText)
+}
+
 fn encodeJsonBool(value: bool) -> error {
     return json.encodeBool(value, jsonText)
+}
+
+fn callEncodeJsonBool(value: bool) -> error {
+    return json.encodeBool(jsonBool(value), jsonText)
 }
 
 fn encodeJsonOptionalInt(value: i64?) -> error {
@@ -61804,10 +61958,30 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callParseJson",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_parse({}({}), {})",
+                    function_c_name("jsonValue"),
+                    local_c_name("value"),
+                    function_c_name("jsonField")
+                ),
+            ),
+            (
                 "encodeJsonString",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!(
                     "flux__json_encode_string({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "callEncodeJsonString",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_encode_string({}({}), {})",
+                    function_c_name("jsonValue"),
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
@@ -61822,10 +61996,30 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callEncodeJsonInt",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__json_encode_int({}({}), {})",
+                    function_c_name("jsonInt"),
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
                 "encodeJsonBool",
                 HashMap::from([("value".to_string(), Type::Bool)]),
                 format!(
                     "flux__json_encode_bool({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "callEncodeJsonBool",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!(
+                    "flux__json_encode_bool({}({}), {})",
+                    function_c_name("jsonBool"),
                     local_c_name("value"),
                     function_c_name("jsonText")
                 ),
@@ -63978,6 +64172,10 @@ fn networkSocket(socket: i64) -> i64 {
     return socket
 }
 
+fn callPeer(socket: i64) -> error {
+    return net.peer(networkSocket(socket), address)
+}
+
 fn callClose(socket: i64) -> error {
     return net.close(networkSocket(socket))
 }
@@ -63995,6 +64193,16 @@ fn main() -> i64 {
                 HashMap::from([("socket".to_string(), Type::I64)]),
                 format!(
                     "flux__net_peer_address({}, {})",
+                    local_c_name("socket"),
+                    function_c_name("address")
+                ),
+            ),
+            (
+                "callPeer",
+                HashMap::from([("socket".to_string(), Type::I64)]),
+                format!(
+                    "flux__net_peer_address({}({}), {})",
+                    function_c_name("networkSocket"),
                     local_c_name("socket"),
                     function_c_name("address")
                 ),
@@ -65058,6 +65266,17 @@ fn plural(key: str, count: i64, offset: i64, fallback: str) -> str {
     return locale.plural(key, count + offset, fallback)
 }
 
+fn formatted(_value: str) -> void {
+}
+
+fn localeValue(value: i64) -> i64 {
+    return value
+}
+
+fn callFormatNumber(value: i64) -> error {
+    return locale.formatNumber(localeValue(value), formatted)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -65116,6 +65335,16 @@ fn main() -> i64 {
                     local_c_name("count"),
                     local_c_name("offset"),
                     local_c_name("fallback")
+                ),
+            ),
+            (
+                "callFormatNumber",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__locale_format_number({}({}), {})",
+                    function_c_name("localeValue"),
+                    local_c_name("value"),
+                    function_c_name("formatted")
                 ),
             ),
         ] {
