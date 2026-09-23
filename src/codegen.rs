@@ -48699,6 +48699,58 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if namespace == "worker" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "join" | "failure" | "cancel" if ty == Type::Error && arguments.len() == 1 => {
+                    let handle =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let helper = match name {
+                        "join" => "flux__worker_join",
+                        "failure" => "flux__worker_failure",
+                        "cancel" => "flux__worker_cancel",
+                        _ => unreachable!(),
+                    };
+                    Some(format!("{helper}({handle})"))
+                }
+                "joinChildren" if ty == Type::Error && arguments.is_empty() => {
+                    Some("flux__worker_join_children()".to_string())
+                }
+                "cancelChildren" if ty == Type::Void && arguments.is_empty() => {
+                    Some("flux__worker_cancel_children()".to_string())
+                }
+                "cancelled" if ty == Type::Bool && arguments.is_empty() => {
+                    Some("flux__worker_cancelled()".to_string())
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if namespace == "channel" => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            match name {
+                "send" if ty == Type::Error && arguments.len() == 2 => {
+                    let handle =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let value =
+                        emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+                    Some(format!("flux__channel_send({handle}, {value})"))
+                }
+                "close" if ty == Type::Error && arguments.len() == 1 => {
+                    let handle =
+                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    Some(format!("flux__channel_close({handle})"))
+                }
+                _ => None,
+            }
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "time" => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let render_i64_args = |count: usize| -> Option<Vec<String>> {
@@ -58429,6 +58481,142 @@ fn main() -> i64 {
             .expect("utility qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-utility-call"));
+        }
+    }
+
+    #[test]
+    fn direct_scalar_concurrency_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn join(handle: i64) -> error {
+    return worker.join(handle)
+}
+
+fn failure(handle: i64) -> error {
+    return worker.failure(handle)
+}
+
+fn cancel(handle: i64) -> error {
+    return worker.cancel(handle)
+}
+
+fn joinChildren() -> error {
+    return worker.joinChildren()
+}
+
+fn cancelChildren() -> void {
+    worker.cancelChildren()
+}
+
+fn cancelled() -> bool {
+    return worker.cancelled()
+}
+
+fn send(handle: i64, value: i64) -> error {
+    return channel.send(handle, value)
+}
+
+fn close(handle: i64) -> error {
+    return channel.close(handle)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct concurrency qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "join",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!("flux__worker_join({})", local_c_name("handle")),
+            ),
+            (
+                "failure",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!("flux__worker_failure({})", local_c_name("handle")),
+            ),
+            (
+                "cancel",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!("flux__worker_cancel({})", local_c_name("handle")),
+            ),
+            (
+                "joinChildren",
+                HashMap::new(),
+                "flux__worker_join_children()".to_string(),
+            ),
+            (
+                "cancelChildren",
+                HashMap::new(),
+                "flux__worker_cancel_children()".to_string(),
+            ),
+            (
+                "cancelled",
+                HashMap::new(),
+                "flux__worker_cancelled()".to_string(),
+            ),
+            (
+                "send",
+                HashMap::from([
+                    ("handle".to_string(), Type::I64),
+                    ("value".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__channel_send({}, {})",
+                    local_c_name("handle"),
+                    local_c_name("value")
+                ),
+            ),
+            (
+                "close",
+                HashMap::from([("handle".to_string(), Type::I64)]),
+                format!("flux__channel_close({})", local_c_name("handle")),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("concurrency qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("concurrency qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("concurrency qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported scalar concurrency call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-concurrency-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("concurrency qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-concurrency-call"));
         }
     }
 
