@@ -48319,6 +48319,145 @@ fn cfg_scalar_expr_is_reusable_pure_primitive(
     }
 }
 
+fn cfg_checked_i64_negation_operand(expr: &CfgScalarExpr) -> Option<&CfgScalarExpr> {
+    match &expr.kind {
+        CfgScalarExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => Some(operand),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(left) == Some(0) => Some(right),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(left) == Some(-1) => Some(right),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(right) == Some(-1) => Some(left),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(right) == Some(-1) => Some(left),
+        _ => None,
+    }
+}
+
+fn cfg_checked_i64_identity_operand(expr: &CfgScalarExpr) -> Option<&CfgScalarExpr> {
+    match &expr.kind {
+        CfgScalarExprKind::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(left) == Some(0) => Some(right),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Add | BinOp::Sub,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(right) == Some(0) => Some(left),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(left) == Some(1) => Some(right),
+        CfgScalarExprKind::Binary {
+            op: BinOp::Mul | BinOp::Div,
+            left,
+            right,
+        } if cfg_scalar_i64_constant(right) == Some(1) => Some(left),
+        _ => None,
+    }
+}
+
+fn cfg_scalar_expr_is_checked_i64(expr: &CfgScalarExpr, signatures: &Signatures) -> bool {
+    signatures.canonical_type(&expr.ty) == Type::I64
+        && matches!(
+            expr.kind,
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                ..
+            } | CfgScalarExprKind::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                ..
+            }
+        )
+}
+
+fn cfg_same_pure_i64_expression(
+    left: &CfgScalarExpr,
+    right: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> bool {
+    if signatures.canonical_type(&left.ty) != Type::I64
+        || signatures.canonical_type(&right.ty) != Type::I64
+    {
+        return false;
+    }
+
+    if let (Some(left_value), Some(right_value)) = (
+        cfg_scalar_i64_constant(left),
+        cfg_scalar_i64_constant(right),
+    ) && left_value == right_value
+    {
+        return true;
+    }
+
+    if let (Some(left), Some(right)) = (
+        cfg_checked_i64_negation_operand(left),
+        cfg_checked_i64_negation_operand(right),
+    ) {
+        return cfg_same_pure_i64_expression(left, right, signatures);
+    }
+    if let Some(left) = cfg_checked_i64_identity_operand(left) {
+        return cfg_same_pure_i64_expression(left, right, signatures);
+    }
+    if let Some(right) = cfg_checked_i64_identity_operand(right) {
+        return cfg_same_pure_i64_expression(left, right, signatures);
+    }
+
+    match (&left.kind, &right.kind) {
+        (CfgScalarExprKind::Name(left), CfgScalarExprKind::Name(right)) => left == right,
+        (
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand: left,
+            },
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand: right,
+            },
+        ) => cfg_same_pure_i64_expression(left, right, signatures),
+        (
+            CfgScalarExprKind::Binary {
+                op: left_op,
+                left: left_left,
+                right: left_right,
+            },
+            CfgScalarExprKind::Binary {
+                op: right_op,
+                left: right_left,
+                right: right_right,
+            },
+        ) if left_op == right_op
+            && matches!(left_op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) =>
+        {
+            let same_order = cfg_same_pure_i64_expression(left_left, right_left, signatures)
+                && cfg_same_pure_i64_expression(left_right, right_right, signatures);
+            same_order
+                || (matches!(left_op, BinOp::Add | BinOp::Mul)
+                    && cfg_same_pure_i64_expression(left_left, right_right, signatures)
+                    && cfg_same_pure_i64_expression(left_right, right_left, signatures))
+        }
+        _ => false,
+    }
+}
+
 fn emit_cfg_reused_pure_primitive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48327,21 +48466,32 @@ fn emit_cfg_reused_pure_primitive_direct(
     let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
         return None;
     };
-    if left != right || !cfg_scalar_expr_is_reusable_pure_primitive(left, signatures) {
+
+    let operand_ty = signatures.canonical_type(&left.ty);
+    let right_ty = signatures.canonical_type(&right.ty);
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let equivalent_checked_i64 = operand_ty == Type::I64
+        && right_ty == Type::I64
+        && (cfg_scalar_expr_is_checked_i64(left, signatures)
+            || cfg_scalar_expr_is_checked_i64(right, signatures))
+        && cfg_same_pure_i64_expression(left, right, signatures);
+    if (left != right && !equivalent_checked_i64)
+        || !cfg_scalar_expr_is_reusable_pure_primitive(left, signatures)
+        || !cfg_scalar_expr_is_reusable_pure_primitive(right, signatures)
+    {
         return None;
     }
 
-    let operand_ty = signatures.canonical_type(&left.ty);
-    let result_ty = signatures.canonical_type(&expr.ty);
     let rendered = emit_cfg_scalar_expr_direct(left, env, signatures)?;
-    let repeated_checked_subtree = matches!(
-        left.kind,
-        CfgScalarExprKind::Unary {
-            op: UnaryOp::Neg,
-            ..
-        } | CfgScalarExprKind::Binary { .. }
-            | CfgScalarExprKind::Conditional { .. }
-    );
+    let repeated_checked_subtree = equivalent_checked_i64
+        || matches!(
+            left.kind,
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                ..
+            } | CfgScalarExprKind::Binary { .. }
+                | CfgScalarExprKind::Conditional { .. }
+        );
     let trivial_boolean_term = match &left.kind {
         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
         CfgScalarExprKind::Unary {
@@ -55009,6 +55159,148 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("reused pure primitive should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_reuses_equivalent_checked_i64_subtrees() {
+        let source = r#"
+fn equivalentSub(left: i64, right: i64) -> i64 {
+    return (left + right) - (right + left)
+}
+
+fn equivalentMul(left: i64, right: i64) -> i64 {
+    return (left + right) * (right + left)
+}
+
+fn equivalentDiv(left: i64, right: i64) -> i64 {
+    return (left + right) / (right + left)
+}
+
+fn equivalentCompare(left: i64, right: i64) -> bool {
+    return (left + right) >= (right + left)
+}
+
+fn negationCompare(value: i64) -> bool {
+    return -value == 0 - value
+}
+
+fn identityCompare(value: i64) -> bool {
+    return value + 0 == value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("equivalent checked-i64 fixture should typecheck");
+        let left = local_c_name("left");
+        let right = local_c_name("right");
+        let add = format!("flux_add_i64({left}, {right})");
+        let cases = [
+            (
+                "equivalentSub",
+                BinOp::Sub,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("((void)({add}), INT64_C(0))"),
+            ),
+            (
+                "equivalentMul",
+                BinOp::Mul,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "__extension__ ({{ int64_t flux__checked_reuse = {add}; flux_mul_i64(flux__checked_reuse, flux__checked_reuse); }})"
+                ),
+            ),
+            (
+                "equivalentDiv",
+                BinOp::Div,
+                Type::I64,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("flux_div_self_i64({add})"),
+            ),
+            (
+                "equivalentCompare",
+                BinOp::Ge,
+                Type::Bool,
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!("((void)({add}), true)"),
+            ),
+            (
+                "negationCompare",
+                BinOp::Eq,
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("((void)(flux_neg_i64({})), true)", local_c_name("value")),
+            ),
+            (
+                "identityCompare",
+                BinOp::Eq,
+                Type::Bool,
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!("((void)({}), true)", local_c_name("value")),
+            ),
+        ];
+
+        for (function, root_op, expected_ty, env, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("equivalent checked-i64 CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .expect("equivalent checked-i64 root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("equivalent checked-i64 root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                expected_ty,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("equivalent checked-i64 expression should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-equivalent-checked-i64".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("equivalent checked-i64 expression should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
