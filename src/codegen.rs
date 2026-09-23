@@ -48458,6 +48458,127 @@ fn cfg_same_pure_i64_expression(
     }
 }
 
+fn cfg_scalar_bool_constant(expr: &CfgScalarExpr) -> Option<bool> {
+    match &expr.kind {
+        CfgScalarExprKind::Constant(ConstantValue::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn cfg_same_pure_boolean_expression(
+    left: &CfgScalarExpr,
+    right: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> bool {
+    if signatures.canonical_type(&left.ty) != Type::Bool
+        || signatures.canonical_type(&right.ty) != Type::Bool
+    {
+        return false;
+    }
+
+    if let (Some(left_value), Some(right_value)) = (
+        cfg_scalar_bool_constant(left),
+        cfg_scalar_bool_constant(right),
+    ) && left_value == right_value
+    {
+        return true;
+    }
+
+    match (&left.kind, &right.kind) {
+        (CfgScalarExprKind::Name(left), CfgScalarExprKind::Name(right)) => left == right,
+        (
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: left,
+            },
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: right,
+            },
+        ) => cfg_same_pure_boolean_expression(left, right, signatures),
+        (
+            CfgScalarExprKind::Binary {
+                op: left_op,
+                left: left_left,
+                right: left_right,
+            },
+            CfgScalarExprKind::Binary {
+                op: right_op,
+                left: right_left,
+                right: right_right,
+            },
+        ) if left_op == right_op && matches!(left_op, BinOp::And | BinOp::Or) => {
+            cfg_same_pure_boolean_expression(left_left, right_left, signatures)
+                && cfg_same_pure_boolean_expression(left_right, right_right, signatures)
+        }
+        (
+            CfgScalarExprKind::Binary {
+                op: left_op,
+                left: left_left,
+                right: left_right,
+            },
+            CfgScalarExprKind::Binary {
+                op: right_op,
+                left: right_left,
+                right: right_right,
+            },
+        ) if left_op == right_op
+            && matches!(
+                left_op,
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            ) =>
+        {
+            cfg_same_pure_i64_expression(left_left, right_left, signatures)
+                && cfg_same_pure_i64_expression(left_right, right_right, signatures)
+        }
+        _ => false,
+    }
+}
+
+fn cfg_complementary_pure_boolean_expression(
+    left: &CfgScalarExpr,
+    right: &CfgScalarExpr,
+    signatures: &Signatures,
+) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            _,
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: right,
+            },
+        ) => cfg_same_pure_boolean_expression(left, right, signatures),
+        (
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: left,
+            },
+            _,
+        ) => cfg_same_pure_boolean_expression(left, right, signatures),
+        _ => false,
+    }
+}
+
+fn cfg_complementary_boolean_binding_term(left: &CfgScalarExpr, right: &CfgScalarExpr) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            CfgScalarExprKind::Name(left),
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: right,
+            },
+        ) => matches!(&right.kind, CfgScalarExprKind::Name(right) if left == right),
+        (
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Not,
+                operand: left,
+            },
+            CfgScalarExprKind::Name(right),
+        ) => matches!(&left.kind, CfgScalarExprKind::Name(left) if left == right),
+        _ => false,
+    }
+}
+
 fn emit_cfg_reused_pure_primitive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -48475,7 +48596,13 @@ fn emit_cfg_reused_pure_primitive_direct(
         && (cfg_scalar_expr_is_checked_i64(left, signatures)
             || cfg_scalar_expr_is_checked_i64(right, signatures))
         && cfg_same_pure_i64_expression(left, right, signatures);
-    if (left != right && !equivalent_checked_i64)
+    let equivalent_boolean = operand_ty == Type::Bool
+        && right_ty == Type::Bool
+        && cfg_same_pure_boolean_expression(left, right, signatures);
+    let complementary_boolean = operand_ty == Type::Bool
+        && right_ty == Type::Bool
+        && cfg_complementary_pure_boolean_expression(left, right, signatures);
+    if (left != right && !equivalent_checked_i64 && !equivalent_boolean && !complementary_boolean)
         || !cfg_scalar_expr_is_reusable_pure_primitive(left, signatures)
         || !cfg_scalar_expr_is_reusable_pure_primitive(right, signatures)
     {
@@ -48492,7 +48619,7 @@ fn emit_cfg_reused_pure_primitive_direct(
             } | CfgScalarExprKind::Binary { .. }
                 | CfgScalarExprKind::Conditional { .. }
         );
-    let trivial_boolean_term = match &left.kind {
+    let trivial_reused_term = match &left.kind {
         CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_) => true,
         CfgScalarExprKind::Unary {
             op: UnaryOp::Not,
@@ -48527,9 +48654,16 @@ fn emit_cfg_reused_pure_primitive_direct(
         }
         BinOp::Eq
             if result_ty == Type::Bool
+                && operand_ty == right_ty
                 && matches!(operand_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) =>
         {
-            if trivial_boolean_term {
+            if complementary_boolean {
+                if cfg_complementary_boolean_binding_term(left, right) {
+                    Some("false".to_string())
+                } else {
+                    Some(format!("((void)({rendered}), false)"))
+                }
+            } else if trivial_reused_term {
                 Some("true".to_string())
             } else {
                 Some(format!("((void)({rendered}), true)"))
@@ -48537,9 +48671,16 @@ fn emit_cfg_reused_pure_primitive_direct(
         }
         BinOp::Ne
             if result_ty == Type::Bool
+                && operand_ty == right_ty
                 && matches!(operand_ty, Type::I64 | Type::Bool | Type::Str | Type::Error) =>
         {
-            if trivial_boolean_term {
+            if complementary_boolean {
+                if cfg_complementary_boolean_binding_term(left, right) {
+                    Some("true".to_string())
+                } else {
+                    Some(format!("((void)({rendered}), true)"))
+                }
+            } else if trivial_reused_term {
                 Some("false".to_string())
             } else {
                 Some(format!("((void)({rendered}), false)"))
@@ -48552,7 +48693,12 @@ fn emit_cfg_reused_pure_primitive_direct(
             Some(format!("((void)({rendered}), true)"))
         }
         BinOp::And | BinOp::Or if result_ty == Type::Bool && operand_ty == Type::Bool => {
-            Some(rendered)
+            if complementary_boolean {
+                let result = matches!(op, BinOp::Or);
+                Some(format!("((void)({rendered}), {result})"))
+            } else {
+                Some(rendered)
+            }
         }
         _ => None,
     }
@@ -55301,6 +55447,122 @@ fn main() -> i64 {
                 &facts,
             )
             .expect("equivalent checked-i64 expression should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_reuses_equivalent_and_complementary_boolean_predicates() {
+        let source = r#"
+fn equivalentOr(left: i64, right: i64, limit: i64) -> bool {
+    return left + right < limit || right + left < limit
+}
+
+fn equivalentAnd(left: i64, right: i64, limit: i64) -> bool {
+    return (left + right < limit) && (right + left < limit)
+}
+
+fn equivalentEquality(left: i64, right: i64, limit: i64) -> bool {
+    return (left + right < limit) == (right + left < limit)
+}
+
+fn complementAnd(left: i64, right: i64, limit: i64) -> bool {
+    return (left + right < limit) && !(right + left < limit)
+}
+
+fn complementOr(left: i64, right: i64, limit: i64) -> bool {
+    return (left + right < limit) || !(right + left < limit)
+}
+
+fn complementNotEqual(left: i64, right: i64, limit: i64) -> bool {
+    return (left + right < limit) != !(right + left < limit)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("equivalent boolean fixture should typecheck");
+        let predicate = format!(
+            "(flux_add_i64({}, {}) < {})",
+            local_c_name("left"),
+            local_c_name("right"),
+            local_c_name("limit")
+        );
+        let env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+            ("limit".to_string(), Type::I64),
+        ]);
+        let cases = [
+            ("equivalentOr", BinOp::Or, predicate.clone()),
+            ("equivalentAnd", BinOp::And, predicate.clone()),
+            (
+                "equivalentEquality",
+                BinOp::Eq,
+                format!("((void)({predicate}), true)"),
+            ),
+            (
+                "complementAnd",
+                BinOp::And,
+                format!("((void)({predicate}), false)"),
+            ),
+            (
+                "complementOr",
+                BinOp::Or,
+                format!("((void)({predicate}), true)"),
+            ),
+            (
+                "complementNotEqual",
+                BinOp::Ne,
+                format!("((void)({predicate}), true)"),
+            ),
+        ];
+
+        for (function, root_op, expected) in cases {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("equivalent boolean CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .expect("equivalent boolean root should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("equivalent boolean root should have scalar typed-IR facts");
+            assert_eq!(
+                database.signatures().canonical_type(&scalar.ty),
+                Type::Bool,
+                "{function} root type should remain exact"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("equivalent boolean predicate should emit directly from typed IR");
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-equivalent-boolean".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("equivalent boolean predicate should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
         }
     }
