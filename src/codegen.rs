@@ -50784,15 +50784,8 @@ fn emit_cfg_scalar_expr_direct(
             start,
             end,
             step,
-        } if matches!(
-            base.kind,
-            CfgScalarExprKind::Name(_)
-                | CfgScalarExprKind::Aggregate(_)
-                | CfgScalarExprKind::Unary {
-                    op: UnaryOp::Borrow,
-                    ..
-                }
-        ) =>
+        } if matches!(base.kind, CfgScalarExprKind::Aggregate(_))
+            || cfg_borrowed_list_has_named_root(base) =>
         {
             let Type::List(element) = signatures.canonical_type(&base.ty) else {
                 return None;
@@ -61183,6 +61176,77 @@ fn main() -> i64 {
         .expect("borrowed nested-list property call should bypass the checked-AST root");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-nested-property"));
+    }
+
+    #[test]
+    fn borrowed_nested_list_projection_slice_emits_directly_at_qualified_call_boundaries() {
+        let source = r#"
+fn sendNestedSlice(
+    socket: i64,
+    groups: str[][],
+    index: i64,
+    start: i64
+) -> error {
+    return net.writeParts(socket, groups[index][start:])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("borrowed nested-list projection slice fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendNestedSlice")
+            .expect("borrowed nested-list projection slice CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("borrowed nested-list projection slice call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("borrowed nested-list projection slice should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            (
+                "groups".to_string(),
+                Type::List(Box::new(Type::List(Box::new(Type::Str)))),
+            ),
+            ("index".to_string(), Type::I64),
+            ("start".to_string(), Type::I64),
+        ]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("borrowed nested-list projection slice should emit directly from typed IR");
+        assert!(direct.starts_with("flux__net_send_text_parts("));
+        assert!(direct.contains("flux_list_slice("));
+        assert!(direct.contains("flux_list_at("));
+        assert!(direct.contains(&local_c_name("groups")));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-nested-projection-slice".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("nested projection slice call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-nested-projection-slice"));
     }
 
     #[test]
