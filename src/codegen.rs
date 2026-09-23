@@ -48415,6 +48415,51 @@ fn emit_cfg_ordinary_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_ordered_copy_arguments_direct(
+    arguments: &[CfgScalarExpr],
+    expected: &[Type],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, Vec<String>)> {
+    if arguments.len() != expected.len() {
+        return None;
+    }
+
+    let direct = arguments
+        .iter()
+        .zip(expected)
+        .map(|(argument, expected)| {
+            emit_cfg_call_argument_direct(argument, expected, env, signatures)
+        })
+        .collect::<Option<Vec<_>>>();
+    if let Some(direct) = direct {
+        return Some((String::new(), direct));
+    }
+
+    let mut setup = String::new();
+    let mut rendered = Vec::with_capacity(arguments.len());
+    for (index, (argument, expected)) in arguments.iter().zip(expected).enumerate() {
+        let expected = signatures.canonical_type(expected);
+        let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+        let temporary = format!("flux__cfg_call_arg_{index}");
+        setup.push_str(&format!(
+            "{} {temporary} = {value}; ",
+            c_type(&expected, signatures)
+        ));
+        rendered.push(temporary);
+    }
+
+    Some((setup, rendered))
+}
+
+fn emit_cfg_ordered_expression(setup: &str, expression: String) -> String {
+    if setup.is_empty() {
+        expression
+    } else {
+        format!("__extension__ ({{ {setup}{expression}; }})")
+    }
+}
+
 fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
@@ -49775,13 +49820,20 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let path = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-            let max_bytes =
-                emit_cfg_call_argument_direct(&arguments[1], &Type::I64, env, signatures)?;
+            let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                &arguments[..2],
+                &[Type::Str, Type::I64],
+                env,
+                signatures,
+            )?;
             let callback =
                 emit_cfg_callback_argument_direct(&arguments[2], &[Type::Str], env, signatures)?;
-            Some(format!(
-                "flux__fs_read_text({path}, {max_bytes}, {callback})"
+            Some(emit_cfg_ordered_expression(
+                &setup,
+                format!(
+                    "flux__fs_read_text({}, {}, {callback})",
+                    rendered[0], rendered[1]
+                ),
             ))
         }
         CfgScalarExprKind::QualifiedCall {
@@ -49804,17 +49856,25 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "path" && ty == Type::Error => match name.as_str() {
             "join" if arguments.len() == 3 => {
-                let base =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
-                let child =
-                    emit_cfg_call_argument_direct(&arguments[1], &Type::Str, env, signatures)?;
+                let (setup, rendered) = emit_cfg_ordered_copy_arguments_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[2],
                     &[Type::Str],
                     env,
                     signatures,
                 )?;
-                Some(format!("flux__path_join({base}, {child}, {callback})"))
+                Some(emit_cfg_ordered_expression(
+                    &setup,
+                    format!(
+                        "flux__path_join({}, {}, {callback})",
+                        rendered[0], rendered[1]
+                    ),
+                ))
             }
             "dirname" | "basename" if arguments.len() == 2 => {
                 let value = emit_cfg_ordinary_call_argument_direct(
@@ -50009,23 +50069,22 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered = if arguments.len() == 1 {
-                vec![emit_cfg_ordinary_call_argument_direct(
+            if arguments.len() == 1 {
+                let rendered = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
                     &expected[0],
                     env,
                     signatures,
-                )?]
-            } else {
-                arguments
-                    .iter()
-                    .zip(&expected)
-                    .map(|(argument, expected)| {
-                        emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                    })
-                    .collect::<Option<Vec<_>>>()?
-            };
-            Some(format!("{helper}({})", rendered.join(", ")))
+                )?;
+                return Some(format!("{helper}({rendered})"));
+            }
+
+            let (setup, rendered) =
+                emit_cfg_ordered_copy_arguments_direct(arguments, &expected, env, signatures)?;
+            Some(emit_cfg_ordered_expression(
+                &setup,
+                format!("{helper}({})", rendered.join(", ")),
+            ))
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -61183,6 +61242,10 @@ fn filesystemPath(path: str) -> str {
     return path
 }
 
+fn filesystemSize(value: i64) -> i64 {
+    return value
+}
+
 fn callFileExists(path: str) -> bool {
     return file.exists(filesystemPath(path))
 }
@@ -61215,6 +61278,10 @@ fn fsWrite(path: str, text: str) -> error {
     return fs.writeText(path, text)
 }
 
+fn callFsWrite(path: str, text: str) -> error {
+    return fs.writeText(filesystemPath(path), filesystemPath(text))
+}
+
 fn fsCopy(source: str, destination: str) -> error {
     return fs.copyFile(source, destination)
 }
@@ -61226,8 +61293,16 @@ fn fileRead(path: str, maxBytes: i64) -> error {
     return file.read(path, maxBytes, text)
 }
 
+fn callFileRead(path: str, maxBytes: i64) -> error {
+    return file.read(filesystemPath(path), filesystemSize(maxBytes), text)
+}
+
 fn pathJoin(base: str, child: str) -> error {
     return path.join(base, child, text)
+}
+
+fn callPathJoin(base: str, child: str) -> error {
+    return path.join(filesystemPath(base), filesystemPath(child), text)
 }
 
 fn pathNormalize(value: str) -> error {
@@ -61340,6 +61415,20 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callFsWrite",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__fs_write_text(flux__cfg_call_arg_0, flux__cfg_call_arg_1); }})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("path"),
+                    function_c_name("filesystemPath"),
+                    local_c_name("text")
+                ),
+            ),
+            (
                 "fsCopy",
                 HashMap::from([
                     ("source".to_string(), Type::Str),
@@ -61365,6 +61454,21 @@ fn main() -> i64 {
                 ),
             ),
             (
+                "callFileRead",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("maxBytes".to_string(), Type::I64),
+                ]),
+                format!(
+                    "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); int64_t flux__cfg_call_arg_1 = {}({}); flux__fs_read_text(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("path"),
+                    function_c_name("filesystemSize"),
+                    local_c_name("maxBytes"),
+                    function_c_name("text")
+                ),
+            ),
+            (
                 "pathJoin",
                 HashMap::from([
                     ("base".to_string(), Type::Str),
@@ -61373,6 +61477,21 @@ fn main() -> i64 {
                 format!(
                     "flux__path_join({}, {}, {})",
                     local_c_name("base"),
+                    local_c_name("child"),
+                    function_c_name("text")
+                ),
+            ),
+            (
+                "callPathJoin",
+                HashMap::from([
+                    ("base".to_string(), Type::Str),
+                    ("child".to_string(), Type::Str),
+                ]),
+                format!(
+                    "__extension__ ({{ const char * flux__cfg_call_arg_0 = {}({}); const char * flux__cfg_call_arg_1 = {}({}); flux__path_join(flux__cfg_call_arg_0, flux__cfg_call_arg_1, {}); }})",
+                    function_c_name("filesystemPath"),
+                    local_c_name("base"),
+                    function_c_name("filesystemPath"),
                     local_c_name("child"),
                     function_c_name("text")
                 ),

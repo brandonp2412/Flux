@@ -15219,6 +15219,80 @@ fn main() -> i64 {
 }
 
 #[test]
+fn filesystem_multi_input_typed_ir_preserves_left_to_right_evaluation() {
+    let root = std::env::temp_dir().join(format!("flux-ordered-filesystem-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("ordered filesystem fixture should be writable");
+    let output_path = root.join("ordered.txt");
+    let escaped_path = output_path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        r#"
+fn first(value: str) -> str {{
+    print("first")
+    return value
+}}
+
+fn second(value: str) -> str {{
+    print("second")
+    return value
+}}
+
+fn main() -> i64 {{
+    let writeError: error = fs.writeText(first("{}"), second("ready"))
+    print(writeError)
+    return 0
+}}
+"#,
+        escaped_path
+    );
+
+    check_source(&source).expect("ordered filesystem typed-IR fixture should typecheck");
+    let generated =
+        compile_to_c(&source).expect("ordered filesystem typed-IR fixture should lower");
+    let first_temporary = generated
+        .find("flux__cfg_call_arg_0 =")
+        .expect("ordered filesystem lowering should materialize the first argument");
+    let second_temporary = generated
+        .find("flux__cfg_call_arg_1 =")
+        .expect("ordered filesystem lowering should materialize the second argument");
+    assert!(
+        first_temporary < second_temporary,
+        "ordered filesystem arguments should be materialized left-to-right"
+    );
+
+    let source_path = root.join("ordered.flux");
+    fs::write(&source_path, &source).expect("ordered filesystem Flux source should be writable");
+    let binary = root.join("ordered");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("ordered filesystem binary should build");
+    assert!(
+        built.status.success(),
+        "ordered filesystem build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let run = Command::new(&binary)
+        .output()
+        .expect("ordered filesystem binary should run");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "first\nsecond\nnil\n");
+    assert_eq!(
+        fs::read_to_string(&output_path).expect("ordered filesystem output should exist"),
+        "ready"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn filesystem_read_callbacks_use_the_bounded_file_api() {
     let source = r#"
 fn consume(_text: str) -> void {
