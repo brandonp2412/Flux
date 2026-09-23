@@ -50410,7 +50410,8 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let title = emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+            let title =
+                emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
             let items = cfg_static_string_list_direct(&arguments[1], signatures)?;
             if items.is_empty() {
                 return None;
@@ -61703,6 +61704,14 @@ fn menuShow(title: str) -> void {
     menu.show(title, ["Open", "Quit"], selected)
 }
 
+fn menuTitle(title: str) -> str {
+    return title
+}
+
+fn menuShowCall(title: str) -> void {
+    menu.show(menuTitle(title), ["Open", "Quit"], selected)
+}
+
 fn confirmDefault(title: str, message: str) -> void {
     dialog.confirm(title, message, confirmed)
 }
@@ -61735,6 +61744,16 @@ fn main() -> i64 {
                 HashMap::from([("title".to_string(), Type::Str)]),
                 format!(
                     "flux__menu_show({}, (const char *[]){{{menu_items}}}, INT64_C(2), {})",
+                    local_c_name("title"),
+                    function_c_name("selected")
+                ),
+            ),
+            (
+                "menuShowCall",
+                HashMap::from([("title".to_string(), Type::Str)]),
+                format!(
+                    "flux__menu_show({}({}), (const char *[]){{{menu_items}}}, INT64_C(2), {})",
+                    function_c_name("menuTitle"),
                     local_c_name("title"),
                     function_c_name("selected")
                 ),
