@@ -50734,13 +50734,7 @@ fn emit_cfg_scalar_expr_direct(
             rendered.push(rendered_receiver);
             for (argument, parameter) in arguments[1..].iter().zip(&member.params) {
                 let parameter_ty = signatures.canonical_type(parameter);
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument
-                    || signatures.canonical_type(&argument.ty) != parameter_ty
+                if signatures.canonical_type(&argument.ty) != parameter_ty
                     || !signatures.is_copy_type(&parameter_ty)
                 {
                     return None;
@@ -50899,13 +50893,7 @@ fn emit_cfg_scalar_expr_direct(
                     })?
                 };
                 let parameter_ty = signatures.canonical_type(&parameter.ty);
-                let direct_argument =
-                    matches!(
-                        argument.kind,
-                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                    ) || cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures);
-                if !direct_argument
-                    || signatures.canonical_type(&argument.ty) != parameter_ty
+                if signatures.canonical_type(&argument.ty) != parameter_ty
                     || !signatures.is_copy_type(&parameter_ty)
                 {
                     return None;
@@ -58105,6 +58093,138 @@ fn main() -> i64 {
         );
         assert!(emitted.contains(&local_c_name("value")), "{emitted}");
         assert!(!emitted.contains("checked-ast-void-await"));
+    }
+
+    #[test]
+    fn interface_dispatch_copy_arguments_trust_direct_emitter() {
+        let source = r#"
+struct OffsetArgument {
+    amount: i64
+}
+
+interface CombineArgument {
+    fn score(other: OffsetArgument) -> i64
+    fn scoreNamed(*, other: OffsetArgument) -> i64
+}
+
+fn offsetArgumentScore(offset: OffsetArgument, other: OffsetArgument) -> i64 {
+    return offset.amount + other.amount
+}
+
+fn offsetArgumentScoreNamed(offset: OffsetArgument, *, other: OffsetArgument) -> i64 {
+    return offset.amount + other.amount
+}
+
+impl CombineArgument for OffsetArgument {
+    score: offsetArgumentScore
+    scoreNamed: offsetArgumentScoreNamed
+}
+
+fn makeOffsetArgument(amount: i64) -> OffsetArgument {
+    return OffsetArgument { amount: amount }
+}
+
+fn positionalArgument(offset: OffsetArgument, amount: i64) -> i64 {
+    return CombineArgument.score(offset, makeOffsetArgument(amount))
+}
+
+fn namedArgument(offset: OffsetArgument, amount: i64) -> i64 {
+    return CombineArgument.scoreNamed(offset, other: makeOffsetArgument(amount))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct interface argument fixture should typecheck");
+        let offset_ty = Type::Named("OffsetArgument".to_string());
+        let env = HashMap::from([
+            ("offset".to_string(), offset_ty),
+            ("amount".to_string(), Type::I64),
+        ]);
+
+        for (function, named) in [("positionalArgument", false), ("namedArgument", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("interface argument CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    if named {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                                interface,
+                                capability,
+                                ..
+                            } if interface == "CombineArgument" && capability == "scoreNamed"
+                        )
+                    } else {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                                interface,
+                                capability,
+                                ..
+                            } if interface == "CombineArgument" && capability == "score"
+                        )
+                    }
+                })
+                .expect("interface argument dispatch should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("interface argument dispatch should have scalar typed-IR facts");
+            let argument = match &scalar.kind {
+                CfgScalarExprKind::QualifiedCall { arguments, .. } => &arguments[1],
+                CfgScalarExprKind::NamedQualifiedCall { arguments, .. } => &arguments[1].1,
+                other => panic!("unexpected interface argument scalar kind: {other:?}"),
+            };
+            assert!(
+                matches!(
+                    &argument.kind,
+                    CfgScalarExprKind::Call { callee, .. } if callee == "makeOffsetArgument"
+                ),
+                "{function}: {argument:?}"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("directly reconstructable interface argument should emit: {function}")
+                });
+            assert!(
+                direct.contains(&function_c_name("makeOffsetArgument")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name(if named {
+                    "offsetArgumentScoreNamed"
+                } else {
+                    "offsetArgumentScore"
+                })),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str("checked-ast-interface-direct-argument".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("direct interface argument should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-interface-direct-argument"));
+        }
     }
 
     #[test]
