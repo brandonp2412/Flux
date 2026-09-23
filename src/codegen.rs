@@ -50025,13 +50025,22 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != expected.len() {
                         return None;
                     }
-                    let rendered = arguments
-                        .iter()
-                        .zip(&expected)
-                        .map(|(argument, expected)| {
-                            emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                        })
-                        .collect::<Option<Vec<_>>>()?;
+                    let rendered = if arguments.len() == 1 {
+                        vec![emit_cfg_ordinary_call_argument_direct(
+                            &arguments[0],
+                            &expected[0],
+                            env,
+                            signatures,
+                        )?]
+                    } else {
+                        arguments
+                            .iter()
+                            .zip(&expected)
+                            .map(|(argument, expected)| {
+                                emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                            })
+                            .collect::<Option<Vec<_>>>()?
+                    };
                     Some(format!("{helper}({})", rendered.join(", ")))
                 }
                 _ => None,
@@ -50306,8 +50315,12 @@ fn emit_cfg_scalar_expr_direct(
             };
             match name {
                 "write" | "setText" => {
-                    let text =
-                        emit_cfg_call_argument_direct(argument, &Type::Str, env, signatures)?;
+                    let text = emit_cfg_ordinary_call_argument_direct(
+                        argument,
+                        &Type::Str,
+                        env,
+                        signatures,
+                    )?;
                     Some(format!("flux__clipboard_set_text({text})"))
                 }
                 "read" | "readText" => {
@@ -50493,8 +50506,12 @@ fn emit_cfg_scalar_expr_direct(
                     Some("flux__text_input_selection_end()".to_string())
                 }
                 "setCaret" if ty == Type::Bool && arguments.len() == 1 => {
-                    let position =
-                        emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                    let position = emit_cfg_ordinary_call_argument_direct(
+                        &arguments[0],
+                        &Type::I64,
+                        env,
+                        signatures,
+                    )?;
                     Some(format!("flux__text_input_set_caret({position})"))
                 }
                 "setSelection" if ty == Type::Bool && arguments.len() == 2 => {
@@ -61571,6 +61588,14 @@ fn preferenceRemove(key: str) -> error {
     return preferences.remove(key)
 }
 
+fn utilityString(value: str) -> str {
+    return value
+}
+
+fn callPreferenceRemove(key: str) -> error {
+    return preferences.remove(utilityString(key))
+}
+
 fn validate(value: str) -> error {
     return json.validate(value)
 }
@@ -61641,6 +61666,10 @@ fn clipboardWrite(value: str) -> void {
     clipboard.setText(value)
 }
 
+fn callClipboardWrite(value: str) -> void {
+    clipboard.setText(utilityString(value))
+}
+
 fn alert(title: str, message: str) -> void {
     dialog.alert(title, message)
 }
@@ -61659,6 +61688,14 @@ fn selectionEnd() -> i64 {
 
 fn setCaret(position: i64) -> bool {
     return textInput.setCaret(position)
+}
+
+fn utilityPosition(position: i64) -> i64 {
+    return position
+}
+
+fn callSetCaret(position: i64) -> bool {
+    return textInput.setCaret(utilityPosition(position))
 }
 
 fn setSelection(start: i64, end: i64) -> bool {
@@ -61689,6 +61726,15 @@ fn main() -> i64 {
                 "preferenceRemove",
                 HashMap::from([("key".to_string(), Type::Str)]),
                 format!("flux__preferences_remove({})", local_c_name("key")),
+            ),
+            (
+                "callPreferenceRemove",
+                HashMap::from([("key".to_string(), Type::Str)]),
+                format!(
+                    "flux__preferences_remove({}({}))",
+                    function_c_name("utilityString"),
+                    local_c_name("key")
+                ),
             ),
             (
                 "validate",
@@ -61836,6 +61882,15 @@ fn main() -> i64 {
                 format!("flux__clipboard_set_text({})", local_c_name("value")),
             ),
             (
+                "callClipboardWrite",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__clipboard_set_text({}({}))",
+                    function_c_name("utilityString"),
+                    local_c_name("value")
+                ),
+            ),
+            (
                 "alert",
                 HashMap::from([
                     ("title".to_string(), Type::Str),
@@ -61873,6 +61928,15 @@ fn main() -> i64 {
                 "setCaret",
                 HashMap::from([("position".to_string(), Type::I64)]),
                 format!("flux__text_input_set_caret({})", local_c_name("position")),
+            ),
+            (
+                "callSetCaret",
+                HashMap::from([("position".to_string(), Type::I64)]),
+                format!(
+                    "flux__text_input_set_caret({}({}))",
+                    function_c_name("utilityPosition"),
+                    local_c_name("position")
+                ),
             ),
             (
                 "setSelection",
