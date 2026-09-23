@@ -50724,17 +50724,14 @@ fn emit_cfg_scalar_expr_direct(
 
             let receiver = arguments.first()?;
             let receiver_ty = signatures.canonical_type(&receiver.ty);
-            if !matches!(
-                receiver.kind,
-                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
-            ) || !signatures.is_copy_type(&receiver_ty)
-            {
+            if !signatures.is_copy_type(&receiver_ty) {
                 return None;
             }
+            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
             let callee =
                 cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
             let mut rendered = Vec::with_capacity(arguments.len());
-            rendered.push(emit_cfg_scalar_expr_direct(receiver, env, signatures)?);
+            rendered.push(rendered_receiver);
             for (argument, parameter) in arguments[1..].iter().zip(&member.params) {
                 let parameter_ty = signatures.canonical_type(parameter);
                 let direct_argument =
@@ -50875,13 +50872,10 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
             let receiver_ty = signatures.canonical_type(&receiver.ty);
-            if !matches!(
-                receiver.kind,
-                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
-            ) || !signatures.is_copy_type(&receiver_ty)
-            {
+            if !signatures.is_copy_type(&receiver_ty) {
                 return None;
             }
+            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
             let callee =
                 cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
 
@@ -50892,7 +50886,7 @@ fn emit_cfg_scalar_expr_direct(
                 .collect::<Vec<_>>();
             let mut positional_index = 0usize;
             let mut rendered = Vec::with_capacity(arguments.len());
-            rendered.push(emit_cfg_scalar_expr_direct(receiver, env, signatures)?);
+            rendered.push(rendered_receiver);
             for parameter in &member.param_details {
                 let argument = if !parameter.named_only && positional_index < positional.len() {
                     let argument = positional[positional_index];
@@ -58111,6 +58105,137 @@ fn main() -> i64 {
         );
         assert!(emitted.contains(&local_c_name("value")), "{emitted}");
         assert!(!emitted.contains("checked-ast-void-await"));
+    }
+
+    #[test]
+    fn interface_dispatch_copy_receivers_trust_direct_emitter() {
+        let source = r#"
+interface Measure {
+    fn apply(value: i64) -> i64
+    fn adjust(value: i64, *, delta: i64) -> i64
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn offsetApply(offset: Offset, value: i64) -> i64 {
+    return offset.amount + value
+}
+
+fn offsetAdjust(offset: Offset, value: i64, *, delta: i64) -> i64 {
+    return offset.amount + value + delta
+}
+
+impl Measure for Offset {
+    apply: offsetApply
+    adjust: offsetAdjust
+}
+
+fn makeOffset(amount: i64) -> Offset {
+    return Offset { amount: amount }
+}
+
+fn positional(amount: i64, value: i64) -> i64 {
+    return Measure.apply(makeOffset(amount), value)
+}
+
+fn named(amount: i64, value: i64) -> i64 {
+    return Measure.adjust(makeOffset(amount), value, delta: 3)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct interface receiver fixture should typecheck");
+        let env = HashMap::from([
+            ("amount".to_string(), Type::I64),
+            ("value".to_string(), Type::I64),
+        ]);
+
+        for (function, named) in [("positional", false), ("named", true)] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("interface receiver CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    if named {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                                interface,
+                                capability,
+                                ..
+                            } if interface == "Measure" && capability == "adjust"
+                        )
+                    } else {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                                interface,
+                                capability,
+                                ..
+                            } if interface == "Measure" && capability == "apply"
+                        )
+                    }
+                })
+                .expect("interface dispatch should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("interface dispatch should have scalar typed-IR facts");
+            let receiver = match &scalar.kind {
+                CfgScalarExprKind::QualifiedCall { arguments, .. } => &arguments[0],
+                CfgScalarExprKind::NamedQualifiedCall { arguments, .. } => &arguments[0].1,
+                other => panic!("unexpected interface scalar kind: {other:?}"),
+            };
+            assert!(
+                matches!(
+                    &receiver.kind,
+                    CfgScalarExprKind::Call { callee, .. } if callee == "makeOffset"
+                ),
+                "{function}: {receiver:?}"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("directly reconstructable interface receiver should emit: {function}")
+                });
+            assert!(
+                direct.contains(&function_c_name("makeOffset")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name(if named {
+                    "offsetAdjust"
+                } else {
+                    "offsetApply"
+                })),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str("checked-ast-interface-direct-receiver".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("direct interface receiver should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-interface-direct-receiver"));
+        }
     }
 
     #[test]
