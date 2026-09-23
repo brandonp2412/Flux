@@ -52728,8 +52728,12 @@ fn emit_cfg_scalar_expr_direct(
                     op: UnaryOp::Borrow,
                     ..
                 }
-        ) || (matches!(signatures.canonical_type(&base.ty), Type::List(_))
-            && cfg_borrowed_list_has_named_root(base)) =>
+        ) || (matches!(
+            signatures.canonical_type(&base.ty),
+            Type::Record(_) | Type::Named(_)
+        ) && signatures.is_copy_type(&signatures.canonical_type(&base.ty)))
+            || (matches!(signatures.canonical_type(&base.ty), Type::List(_))
+                && cfg_borrowed_list_has_named_root(base)) =>
         {
             let base_ty = signatures.canonical_type(&base.ty);
             let aggregate_base = matches!(base.kind, CfgScalarExprKind::Aggregate(_));
@@ -57167,6 +57171,129 @@ fn main() -> i64 {
                     format!("({}).{}", local_c_name("point"), field_c_name("x"))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn call_produced_copy_field_projections_emit_directly_from_typed_ir() {
+        let source = r#"
+struct Point {
+    x: i64
+}
+
+struct Holder {
+    point: Point
+}
+
+type ValueRecord = (amount: i64, enabled: bool)
+
+fn makePoint(value: i64) -> Point {
+    return Point { x: value }
+}
+
+fn makeHolder(value: i64) -> Holder {
+    return Holder { point: makePoint(value) }
+}
+
+fn makeRecord(value: i64) -> ValueRecord {
+    return (amount: value, enabled: true)
+}
+
+fn directCallField(value: i64) -> i64 {
+    return makePoint(value).x
+}
+
+fn chainedCallField(value: i64) -> i64 {
+    return makeHolder(value).point.x
+}
+
+fn recordCallField(value: i64) -> i64 {
+    return makeRecord(value).amount
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("call-produced field projection fixture should typecheck");
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+
+        for (function, field_name, nested, producer) in [
+            ("directCallField", "x", false, "makePoint"),
+            ("chainedCallField", "x", true, "makeHolder"),
+            ("recordCallField", "amount", false, "makeRecord"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("field projection CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let field = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    let Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Field { base, name, .. },
+                        ..
+                    }) = facts.scalar_exprs.get(&source_span_key(value.span))
+                    else {
+                        return false;
+                    };
+                    if name != field_name {
+                        return false;
+                    }
+                    if nested {
+                        matches!(
+                            &base.kind,
+                            CfgScalarExprKind::Field { base, name, .. }
+                                if name == "point"
+                                    && matches!(base.kind, CfgScalarExprKind::Call { .. })
+                        )
+                    } else {
+                        matches!(base.kind, CfgScalarExprKind::Call { .. })
+                    }
+                })
+                .expect("typed IR should retain the call-produced field projection");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(field.span))
+                .expect("call-produced field projection should retain scalar facts");
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("call-produced Copy field projection should emit directly");
+            assert!(direct.contains(&function_c_name(producer)), "{direct}");
+            assert_eq!(
+                direct.matches(&function_c_name(producer)).count(),
+                1,
+                "{direct}"
+            );
+            if field_name == "x" {
+                assert!(direct.contains(&field_c_name("x")), "{direct}");
+            } else {
+                assert!(
+                    direct.contains(&record_field_c_name(Some("amount"), 0)),
+                    "{direct}"
+                );
+            }
+            if nested {
+                assert!(direct.contains(&field_c_name("point")), "{direct}");
+            }
+
+            let fake = Expr {
+                line: field.span.line,
+                span: field.span,
+                kind: ExprKind::Int(0),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("call-produced field projection should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
         }
     }
 
