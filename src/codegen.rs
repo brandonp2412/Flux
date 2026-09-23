@@ -51248,7 +51248,7 @@ fn emit_cfg_scalar_expr_direct(
             let mut positional_index = 0usize;
             for parameter in remaining {
                 if !parameter.named_only && positional_index < arguments.len() {
-                    rendered.push(emit_cfg_call_argument_direct(
+                    rendered.push(emit_cfg_ordinary_call_argument_direct(
                         &arguments[positional_index],
                         &parameter.ty,
                         env,
@@ -58667,6 +58667,10 @@ fn nestedOptionalCall(value: i64?, left: i64, right: i64) -> i64? {
     return value ?.. add(left + right)
 }
 
+fn callArgumentOptionalCall(value: i64?, amount: i64) -> i64? {
+    return value ?.. add(scale(amount))
+}
+
 interface Measure {
     fn apply(value: i64) -> i64
     fn adjust(value: i64, *, delta: i64) -> i64
@@ -59505,6 +59509,74 @@ fn main() -> i64 {
         .expect("nested primitive optional-cascade arguments should bypass the checked-AST root");
         assert_eq!(nested_optional_emitted, nested_optional_direct);
         assert!(!nested_optional_emitted.contains("checked-ast-nested-optional-call"));
+
+        let call_argument_optional = database
+            .control_flow_graph("callArgumentOptionalCall")
+            .expect("call-argument optional-cascade CFG should exist");
+        let call_argument_optional_call = call_argument_optional
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::OptionalCascadeCall { callee, .. }
+                        if callee == "add"
+                )
+            })
+            .expect("call-argument optional cascade should retain typed IR");
+        let call_argument_optional_facts = cfg_rewrite_facts(call_argument_optional);
+        let call_argument_optional_scalar = call_argument_optional_facts
+            .scalar_exprs
+            .get(&source_span_key(call_argument_optional_call.span))
+            .expect("call-argument optional cascade should have typed-IR facts");
+        let CfgScalarExprKind::OptionalCascadeCall { arguments, .. } =
+            &call_argument_optional_scalar.kind
+        else {
+            panic!("call-argument optional cascade should retain its typed shape");
+        };
+        assert!(matches!(
+            &arguments[0].kind,
+            CfgScalarExprKind::Call { callee, .. } if callee == "scale"
+        ));
+        let call_argument_optional_env = HashMap::from([
+            ("value".to_string(), Type::Optional(Box::new(Type::I64))),
+            ("amount".to_string(), Type::I64),
+        ]);
+        let call_argument_optional_direct = emit_cfg_scalar_expr_direct(
+            call_argument_optional_scalar,
+            &call_argument_optional_env,
+            database.signatures(),
+        )
+        .expect("direct Copy call arguments should render inside optional cascades");
+        assert!(
+            call_argument_optional_direct.contains(&function_c_name("scale")),
+            "{call_argument_optional_direct}"
+        );
+        assert!(
+            call_argument_optional_direct.contains(&function_c_name("add")),
+            "{call_argument_optional_direct}"
+        );
+        let fake_call_argument_optional = Expr {
+            line: call_argument_optional_call.span.line,
+            span: call_argument_optional_call.span,
+            kind: ExprKind::Str("checked-ast-call-argument-optional-call".to_string()),
+        };
+        let call_argument_optional_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_call_argument_optional,
+            &Type::Optional(Box::new(Type::I64)),
+            &call_argument_optional_env,
+            database.signatures(),
+            &HashMap::new(),
+            &call_argument_optional_facts,
+        )
+        .expect("direct optional-cascade call arguments should bypass the checked-AST root");
+        assert_eq!(
+            call_argument_optional_emitted,
+            call_argument_optional_direct
+        );
+        assert!(
+            !call_argument_optional_emitted.contains("checked-ast-call-argument-optional-call")
+        );
 
         let CfgScalarExprKind::OptionalCascadeCall {
             optional: optional_input,
