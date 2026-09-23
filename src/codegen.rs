@@ -48402,6 +48402,7 @@ fn emit_cfg_borrowed_list_argument_direct(
 
     let has_stable_borrowed_storage = match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
+        CfgScalarExprKind::Aggregate(_) => signatures.is_copy_type(element),
         CfgScalarExprKind::Unary {
             op: UnaryOp::Borrow,
             operand,
@@ -48409,6 +48410,7 @@ fn emit_cfg_borrowed_list_argument_direct(
         CfgScalarExprKind::Slice { base, .. } => matches!(
             base.kind,
             CfgScalarExprKind::Name(_)
+                | CfgScalarExprKind::Aggregate(_)
                 | CfgScalarExprKind::Unary {
                     op: UnaryOp::Borrow,
                     ..
@@ -60979,6 +60981,63 @@ fn main() -> i64 {
         .expect("borrowed list slice call should bypass the checked-AST root");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-borrowed-slice"));
+    }
+
+    #[test]
+    fn temporary_copy_list_arguments_emit_directly_at_qualified_call_boundaries() {
+        let source = r#"
+fn sendLiteral(socket: i64) -> error {
+    return net.writeParts(socket, ["alpha", "beta"])
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("temporary borrowed-list direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sendLiteral")
+            .expect("temporary borrowed-list CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("temporary borrowed-list qualified call should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("temporary borrowed-list call should have scalar typed-IR facts");
+        let env = HashMap::from([("socket".to_string(), Type::I64)]);
+
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("temporary Copy list should emit directly from typed IR");
+        assert!(direct.starts_with("flux__net_send_text_parts("));
+        assert!(direct.contains("alpha"));
+        assert!(direct.contains("beta"));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-borrowed-temporary".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("temporary borrowed-list call should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-borrowed-temporary"));
     }
 
     #[test]
