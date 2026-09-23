@@ -50197,20 +50197,13 @@ fn emit_cfg_scalar_expr_direct(
                     }
                     _ => return None,
                 };
-                let direct_aggregate = matches!(
-                    value.kind,
-                    CfgScalarExprKind::Aggregate(_)
-                        | CfgScalarExprKind::Call { .. }
-                        | CfgScalarExprKind::NamedCall { .. }
-                        | CfgScalarExprKind::QualifiedCall { .. }
-                        | CfgScalarExprKind::Field { .. }
-                        | CfgScalarExprKind::Index { .. }
-                ) && signatures.is_copy_type(&value_ty);
-                let value = if direct_aggregate {
-                    emit_cfg_scalar_expr_direct(value, env, signatures)?
+                let direct_value = if signatures.is_copy_type(&value_ty) {
+                    emit_cfg_scalar_expr_direct(value, env, signatures)
                 } else {
-                    emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?
+                    None
                 };
+                let value = direct_value
+                    .or_else(|| emit_cfg_call_argument_direct(value, &value.ty, env, signatures))?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -61551,6 +61544,103 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-aggregate-index"));
         }
+    }
+
+    #[test]
+    fn json_direct_copy_values_trust_typed_ir_emitter() {
+        let source = r#"
+struct JsonCascadeUser {
+    name: str
+    age: i64
+}
+
+fn jsonCascadeText(_value: str) -> void {
+}
+
+fn updateJsonCascadeUser(user: JsonCascadeUser, delta: i64) -> JsonCascadeUser {
+    return JsonCascadeUser { name: user.name, age: user.age + delta }
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("optional aggregate cascade JSON support fixture should typecheck");
+        let user_ty = Type::Named("JsonCascadeUser".to_string());
+        let optional_user_ty = Type::Optional(Box::new(user_ty.clone()));
+        let callback_ty = Type::Function {
+            params: vec![Type::Str],
+            returns: vec![],
+        };
+        let value = CfgScalarExpr {
+            ty: optional_user_ty.clone(),
+            kind: CfgScalarExprKind::OptionalCascadeCall {
+                optional: Box::new(CfgScalarExpr {
+                    ty: optional_user_ty.clone(),
+                    kind: CfgScalarExprKind::Name("user".to_string()),
+                }),
+                callee: "updateJsonCascadeUser".to_string(),
+                arguments: vec![CfgScalarExpr {
+                    ty: Type::I64,
+                    kind: CfgScalarExprKind::Constant(ConstantValue::I64(1)),
+                }],
+            },
+        };
+        let scalar = CfgScalarExpr {
+            ty: Type::Error,
+            kind: CfgScalarExprKind::QualifiedCall {
+                namespace: "json".to_string(),
+                name: "encode".to_string(),
+                arguments: vec![
+                    value,
+                    CfgScalarExpr {
+                        ty: callback_ty,
+                        kind: CfgScalarExprKind::Name("jsonCascadeText".to_string()),
+                    },
+                ],
+            },
+        };
+
+        let helper = json_optional_aggregate_helper_name(&optional_user_ty, database.signatures());
+        let env = HashMap::from([("user".to_string(), optional_user_ty)]);
+        let direct = emit_cfg_scalar_expr_direct(&scalar, &env, database.signatures())
+            .expect("directly reconstructable Copy JSON values should use typed IR");
+        assert!(direct.starts_with(&format!("{helper}(")), "{direct}");
+        assert!(
+            direct.contains("flux__optional_cascade_input_direct"),
+            "{direct}"
+        );
+        assert!(
+            direct.contains(&function_c_name("updateJsonCascadeUser")),
+            "{direct}"
+        );
+        assert!(
+            direct.contains(&function_c_name("jsonCascadeText")),
+            "{direct}"
+        );
+
+        let span = SourceSpan::new(1, 1, 12).with_source(SourceId::new(9912));
+        let facts = CfgRewriteFacts {
+            scalar_exprs: HashMap::from([(source_span_key(span), scalar)]),
+            ..CfgRewriteFacts::default()
+        };
+        let fake = Expr {
+            line: span.line,
+            span,
+            kind: ExprKind::Str("checked-ast-json-direct-copy-value".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("directly reconstructable Copy JSON value should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-json-direct-copy-value"));
     }
 
     #[test]
