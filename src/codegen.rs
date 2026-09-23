@@ -48763,7 +48763,12 @@ fn emit_cfg_scalar_expr_direct(
                         "flux__typed_contains_source.len".to_string(),
                     )
                 }
-                Type::Set(element) if matches!(collection.kind, CfgScalarExprKind::Name(_)) => {
+                Type::Set(element)
+                    if matches!(
+                        collection.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+                    ) =>
+                {
                     let element = signatures.canonical_type(&element);
                     let source = emit_cfg_scalar_expr_direct(collection, env, signatures)?;
                     (
@@ -48774,7 +48779,12 @@ fn emit_cfg_scalar_expr_direct(
                         "flux__typed_contains_source.len".to_string(),
                     )
                 }
-                Type::Map(key, _) if matches!(collection.kind, CfgScalarExprKind::Name(_)) => {
+                Type::Map(key, _)
+                    if matches!(
+                        collection.kind,
+                        CfgScalarExprKind::Name(_) | CfgScalarExprKind::Aggregate(_)
+                    ) =>
+                {
                     let key = signatures.canonical_type(&key);
                     let source = emit_cfg_scalar_expr_direct(collection, env, signatures)?;
                     (
@@ -56272,6 +56282,14 @@ fn containsMap(values: map<str, i64>, needle: str) -> bool {
     return contains(values, needle)
 }
 
+fn containsSetLiteral(needle: i64) -> bool {
+    return contains({1, 2, 3}, needle)
+}
+
+fn containsMapLiteral(needle: str) -> bool {
+    return contains(map{"one": 1, "two": 2}, needle)
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -56299,6 +56317,20 @@ fn main() -> i64 {
                     ),
                     ("needle".to_string(), Type::Str),
                 ]),
+                "struct flux__map",
+                "flux__typed_contains_source.keys.len",
+                "strcmp(flux__typed_contains_value",
+            ),
+            (
+                "containsSetLiteral",
+                HashMap::from([("needle".to_string(), Type::I64)]),
+                "struct flux__list",
+                "flux__typed_contains_source.len",
+                "flux__typed_contains_value ==",
+            ),
+            (
+                "containsMapLiteral",
+                HashMap::from([("needle".to_string(), Type::Str)]),
                 "struct flux__map",
                 "flux__typed_contains_source.keys.len",
                 "strcmp(flux__typed_contains_value",
