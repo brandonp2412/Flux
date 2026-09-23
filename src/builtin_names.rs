@@ -189,6 +189,7 @@ pub fn qualified_impl<'a>(namespace: &str, name: &'a str) -> &'a str {
         ("net", "readBytesFromMany") => "receiveBytesFromMany",
         ("net", "readBytesFromManyTimeout") => "receiveBytesFromManyWithTimeout",
         ("net", "readBytesFromTimeout") => "receiveBytesFromWithTimeout",
+        ("net", "readBytesTimeout") => "receiveBytesWithTimeout",
         ("net", "readTimeout") => "receiveTextWithTimeout",
         ("net", "readMany") => "receiveTextMany",
         ("net", "readManyTimeout") => "receiveTextManyWithTimeout",
@@ -356,6 +357,10 @@ mod tests {
             "startMicrophoneRecording"
         );
         assert_eq!(qualified_impl("net", "readManyFrom"), "receiveTextFromMany");
+        assert_eq!(
+            qualified_impl("net", "readBytesTimeout"),
+            "receiveBytesWithTimeout"
+        );
         assert_eq!(global("distinct"), "unique");
         assert_eq!(global("where"), "where");
         assert_eq!(global_impl("unique"), "distinct");
