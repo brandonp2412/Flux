@@ -49267,6 +49267,27 @@ fn cfg_interface_dispatch_callee_direct(
     Some(function_c_name(mapped))
 }
 
+fn cfg_interface_dispatch_multi_shape_direct(
+    namespace: &str,
+    name: &str,
+    receiver_ty: &Type,
+    signatures: &Signatures,
+) -> Option<(String, String)> {
+    signatures.interface(namespace)?;
+    let Type::Named(target_name) = signatures.canonical_type(receiver_ty) else {
+        return None;
+    };
+    if target_name == namespace && signatures.interface(&target_name).is_some() {
+        return Some((
+            interface_dispatch_helper_name(namespace, name),
+            interface_multi_return_struct_name(namespace, name),
+        ));
+    }
+    let implementation = signatures.implementation(namespace, &target_name)?;
+    let mapped = implementation.functions.get(name)?;
+    Some((function_c_name(mapped), multi_return_struct_name(mapped)))
+}
+
 fn cfg_direct_aggregate_list_length(value: &CfgScalarExpr) -> Option<usize> {
     let CfgScalarExprKind::Aggregate(aggregate) = &value.kind else {
         return None;
@@ -69403,6 +69424,172 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn interface_multi_value_calls_emit_from_typed_ir() {
+        let source = r#"
+interface Measure {
+    fn split(value: i64) -> (i64, error)
+    fn adjust(value: i64, *, delta: i64) -> (i64, error)
+}
+
+struct Offset {
+    amount: i64
+}
+
+fn offsetSplit(offset: Offset, value: i64) -> (i64, error) {
+    return offset.amount + value, nil
+}
+
+fn offsetAdjust(offset: Offset, value: i64, *, delta: i64) -> (i64, error) {
+    return offset.amount + value + delta, nil
+}
+
+impl Measure for Offset {
+    split: offsetSplit
+    adjust: offsetAdjust
+}
+
+fn concrete(offset: Offset, value: i64) -> i64 {
+    let (result, _) = Measure.split(offset, value)
+    return result
+}
+
+fn dynamic(measure: Measure, value: i64) -> i64 {
+    let (result, _) = Measure.split(measure, value)
+    return result
+}
+
+fn concreteNamed(offset: Offset, value: i64, delta: i64) -> i64 {
+    let (result, _) = Measure.adjust(offset, value, delta: delta)
+    return result
+}
+
+fn dynamicNamed(measure: Measure, value: i64, delta: i64) -> i64 {
+    let (result, _) = Measure.adjust(measure, value, delta: delta)
+    return result
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("interface multi-value typed-IR fixture should typecheck");
+
+        for (function, named, dynamic, env) in [
+            (
+                "concrete",
+                false,
+                false,
+                HashMap::from([
+                    ("offset".to_string(), Type::Named("Offset".to_string())),
+                    ("value".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "dynamic",
+                false,
+                true,
+                HashMap::from([
+                    ("measure".to_string(), Type::Named("Measure".to_string())),
+                    ("value".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "concreteNamed",
+                true,
+                false,
+                HashMap::from([
+                    ("offset".to_string(), Type::Named("Offset".to_string())),
+                    ("value".to_string(), Type::I64),
+                    ("delta".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "dynamicNamed",
+                true,
+                true,
+                HashMap::from([
+                    ("measure".to_string(), Type::Named("Measure".to_string())),
+                    ("value".to_string(), Type::I64),
+                    ("delta".to_string(), Type::I64),
+                ]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("interface multi-value CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && if named {
+                            matches!(
+                                value.kind,
+                                crate::ir::ControlFlowValueKind::NamedInterfaceDispatch { .. }
+                            )
+                        } else {
+                            matches!(
+                                value.kind,
+                                crate::ir::ControlFlowValueKind::InterfaceDispatch { .. }
+                            )
+                        }
+                })
+                .expect("typed IR should retain the interface multi-value call");
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("interface multi-value call should retain typed-IR facts");
+            if named {
+                assert!(matches!(
+                    multi.kind,
+                    CfgScalarExprKind::NamedQualifiedCall { .. }
+                ));
+            } else {
+                assert!(matches!(
+                    multi.kind,
+                    CfgScalarExprKind::QualifiedCall { .. }
+                ));
+            }
+
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .expect("interface multi-value call should emit directly from typed IR");
+            let capability = if named { "adjust" } else { "split" };
+            let expected_callee = if dynamic {
+                interface_dispatch_helper_name("Measure", capability)
+            } else if named {
+                function_c_name("offsetAdjust")
+            } else {
+                function_c_name("offsetSplit")
+            };
+            let expected_shape = if dynamic {
+                interface_multi_return_struct_name("Measure", capability)
+            } else if named {
+                multi_return_struct_name("offsetAdjust")
+            } else {
+                multi_return_struct_name("offsetSplit")
+            };
+            assert!(
+                direct.0.starts_with(&format!("{expected_callee}(")),
+                "{}",
+                direct.0
+            );
+            assert_eq!(direct.1, expected_shape);
+            assert_eq!(direct.2, vec![Type::I64, Type::Error]);
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("interface multi-value call should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+        }
+    }
+
+    #[test]
     fn simple_qualified_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
 fn tick() -> void {
@@ -73372,6 +73559,38 @@ fn emit_cfg_multi_expr_direct(
             name,
             arguments,
         } => {
+            if let Some(interface) = signatures.interface(namespace) {
+                let member = interface.functions.get(name)?;
+                if member.asynchronous || member.returns.len() < 2 || arguments.is_empty() {
+                    return None;
+                }
+                let receiver = &arguments[0];
+                let receiver_ty = signatures.canonical_type(&receiver.ty);
+                if !signatures.is_copy_type(&receiver_ty) {
+                    return None;
+                }
+                let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
+                let rendered_arguments = emit_cfg_positional_call_arguments_direct(
+                    member,
+                    &arguments[1..],
+                    env,
+                    signatures,
+                )?;
+                let (callee, multi_struct) = cfg_interface_dispatch_multi_shape_direct(
+                    namespace,
+                    name,
+                    &receiver_ty,
+                    signatures,
+                )?;
+                let mut rendered = Vec::with_capacity(rendered_arguments.len() + 1);
+                rendered.push(rendered_receiver);
+                rendered.extend(rendered_arguments);
+                return Some((
+                    format!("{callee}({})", rendered.join(", ")),
+                    multi_struct,
+                    member.returns.clone(),
+                ));
+            }
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let i64_error = vec![Type::I64, Type::Error];
             let i64_bool_error = vec![Type::I64, Type::Bool, Type::Error];
@@ -74724,6 +74943,42 @@ fn emit_cfg_multi_expr_direct(
                 },
                 _ => None,
             }
+        }
+        CfgScalarExprKind::NamedQualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if signatures.interface(namespace).is_some() => {
+            let interface = signatures.interface(namespace)?;
+            let member = interface.functions.get(name)?;
+            if member.asynchronous || member.returns.len() < 2 || arguments.is_empty() {
+                return None;
+            }
+            let (receiver_name, receiver) = arguments.first()?;
+            if receiver_name.is_some() {
+                return None;
+            }
+            let receiver_ty = signatures.canonical_type(&receiver.ty);
+            if !signatures.is_copy_type(&receiver_ty) {
+                return None;
+            }
+            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
+            let rendered_arguments =
+                emit_cfg_named_call_arguments_direct(member, &arguments[1..], env, signatures)?;
+            let (callee, multi_struct) = cfg_interface_dispatch_multi_shape_direct(
+                namespace,
+                name,
+                &receiver_ty,
+                signatures,
+            )?;
+            let mut rendered = Vec::with_capacity(rendered_arguments.len() + 1);
+            rendered.push(rendered_receiver);
+            rendered.extend(rendered_arguments);
+            Some((
+                format!("{callee}({})", rendered.join(", ")),
+                multi_struct,
+                member.returns.clone(),
+            ))
         }
         CfgScalarExprKind::Await { value } => match &value.kind {
             CfgScalarExprKind::Call { callee, arguments } => {
