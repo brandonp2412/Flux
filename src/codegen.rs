@@ -49199,8 +49199,12 @@ fn emit_cfg_scalar_expr_direct(
                 Some(format!("flux__tls_write({session}, {value})"))
             }
             "close" if arguments.len() == 1 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let session = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::I64,
+                    env,
+                    signatures,
+                )?;
                 Some(format!("flux__tls_close({session})"))
             }
             _ => None,
@@ -49354,8 +49358,12 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "close" if arguments.len() == 1 => {
-                let session =
-                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let session = emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &Type::I64,
+                    env,
+                    signatures,
+                )?;
                 Some(format!("flux__websocket_close({session})"))
             }
             _ => None,
@@ -63485,6 +63493,14 @@ fn close(session: i64) -> error {
     return websocket.close(session)
 }
 
+fn websocketSession(session: i64) -> i64 {
+    return session
+}
+
+fn callClose(session: i64) -> error {
+    return websocket.close(websocketSession(session))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -63559,6 +63575,15 @@ fn main() -> i64 {
                 "close",
                 HashMap::from([("session".to_string(), Type::I64)]),
                 format!("flux__websocket_close({})", local_c_name("session")),
+            ),
+            (
+                "callClose",
+                HashMap::from([("session".to_string(), Type::I64)]),
+                format!(
+                    "flux__websocket_close({}({}))",
+                    function_c_name("websocketSession"),
+                    local_c_name("session")
+                ),
             ),
         ] {
             let graph = database
@@ -64225,6 +64250,14 @@ fn close(session: i64) -> error {
     return tls.close(session)
 }
 
+fn tlsSession(session: i64) -> i64 {
+    return session
+}
+
+fn callClose(session: i64) -> error {
+    return tls.close(tlsSession(session))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -64249,6 +64282,15 @@ fn main() -> i64 {
                 "close",
                 HashMap::from([("session".to_string(), Type::I64)]),
                 format!("flux__tls_close({})", local_c_name("session")),
+            ),
+            (
+                "callClose",
+                HashMap::from([("session".to_string(), Type::I64)]),
+                format!(
+                    "flux__tls_close({}({}))",
+                    function_c_name("tlsSession"),
+                    local_c_name("session")
+                ),
             ),
         ] {
             let graph = database
