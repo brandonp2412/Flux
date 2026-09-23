@@ -68852,6 +68852,14 @@ fn main() -> i64 {
     #[test]
     fn network_borrowed_send_multi_values_emit_from_typed_ir() {
         let source = r#"
+fn networkI64(value: i64) -> i64 {
+    return value
+}
+
+fn networkStr(value: str) -> str {
+    return value
+}
+
 fn exercise(
     socket: i64,
     bytes: i64[],
@@ -68862,16 +68870,21 @@ fn exercise(
     offset: i64,
     timeout: i64
 ) -> i64 {
-    let (byteCount, _) = net.writeBytes(socket, bytes)
-    let (byteOffset, _, _) = net.writeBytesFrom(socket, bytes, offset)
+    let (byteCount, _) = net.writeBytes(networkI64(socket), bytes)
+    let (byteOffset, _, _) = net.writeBytesFrom(socket, bytes, networkI64(offset))
     let (timedBytes, _) = net.writeBytesTimeout(socket, bytes, timeout)
-    let (timedOffset, _, _) = net.writeBytesFromTimeout(socket, bytes, offset, timeout)
-    let (partOffset, _, _) = net.writePartsFrom(socket, parts, offset)
-    let (timedParts, _) = net.writePartsTimeout(socket, parts, timeout)
-    let (timedPartOffset, _, _) = net.writePartsFromTimeout(socket, parts, offset, timeout)
-    let (udpBytes, _) = net.writeBytesTo(socket, host, port, bytes)
-    let (udpByteParts, _) = net.writeBytesToParts(socket, host, port, byteParts)
+    let (timedOffset, _, _) = net.writeBytesFromTimeout(networkI64(socket), bytes, offset, timeout)
+    let (partOffset, _, _) = net.writePartsFrom(networkI64(socket), parts, offset)
+    let (timedParts, _) = net.writePartsTimeout(socket, parts, networkI64(timeout))
+    let (timedPartOffset, _, _) = net.writePartsFromTimeout(networkI64(socket), parts, offset, timeout)
+    let (udpBytes, _) = net.writeBytesTo(networkI64(socket), host, port, bytes)
+    let (udpByteParts, _) = net.writeBytesToParts(socket, networkStr(host), port, byteParts)
     return byteCount + byteOffset + timedBytes + timedOffset + partOffset + timedParts + timedPartOffset + udpBytes + udpByteParts
+}
+
+fn doubleWriteBytesTo(socket: i64, host: str, port: i64, bytes: i64[]) -> i64 {
+    let (sent, _) = net.writeBytesTo(networkI64(socket), networkStr(host), port, bytes)
+    return sent
 }
 
 fn main() -> i64 {
@@ -68902,7 +68915,8 @@ fn main() -> i64 {
                 "writeBytes".to_string(),
                 (
                     format!(
-                        "flux__net_send_bytes({}, {})",
+                        "flux__net_send_bytes({}({}), {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("bytes")
                     ),
@@ -68914,9 +68928,10 @@ fn main() -> i64 {
                 "writeBytesFrom".to_string(),
                 (
                     format!(
-                        "flux__net_send_bytes_progress({}, {}, {})",
+                        "flux__net_send_bytes_progress({}, {}, {}({}))",
                         local_c_name("socket"),
                         local_c_name("bytes"),
+                        function_c_name("networkI64"),
                         local_c_name("offset")
                     ),
                     "flux__net_i64_bool_error".to_string(),
@@ -68940,7 +68955,8 @@ fn main() -> i64 {
                 "writeBytesFromTimeout".to_string(),
                 (
                     format!(
-                        "flux__net_send_bytes_progress_with_timeout({}, {}, {}, {})",
+                        "flux__net_send_bytes_progress_with_timeout({}({}), {}, {}, {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("bytes"),
                         local_c_name("offset"),
@@ -68954,7 +68970,8 @@ fn main() -> i64 {
                 "writePartsFrom".to_string(),
                 (
                     format!(
-                        "flux__net_send_text_parts_progress({}, {}, {})",
+                        "flux__net_send_text_parts_progress({}({}), {}, {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("parts"),
                         local_c_name("offset")
@@ -68967,9 +68984,10 @@ fn main() -> i64 {
                 "writePartsTimeout".to_string(),
                 (
                     format!(
-                        "flux__net_send_text_parts_with_timeout({}, {}, {})",
+                        "flux__net_send_text_parts_with_timeout({}, {}, {}({}))",
                         local_c_name("socket"),
                         local_c_name("parts"),
+                        function_c_name("networkI64"),
                         local_c_name("timeout")
                     ),
                     "flux__net_i64_error".to_string(),
@@ -68980,7 +68998,8 @@ fn main() -> i64 {
                 "writePartsFromTimeout".to_string(),
                 (
                     format!(
-                        "flux__net_send_text_parts_progress_with_timeout({}, {}, {}, {})",
+                        "flux__net_send_text_parts_progress_with_timeout({}({}), {}, {}, {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("parts"),
                         local_c_name("offset"),
@@ -68994,7 +69013,8 @@ fn main() -> i64 {
                 "writeBytesTo".to_string(),
                 (
                     format!(
-                        "flux__net_send_bytes_to({}, {}, {}, {})",
+                        "flux__net_send_bytes_to({}({}), {}, {}, {})",
+                        function_c_name("networkI64"),
                         local_c_name("socket"),
                         local_c_name("host"),
                         local_c_name("port"),
@@ -69008,8 +69028,9 @@ fn main() -> i64 {
                 "writeBytesToParts".to_string(),
                 (
                     format!(
-                        "flux__net_send_bytes_to_parts({}, {}, {}, {})",
+                        "flux__net_send_bytes_to_parts({}, {}({}), {}, {})",
                         local_c_name("socket"),
+                        function_c_name("networkStr"),
                         local_c_name("host"),
                         local_c_name("port"),
                         local_c_name("byteParts")
@@ -69064,6 +69085,34 @@ fn main() -> i64 {
                 .expect("network borrowed send call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{name}");
         }
+
+        let graph = database
+            .control_flow_graph("doubleWriteBytesTo")
+            .expect("two-flex borrowed send CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "net" && name == "writeBytesTo"
+                    )
+            })
+            .expect("two-flex borrowed send should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-flex borrowed send should have typed multi-value facts");
+        assert!(
+            emit_cfg_multi_expr_direct(multi, &env, database.signatures()).is_none(),
+            "two flexible scalars beside an inert borrowed list must retain ordered fallback"
+        );
     }
 
     #[test]
@@ -71730,256 +71779,183 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "sendBytes" if arguments.len() == 2 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let bytes = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let (rendered, bytes) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &arguments[..1],
+                                &[Type::I64],
+                                &arguments[1],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
-                            format!("flux__net_send_bytes({socket}, {bytes})"),
+                            format!("flux__net_send_bytes({}, {bytes})", rendered[0]),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "sendBytesProgress" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let bytes = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
+                        let (rendered, bytes) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
-                            format!("flux__net_send_bytes_progress({socket}, {bytes}, {offset})"),
+                            format!(
+                                "flux__net_send_bytes_progress({}, {bytes}, {})",
+                                rendered[0], rendered[1]
+                            ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "sendBytesWithTimeout" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let bytes = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
+                        let (rendered, bytes) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_bytes_with_timeout({socket}, {bytes}, {timeout})"
+                                "flux__net_send_bytes_with_timeout({}, {bytes}, {})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "sendBytesProgressWithTimeout" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let bytes = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [
+                            arguments[0].clone(),
+                            arguments[2].clone(),
+                            arguments[3].clone(),
+                        ];
+                        let (rendered, bytes) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_bytes_progress_with_timeout({socket}, {bytes}, {offset}, {timeout})"
+                                "flux__net_send_bytes_progress_with_timeout({}, {bytes}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "sendTextPartsProgress" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let parts = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
+                        let (rendered, parts) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::Str,
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_text_parts_progress({socket}, {parts}, {offset})"
+                                "flux__net_send_text_parts_progress({}, {parts}, {})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "sendTextPartsWithTimeout" if arguments.len() == 3 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let parts = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
+                        let (rendered, parts) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::Str,
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_text_parts_with_timeout({socket}, {parts}, {timeout})"
+                                "flux__net_send_text_parts_with_timeout({}, {parts}, {})",
+                                rendered[0], rendered[1]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "sendTextPartsProgressWithTimeout" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let parts = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let offset = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let timeout = emit_cfg_call_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let scalar_arguments = [
+                            arguments[0].clone(),
+                            arguments[2].clone(),
+                            arguments[3].clone(),
+                        ];
+                        let (rendered, parts) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &scalar_arguments,
+                                &[Type::I64, Type::I64, Type::I64],
+                                &arguments[1],
+                                &Type::Str,
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_text_parts_progress_with_timeout({socket}, {parts}, {offset}, {timeout})"
+                                "flux__net_send_text_parts_progress_with_timeout({}, {parts}, {}, {})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
                     }
                     "sendBytesToParts" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let port = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let parts = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[3],
-                            &Type::List(Box::new(Type::I64)),
-                            env,
-                            signatures,
-                        )?;
+                        let (rendered, parts) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &arguments[..3],
+                                &[Type::I64, Type::Str, Type::I64],
+                                &arguments[3],
+                                &Type::List(Box::new(Type::I64)),
+                                env,
+                                signatures,
+                            )?;
                         Some((
                             format!(
-                                "flux__net_send_bytes_to_parts({socket}, {host}, {port}, {parts})"
+                                "flux__net_send_bytes_to_parts({}, {}, {}, {parts})",
+                                rendered[0], rendered[1], rendered[2]
                             ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
                     }
                     "sendBytesTo" if arguments.len() == 4 => {
-                        let socket = emit_cfg_call_argument_direct(
-                            &arguments[0],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let host = emit_cfg_call_argument_direct(
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                        let port = emit_cfg_call_argument_direct(
-                            &arguments[2],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
-                        let bytes = emit_cfg_borrowed_list_argument_direct(
-                            &arguments[3],
-                            &Type::I64,
-                            env,
-                            signatures,
-                        )?;
+                        let (rendered, bytes) =
+                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
+                                &arguments[..3],
+                                &[Type::I64, Type::Str, Type::I64],
+                                &arguments[3],
+                                &Type::I64,
+                                env,
+                                signatures,
+                            )?;
                         Some((
-                            format!("flux__net_send_bytes_to({socket}, {host}, {port}, {bytes})"),
+                            format!(
+                                "flux__net_send_bytes_to({}, {}, {}, {bytes})",
+                                rendered[0], rendered[1], rendered[2]
+                            ),
                             "flux__net_i64_error".to_string(),
                             i64_error,
                         ))
