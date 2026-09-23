@@ -48883,6 +48883,155 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if matches!(namespace.as_str(), "file" | "path" | "directory" | "fs") => {
+            let name = crate::builtin_names::qualified_impl(namespace, name);
+            let (helper, expected, result) = match (namespace.as_str(), name) {
+                ("file", "exists") => ("flux__fs_is_file", vec![Type::Str], Type::Bool),
+                ("file", "write") => (
+                    "flux__fs_write_text",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("file", "append") => (
+                    "flux__fs_append_text",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("file", "copy") => (
+                    "flux__fs_copy_file",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("file", "rename") => ("flux__fs_rename", vec![Type::Str, Type::Str], Type::Error),
+                ("file", "remove") => ("flux__fs_remove_file", vec![Type::Str], Type::Error),
+                ("file", "sync") => ("flux__fs_file_sync", vec![Type::Str], Type::Error),
+                ("file", "syncData") => ("flux__fs_file_sync_data", vec![Type::Str], Type::Error),
+                ("file", "truncate") => (
+                    "flux__fs_file_truncate",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("file", "setPermissions") => (
+                    "flux__fs_file_set_permissions",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("file", "setModified") => (
+                    "flux__fs_file_set_modified_unix_millis",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("file", "setAccessed") => (
+                    "flux__fs_file_set_accessed_unix_millis",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("file", "setOwner") => (
+                    "flux__fs_file_set_owner",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("file", "setGroup") => (
+                    "flux__fs_file_set_group",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("path", "isAbsolute") => ("flux__path_is_absolute", vec![Type::Str], Type::Bool),
+                ("directory", "exists") => ("flux__fs_is_directory", vec![Type::Str], Type::Bool),
+                ("directory", "rename") => (
+                    "flux__fs_directory_rename",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("directory", "setPermissions") => (
+                    "flux__fs_directory_set_permissions",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("directory", "setModified") => (
+                    "flux__fs_directory_set_modified_unix_millis",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("directory", "setAccessed") => (
+                    "flux__fs_directory_set_accessed_unix_millis",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("directory", "setOwner") => (
+                    "flux__fs_directory_set_owner",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("directory", "setGroup") => (
+                    "flux__fs_directory_set_group",
+                    vec![Type::Str, Type::I64],
+                    Type::Error,
+                ),
+                ("directory", "create") => {
+                    ("flux__fs_create_directory", vec![Type::Str], Type::Error)
+                }
+                ("directory", "createAll") => {
+                    ("flux__fs_create_directories", vec![Type::Str], Type::Error)
+                }
+                ("directory", "remove") => {
+                    ("flux__fs_remove_directory", vec![Type::Str], Type::Error)
+                }
+                ("directory", "removeAll") => {
+                    ("flux__fs_remove_directories", vec![Type::Str], Type::Error)
+                }
+                ("directory", "sync") => ("flux__fs_directory_sync", vec![Type::Str], Type::Error),
+                ("fs", "exists") => ("flux__fs_exists", vec![Type::Str], Type::Bool),
+                ("fs", "isFile") => ("flux__fs_is_file", vec![Type::Str], Type::Bool),
+                ("fs", "isDirectory") => ("flux__fs_is_directory", vec![Type::Str], Type::Bool),
+                ("fs", "createDirectory") => {
+                    ("flux__fs_create_directory", vec![Type::Str], Type::Error)
+                }
+                ("fs", "createDirectories") => {
+                    ("flux__fs_create_directories", vec![Type::Str], Type::Error)
+                }
+                ("fs", "removeFile") => ("flux__fs_remove_file", vec![Type::Str], Type::Error),
+                ("fs", "removeDirectory") => {
+                    ("flux__fs_remove_directory", vec![Type::Str], Type::Error)
+                }
+                ("fs", "removeDirectories") => {
+                    ("flux__fs_remove_directories", vec![Type::Str], Type::Error)
+                }
+                ("fs", "writeText") => (
+                    "flux__fs_write_text",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("fs", "appendText") => (
+                    "flux__fs_append_text",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                ("fs", "rename") => ("flux__fs_rename", vec![Type::Str, Type::Str], Type::Error),
+                ("fs", "copyFile") => (
+                    "flux__fs_copy_file",
+                    vec![Type::Str, Type::Str],
+                    Type::Error,
+                ),
+                _ => return None,
+            };
+            if ty != result || arguments.len() != expected.len() {
+                return None;
+            }
+
+            let rendered = arguments
+                .iter()
+                .zip(&expected)
+                .map(|(argument, expected)| {
+                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!("{helper}({})", rendered.join(", ")))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "process" => {
             let (helper, expected, result) = match name.as_str() {
                 "pid" => ("flux__process_pid", Vec::new(), Type::I64),
@@ -57838,6 +57987,179 @@ fn main() -> i64 {
             .is_none(),
             "callback-based string slicing should retain its established lowering path"
         );
+    }
+
+    #[test]
+    fn direct_scalar_filesystem_qualified_calls_emit_from_typed_ir() {
+        let source = r#"
+fn fileExists(path: str) -> bool {
+    return file.exists(path)
+}
+
+fn fileWrite(path: str, text: str) -> error {
+    return file.write(path, text)
+}
+
+fn fileTruncate(path: str, size: i64) -> error {
+    return file.truncate(path, size)
+}
+
+fn absolute(value: str) -> bool {
+    return path.isAbsolute(value)
+}
+
+fn directoryCreate(path: str) -> error {
+    return directory.create(path)
+}
+
+fn directoryRename(source: str, destination: str) -> error {
+    return directory.rename(source, destination)
+}
+
+fn fsDirectory(path: str) -> bool {
+    return fs.isDirectory(path)
+}
+
+fn fsWrite(path: str, text: str) -> error {
+    return fs.writeText(path, text)
+}
+
+fn fsCopy(source: str, destination: str) -> error {
+    return fs.copyFile(source, destination)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct filesystem qualified-call fixture should typecheck");
+
+        for (function, env, expected) in [
+            (
+                "fileExists",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!("flux__fs_is_file({})", local_c_name("path")),
+            ),
+            (
+                "fileWrite",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__fs_write_text({}, {})",
+                    local_c_name("path"),
+                    local_c_name("text")
+                ),
+            ),
+            (
+                "fileTruncate",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("size".to_string(), Type::I64),
+                ]),
+                format!(
+                    "flux__fs_file_truncate({}, {})",
+                    local_c_name("path"),
+                    local_c_name("size")
+                ),
+            ),
+            (
+                "absolute",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!("flux__path_is_absolute({})", local_c_name("value")),
+            ),
+            (
+                "directoryCreate",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!("flux__fs_create_directory({})", local_c_name("path")),
+            ),
+            (
+                "directoryRename",
+                HashMap::from([
+                    ("source".to_string(), Type::Str),
+                    ("destination".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__fs_directory_rename({}, {})",
+                    local_c_name("source"),
+                    local_c_name("destination")
+                ),
+            ),
+            (
+                "fsDirectory",
+                HashMap::from([("path".to_string(), Type::Str)]),
+                format!("flux__fs_is_directory({})", local_c_name("path")),
+            ),
+            (
+                "fsWrite",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("text".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__fs_write_text({}, {})",
+                    local_c_name("path"),
+                    local_c_name("text")
+                ),
+            ),
+            (
+                "fsCopy",
+                HashMap::from([
+                    ("source".to_string(), Type::Str),
+                    ("destination".to_string(), Type::Str),
+                ]),
+                format!(
+                    "flux__fs_copy_file({}, {})",
+                    local_c_name("source"),
+                    local_c_name("destination")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("filesystem qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("filesystem qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("filesystem qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported scalar filesystem call should emit directly from typed IR: {function}: {scalar:?}"
+                    )
+                });
+            assert_eq!(direct, expected, "{function}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-filesystem-call".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("filesystem qualified call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-filesystem-call"));
+        }
     }
 
     #[test]
