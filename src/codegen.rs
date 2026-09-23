@@ -49698,13 +49698,86 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
-        } if namespace == "json" && name == "validate" && ty == Type::Error => {
-            let [value] = arguments.as_slice() else {
-                return None;
-            };
-            let value = emit_cfg_call_argument_direct(value, &Type::Str, env, signatures)?;
-            Some(format!("flux__json_validate({value})"))
-        }
+        } if namespace == "json" && ty == Type::Error => match name.as_str() {
+            "validate" => {
+                let [value] = arguments.as_slice() else {
+                    return None;
+                };
+                let value = emit_cfg_call_argument_direct(value, &Type::Str, env, signatures)?;
+                Some(format!("flux__json_validate({value})"))
+            }
+            "parse" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__json_parse({value}, {callback})"))
+            }
+            "encodeString" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Str, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__json_encode_string({value}, {callback})"))
+            }
+            "encodeInt" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::I64, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__json_encode_int({value}, {callback})"))
+            }
+            "encodeBool" if arguments.len() == 2 => {
+                let value =
+                    emit_cfg_call_argument_direct(&arguments[0], &Type::Bool, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__json_encode_bool({value}, {callback})"))
+            }
+            "encodeNull" if arguments.len() == 1 => {
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[0],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("flux__json_encode_null({callback})"))
+            }
+            "encode" if arguments.len() == 2 => {
+                let value = &arguments[0];
+                let helper = match signatures.canonical_type(&value.ty) {
+                    Type::I64 => "flux__json_encode_int",
+                    Type::Bool => "flux__json_encode_bool",
+                    Type::Str => "flux__json_encode_string",
+                    _ => return None,
+                };
+                let value = emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?;
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[1],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                Some(format!("{helper}({value}, {callback})"))
+            }
+            _ => None,
+        },
         CfgScalarExprKind::QualifiedCall {
             namespace,
             name,
@@ -59692,6 +59765,32 @@ fn validate(value: str) -> error {
     return json.validate(value)
 }
 
+fn jsonField(_key: str, _value: str) -> void {
+}
+
+fn jsonText(_value: str) -> void {
+}
+
+fn parseJson(value: str) -> error {
+    return json.parse(value, jsonField)
+}
+
+fn encodeJsonString(value: str) -> error {
+    return json.encode(value, jsonText)
+}
+
+fn encodeJsonInt(value: i64) -> error {
+    return json.encodeInt(value, jsonText)
+}
+
+fn encodeJsonBool(value: bool) -> error {
+    return json.encodeBool(value, jsonText)
+}
+
+fn encodeJsonNull() -> error {
+    return json.encodeNull(jsonText)
+}
+
 fn clipboardWrite(value: str) -> void {
     clipboard.setText(value)
 }
@@ -59749,6 +59848,47 @@ fn main() -> i64 {
                 "validate",
                 HashMap::from([("value".to_string(), Type::Str)]),
                 format!("flux__json_validate({})", local_c_name("value")),
+            ),
+            (
+                "parseJson",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_parse({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonField")
+                ),
+            ),
+            (
+                "encodeJsonString",
+                HashMap::from([("value".to_string(), Type::Str)]),
+                format!(
+                    "flux__json_encode_string({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonInt",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__json_encode_int({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonBool",
+                HashMap::from([("value".to_string(), Type::Bool)]),
+                format!(
+                    "flux__json_encode_bool({}, {})",
+                    local_c_name("value"),
+                    function_c_name("jsonText")
+                ),
+            ),
+            (
+                "encodeJsonNull",
+                HashMap::new(),
+                format!("flux__json_encode_null({})", function_c_name("jsonText")),
             ),
             (
                 "clipboardWrite",
