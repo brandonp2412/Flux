@@ -48742,6 +48742,24 @@ fn emit_cfg_scalar_expr_direct(
             ))
         }
         CfgScalarExprKind::Call { callee, arguments }
+            if matches!(crate::builtin_names::global_impl(callee), "any" | "every")
+                && arguments.len() == 1
+                && ty == Type::Bool =>
+        {
+            let list = emit_cfg_borrowed_list_argument_direct(
+                &arguments[0],
+                &Type::Bool,
+                env,
+                signatures,
+            )?;
+            let helper = if crate::builtin_names::global_impl(callee) == "any" {
+                "flux_list_any_bool"
+            } else {
+                "flux_list_every_bool"
+            };
+            Some(format!("{helper}({list})"))
+        }
+        CfgScalarExprKind::Call { callee, arguments }
             if matches!(crate::builtin_names::global_impl(callee), "take" | "skip")
                 && arguments.len() == 2 =>
         {
@@ -56000,6 +56018,91 @@ fn main() -> i64 {
             .expect("list-view projection should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-list-view-projection"));
+        }
+    }
+
+    #[test]
+    fn boolean_collection_queries_emit_directly_from_typed_ir() {
+        let source = r#"
+fn anySlice(flags: bool[], start: i64) -> bool {
+    return any(flags[start:])
+}
+
+fn everyTake(flags: bool[], count: i64) -> bool {
+    return every(take(flags, count))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("boolean collection-query direct-IR fixture should typecheck");
+        let list_ty = Type::List(Box::new(Type::Bool));
+
+        for (function, env, helper, view_fragment) in [
+            (
+                "anySlice",
+                HashMap::from([
+                    ("flags".to_string(), list_ty.clone()),
+                    ("start".to_string(), Type::I64),
+                ]),
+                "flux_list_any_bool(",
+                "flux_list_slice(",
+            ),
+            (
+                "everyTake",
+                HashMap::from([
+                    ("flags".to_string(), list_ty.clone()),
+                    ("count".to_string(), Type::I64),
+                ]),
+                "flux_list_every_bool(",
+                "flux_list_take(",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("boolean collection-query CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if matches!(
+                                crate::builtin_names::global_impl(callee),
+                                "any" | "every"
+                            )
+                    )
+                })
+                .expect("boolean collection query should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("boolean collection query should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("boolean collection query should emit directly from typed IR");
+            assert!(direct.starts_with(helper), "{function}: {direct}");
+            assert!(direct.contains(view_fragment), "{function}: {direct}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-boolean-query".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("boolean collection query should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-boolean-query"));
         }
     }
 
