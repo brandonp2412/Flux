@@ -48934,6 +48934,29 @@ fn emit_cfg_scalar_expr_direct(
             namespace,
             name,
             arguments,
+        } if ty == Type::Named(namespace.clone()) => {
+            let definition = signatures.enum_type(namespace)?;
+            let variant = definition.variant(name)?;
+            if arguments.len() != variant.payloads.len() {
+                return None;
+            }
+            let rendered = arguments
+                .iter()
+                .zip(&variant.payloads)
+                .map(|(argument, expected)| {
+                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!(
+                "{}({})",
+                enum_variant_helper_name(namespace, name),
+                rendered.join(", ")
+            ))
+        }
+        CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
         } if namespace == "url" && ty == Type::Error => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             if arguments.len() != 2 {
@@ -50052,7 +50075,15 @@ fn emit_cfg_scalar_expr_direct(
                     }
                     _ => return None,
                 };
-                let value = emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?;
+                let direct_aggregate = matches!(
+                    value.kind,
+                    CfgScalarExprKind::Aggregate(_) | CfgScalarExprKind::QualifiedCall { .. }
+                ) && signatures.is_copy_type(&value_ty);
+                let value = if direct_aggregate {
+                    emit_cfg_scalar_expr_direct(value, env, signatures)?
+                } else {
+                    emit_cfg_call_argument_direct(value, &value.ty, env, signatures)?
+                };
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
@@ -60871,6 +60902,128 @@ fn main() -> i64 {
                 local_c_name("callback")
             )
         );
+    }
+
+    #[test]
+    fn json_literal_copy_aggregates_emit_from_typed_ir() {
+        let source = r#"
+struct JsonLiteralUser {
+    name: str
+    age: i64
+}
+
+enum JsonLiteralChoice {
+    Number(i64)
+    Empty
+}
+
+fn jsonLiteralText(_value: str) -> void {
+}
+
+fn encodeRecord(value: i64) -> error {
+    return json.encode((name: "Flux", count: value), jsonLiteralText)
+}
+
+fn encodeStruct(value: i64) -> error {
+    return json.encode(JsonLiteralUser { name: "Flux", age: value }, jsonLiteralText)
+}
+
+fn encodeEnum(value: i64) -> error {
+    return json.encode(JsonLiteralChoice.Number(value), jsonLiteralText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("literal aggregate JSON direct-IR fixture should typecheck");
+
+        for function in ["encodeRecord", "encodeStruct", "encodeEnum"] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("literal aggregate JSON CFG should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "json" && name == "encode"
+                    )
+                })
+                .expect("literal aggregate JSON call should remain in typed IR");
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("literal aggregate JSON call should have scalar typed-IR facts");
+            let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+                panic!("literal aggregate JSON root should preserve qualified-call facts");
+            };
+            let value = &arguments[0];
+            if function == "encodeEnum" {
+                assert!(
+                    matches!(
+                        &value.kind,
+                        CfgScalarExprKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "JsonLiteralChoice" && name == "Number"
+                    ),
+                    "{function}: {value:?}"
+                );
+            } else {
+                assert!(
+                    matches!(value.kind, CfgScalarExprKind::Aggregate(_)),
+                    "{function}: {value:?}"
+                );
+            }
+            let value_ty = database.signatures().canonical_type(&value.ty);
+            let helper = if json_record_supported(&value_ty, database.signatures()) {
+                json_record_helper_name(&value_ty, database.signatures())
+            } else {
+                assert!(json_enum_supported(&value_ty, database.signatures()));
+                json_enum_helper_name(&value_ty, database.signatures())
+            };
+            let env = HashMap::from([("value".to_string(), Type::I64)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "representable literal aggregate JSON call should emit directly: {function}: {scalar:?}"
+                    )
+                });
+            assert!(
+                direct.starts_with(&format!("{helper}(")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&local_c_name("value")),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-json-literal-aggregate".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("literal aggregate JSON call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-json-literal-aggregate"));
+        }
     }
 
     #[test]
