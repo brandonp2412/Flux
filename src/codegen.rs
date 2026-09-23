@@ -48389,6 +48389,21 @@ fn emit_cfg_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_borrowed_list_argument_direct(
+    argument: &CfgScalarExpr,
+    element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = Type::List(Box::new(element.clone()));
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
+        || !matches!(argument.kind, CfgScalarExprKind::Name(_))
+    {
+        return None;
+    }
+    emit_cfg_scalar_expr_direct(argument, env, signatures)
+}
+
 fn emit_cfg_callback_argument_direct(
     argument: &CfgScalarExpr,
     params: &[Type],
@@ -62093,14 +62108,16 @@ fn work() -> void {
 fn workWith(_value: i64) -> void {
 }
 
-fn exercise(handle: i64, capacity: i64) -> i64 {
+fn exercise(handle: i64, capacity: i64, handles: i64[]) -> i64 {
     let (started, _) = worker.start(work)
     let (startedWith, _) = worker.startWith(workWith, handle)
     let (done, _) = worker.done(handle)
+    let (waited, _) = worker.waitAny(handles)
+    let (joined, _) = worker.joinAny(handles)
     let (channelHandle, _) = channel.create(capacity)
     let (received, _) = channel.receive(handle)
     print(done)
-    return started + startedWith + channelHandle + received
+    return started + startedWith + waited + joined + channelHandle + received
 }
 
 fn main() -> i64 {
@@ -62116,6 +62133,7 @@ fn main() -> i64 {
         let env = HashMap::from([
             ("handle".to_string(), Type::I64),
             ("capacity".to_string(), Type::I64),
+            ("handles".to_string(), Type::List(Box::new(Type::I64))),
         ]);
         let expected = HashMap::from([
             (
@@ -62144,6 +62162,22 @@ fn main() -> i64 {
                     format!("flux__worker_done_result({})", local_c_name("handle")),
                     "flux__worker_bool_error".to_string(),
                     vec![Type::Bool, Type::Error],
+                ),
+            ),
+            (
+                ("worker".to_string(), "waitAny".to_string()),
+                (
+                    format!("flux__worker_wait_any({})", local_c_name("handles")),
+                    "flux__worker_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                ("worker".to_string(), "joinAny".to_string()),
+                (
+                    format!("flux__worker_join_any({})", local_c_name("handles")),
+                    "flux__worker_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
                 ),
             ),
             (
@@ -64965,6 +64999,24 @@ fn emit_cfg_multi_expr_direct(
                             format!("flux__worker_done_result({handle})"),
                             "flux__worker_bool_error".to_string(),
                             bool_error,
+                        ))
+                    }
+                    "waitAny" | "joinAny" if arguments.len() == 1 => {
+                        let handles = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let helper = if name == "joinAny" {
+                            "flux__worker_join_any"
+                        } else {
+                            "flux__worker_wait_any"
+                        };
+                        Some((
+                            format!("{helper}({handles})"),
+                            "flux__worker_i64_error".to_string(),
+                            i64_error,
                         ))
                     }
                     _ => None,
