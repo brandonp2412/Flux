@@ -48391,6 +48391,30 @@ fn emit_cfg_call_argument_direct(
     emit_cfg_scalar_expr_direct(argument, env, signatures)
 }
 
+fn emit_cfg_ordinary_call_argument_direct(
+    argument: &CfgScalarExpr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    if signatures.canonical_type(&argument.ty) != expected || !signatures.is_copy_type(&expected) {
+        return None;
+    }
+
+    if matches!(
+        argument.kind,
+        CfgScalarExprKind::Unary { .. }
+            | CfgScalarExprKind::Binary { .. }
+            | CfgScalarExprKind::Conditional { .. }
+    ) && !cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures)
+    {
+        return None;
+    }
+
+    emit_cfg_scalar_expr_direct(argument, env, signatures)
+}
+
 fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
@@ -48512,7 +48536,7 @@ fn emit_cfg_positional_call_arguments_direct(
     let mut positional_index = 0usize;
     for parameter in &signature.param_details {
         if !parameter.named_only && positional_index < arguments.len() {
-            rendered.push(emit_cfg_call_argument_direct(
+            rendered.push(emit_cfg_ordinary_call_argument_direct(
                 &arguments[positional_index],
                 &parameter.ty,
                 env,
@@ -48574,7 +48598,7 @@ fn emit_cfg_named_call_arguments_direct(
             })
         };
         if let Some(argument) = supplied {
-            rendered.push(emit_cfg_call_argument_direct(
+            rendered.push(emit_cfg_ordinary_call_argument_direct(
                 argument,
                 &parameter.ty,
                 env,
@@ -58420,6 +58444,124 @@ fn main() -> i64 {
         .expect("aggregate call should bypass checked AST");
         assert_eq!(emitted, direct);
         assert!(!emitted.contains("checked-ast-aggregate-call-argument"));
+    }
+
+    #[test]
+    fn ordinary_copy_call_arguments_trust_direct_emitter() {
+        let source = r#"
+struct OffsetArgument {
+    amount: i64
+}
+
+fn consumeOffset(offset: OffsetArgument) -> i64 {
+    return offset.amount
+}
+
+fn consumeOffsetNamed(*, offset: OffsetArgument) -> i64 {
+    return offset.amount
+}
+
+fn makeOffsetArgument(amount: i64) -> OffsetArgument {
+    return OffsetArgument { amount: amount }
+}
+
+fn positionalArgument(amount: i64) -> i64 {
+    return consumeOffset(makeOffsetArgument(amount))
+}
+
+fn namedArgument(amount: i64) -> i64 {
+    return consumeOffsetNamed(offset: makeOffsetArgument(amount))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("direct ordinary argument fixture should typecheck");
+        let env = HashMap::from([("amount".to_string(), Type::I64)]);
+
+        for (function, callee, named) in [
+            ("positionalArgument", "consumeOffset", false),
+            ("namedArgument", "consumeOffsetNamed", true),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordinary argument CFG should exist");
+            let call = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    if named {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::NamedCall {
+                                callee: value_callee,
+                                ..
+                            } if value_callee == callee
+                        )
+                    } else {
+                        matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::Call {
+                                callee: value_callee,
+                                ..
+                            } if value_callee == callee
+                        )
+                    }
+                })
+                .expect("ordinary argument call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(call.span))
+                .expect("ordinary argument call should have scalar typed-IR facts");
+            let argument = match &scalar.kind {
+                CfgScalarExprKind::Call { arguments, .. } => &arguments[0],
+                CfgScalarExprKind::NamedCall { arguments, .. } => &arguments[0].1,
+                other => panic!("unexpected ordinary argument scalar kind: {other:?}"),
+            };
+            assert!(
+                matches!(
+                    &argument.kind,
+                    CfgScalarExprKind::Call {
+                        callee: argument_callee,
+                        ..
+                    } if argument_callee == "makeOffsetArgument"
+                ),
+                "{function}: {argument:?}"
+            );
+
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("directly reconstructable ordinary argument should emit: {function}")
+                });
+            assert!(
+                direct.contains(&function_c_name("makeOffsetArgument")),
+                "{function}: {direct}"
+            );
+            assert!(
+                direct.contains(&function_c_name(callee)),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: call.span.line,
+                span: call.span,
+                kind: ExprKind::Str("checked-ast-ordinary-direct-argument".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("direct ordinary argument should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-ordinary-direct-argument"));
+        }
     }
 
     #[test]
