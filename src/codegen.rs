@@ -63462,6 +63462,137 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn network_named_readiness_multi_values_emit_from_typed_ir() {
+        let source = r#"
+fn ready(_socket: i64) -> void {
+}
+
+fn state(_socket: i64, _readable: bool, _writable: bool) -> void {
+}
+
+fn exercise(sockets: i64[], timeout: i64) -> i64 {
+    let (readable, _) = net.readableMany(sockets, timeout, ready)
+    let (writable, _) = net.writableMany(sockets, timeout, ready)
+    let (combined, _) = net.readyMany(sockets, timeout, state)
+    let (handle, _, _) = net.waitAny(sockets, timeout)
+    return readable + writable + combined + handle
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("network readiness direct-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("sockets".to_string(), Type::List(Box::new(Type::I64))),
+            ("timeout".to_string(), Type::I64),
+        ]);
+        let expected = HashMap::from([
+            (
+                "readableMany".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_readable_many({}, {}, {})",
+                        local_c_name("sockets"),
+                        local_c_name("timeout"),
+                        function_c_name("ready")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "writableMany".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_writable_many({}, {}, {})",
+                        local_c_name("sockets"),
+                        local_c_name("timeout"),
+                        function_c_name("ready")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "readyMany".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_ready_many({}, {}, {})",
+                        local_c_name("sockets"),
+                        local_c_name("timeout"),
+                        function_c_name("state")
+                    ),
+                    "flux__net_i64_error".to_string(),
+                    vec![Type::I64, Type::Error],
+                ),
+            ),
+            (
+                "waitAny".to_string(),
+                (
+                    format!(
+                        "flux__net_wait_any({}, {})",
+                        local_c_name("sockets"),
+                        local_c_name("timeout")
+                    ),
+                    "flux__net_i64_bool_error".to_string(),
+                    vec![Type::I64, Type::Bool, Type::Error],
+                ),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { namespace, name, .. }
+                            if namespace == "net" && expected.contains_key(name)
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall { name, .. } = &root.kind else {
+                unreachable!();
+            };
+            let expected = expected
+                .get(name)
+                .unwrap_or_else(|| panic!("unexpected network readiness call: {name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("network readiness call should have typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "supported network readiness call should emit directly: {name}: {multi:?}"
+                    )
+                });
+            assert_eq!(&direct.0, &expected.0, "{name}");
+            assert_eq!(&direct.1, &expected.1, "{name}");
+            assert_eq!(&direct.2, &expected.2, "{name}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("network readiness call should bypass the checked-AST root");
+            assert_eq!(emitted, direct, "{name}");
+        }
+    }
+
+    #[test]
     fn multi_value_await_root_lowers_from_typed_ir_without_ast_shape() {
         let source = r#"
 async fn pair(value: i64, offset: i64) -> (i64, bool) {
@@ -66810,6 +66941,80 @@ fn emit_cfg_multi_expr_direct(
                             format!(
                                 "flux__net_receive_text_from_many_with_timeout({socket}, {max_bytes}, {max_count}, {timeout}, {callback})"
                             ),
+                            "flux__net_i64_bool_error".to_string(),
+                            i64_bool_error,
+                        ))
+                    }
+                    "waitReadableMany" | "waitWritableMany" if arguments.len() == 3 => {
+                        let sockets = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64],
+                            env,
+                            signatures,
+                        )?;
+                        let helper = if name == "waitReadableMany" {
+                            "flux__net_wait_readable_many"
+                        } else {
+                            "flux__net_wait_writable_many"
+                        };
+                        Some((
+                            format!("{helper}({sockets}, {timeout}, {callback})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "waitReadyMany" if arguments.len() == 3 => {
+                        let sockets = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let callback = emit_cfg_callback_argument_direct(
+                            &arguments[2],
+                            &[Type::I64, Type::Bool, Type::Bool],
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__net_wait_ready_many({sockets}, {timeout}, {callback})"),
+                            "flux__net_i64_error".to_string(),
+                            i64_error,
+                        ))
+                    }
+                    "waitAny" if arguments.len() == 2 => {
+                        let sockets = emit_cfg_borrowed_list_argument_direct(
+                            &arguments[0],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        let timeout = emit_cfg_call_argument_direct(
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?;
+                        Some((
+                            format!("flux__net_wait_any({sockets}, {timeout})"),
                             "flux__net_i64_bool_error".to_string(),
                             i64_bool_error,
                         ))
