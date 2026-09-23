@@ -48877,16 +48877,9 @@ fn emit_cfg_scalar_expr_direct(
             {
                 return None;
             }
-            let direct_count =
-                matches!(
-                    count.kind,
-                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                ) || cfg_scalar_expr_is_direct_primitive_tree(count, env, signatures);
-            if !direct_count {
-                return None;
-            }
             let rendered_list = emit_cfg_scalar_expr_direct(list, env, signatures)?;
-            let rendered_count = emit_cfg_scalar_expr_direct(count, env, signatures)?;
+            let rendered_count =
+                emit_cfg_ordinary_call_argument_direct(count, &Type::I64, env, signatures)?;
             if crate::builtin_names::global_impl(callee) == "take" {
                 Some(format!("flux_list_take({rendered_list}, {rendered_count})"))
             } else {
@@ -55995,6 +55988,14 @@ fn nestedIndex(values: i64[], takeCount: i64, skipCount: i64, at: i64) -> i64 {
     return skip(take(values, takeCount), skipCount)[at]
 }
 
+fn makeCount(count: i64) -> i64 {
+    return count
+}
+
+fn callCount(values: i64[], count: i64) -> i64 {
+    return take(values, makeCount(count)).count
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -56181,6 +56182,62 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_skip("), "{emitted}");
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!emitted.contains("checked-ast-nested-list-view-index"));
+
+        let graph = database
+            .control_flow_graph("callCount")
+            .expect("call-count list-view CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let field = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Field { base, .. },
+                        ..
+                    }) if matches!(
+                        &base.kind,
+                        CfgScalarExprKind::Call { callee, arguments }
+                            if crate::builtin_names::global_impl(callee) == "take"
+                                && matches!(
+                                    arguments.get(1).map(|argument| &argument.kind),
+                                    Some(CfgScalarExprKind::Call { callee, .. })
+                                        if callee == "makeCount"
+                                )
+                    )
+                )
+            })
+            .expect("call count should remain nested in the typed list-view call");
+        let call_count_env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("count".to_string(), Type::I64),
+        ]);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(field.span))
+            .expect("call-count list view should have scalar typed-IR facts");
+        let direct = emit_cfg_scalar_expr_direct(scalar, &call_count_env, database.signatures())
+            .expect("direct Copy count calls should emit inside list views");
+        assert!(direct.contains("flux_list_take("), "{direct}");
+        assert!(direct.contains(&function_c_name("makeCount")), "{direct}");
+
+        let fake = Expr {
+            line: field.span.line,
+            span: field.span,
+            kind: ExprKind::Str("checked-ast-call-count-list-view".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::I64,
+            &call_count_env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("call-count list view should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-call-count-list-view"));
     }
 
     #[test]
