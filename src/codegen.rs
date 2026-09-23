@@ -67198,7 +67198,7 @@ fn exercise(path: str, database: i64, delay: i64, timestamp: i64, zone: str) -> 
     let (offset, _) = time.zoneOffset(multiI64(timestamp), zone)
     let (opened, _) = sqlite.open(path)
     let (rows, _) = sqlite.query(multiI64(database), "SELECT 1", cell)
-    let (once, _) = time.after(delay, tick)
+    let (once, _) = time.after(multiI64(delay), tick)
     let (repeat, _) = time.every(time.duration(delay), tick)
     return size + modified + offset + opened + rows + once + repeat
 }
@@ -67274,7 +67274,8 @@ fn main() -> i64 {
                 ("time".to_string(), "after".to_string()),
                 (
                     format!(
-                        "flux__time_start_timer({}, {}, false)",
+                        "flux__time_start_timer({}({}), {}, false)",
+                        function_c_name("multiI64"),
                         local_c_name("delay"),
                         function_c_name("tick")
                     ),
@@ -67356,9 +67357,13 @@ fn work() -> void {
 fn workWith(_value: i64) -> void {
 }
 
+fn workerI64(value: i64) -> i64 {
+    return value
+}
+
 fn exercise(handle: i64, capacity: i64, handles: i64[]) -> i64 {
     let (started, _) = worker.start(work)
-    let (startedWith, _) = worker.startWith(workWith, handle)
+    let (startedWith, _) = worker.startWith(workWith, workerI64(handle))
     let (done, _) = worker.done(handle)
     let (waited, _) = worker.waitAny(handles)
     let (joined, _) = worker.joinAny(handles)
@@ -67396,8 +67401,9 @@ fn main() -> i64 {
                 ("worker".to_string(), "startWith".to_string()),
                 (
                     format!(
-                        "flux__worker_start_with({}, {})",
+                        "flux__worker_start_with({}, {}({}))",
                         function_c_name("workWith"),
+                        function_c_name("workerI64"),
                         local_c_name("handle")
                     ),
                     "flux__worker_i64_error".to_string(),
@@ -71206,7 +71212,7 @@ fn emit_cfg_multi_expr_direct(
                     "after" | "every" if arguments.len() == 2 => {
                         let duration_ty = signatures.canonical_type(&arguments[0].ty);
                         let duration = if duration_ty == Type::I64 {
-                            emit_cfg_call_argument_direct(
+                            emit_cfg_ordinary_call_argument_direct(
                                 &arguments[0],
                                 &Type::I64,
                                 env,
@@ -71289,7 +71295,7 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        let argument = emit_cfg_call_argument_direct(
+                        let argument = emit_cfg_ordinary_call_argument_direct(
                             &arguments[1],
                             &Type::I64,
                             env,
