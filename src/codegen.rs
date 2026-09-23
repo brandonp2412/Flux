@@ -49711,16 +49711,12 @@ fn emit_cfg_scalar_expr_direct(
                     };
                     let duration_ty = signatures.canonical_type(&duration.ty);
                     let duration_code = if duration_ty == Type::I64 {
-                        let direct_argument = matches!(
-                            duration.kind,
-                            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                        ) || cfg_scalar_expr_is_direct_primitive_tree(
-                            duration, env, signatures,
-                        );
-                        if !direct_argument {
-                            return None;
-                        }
-                        emit_cfg_scalar_expr_direct(duration, env, signatures)?
+                        emit_cfg_ordinary_call_argument_direct(
+                            duration,
+                            &Type::I64,
+                            env,
+                            signatures,
+                        )?
                     } else if is_duration_type(&duration_ty, signatures) {
                         format!(
                             "({}).{}",
@@ -60559,6 +60555,10 @@ fn sleep(value: i64) -> void {
     time.sleep(value)
 }
 
+fn callSleep(value: i64) -> void {
+    time.sleep(timeValue(value))
+}
+
 fn nestedSleep(left: i64, right: i64) -> void {
     time.sleep(left + right)
 }
@@ -60721,6 +60721,15 @@ fn main() -> i64 {
                 format!("flux__time_sleep_millis({})", local_c_name("value")),
             ),
             (
+                "callSleep",
+                HashMap::from([("value".to_string(), Type::I64)]),
+                format!(
+                    "flux__time_sleep_millis({}({}))",
+                    function_c_name("timeValue"),
+                    local_c_name("value")
+                ),
+            ),
+            (
                 "nestedSleep",
                 HashMap::from([
                     ("left".to_string(), Type::I64),
@@ -60850,6 +60859,7 @@ fn main() -> i64 {
                         | "callUtcPart"
                         | "callFormatUtc"
                         | "callFormatLocal"
+                        | "callSleep"
                 )
             {
                 let fake = Expr {
