@@ -50711,7 +50711,8 @@ fn emit_cfg_scalar_expr_direct(
                     op: UnaryOp::Borrow,
                     ..
                 }
-        ) =>
+        ) || (matches!(signatures.canonical_type(&base.ty), Type::List(_))
+            && cfg_borrowed_list_has_named_root(base)) =>
         {
             let direct_index =
                 matches!(
@@ -55590,6 +55591,17 @@ fn main() -> i64 {
             ("end".to_string(), Type::I64),
             ("at".to_string(), Type::I64),
         ]);
+        let direct_index = emit_cfg_scalar_expr_direct(
+            index_facts
+                .scalar_exprs
+                .get(&source_span_key(outer_index.span))
+                .expect("nested borrowed index should have direct typed-IR facts"),
+            &env,
+            database.signatures(),
+        )
+        .expect("nested borrowed index should render directly without synthetic AST");
+        assert!(direct_index.contains("flux_list_slice("));
+        assert!(direct_index.contains("flux_list_at("));
         let emitted_index = emit_expr_for_expected_with_cfg_proofs(
             &fake_index,
             &Type::I64,
@@ -55620,6 +55632,16 @@ fn main() -> i64 {
                 )
             })
             .expect("nested slice should retain its borrowed slice base in typed IR");
+        let direct_slice = emit_cfg_scalar_expr_direct(
+            slice_facts
+                .scalar_exprs
+                .get(&source_span_key(outer_slice.span))
+                .expect("nested borrowed slice should have direct typed-IR facts"),
+            &env,
+            database.signatures(),
+        )
+        .expect("nested borrowed slice should render directly without synthetic AST");
+        assert_eq!(direct_slice.matches("flux_list_slice(").count(), 2);
         let fake_slice = Expr {
             line: outer_slice.span.line,
             span: outer_slice.span,
