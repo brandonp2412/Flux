@@ -48960,13 +48960,22 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != variant.payloads.len() {
                 return None;
             }
-            let rendered = arguments
-                .iter()
-                .zip(&variant.payloads)
-                .map(|(argument, expected)| {
-                    emit_cfg_call_argument_direct(argument, expected, env, signatures)
-                })
-                .collect::<Option<Vec<_>>>()?;
+            let rendered = if variant.payloads.len() == 1 {
+                vec![emit_cfg_ordinary_call_argument_direct(
+                    &arguments[0],
+                    &variant.payloads[0],
+                    env,
+                    signatures,
+                )?]
+            } else {
+                arguments
+                    .iter()
+                    .zip(&variant.payloads)
+                    .map(|(argument, expected)| {
+                        emit_cfg_call_argument_direct(argument, expected, env, signatures)
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            };
             Some(format!(
                 "{}({})",
                 enum_variant_helper_name(namespace, name),
@@ -58719,6 +58728,92 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-ordinary-direct-argument"));
         }
+    }
+
+    #[test]
+    fn single_payload_enum_constructors_trust_direct_emitter() {
+        let source = r#"
+enum Choice {
+    One(i64)
+    None
+}
+
+fn identity(value: i64) -> i64 {
+    return value
+}
+
+fn wrap(value: i64) -> Choice {
+    return Choice.One(identity(value))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("single-payload enum constructor fixture should typecheck");
+        let graph = database
+            .control_flow_graph("wrap")
+            .expect("enum constructor CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "Choice" && name == "One"
+                )
+            })
+            .expect("enum constructor should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("enum constructor should have scalar typed-IR facts");
+        let CfgScalarExprKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } = &scalar.kind
+        else {
+            panic!("enum constructor should retain its qualified-call shape");
+        };
+        assert_eq!(namespace, "Choice");
+        assert_eq!(name, "One");
+        assert!(matches!(
+            &arguments[0].kind,
+            CfgScalarExprKind::Call { callee, .. } if callee == "identity"
+        ));
+
+        let env = HashMap::from([("value".to_string(), Type::I64)]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("direct Copy call results should feed single-payload enum constructors");
+        assert!(
+            direct.contains(&enum_variant_helper_name("Choice", "One")),
+            "{direct}"
+        );
+        assert!(direct.contains(&function_c_name("identity")), "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-single-payload-enum".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Named("Choice".to_string()),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("single-payload enum constructor should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-single-payload-enum"));
     }
 
     #[test]
