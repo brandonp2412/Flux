@@ -41314,6 +41314,7 @@ fn emit_cfg_sequence_list_value(
             emit_cfg_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
         }
         "flatten" => emit_cfg_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter),
+        "concat" => emit_cfg_sequence_concat_value(out, pad, expr, env, signatures, temp_counter),
         _ => None,
     }
 }
@@ -41678,9 +41679,25 @@ fn emit_sequence_concat_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)?;
+    let direct = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            matches!(
+                &sequence.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "concat"
+            ) && cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+        })
+        .and_then(|sequence| {
+            emit_cfg_sequence_list_value_buffered(out, pad, sequence, env, signatures, temp_counter)
+        });
+    let value = if let Some(value) = direct {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_concat_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -41698,29 +41715,22 @@ fn emit_sequence_concat_binding(
     Ok(())
 }
 
-fn emit_sequence_concat_value(
+fn emit_concat_list_value(
     out: &mut String,
     pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    left: EmittedExpr,
+    right: EmittedExpr,
+    result_ty: Type,
     signatures: &Signatures,
     temp_counter: &mut usize,
-) -> Result<EmittedExpr, Diagnostic> {
-    let (left_expr, right_expr) = sequence_concat(expr)
-        .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
-    let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
-    let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+) -> Option<EmittedExpr> {
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "concat result must have a list type"));
+        return None;
     };
     if signatures.canonical_type(&left.ty) != result_ty
         || signatures.canonical_type(&right.ty) != result_ty
     {
-        return Err(diag(
-            expr.span,
-            "concat input type mismatch reached code generation",
-        ));
+        return None;
     }
     let left_name = format!("flux__concat_left_{}", *temp_counter);
     *temp_counter += 1;
@@ -41757,10 +41767,56 @@ fn emit_sequence_concat_value(
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {capacity_name}, .stride = sizeof({element_c}) }};\n"
     ));
-    Ok(EmittedExpr {
+    Some(EmittedExpr {
         code: result_name,
         ty: result_ty,
     })
+}
+
+fn emit_cfg_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != "concat" || arguments.len() != 2 {
+        return None;
+    }
+    let left =
+        emit_cfg_sequence_source_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    let right =
+        emit_cfg_sequence_source_value(out, pad, &arguments[1], env, signatures, temp_counter)?;
+    emit_concat_list_value(
+        out,
+        pad,
+        left,
+        right,
+        signatures.canonical_type(&expr.ty),
+        signatures,
+        temp_counter,
+    )
+}
+
+fn emit_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let (left_expr, right_expr) = sequence_concat(expr)
+        .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
+    let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
+    let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_concat_list_value(out, pad, left, right, result_ty, signatures, temp_counter)
+        .ok_or_else(|| diag(expr.span, "invalid concat types reached code generation"))
 }
 
 fn emit_sequence_transform_binding(
