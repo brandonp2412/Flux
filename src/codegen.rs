@@ -26436,7 +26436,8 @@ fn async_continuation_plan(
             let StmtKind::ListMatch { value, arms } = &stmt.kind else {
                 return None;
             };
-            let Type::List(element) = typecheck::type_of_expr(value, &env, signatures).ok()? else {
+            let value_ty = cfg_rewrite_root_type(value.span, &cfg_rewrite_facts)?;
+            let Type::List(element) = signatures.canonical_type(&value_ty) else {
                 return None;
             };
             for (arm, await_indices) in arms.iter().zip(&match_plan.arm_await_indices) {
@@ -33046,7 +33047,10 @@ fn emit_async_match_continuation_function(
             emit_async_completed_single_await(out, pad, value, function, signatures, temp_counter)?;
         EmittedExpr { code, ty }
     } else {
-        let value_ty = type_of_expr(value, &outer_env, signatures)?;
+        let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+            value.span,
+            context.cfg_rewrite_facts,
+        )?);
         EmittedExpr {
             code: emit_expr_for_expected_with_cfg_proofs(
                 value,
@@ -33419,7 +33423,10 @@ fn emit_async_list_match_continuation_function(
         temp_counter,
         state_context,
     )?;
-    let value_ty = type_of_expr(value, &outer_env, signatures)?;
+    let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        value.span,
+        context.cfg_rewrite_facts,
+    )?);
     let emitted_value = EmittedExpr {
         code: emit_expr_for_expected_with_cfg_proofs(
             value,
@@ -78918,6 +78925,115 @@ async fn main() -> i64 {
         )
         .expect("typed IR should emit the suspended call despite the fake AST root");
         assert!(out.contains(&async_start_cont_c_name("ping")), "{out}");
+    }
+
+    #[test]
+    fn async_match_continuations_use_typed_ir_scrutinee_types_after_ast_poisoning() {
+        let source = r#"
+enum Choice {
+    Value(i64)
+    Empty
+}
+
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn chooseEnum(choice: Choice) -> i64 {
+    var total: i64 = 0
+    match choice:
+        Choice.Value(value):
+            total = await addOne(value)
+        Choice.Empty():
+            total = 0
+    return total
+}
+
+async fn chooseList(value: i64) -> i64 {
+    var total: i64 = 0
+    match [value]:
+        [item]:
+            total = await addOne(item)
+        _:
+            total = 0
+    return total
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async match typed-IR fixture should typecheck");
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async match typed-IR fixture should parse");
+
+        for function_name in ["chooseEnum", "chooseList"] {
+            let graph = database
+                .control_flow_graph(function_name)
+                .unwrap_or_else(|| panic!("{function_name} CFG should exist"));
+            let facts = cfg_rewrite_facts(graph);
+            let function = program
+                .functions
+                .iter_mut()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{function_name} should exist"));
+            let value = function
+                .body
+                .iter_mut()
+                .find_map(|stmt| match &mut stmt.kind {
+                    StmtKind::Match { value, .. } | StmtKind::ListMatch { value, .. } => {
+                        Some(value)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{function_name} should contain a match statement"));
+            let expected = if function_name == "chooseEnum" {
+                Type::Named("Choice".to_string())
+            } else {
+                Type::List(Box::new(Type::I64))
+            };
+            assert_eq!(
+                cfg_rewrite_root_type(value.span, &facts),
+                Some(expected),
+                "{function_name} should retain its normalized scrutinee type"
+            );
+            value.kind = ExprKind::Str(format!("checked-ast-async-scrutinee-{function_name}"));
+
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            emit_function(
+                &mut out,
+                function,
+                database.signatures(),
+                graph,
+                &mut temp_counter,
+                &HashMap::new(),
+            )
+            .unwrap_or_else(|diagnostic| {
+                panic!("{function_name} should emit from typed IR: {diagnostic:?}")
+            });
+
+            assert!(
+                !out.contains("checked-ast-async-scrutinee-"),
+                "{function_name}: {out}"
+            );
+            assert!(
+                out.contains(&async_resume_c_name(function_name)),
+                "{function_name}: {out}"
+            );
+            assert!(
+                out.contains(&async_start_cont_c_name("addOne")),
+                "{function_name}: {out}"
+            );
+            if function_name == "chooseEnum" {
+                assert!(out.contains("switch ("), "{out}");
+                assert!(out.contains(&local_c_name("choice")), "{out}");
+            } else {
+                assert!(out.contains("flux__async_list_match_"), "{out}");
+                assert!(out.contains(&local_c_name("value")), "{out}");
+            }
+        }
     }
 
     #[test]
