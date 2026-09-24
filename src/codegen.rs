@@ -49704,13 +49704,7 @@ fn cfg_scalar_expr_calls_are_reconstructable(
                     .is_some_and(|signature| signature.asynchronous)
                 && cfg_scalar_expr_calls_are_reconstructable(value, env, signatures)
         }
-        CfgScalarExprKind::AnonymousFunction { params, body, .. } => {
-            let mut nested = env.clone();
-            for (name, ty) in params {
-                nested.insert(name.clone(), ty.clone());
-            }
-            cfg_scalar_expr_calls_are_reconstructable(body, &nested, signatures)
-        }
+        CfgScalarExprKind::AnonymousFunction { .. } => true,
         CfgScalarExprKind::Bind { arguments, .. } => arguments
             .iter()
             .all(|argument| cfg_scalar_expr_calls_are_reconstructable(argument, env, signatures)),
@@ -51830,7 +51824,10 @@ fn emit_cfg_scalar_expr_direct(
         } if matches!(ty, Type::Function { .. }) => {
             let expected = Type::Function {
                 params: params.iter().map(|(_, ty)| ty.clone()).collect(),
-                returns: return_type.iter().cloned().collect(),
+                returns: match return_type {
+                    Some(Type::Void) | None => Vec::new(),
+                    Some(ty) => vec![ty.clone()],
+                },
             };
             (signatures.canonical_type(&expected) == ty).then(|| anonymous_function_c_name(*span))
         }
@@ -76690,6 +76687,61 @@ fn main() -> i64 {
             emit_cfg_scalar_expr_direct(&mismatched, &HashMap::new(), database.signatures())
                 .is_none(),
             "anonymous direct emission should verify its preserved function signature"
+        );
+
+        let special_body_source = r#"
+fn pick() -> fn(i64[]) -> void {
+    return fn(values: i64[]) -> void { drop(values) }
+}
+
+fn main() -> i64 {
+    let discard: fn(i64[]) -> void = pick()
+    discard([1, 2, 3])
+    return 0
+}
+"#;
+        let special_body_database =
+            crate::semantic::SemanticDatabase::analyze(special_body_source, SourceId::UNKNOWN)
+                .expect("anonymous special-body fixture should typecheck");
+        let special_body_graph = special_body_database
+            .control_flow_graph("pick")
+            .expect("special-body pick CFG should exist");
+        let special_body_anonymous = special_body_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
+                )
+            })
+            .expect("typed IR should retain the special-body anonymous function");
+        let special_body_facts = cfg_rewrite_facts(special_body_graph);
+        let special_body_scalar = special_body_facts
+            .scalar_exprs
+            .get(&source_span_key(special_body_anonymous.span))
+            .expect("special-body anonymous function should have typed-IR facts");
+        let special_body_ty = Type::Function {
+            params: vec![Type::List(Box::new(Type::I64))],
+            returns: Vec::new(),
+        };
+        let special_body_direct = emit_cfg_scalar_expr_direct(
+            special_body_scalar,
+            &HashMap::new(),
+            special_body_database.signatures(),
+        )
+        .expect("anonymous helper symbol should not depend on its body lowering");
+        let special_body_emitted = emit_cfg_scalar_expr(
+            special_body_scalar,
+            &special_body_ty,
+            &HashMap::new(),
+            special_body_database.signatures(),
+        )
+        .expect("anonymous function value should bypass body reconstructability preflight");
+        assert_eq!(special_body_emitted, special_body_direct);
+        assert_eq!(
+            special_body_emitted,
+            anonymous_function_c_name(special_body_anonymous.span)
         );
     }
 
