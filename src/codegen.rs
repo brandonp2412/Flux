@@ -41830,6 +41830,132 @@ fn emit_inline_sequence_reducer_application(
     Ok(true)
 }
 
+fn emit_cfg_sequence_reduction_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &CfgScalarExpr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<bool, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(false);
+    };
+    let implementation = crate::builtin_names::global_impl(callee);
+    let (list, initial, reducer, reduce) = match implementation {
+        "fold" if arguments.len() == 3 => {
+            (&arguments[0], Some(&arguments[1]), &arguments[2], false)
+        }
+        "reduce" if arguments.len() == 2 => (&arguments[0], None, &arguments[1], true),
+        _ => return Ok(false),
+    };
+    if !matches!(reducer.kind, CfgScalarExprKind::Name(_)) {
+        return Ok(false);
+    }
+
+    let list_ty = signatures.canonical_type(&list.ty);
+    let Type::List(element) = &list_ty else {
+        return Ok(false);
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let declared_ty = signatures.canonical_type(target.1);
+    if result_ty != declared_ty || !signatures.is_copy_type(&result_ty) {
+        return Ok(false);
+    }
+
+    let reducer_ty = signatures.canonical_type(&reducer.ty);
+    let Type::Function { params, returns } = reducer_ty else {
+        return Ok(false);
+    };
+    if params.len() != 2 || returns.len() != 1 {
+        return Ok(false);
+    }
+    let element_ty = signatures.canonical_type(element);
+    if reduce {
+        if result_ty != element_ty
+            || signatures.canonical_type(&params[0]) != element_ty
+            || signatures.canonical_type(&params[1]) != element_ty
+            || signatures.canonical_type(&returns[0]) != element_ty
+        {
+            return Ok(false);
+        }
+    } else if signatures.canonical_type(&params[0]) != result_ty
+        || signatures.canonical_type(&params[1]) != element_ty
+        || signatures.canonical_type(&returns[0]) != result_ty
+        || initial.is_none_or(|value| signatures.canonical_type(&value.ty) != result_ty)
+    {
+        return Ok(false);
+    }
+
+    let Some(source_code) = emit_cfg_scalar_expr_direct(list, env, signatures) else {
+        return Ok(false);
+    };
+    let Some(reducer_code) = emit_cfg_scalar_expr_direct(reducer, env, signatures) else {
+        return Ok(false);
+    };
+    let initial_code = if let Some(initial) = initial {
+        let Some(code) =
+            emit_cfg_ordinary_call_argument_direct(initial, &result_ty, env, signatures)
+        else {
+            return Ok(false);
+        };
+        Some(code)
+    } else {
+        None
+    };
+
+    let source_name = format!("flux__reduce_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__reduce_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__reduce_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let target_name = local_c_name(target.0);
+    let element_c = c_type(&element_ty, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {source_code};\n"
+    ));
+
+    let has_value_name = if reduce {
+        let has_value_name = format!("flux__reduce_has_value_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}{} {target_name};\n{pad}bool {has_value_name} = false;\n",
+            c_type(target.1, signatures)
+        ));
+        Some(has_value_name)
+    } else {
+        out.push_str(&format!(
+            "{pad}{} {target_name} = {};\n",
+            c_type(target.1, signatures),
+            initial_code.expect("fold direct lowering has an initial value")
+        ));
+        None
+    };
+
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n"
+    ));
+    if let Some(has_value_name) = &has_value_name {
+        out.push_str(&format!(
+            "{pad}    if (!{has_value_name}) {{ {target_name} = {item_name}; {has_value_name} = true; }} else {{ {target_name} = {reducer_code}({target_name}, {item_name}); }}\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "{pad}    {target_name} = {reducer_code}({target_name}, {item_name});\n"
+        ));
+    }
+    out.push_str(&format!("{pad}}}\n"));
+    if let Some(has_value_name) = has_value_name {
+        out.push_str(&format!(
+            "{pad}if (!{has_value_name}) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }}\n"
+        ));
+    }
+    env.insert(target.0.to_string(), declared_ty);
+    Ok(true)
+}
+
 fn emit_sequence_reduction_binding(
     out: &mut String,
     pad: &str,
@@ -41841,6 +41967,21 @@ fn emit_sequence_reduction_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        && emit_cfg_sequence_reduction_binding(
+            out,
+            pad,
+            (name, declared_ty),
+            sequence,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    {
+        return Ok(());
+    }
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
     let reduction = sequence_reduction(expr).ok_or_else(|| {
@@ -54522,6 +54663,100 @@ fn main() -> i64 {
         )
         .expect("inline sequence callback should emit from typed IR");
         assert!(out.contains("flux_mul_i64(flux__local_value, INT64_C(3))"));
+    }
+
+    #[test]
+    fn simple_sequence_reductions_lower_directly_from_typed_ir() {
+        let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn foldOnce(values: i64[], initial: i64) -> i64 {
+    let total: i64 = fold(values, initial, add)
+    return total
+}
+
+fn reduceOnce(values: i64[]) -> i64 {
+    let total: i64 = reduce(values, add)
+    return total
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("simple reduction typed-IR fixture should typecheck");
+
+        for (function, callee, env) in [
+            (
+                "foldOnce",
+                "fold",
+                HashMap::from([
+                    ("values".to_string(), Type::List(Box::new(Type::I64))),
+                    ("initial".to_string(), Type::I64),
+                ]),
+            ),
+            (
+                "reduceOnce",
+                "reduce",
+                HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("simple reduction CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee: actual, .. }
+                            if crate::builtin_names::global_impl(actual) == callee
+                    )
+                })
+                .expect("typed IR should retain the reduction call");
+            let facts = cfg_rewrite_facts(graph);
+            let sequence = facts
+                .sequence_exprs
+                .get(&source_span_key(root.span))
+                .expect("reduction should retain sequence typed-IR facts");
+            let fake_text = format!("checked-ast-{function}");
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str(fake_text.clone()),
+            };
+            let mut env = env;
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            emit_sequence_reduction_binding(
+                &mut out,
+                "",
+                ("total", &Type::I64),
+                &fake,
+                &mut env,
+                database.signatures(),
+                &facts,
+                &mut temp_counter,
+            )
+            .expect("simple reduction binding should lower from typed IR");
+
+            assert!(matches!(
+                &sequence.kind,
+                CfgScalarExprKind::Call { callee: actual, .. }
+                    if crate::builtin_names::global_impl(actual) == callee
+            ));
+            assert!(out.contains("flux__reduce_source_"), "{function}: {out}");
+            assert!(out.contains(&function_c_name("add")), "{function}: {out}");
+            assert!(!out.contains(&fake_text), "{function}: {out}");
+            if callee == "reduce" {
+                assert!(out.contains("reduce requires a non-empty list"), "{out}");
+            }
+            assert_eq!(env.get("total"), Some(&Type::I64));
+        }
     }
 
     #[test]
