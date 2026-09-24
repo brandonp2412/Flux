@@ -50947,11 +50947,6 @@ fn emit_cfg_ordered_call_expression_direct<F>(
 where
     F: FnOnce(&[String]) -> String,
 {
-    if let Some(rendered) =
-        emit_cfg_order_safe_call_arguments_direct(arguments, expected, env, signatures)
-    {
-        return Some(render_call(&rendered));
-    }
     if arguments.len() != expected.len() {
         return None;
     }
@@ -50966,7 +50961,9 @@ where
         })
         .count();
     if flexible_count < 2 {
-        return None;
+        let rendered =
+            emit_cfg_order_safe_call_arguments_direct(arguments, expected, env, signatures)?;
+        return Some(render_call(&rendered));
     }
 
     let mut prelude = String::new();
