@@ -41910,112 +41910,48 @@ fn cfg_rewrite_expr_as_ast(
     Some(expr)
 }
 
-fn cfg_aggregate_child_is_reorder_safe(
-    span_key: (u32, usize, usize, usize),
+fn cfg_aggregate_shape_child_is_direct_safe(
+    span: (u32, usize, usize, usize),
     rewrite_facts: &CfgRewriteFacts,
 ) -> bool {
-    rewrite_facts
-        .scalar_exprs
-        .get(&span_key)
-        .is_none_or(cfg_scalar_expr_is_aggregate_reorder_safe)
-}
-
-fn cfg_rewrite_aggregate_child_as_ast(
-    span_key: (u32, usize, usize, usize),
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> Option<Expr> {
-    if !cfg_aggregate_child_is_reorder_safe(span_key, rewrite_facts) {
-        return None;
+    if rewrite_facts.constants.contains_key(&span)
+        || rewrite_facts.aggregate_constants.contains_key(&span)
+    {
+        return true;
     }
-    cfg_rewrite_expr_as_ast(span_key, env, signatures, rewrite_facts)
-}
-
-fn cfg_plain_aggregate_shape_as_ast(
-    root_span: SourceSpan,
-    shape: &CfgAggregateShape,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> Option<Expr> {
-    let kind = match shape {
-        CfgAggregateShape::List(items)
-            if items.iter().all(|item| {
-                let CfgListItemShape::Value(span) = item else {
-                    return false;
-                };
-                cfg_aggregate_child_is_reorder_safe(*span, rewrite_facts)
-            }) =>
-        {
-            return cfg_list_shape_as_ast(root_span, shape, env, signatures, rewrite_facts);
-        }
-        CfgAggregateShape::Set(items) => ExprKind::Set(
-            items
-                .iter()
-                .map(|span| {
-                    cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)
-                })
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        CfgAggregateShape::Map(entries) => ExprKind::Map(
-            entries
-                .iter()
-                .flat_map(|(key, value)| [key, value])
-                .map(|span| {
-                    cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)
-                })
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        CfgAggregateShape::Record(fields) => ExprKind::RecordLiteral {
-            fields: fields
-                .iter()
-                .map(|(name, span)| {
-                    let value =
-                        cfg_rewrite_aggregate_child_as_ast(*span, env, signatures, rewrite_facts)?;
-                    Some(crate::ast::RecordLiteralField {
-                        name: name.clone(),
-                        name_span: name.as_ref().map(|_| source_span_from_key(*span)),
-                        value,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?,
-        },
-        CfgAggregateShape::Struct { name, base, fields } => ExprKind::StructLiteral {
-            name: name.clone(),
-            name_span: root_span,
-            base: match base {
-                Some(span) => Some(Box::new(cfg_rewrite_aggregate_child_as_ast(
-                    *span,
-                    env,
-                    signatures,
-                    rewrite_facts,
-                )?)),
-                None => None,
-            },
-            fields: fields
-                .iter()
-                .map(|(name, span)| {
-                    Some(crate::ast::StructLiteralField {
-                        name: name.clone(),
-                        name_span: source_span_from_key(*span),
-                        value: cfg_rewrite_aggregate_child_as_ast(
-                            *span,
-                            env,
-                            signatures,
-                            rewrite_facts,
-                        )?,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?,
-        },
-        CfgAggregateShape::List(_) | CfgAggregateShape::ListComprehension { .. } => return None,
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span) {
+        return cfg_scalar_expr_is_aggregate_reorder_safe(scalar);
+    }
+    let Some(shape) = rewrite_facts.aggregates.get(&span) else {
+        return false;
     };
-    Some(Expr {
-        line: root_span.line,
-        span: root_span,
-        kind,
-    })
+    match shape {
+        CfgAggregateShape::List(items) => items.iter().all(|item| match item {
+            CfgListItemShape::Value(value) => {
+                cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)
+            }
+            CfgListItemShape::Spread { .. }
+            | CfgListItemShape::Optional { .. }
+            | CfgListItemShape::Conditional { .. } => false,
+        }),
+        CfgAggregateShape::Set(items) => items
+            .iter()
+            .all(|value| cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)),
+        CfgAggregateShape::Map(entries) => entries.iter().all(|(key, value)| {
+            cfg_aggregate_shape_child_is_direct_safe(*key, rewrite_facts)
+                && cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)
+        }),
+        CfgAggregateShape::Record(fields) => fields
+            .iter()
+            .all(|(_, value)| cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)),
+        CfgAggregateShape::Struct { base, fields, .. } => {
+            base.is_none_or(|base| cfg_aggregate_shape_child_is_direct_safe(base, rewrite_facts))
+                && fields.iter().all(|(_, value)| {
+                    cfg_aggregate_shape_child_is_direct_safe(*value, rewrite_facts)
+                })
+        }
+        CfgAggregateShape::ListComprehension { .. } => false,
+    }
 }
 
 fn emit_cfg_aggregate_shape_child_direct(
@@ -42043,10 +41979,10 @@ fn emit_cfg_aggregate_shape_child_direct(
         return Some(rendered);
     }
     let shape = rewrite_facts.aggregates.get(&span)?;
-    emit_cfg_ordered_copy_aggregate_shape_direct(shape, &expected, env, signatures, rewrite_facts)
+    emit_cfg_aggregate_shape_direct(shape, &expected, env, signatures, rewrite_facts)
 }
 
-fn emit_cfg_ordered_copy_aggregate_shape_direct(
+fn emit_cfg_aggregate_shape_direct(
     shape: &CfgAggregateShape,
     expected: &Type,
     env: &HashMap<String, Type>,
@@ -42054,12 +41990,108 @@ fn emit_cfg_ordered_copy_aggregate_shape_direct(
     rewrite_facts: &CfgRewriteFacts,
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
-    if !signatures.is_copy_type(&expected) {
-        return None;
-    }
 
     match shape {
+        CfgAggregateShape::List(items) => {
+            let Type::List(element) = &expected else {
+                return None;
+            };
+            let mut rendered = Vec::with_capacity(items.len());
+            for item in items {
+                let CfgListItemShape::Value(span) = item else {
+                    return None;
+                };
+                if !cfg_aggregate_shape_child_is_direct_safe(*span, rewrite_facts) {
+                    return None;
+                }
+                rendered.push(emit_cfg_aggregate_shape_child_direct(
+                    *span,
+                    element,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?);
+            }
+            let element_c = c_type(element, signatures);
+            Some(format!(
+                "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {}, .stride = sizeof({element_c}) }})",
+                rendered.join(", "),
+                rendered.len()
+            ))
+        }
+        CfgAggregateShape::Set(items) => {
+            let Type::Set(element) = &expected else {
+                return None;
+            };
+            let mut rendered = Vec::with_capacity(items.len());
+            let mut seen = HashSet::new();
+            for span in items {
+                if !cfg_aggregate_shape_child_is_direct_safe(*span, rewrite_facts) {
+                    return None;
+                }
+                let key = rewrite_facts
+                    .constants
+                    .get(span)
+                    .map(|constant| format!("{}:{constant:?}", constant.ty().name()))?;
+                if !seen.insert(key) {
+                    continue;
+                }
+                rendered.push(emit_cfg_aggregate_shape_child_direct(
+                    *span,
+                    element,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?);
+            }
+            let element_c = c_type(element, signatures);
+            Some(format!(
+                "((struct flux__list){{ .data = (void *)({element_c}[]){{ {} }}, .len = {}, .stride = sizeof({element_c}) }})",
+                rendered.join(", "),
+                rendered.len()
+            ))
+        }
+        CfgAggregateShape::Map(entries) => {
+            let Type::Map(key, value) = &expected else {
+                return None;
+            };
+            let key_c = c_type(key, signatures);
+            let value_c = c_type(value, signatures);
+            let mut keys = Vec::with_capacity(entries.len());
+            let mut values = Vec::with_capacity(entries.len());
+            for (key_span, value_span) in entries {
+                if !cfg_aggregate_shape_child_is_direct_safe(*key_span, rewrite_facts)
+                    || !cfg_aggregate_shape_child_is_direct_safe(*value_span, rewrite_facts)
+                {
+                    return None;
+                }
+                keys.push(emit_cfg_aggregate_shape_child_direct(
+                    *key_span,
+                    key,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?);
+                values.push(emit_cfg_aggregate_shape_child_direct(
+                    *value_span,
+                    value,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?);
+            }
+            Some(format!(
+                "((struct flux__map){{ .keys = (struct flux__list){{ .data = (void *)({key_c}[]){{ {} }}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *)({value_c}[]){{ {} }}, .len = {}, .stride = sizeof({value_c}) }} }})",
+                keys.join(", "),
+                keys.len(),
+                values.join(", "),
+                values.len()
+            ))
+        }
         CfgAggregateShape::Record(fields) => {
+            if !signatures.is_copy_type(&expected) {
+                return None;
+            }
             let Type::Record(record_fields) = &expected else {
                 return None;
             };
@@ -42103,7 +42135,7 @@ fn emit_cfg_ordered_copy_aggregate_shape_direct(
             ))
         }
         CfgAggregateShape::Struct { name, base, fields } => {
-            if expected != Type::Named(name.clone()) {
+            if !signatures.is_copy_type(&expected) || expected != Type::Named(name.clone()) {
                 return None;
             }
             let definition = signatures.struct_type(name)?;
@@ -42173,7 +42205,7 @@ fn emit_cfg_ordered_copy_aggregate_shape_direct(
 
             Some(format!("__extension__ ({{ {prelude}{value}; }})"))
         }
-        _ => None,
+        CfgAggregateShape::ListComprehension { .. } => None,
     }
 }
 
@@ -53829,21 +53861,11 @@ fn emit_expr_for_expected_with_cfg_proofs(
     {
         return Ok(value);
     }
-    if let Some(shape) = rewrite_facts.aggregates.get(&span) {
-        if let Some(rewritten) =
-            cfg_plain_aggregate_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
-        {
-            return emit_expr_for_expected(&rewritten, expected, env, signatures);
-        }
-        if let Some(value) = emit_cfg_ordered_copy_aggregate_shape_direct(
-            shape,
-            expected,
-            env,
-            signatures,
-            rewrite_facts,
-        ) {
-            return Ok(value);
-        }
+    if let Some(shape) = rewrite_facts.aggregates.get(&span)
+        && let Some(value) =
+            emit_cfg_aggregate_shape_direct(shape, expected, env, signatures, rewrite_facts)
+    {
+        return Ok(value);
     }
     let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     emit_expr_for_expected(&rewritten, expected, env, signatures)
@@ -55500,23 +55522,7 @@ fn main() -> i64 {
             })
             .expect("struct literal should have a typed-IR root");
         let facts = cfg_rewrite_facts(graph);
-        let shape = facts
-            .aggregates
-            .get(&source_span_key(root.span))
-            .expect("effectful struct should still retain its dependency shape");
         let env = HashMap::from([("value".to_string(), Type::I64)]);
-
-        assert!(
-            cfg_plain_aggregate_shape_as_ast(
-                root.span,
-                shape,
-                &env,
-                database.signatures(),
-                &facts,
-            )
-            .is_none(),
-            "effectful aggregate children must not rebuild a checked-AST root"
-        );
 
         let fake = Expr {
             line: root.span.line,
@@ -55583,26 +55589,10 @@ fn main() -> i64 {
             })
             .expect("struct update should have a typed-IR root");
         let facts = cfg_rewrite_facts(graph);
-        let shape = facts
-            .aggregates
-            .get(&source_span_key(root.span))
-            .expect("struct update should retain aggregate shape");
         let env = HashMap::from([
             ("first".to_string(), Type::I64),
             ("second".to_string(), Type::I64),
         ]);
-        assert!(
-            cfg_plain_aggregate_shape_as_ast(
-                root.span,
-                shape,
-                &env,
-                database.signatures(),
-                &facts,
-            )
-            .is_none(),
-            "effectful struct update must not rebuild a checked-AST root"
-        );
-
         let fake = Expr {
             line: root.span.line,
             span: root.span,
@@ -75642,22 +75632,6 @@ fn main() -> i64 {
                 .contains_key(&source_span_key(list.span)),
             "effectful children must not become direct aggregate constants"
         );
-        let list_shape = facts
-            .aggregates
-            .get(&source_span_key(list.span))
-            .expect("structural aggregate facts should remain available for safe fallback");
-        assert!(
-            cfg_plain_aggregate_shape_as_ast(
-                list.span,
-                list_shape,
-                &HashMap::new(),
-                database.signatures(),
-                &facts,
-            )
-            .is_none(),
-            "effectful list children must not rebuild a root that could reorder effects"
-        );
-
         let graph = database
             .control_flow_graph("buildRecord")
             .expect("buildRecord CFG should exist");
@@ -75672,22 +75646,6 @@ fn main() -> i64 {
             })
             .expect("typed IR should retain the record root");
         let facts = cfg_rewrite_facts(graph);
-        let shape = facts
-            .aggregates
-            .get(&source_span_key(root.span))
-            .expect("record structural facts should remain");
-        assert!(
-            cfg_plain_aggregate_shape_as_ast(
-                root.span,
-                shape,
-                &HashMap::new(),
-                database.signatures(),
-                &facts,
-            )
-            .is_none(),
-            "effectful record children must not rebuild a checked-AST root"
-        );
-
         let fake = Expr {
             line: root.span.line,
             span: root.span,
