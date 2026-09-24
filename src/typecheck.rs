@@ -6131,6 +6131,119 @@ fn json_enum_type_is_supported_inner(
     supported
 }
 
+pub(crate) fn binary_result_type(
+    expr_span: SourceSpan,
+    left_span: SourceSpan,
+    right_span: SourceSpan,
+    op: BinOp,
+    left_ty: &Type,
+    right_ty: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+            require_type(expr_span, &Type::I64, left_ty, "left arithmetic operand")?;
+            require_type(expr_span, &Type::I64, right_ty, "right arithmetic operand")?;
+            Ok(Type::I64)
+        }
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            require_type(expr_span, &Type::I64, left_ty, "left comparison operand")?;
+            require_type(expr_span, &Type::I64, right_ty, "right comparison operand")?;
+            Ok(Type::Bool)
+        }
+        BinOp::Eq | BinOp::Ne => {
+            if *left_ty == Type::Void || *right_ty == Type::Void {
+                return Err(diag(expr_span, "void values cannot be compared"));
+            }
+            let left_canonical = signatures.canonical_type(left_ty);
+            let right_canonical = signatures.canonical_type(right_ty);
+            if matches!(left_canonical, Type::Optional(_))
+                || matches!(right_canonical, Type::Optional(_))
+            {
+                let compares_none = matches!(
+                    (&left_canonical, &right_canonical),
+                    (Type::Optional(left), Type::Optional(right))
+                        if **left == Type::Void || **right == Type::Void
+                );
+                if compares_none {
+                    return Ok(Type::Bool);
+                }
+                return Err(diag(
+                    expr_span,
+                    "optional equality is only defined for presence checks against 'none'; unwrap with 'if let' or '??' before comparing values",
+                ));
+            }
+            if matches!(left_canonical, Type::Named(_)) || matches!(right_canonical, Type::Named(_))
+            {
+                return Err(diag(
+                    expr_span,
+                    "whole-struct equality is not defined yet; compare fields explicitly",
+                ));
+            }
+            if matches!(left_canonical, Type::Record(_))
+                || matches!(right_canonical, Type::Record(_))
+            {
+                return Err(diag(
+                    expr_span,
+                    "whole-record equality is not defined yet; compare fields explicitly",
+                ));
+            }
+            require_type(expr_span, left_ty, right_ty, "equality operand")?;
+            Ok(Type::Bool)
+        }
+        BinOp::And | BinOp::Or => {
+            require_type(expr_span, &Type::Bool, left_ty, "left boolean operand")?;
+            require_type(expr_span, &Type::Bool, right_ty, "right boolean operand")?;
+            Ok(Type::Bool)
+        }
+        BinOp::Coalesce => {
+            let left_ty = signatures.canonical_type(left_ty);
+            let right_ty = signatures.canonical_type(right_ty);
+            let Type::Optional(inner) = left_ty else {
+                return Err(diag(
+                    left_span,
+                    &format!(
+                        "left operand of '??' must be optional, got {}",
+                        left_ty.name()
+                    ),
+                ));
+            };
+            if *inner == Type::Void {
+                if matches!(right_ty, Type::Optional(ref right) if **right == Type::Void) {
+                    return Err(diag(
+                        expr_span,
+                        "'none ?? none' has no concrete optional value type",
+                    ));
+                }
+                return Ok(right_ty);
+            }
+            if !signatures.is_copy_type(&inner) {
+                return Err(diag(
+                    left_span,
+                    "coalescing currently requires a Copy optional payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
+                ));
+            }
+            if right_ty == *inner {
+                Ok(*inner)
+            } else if right_ty == Type::Optional(inner.clone())
+                || matches!(right_ty, Type::Optional(ref right) if **right == Type::Void)
+            {
+                Ok(Type::Optional(inner))
+            } else {
+                Err(diag(
+                    right_span,
+                    &format!(
+                        "fallback of '??' must be {} or {}?, got {}",
+                        inner.name(),
+                        inner.name(),
+                        right_ty.name()
+                    ),
+                ))
+            }
+        }
+    }
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -7810,109 +7923,9 @@ pub fn type_of_expr(
         ExprKind::Binary { left, op, right } => {
             let left_ty = type_of_expr(left, env, signatures)?;
             let right_ty = type_of_expr(right, env, signatures)?;
-            match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                    require_type(expr.span, &Type::I64, &left_ty, "left arithmetic operand")?;
-                    require_type(expr.span, &Type::I64, &right_ty, "right arithmetic operand")?;
-                    Ok(Type::I64)
-                }
-                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    require_type(expr.span, &Type::I64, &left_ty, "left comparison operand")?;
-                    require_type(expr.span, &Type::I64, &right_ty, "right comparison operand")?;
-                    Ok(Type::Bool)
-                }
-                BinOp::Eq | BinOp::Ne => {
-                    if left_ty == Type::Void || right_ty == Type::Void {
-                        return Err(diag(expr.span, "void values cannot be compared"));
-                    }
-                    let left_canonical = signatures.canonical_type(&left_ty);
-                    let right_canonical = signatures.canonical_type(&right_ty);
-                    if matches!(left_canonical, Type::Optional(_))
-                        || matches!(right_canonical, Type::Optional(_))
-                    {
-                        let compares_none = matches!(
-                            (&left_canonical, &right_canonical),
-                            (Type::Optional(left), Type::Optional(right))
-                                if **left == Type::Void || **right == Type::Void
-                        );
-                        if compares_none {
-                            return Ok(Type::Bool);
-                        }
-                        return Err(diag(
-                            expr.span,
-                            "optional equality is only defined for presence checks against 'none'; unwrap with 'if let' or '??' before comparing values",
-                        ));
-                    }
-                    if matches!(left_canonical, Type::Named(_))
-                        || matches!(right_canonical, Type::Named(_))
-                    {
-                        return Err(diag(
-                            expr.span,
-                            "whole-struct equality is not defined yet; compare fields explicitly",
-                        ));
-                    }
-                    if matches!(left_canonical, Type::Record(_))
-                        || matches!(right_canonical, Type::Record(_))
-                    {
-                        return Err(diag(
-                            expr.span,
-                            "whole-record equality is not defined yet; compare fields explicitly",
-                        ));
-                    }
-                    require_type(expr.span, &left_ty, &right_ty, "equality operand")?;
-                    Ok(Type::Bool)
-                }
-                BinOp::And | BinOp::Or => {
-                    require_type(expr.span, &Type::Bool, &left_ty, "left boolean operand")?;
-                    require_type(expr.span, &Type::Bool, &right_ty, "right boolean operand")?;
-                    Ok(Type::Bool)
-                }
-                BinOp::Coalesce => {
-                    let left_ty = signatures.canonical_type(&left_ty);
-                    let right_ty = signatures.canonical_type(&right_ty);
-                    let Type::Optional(inner) = left_ty else {
-                        return Err(diag(
-                            left.span,
-                            &format!(
-                                "left operand of '??' must be optional, got {}",
-                                left_ty.name()
-                            ),
-                        ));
-                    };
-                    if *inner == Type::Void {
-                        if matches!(right_ty, Type::Optional(ref right) if **right == Type::Void) {
-                            return Err(diag(
-                                expr.span,
-                                "'none ?? none' has no concrete optional value type",
-                            ));
-                        }
-                        return Ok(right_ty);
-                    }
-                    if !signatures.is_copy_type(&inner) {
-                        return Err(diag(
-                            left.span,
-                            "coalescing currently requires a Copy optional payload; borrowed optional lists support '?[index]' until first-class borrow lifetimes are implemented",
-                        ));
-                    }
-                    if right_ty == *inner {
-                        Ok(*inner)
-                    } else if right_ty == Type::Optional(inner.clone())
-                        || matches!(right_ty, Type::Optional(ref right) if **right == Type::Void)
-                    {
-                        Ok(Type::Optional(inner))
-                    } else {
-                        Err(diag(
-                            right.span,
-                            &format!(
-                                "fallback of '??' must be {} or {}?, got {}",
-                                inner.name(),
-                                inner.name(),
-                                right_ty.name()
-                            ),
-                        ))
-                    }
-                }
-            }
+            binary_result_type(
+                expr.span, left.span, right.span, *op, &left_ty, &right_ty, signatures,
+            )
         }
     }
 }

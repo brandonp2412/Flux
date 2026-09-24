@@ -45991,7 +45991,15 @@ fn emit_expr(
         ExprKind::Binary { left, op, right } => {
             let emitted_left = emit_expr(left, env, signatures)?;
             let emitted_right = emit_expr(right, env, signatures)?;
-            let result_ty = type_of_expr(expr, env, signatures)?;
+            let result_ty = typecheck::binary_result_type(
+                expr.span,
+                left.span,
+                right.span,
+                *op,
+                &emitted_left.ty,
+                &emitted_right.ty,
+                signatures,
+            )?;
             let code = if matches!(op, BinOp::Coalesce) {
                 let left_ty = signatures.canonical_type(&emitted_left.ty);
                 let result_ty_canonical = signatures.canonical_type(&result_ty);
