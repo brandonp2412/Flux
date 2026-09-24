@@ -26271,9 +26271,9 @@ fn async_continuation_plan(
             };
             let mut nested_then_env = nested_outer_env.clone();
             if let Some(binding) = nested_binding {
-                let Type::Optional(inner) = signatures.canonical_type(
-                    &typecheck::type_of_expr(nested_cond, &nested_outer_env, signatures).ok()?,
-                ) else {
+                let nested_condition_ty =
+                    cfg_rewrite_root_type(nested_cond.span, &cfg_rewrite_facts)?;
+                let Type::Optional(inner) = signatures.canonical_type(&nested_condition_ty) else {
                     return None;
                 };
                 let inner = signatures.canonical_type(&inner);
@@ -26331,7 +26331,7 @@ fn async_continuation_plan(
             if let Some(binding) = binding
                 && binding.name != "_"
             {
-                let condition_ty = typecheck::type_of_expr(cond, &env, signatures).ok()?;
+                let condition_ty = cfg_rewrite_root_type(cond.span, &cfg_rewrite_facts)?;
                 let Type::Optional(inner) = signatures.canonical_type(&condition_ty) else {
                     return None;
                 };
@@ -30435,8 +30435,9 @@ fn emit_async_completed_optional_await(
     current_function: &Function,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, Type), Diagnostic> {
-    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+    let callee = direct_await_callee(await_expr, rewrite_facts).ok_or_else(|| {
         diag(
             await_expr.span,
             "async continuation lowering requires a direct async function call",
@@ -30497,8 +30498,9 @@ fn emit_async_completed_single_await(
     current_function: &Function,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, Type), Diagnostic> {
-    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+    let callee = direct_await_callee(await_expr, rewrite_facts).ok_or_else(|| {
         diag(
             await_expr.span,
             "async continuation lowering requires a direct async function call",
@@ -30552,8 +30554,9 @@ fn emit_async_completed_bool_await(
     current_function: &Function,
     signatures: &Signatures,
     temp_counter: &mut usize,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> Result<String, Diagnostic> {
-    let (callee, _, _) = direct_await_call(await_expr).ok_or_else(|| {
+    let callee = direct_await_callee(await_expr, rewrite_facts).ok_or_else(|| {
         diag(
             await_expr.span,
             "async continuation lowering requires a direct async function call",
@@ -31156,6 +31159,7 @@ fn emit_async_nested_branch_continuation_function(
             function,
             signatures,
             temp_counter,
+            context.cfg_rewrite_facts,
         )?;
         if binding.name != "_" {
             out.push_str(&format!(
@@ -31176,6 +31180,7 @@ fn emit_async_nested_branch_continuation_function(
             function,
             signatures,
             temp_counter,
+            context.cfg_rewrite_facts,
         )?)
     };
     if let Some(nested_condition) = nested_condition {
@@ -31439,6 +31444,7 @@ fn emit_async_branch_continuation_function(
                 function,
                 signatures,
                 temp_counter,
+                context.cfg_rewrite_facts,
             )?;
             completed_optional_binding = Some((binding.name.clone(), inner, temp));
             None
@@ -31450,6 +31456,7 @@ fn emit_async_branch_continuation_function(
                 function,
                 signatures,
                 temp_counter,
+                context.cfg_rewrite_facts,
             )?)
         }
     } else {
@@ -31469,7 +31476,18 @@ fn emit_async_branch_continuation_function(
     } else if let Some((_, _, temp)) = &optional_binding {
         format!("{temp}.has_value")
     } else if let Some(binding) = binding {
-        let optional = emit_expr(cond, &env, signatures)?;
+        let optional_type = cfg_rewrite_required_root_type(cond.span, context.cfg_rewrite_facts)?;
+        let optional = EmittedExpr {
+            code: emit_expr_for_expected_with_cfg_proofs(
+                cond,
+                &optional_type,
+                &env,
+                signatures,
+                context.checked_i64_cfg_proofs,
+                context.cfg_rewrite_facts,
+            )?,
+            ty: optional_type,
+        };
         let Type::Optional(inner) = signatures.canonical_type(&optional.ty) else {
             return Err(diag(
                 cond.span,
@@ -32133,8 +32151,15 @@ fn emit_async_while_continuation_function(
             ));
         }
         emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, cond.span)?;
-        let completed_condition =
-            emit_async_completed_bool_await(out, pad, cond, function, signatures, temp_counter)?;
+        let completed_condition = emit_async_completed_bool_await(
+            out,
+            pad,
+            cond,
+            function,
+            signatures,
+            temp_counter,
+            context.cfg_rewrite_facts,
+        )?;
         let body_state = emit_async_while_condition_body(
             out,
             function,
@@ -32670,8 +32695,15 @@ fn emit_async_for_range_continuation_function(
             ));
         }
         emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, start.span)?;
-        let (completed_start, completed_ty) =
-            emit_async_completed_single_await(out, pad, start, function, signatures, temp_counter)?;
+        let (completed_start, completed_ty) = emit_async_completed_single_await(
+            out,
+            pad,
+            start,
+            function,
+            signatures,
+            temp_counter,
+            context.cfg_rewrite_facts,
+        )?;
         if completed_ty != Type::I64 {
             return Err(diag(
                 start.span,
@@ -32727,8 +32759,15 @@ fn emit_async_for_range_continuation_function(
             ));
         }
         emit_async_restore_locals(out, pad, &plan.locals, &range_env, signatures, end.span)?;
-        let (completed_end, completed_ty) =
-            emit_async_completed_single_await(out, pad, end, function, signatures, temp_counter)?;
+        let (completed_end, completed_ty) = emit_async_completed_single_await(
+            out,
+            pad,
+            end,
+            function,
+            signatures,
+            temp_counter,
+            context.cfg_rewrite_facts,
+        )?;
         if completed_ty != Type::I64 {
             return Err(diag(
                 end.span,
@@ -33043,8 +33082,15 @@ fn emit_async_match_continuation_function(
             ));
         }
         emit_async_restore_locals(out, pad, &plan.locals, &outer_env, signatures, value.span)?;
-        let (code, ty) =
-            emit_async_completed_single_await(out, pad, value, function, signatures, temp_counter)?;
+        let (code, ty) = emit_async_completed_single_await(
+            out,
+            pad,
+            value,
+            function,
+            signatures,
+            temp_counter,
+            context.cfg_rewrite_facts,
+        )?;
         EmittedExpr { code, ty }
     } else {
         let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
@@ -79098,6 +79144,130 @@ async fn main() -> i64 {
         assert_eq!(direct_await_callee(selected, &facts), Some("ping"));
         async_continuation_plan(function, database.signatures(), graph)
             .expect("typed IR should preserve the full async continuation plan");
+    }
+
+    #[test]
+    fn async_optional_binding_plans_use_typed_ir_condition_types_after_ast_poisoning() {
+        let source = r#"
+async fn addOne(value: i64) -> i64 {
+    return value + 1
+}
+
+async fn maybe(value: i64, present: bool) -> i64? {
+    if present:
+        return value
+    return none
+}
+
+async fn chooseSimple(value: i64?) -> i64 {
+    if let present = value:
+        let next: i64 = await addOne(present)
+        return next
+    return 0
+}
+
+async fn chooseNested(first: bool, present: bool) -> i64 {
+    if first:
+        return 1
+    elif let value = await maybe(40, present):
+        return await addOne(value)
+    else:
+        return 0
+}
+
+async fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("async optional-binding typed-IR fixture should typecheck");
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("async optional-binding typed-IR fixture should parse");
+        let optional_i64 = Type::Optional(Box::new(Type::I64));
+
+        for function_name in ["chooseSimple", "chooseNested"] {
+            let graph = database
+                .control_flow_graph(function_name)
+                .unwrap_or_else(|| panic!("{function_name} CFG should exist"));
+            let facts = cfg_rewrite_facts(graph);
+            let function = program
+                .functions
+                .iter_mut()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{function_name} should exist"));
+
+            let condition = if function_name == "chooseSimple" {
+                let StmtKind::If {
+                    cond,
+                    binding: Some(_),
+                    ..
+                } = &mut function.body[0].kind
+                else {
+                    panic!("chooseSimple should start with an optional-binding if");
+                };
+                cond
+            } else {
+                let StmtKind::If { else_body, .. } = &mut function.body[0].kind else {
+                    panic!("chooseNested should start with an if");
+                };
+                let [nested] = else_body.as_mut_slice() else {
+                    panic!("chooseNested should contain one nested elif");
+                };
+                let StmtKind::If {
+                    cond,
+                    binding: Some(_),
+                    ..
+                } = &mut nested.kind
+                else {
+                    panic!("chooseNested elif should be an optional-binding if");
+                };
+                cond
+            };
+            assert_eq!(
+                cfg_rewrite_root_type(condition.span, &facts),
+                Some(optional_i64.clone()),
+                "{function_name} should retain the optional condition root type"
+            );
+            if function_name == "chooseSimple" {
+                condition.kind = ExprKind::Bool(true);
+            } else {
+                condition.kind = ExprKind::Int(999);
+            }
+
+            let plan = async_continuation_plan(function, database.signatures(), graph)
+                .unwrap_or_else(|| panic!("{function_name} should retain continuation lowering"));
+            if function_name == "chooseSimple" {
+                assert!(plan.branch_await.is_some());
+            } else {
+                assert!(plan.nested_branch_await.is_some());
+            }
+
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            emit_function(
+                &mut out,
+                function,
+                database.signatures(),
+                graph,
+                &mut temp_counter,
+                &HashMap::new(),
+            )
+            .unwrap_or_else(|diagnostic| {
+                panic!("{function_name} should emit from typed IR: {diagnostic:?}")
+            });
+            assert!(
+                out.contains(&async_resume_c_name(function_name)),
+                "{function_name}: {out}"
+            );
+            assert!(
+                !out.contains(&format!("flux__async_body_{function_name}(")),
+                "{function_name}: {out}"
+            );
+            assert!(
+                !out.contains("INT64_C(999)"),
+                "{function_name}: poisoned nested condition leaked into output: {out}"
+            );
+        }
     }
 
     #[test]
