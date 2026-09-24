@@ -45127,7 +45127,16 @@ fn emit_expr(
             optional,
         } => {
             let base_value = emit_expr(base, env, signatures)?;
-            let result_ty = type_of_expr(expr, env, signatures)?;
+            let index_value = emit_expr(index, env, signatures)?;
+            let result_ty = typecheck::index_result_type(
+                base.span,
+                index.span,
+                expr.span,
+                *optional,
+                &base_value.ty,
+                &index_value.ty,
+                signatures,
+            )?;
             let map_info = if *optional {
                 match signatures.canonical_type(&base_value.ty) {
                     Type::Optional(inner) => match signatures.canonical_type(&inner) {
@@ -45143,7 +45152,6 @@ fn emit_expr(
                 }
             };
             if let Some((key, value, optional_base)) = map_info {
-                let index_value = emit_expr(index, env, signatures)?;
                 let result_c = c_type(&result_ty, signatures);
                 let key_c = c_type(&key, signatures);
                 let value_c = c_type(&value, signatures);
@@ -45211,7 +45219,6 @@ fn emit_expr(
                         "optional-aware indexing requires an optional list value during code generation",
                     ));
                 };
-                let index_value = emit_expr(index, env, signatures)?;
                 let base_c = c_type(&base_value.ty, signatures);
                 let element_c = c_type(&element, signatures);
                 let result_c = c_type(&result_ty, signatures);
@@ -45235,7 +45242,6 @@ fn emit_expr(
                 }
             } else {
                 let static_index = resolved_static_list_index(base, index, env, signatures)?;
-                let index_value = emit_expr(index, env, signatures)?;
                 let element_c = c_type(&result_ty, signatures);
                 let code = if let Some(static_index) = static_index {
                     format!(
@@ -45260,8 +45266,10 @@ fn emit_expr(
             end,
             step,
         } => {
-            let base = emit_expr(base, env, signatures)?;
-            let Type::List(element) = type_of_expr(expr, env, signatures)? else {
+            let base_value = emit_expr(base, env, signatures)?;
+            let Type::List(element) =
+                typecheck::slice_result_type_from_base(base.span, &base_value.ty, signatures)?
+            else {
                 unreachable!()
             };
             let (has_start, start_code) = if let Some(start) = start {
@@ -45283,7 +45291,7 @@ fn emit_expr(
             EmittedExpr {
                 code: format!(
                     "flux_list_slice({}, {has_start}, {start_code}, {has_end}, {end_code}, {step_code}, sizeof({element_c}))",
-                    base.code
+                    base_value.code
                 ),
                 ty: Type::List(element),
             }

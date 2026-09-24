@@ -6244,6 +6244,87 @@ pub(crate) fn binary_result_type(
     }
 }
 
+pub(crate) fn index_result_type(
+    base_span: SourceSpan,
+    index_span: SourceSpan,
+    expr_span: SourceSpan,
+    optional: bool,
+    base_ty: &Type,
+    index_ty: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    let base_ty = signatures.canonical_type(base_ty);
+    let map_ty = if optional {
+        match base_ty.clone() {
+            Type::Optional(inner) => match signatures.canonical_type(&inner) {
+                Type::Map(key, value) => Some((key, value)),
+                _ => None,
+            },
+            _ => None,
+        }
+    } else {
+        match base_ty.clone() {
+            Type::Map(key, value) => Some((key, value)),
+            _ => None,
+        }
+    };
+    if let Some((key, value)) = map_ty {
+        require_type(index_span, &key, index_ty, "map key")?;
+        if !matches!(value.as_ref(), Type::I64 | Type::Bool | Type::Str) {
+            return Err(diag(
+                expr_span,
+                "map indexing currently requires an i64, bool, or str value",
+            ));
+        }
+        return Ok(Type::Optional(value));
+    }
+
+    require_type(index_span, &Type::I64, index_ty, "list index")?;
+    if optional {
+        let Type::Optional(inner) = base_ty else {
+            return Err(diag(
+                base_span,
+                "optional-aware indexing requires an optional list value",
+            ));
+        };
+        let Type::List(element) = signatures.canonical_type(&inner) else {
+            return Err(diag(
+                base_span,
+                "optional-aware indexing requires an optional list value",
+            ));
+        };
+        let element = *element;
+        if !signatures.is_copy_type(&element) {
+            return Err(diag(
+                expr_span,
+                "optional-aware indexing currently requires a Copy list element; borrowed nested-list results need first-class borrow lifetimes",
+            ));
+        }
+        if matches!(element, Type::Optional(_)) {
+            Ok(element)
+        } else {
+            Ok(Type::Optional(Box::new(element)))
+        }
+    } else {
+        let Type::List(element) = base_ty else {
+            return Err(diag(base_span, "indexing currently requires a list value"));
+        };
+        Ok(*element)
+    }
+}
+
+pub(crate) fn slice_result_type_from_base(
+    base_span: SourceSpan,
+    base_ty: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    let base_ty = signatures.canonical_type(base_ty);
+    let Type::List(element) = base_ty else {
+        return Err(diag(base_span, "slicing currently requires a list value"));
+    };
+    Ok(Type::List(element))
+}
+
 pub fn type_of_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -6751,64 +6832,11 @@ pub fn type_of_expr(
             index,
             optional,
         } => {
-            let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
+            let base_ty = type_of_expr(base, env, signatures)?;
             let index_ty = type_of_expr(index, env, signatures)?;
-            let map_ty = if *optional {
-                match base_ty.clone() {
-                    Type::Optional(inner) => match signatures.canonical_type(&inner) {
-                        Type::Map(key, value) => Some((key, value)),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            } else {
-                match base_ty.clone() {
-                    Type::Map(key, value) => Some((key, value)),
-                    _ => None,
-                }
-            };
-            if let Some((key, value)) = map_ty {
-                require_type(index.span, &key, &index_ty, "map key")?;
-                if !matches!(value.as_ref(), Type::I64 | Type::Bool | Type::Str) {
-                    return Err(diag(
-                        expr.span,
-                        "map indexing currently requires an i64, bool, or str value",
-                    ));
-                }
-                return Ok(Type::Optional(value));
-            }
-            require_type(index.span, &Type::I64, &index_ty, "list index")?;
-            if *optional {
-                let Type::Optional(inner) = base_ty else {
-                    return Err(diag(
-                        base.span,
-                        "optional-aware indexing requires an optional list value",
-                    ));
-                };
-                let Type::List(element) = signatures.canonical_type(&inner) else {
-                    return Err(diag(
-                        base.span,
-                        "optional-aware indexing requires an optional list value",
-                    ));
-                };
-                let element = *element;
-                if !signatures.is_copy_type(&element) {
-                    return Err(diag(
-                        expr.span,
-                        "optional-aware indexing currently requires a Copy list element; borrowed nested-list results need first-class borrow lifetimes",
-                    ));
-                }
-                if matches!(element, Type::Optional(_)) {
-                    Ok(element)
-                } else {
-                    Ok(Type::Optional(Box::new(element)))
-                }
-            } else {
-                let Type::List(element) = base_ty else {
-                    return Err(diag(base.span, "indexing currently requires a list value"));
-                };
-                Ok(*element)
-            }
+            index_result_type(
+                base.span, index.span, expr.span, *optional, &base_ty, &index_ty, signatures,
+            )
         }
         ExprKind::Slice {
             base,
@@ -6816,10 +6844,8 @@ pub fn type_of_expr(
             end,
             step,
         } => {
-            let base_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
-            let Type::List(element) = base_ty else {
-                return Err(diag(base.span, "slicing currently requires a list value"));
-            };
+            let base_ty = type_of_expr(base, env, signatures)?;
+            let result_ty = slice_result_type_from_base(base.span, &base_ty, signatures)?;
             for (bound, label) in [
                 (start.as_deref(), "slice start"),
                 (end.as_deref(), "slice end"),
@@ -6839,7 +6865,7 @@ pub fn type_of_expr(
                     "list slice step cannot be zero",
                 ));
             }
-            Ok(Type::List(element))
+            Ok(result_ty)
         }
         ExprKind::ListComprehension {
             value,
