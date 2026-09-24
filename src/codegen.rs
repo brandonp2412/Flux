@@ -40669,10 +40669,10 @@ fn emit_match_expr_into(
             "expected match expression during code generation",
         ));
     };
-    let value_ty = match cfg_rewrite_root_type(value.span, cfg_rewrite_facts) {
-        Some(ty) => signatures.canonical_type(&ty),
-        None => type_of_expr(value, env, signatures)?,
-    };
+    let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        value.span,
+        cfg_rewrite_facts,
+    )?);
     let emitted_value = EmittedExpr {
         code: emit_expr_for_expected_with_cfg_proofs(
             value,
@@ -41239,10 +41239,10 @@ fn emit_list_match_expr_into(
             "expected list match expression during code generation",
         ));
     };
-    let value_ty = match cfg_rewrite_root_type(value.span, cfg_rewrite_facts) {
-        Some(ty) => signatures.canonical_type(&ty),
-        None => type_of_expr(value, env, signatures)?,
-    };
+    let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        value.span,
+        cfg_rewrite_facts,
+    )?);
     let emitted_value = EmittedExpr {
         code: emit_expr_for_expected_with_cfg_proofs(
             value,
