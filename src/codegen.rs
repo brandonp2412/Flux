@@ -37297,6 +37297,147 @@ fn record_mutable_declaration(stmt: &Stmt, mutable: &mut HashSet<String>) {
     }
 }
 
+fn emit_cfg_sequence_list_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if let CfgScalarExprKind::Call { callee, arguments } = &expr.kind
+        && crate::builtin_names::global_impl(callee) == "sorted"
+        && arguments.len() == 1
+    {
+        let source =
+            emit_cfg_sequence_list_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+        let result_ty = signatures.canonical_type(&expr.ty);
+        let Type::List(element) = &result_ty else {
+            return None;
+        };
+        if signatures.canonical_type(&source.ty) != result_ty {
+            return None;
+        }
+        let element_ty = signatures.canonical_type(element);
+        let source_name = format!("flux__sorted_source_{}", *temp_counter);
+        *temp_counter += 1;
+        let buffer_name = format!("flux__sorted_buffer_{}", *temp_counter);
+        *temp_counter += 1;
+        let index_name = format!("flux__sorted_index_{}", *temp_counter);
+        *temp_counter += 1;
+        let key_name = format!("flux__sorted_key_{}", *temp_counter);
+        *temp_counter += 1;
+        let cursor_name = format!("flux__sorted_cursor_{}", *temp_counter);
+        *temp_counter += 1;
+        let result_name = format!("flux__sorted_result_{}", *temp_counter);
+        *temp_counter += 1;
+        let element_c = c_type(element, signatures);
+        let less = sorted_less(
+            &key_name,
+            &format!("{buffer_name}[{cursor_name} - 1]"),
+            &element_ty,
+        )?;
+        out.push_str(&format!(
+            "{pad}struct flux__list {source_name} = {};\n",
+            source.code
+        ));
+        out.push_str(&format!(
+            "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+        ));
+        out.push_str(&format!(
+            "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
+        ));
+        out.push_str(&format!(
+            "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {key_name} = {buffer_name}[{index_name}];\n{pad}    size_t {cursor_name} = {index_name};\n{pad}    while ({cursor_name} > 0 && {less}) {{ {buffer_name}[{cursor_name}] = {buffer_name}[{cursor_name} - 1]; --{cursor_name}; }}\n{pad}    {buffer_name}[{cursor_name}] = {key_name};\n{pad}}}\n"
+        ));
+        out.push_str(&format!(
+            "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {source_name}.len, .stride = sizeof({element_c}) }};\n"
+        ));
+        return Some(EmittedExpr {
+            code: result_name,
+            ty: result_ty,
+        });
+    }
+
+    let ty = signatures.canonical_type(&expr.ty);
+    if !matches!(ty, Type::List(_)) {
+        return None;
+    }
+    Some(EmittedExpr {
+        code: emit_cfg_scalar_expr_direct(expr, env, signatures)?,
+        ty,
+    })
+}
+
+fn emit_cfg_sequence_projection_direct(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    expected: &Type,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<String> {
+    let base = match &expr.kind {
+        CfgScalarExprKind::Index {
+            base,
+            optional: false,
+            ..
+        }
+        | CfgScalarExprKind::Field {
+            base,
+            optional: false,
+            ..
+        } => base.as_ref(),
+        _ => return None,
+    };
+    if !matches!(
+        &base.kind,
+        CfgScalarExprKind::Call { callee, arguments }
+            if crate::builtin_names::global_impl(callee) == "sorted"
+                && arguments.len() == 1
+    ) {
+        return None;
+    }
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
+        return None;
+    }
+
+    let emitted = emit_cfg_sequence_list_value(out, pad, base, env, signatures, temp_counter)?;
+    let sequence_ty = signatures.canonical_type(&base.ty);
+    if signatures.canonical_type(&emitted.ty) != sequence_ty {
+        return None;
+    }
+
+    let mut temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
+    *temp_counter += 1;
+    while env.contains_key(&temp_name) {
+        temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
+        *temp_counter += 1;
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(&emitted.ty, signatures),
+        local_c_name(&temp_name),
+        emitted.code
+    ));
+    env.insert(temp_name.clone(), sequence_ty.clone());
+
+    let replacement = CfgScalarExpr {
+        ty: sequence_ty,
+        kind: CfgScalarExprKind::Name(temp_name),
+    };
+    let mut materialized = expr.clone();
+    match &mut materialized.kind {
+        CfgScalarExprKind::Index { base, .. } | CfgScalarExprKind::Field { base, .. } => {
+            **base = replacement;
+        }
+        _ => return None,
+    }
+    emit_cfg_scalar_expr_direct(&materialized, env, signatures)
+}
+
 fn emit_direct_sequence_projection(
     out: &mut String,
     pad: &str,
@@ -37308,6 +37449,25 @@ fn emit_direct_sequence_projection(
     temp_counter: &mut usize,
 ) -> Result<Option<String>, Diagnostic> {
     let span_key = source_span_key(expr.span);
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span_key) {
+        let mut direct = String::new();
+        let mut direct_env = env.clone();
+        let mut direct_temp_counter = *temp_counter;
+        if let Some(value) = emit_cfg_sequence_projection_direct(
+            &mut direct,
+            pad,
+            scalar,
+            expected,
+            &mut direct_env,
+            signatures,
+            &mut direct_temp_counter,
+        ) {
+            out.push_str(&direct);
+            *env = direct_env;
+            *temp_counter = direct_temp_counter;
+            return Ok(Some(value));
+        }
+    }
     let rewritten = rewrite_facts
         .scalar_exprs
         .get(&span_key)
