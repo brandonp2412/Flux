@@ -72477,6 +72477,223 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ordered_platform_multi_value_calls_sequence_multiple_computed_arguments() {
+        let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+
+fn body(_socket: i64, _value: str) -> void {
+}
+
+fn cell(_row: i64, _column: i64, _name: str, _value: str, _isNull: bool) -> void {
+}
+
+fn text(_value: str) -> void {
+}
+
+fn bytes(_value: i64[]) -> void {
+}
+
+fn multiI64(value: i64) -> i64 {
+    return value
+}
+
+fn multiStr(value: str) -> str {
+    return value
+}
+
+fn exercise(
+    socket: i64,
+    session: i64,
+    database: i64,
+    timestamp: i64,
+    zone: str,
+    query: str,
+    host: str,
+    certificate: str,
+    key: str,
+    maxBytes: i64,
+    timeout: i64,
+    maxHead: i64,
+    maxBody: i64
+) -> i64 {
+    let (offset, _) = time.zoneOffset(multiI64(timestamp), multiStr(zone))
+    let (rows, _) = sqlite.query(multiI64(database), multiStr(query), cell)
+    let (requestBytes, _) = http.readRequest(multiI64(socket), multiI64(maxHead), request)
+    let (requestHeaderBytes, _) = http.readRequestHeaders(multiI64(socket), multiI64(maxHead), request, header)
+    let (requestBodyBytes, _) = http.readRequestBody(multiI64(socket), multiI64(maxHead), multiI64(maxBody), request, header, body)
+    let (responseHeaderBytes, _) = http.readResponse(multiI64(socket), multiI64(maxHead), response, header)
+    let (responseBodyBytes, _) = http.readResponseBody(multiI64(socket), multiI64(maxHead), multiI64(maxBody), response, header, body)
+    let (wrapped, _) = tls.wrap(multiI64(socket), multiStr(host), multiStr(certificate))
+    let (listener, _) = tls.listen(multiI64(socket), multiStr(certificate), multiStr(key))
+    let (read, _) = tls.read(multiI64(session), multiI64(maxBytes), text)
+    let (timedRead, _, _) = tls.readTimeout(multiI64(session), multiI64(maxBytes), multiI64(timeout), text)
+    let (written, _, _) = tls.writeTimeout(multiI64(session), multiStr(host), multiI64(timeout))
+    let (connected, _) = websocket.connect(multiI64(socket), multiStr(host))
+    let (message, _) = websocket.readText(multiI64(session), multiI64(maxBytes), text)
+    let (binary, _) = websocket.readBytes(multiI64(session), multiI64(maxBytes), bytes)
+    return offset + rows + requestBytes + requestHeaderBytes + requestBodyBytes + responseHeaderBytes + responseBodyBytes + wrapped + listener + read + timedRead + written + connected + message + binary
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered platform multi-value fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let env = HashMap::from([
+            ("socket".to_string(), Type::I64),
+            ("session".to_string(), Type::I64),
+            ("database".to_string(), Type::I64),
+            ("timestamp".to_string(), Type::I64),
+            ("zone".to_string(), Type::Str),
+            ("query".to_string(), Type::Str),
+            ("host".to_string(), Type::Str),
+            ("certificate".to_string(), Type::Str),
+            ("key".to_string(), Type::Str),
+            ("maxBytes".to_string(), Type::I64),
+            ("timeout".to_string(), Type::I64),
+            ("maxHead".to_string(), Type::I64),
+            ("maxBody".to_string(), Type::I64),
+        ]);
+        let expected = HashMap::from([
+            (
+                ("time".to_string(), "zoneOffset".to_string()),
+                ("flux__time_zone_offset", 2usize),
+            ),
+            (
+                ("sqlite".to_string(), "query".to_string()),
+                ("flux__sqlite_query", 2usize),
+            ),
+            (
+                ("http".to_string(), "readRequest".to_string()),
+                ("flux__net_http_receive_request_head", 2usize),
+            ),
+            (
+                ("http".to_string(), "readRequestHeaders".to_string()),
+                ("flux__net_http_receive_request_head_with_headers", 2usize),
+            ),
+            (
+                ("http".to_string(), "readRequestBody".to_string()),
+                ("flux__net_http_receive_request_with_text_body_v2", 3usize),
+            ),
+            (
+                ("http".to_string(), "readResponse".to_string()),
+                ("flux__net_http_receive_response_head_with_headers", 2usize),
+            ),
+            (
+                ("http".to_string(), "readResponseBody".to_string()),
+                ("flux__net_http_receive_response_with_text_body_v2", 3usize),
+            ),
+            (
+                ("tls".to_string(), "wrap".to_string()),
+                ("flux__tls_wrap", 3usize),
+            ),
+            (
+                ("tls".to_string(), "listen".to_string()),
+                ("flux__tls_listen", 3usize),
+            ),
+            (
+                ("tls".to_string(), "read".to_string()),
+                ("flux__tls_read", 2usize),
+            ),
+            (
+                ("tls".to_string(), "readTimeout".to_string()),
+                ("flux__tls_read_timeout", 3usize),
+            ),
+            (
+                ("tls".to_string(), "writeTimeout".to_string()),
+                ("flux__tls_write_timeout", 3usize),
+            ),
+            (
+                ("websocket".to_string(), "connect".to_string()),
+                ("flux__websocket_connect", 2usize),
+            ),
+            (
+                ("websocket".to_string(), "readText".to_string()),
+                ("flux__websocket_read_text", 2usize),
+            ),
+            (
+                ("websocket".to_string(), "readBytes".to_string()),
+                ("flux__websocket_read_bytes", 2usize),
+            ),
+        ]);
+
+        let roots = graph
+            .values()
+            .iter()
+            .filter(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if expected.contains_key(&(namespace.clone(), name.clone()))
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), expected.len());
+
+        for root in roots {
+            let crate::ir::ControlFlowValueKind::QualifiedCall {
+                namespace, name, ..
+            } = &root.kind
+            else {
+                unreachable!();
+            };
+            let (helper, computed_count) = expected
+                .get(&(namespace.clone(), name.clone()))
+                .unwrap_or_else(|| panic!("unexpected ordered platform call: {namespace}.{name}"));
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{namespace}.{name}: missing typed multi facts"));
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("{namespace}.{name}: should emit directly from typed IR: {multi:?}")
+                });
+
+            let positions = (0..*computed_count)
+                .map(|index| {
+                    direct
+                        .0
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{namespace}.{name}: missing typed argument {index}: {}",
+                                direct.0
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
+            let call = direct.0.rfind(helper).unwrap_or_else(|| {
+                panic!(
+                    "{namespace}.{name}: missing native helper {helper}: {}",
+                    direct.0
+                )
+            });
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{namespace}.{name}: {}",
+                direct.0
+            );
+        }
+    }
+
+    #[test]
     fn network_text_receive_and_readiness_multi_values_emit_from_typed_ir() {
         let source = r#"
 fn networkI64(value: i64) -> i64 {
@@ -75594,17 +75811,16 @@ fn emit_cfg_multi_expr_direct(
                 }
                 "time" => match name {
                     "zoneOffset" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
+                            |rendered| {
+                                format!("flux__time_zone_offset({}, {})", rendered[0], rendered[1])
+                            },
                         )?;
-                        Some((
-                            format!("flux__time_zone_offset({}, {})", rendered[0], rendered[1]),
-                            "flux__time_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__time_i64_error".to_string(), i64_error))
                     }
                     "after" | "every" if arguments.len() == 2 => {
                         let duration_ty = signatures.canonical_type(&arguments[0].ty);
@@ -75652,26 +75868,21 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "query" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..2],
                             &[Type::I64, Type::Str],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::I64, Type::Str, Type::Str, Type::Bool],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__sqlite_query({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__sqlite_query({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__sqlite_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__sqlite_i64_error".to_string(), i64_error))
                     }
                     _ => None,
                 },
@@ -75768,34 +75979,27 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "http" => match name {
                     "receiveRequestHead" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Str, Type::Str, Type::Str],
                             env,
                             signatures,
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_http_receive_request_head({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_http_receive_request_head({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveRequestHeadWithHeaders" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let request_callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Str, Type::Str, Type::Str],
@@ -75808,22 +76012,21 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_http_receive_request_head_with_headers({}, {}, {request_callback}, {header_callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_http_receive_request_head_with_headers({}, {}, {request_callback}, {header_callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveRequestWithTextBody" if arguments.len() == 6 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..3],
-                            &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let request_callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str, Type::Str, Type::Str],
@@ -75842,26 +76045,25 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        Some((
-                            profiled_timeline_call(
-                                "network",
-                                "http.receiveRequestWithTextBody",
-                                format!(
-                                    "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {request_callback}, {header_callback}, {body_callback})",
-                                    rendered[0], rendered[1], rendered[2]
-                                ),
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
-                    }
-                    "receiveResponseHeadWithHeaders" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "http.receiveRequestWithTextBody",
+                                    format!(
+                                        "flux__net_http_receive_request_with_text_body_v2({}, {}, {}, {request_callback}, {header_callback}, {body_callback})",
+                                        rendered[0], rendered[1], rendered[2]
+                                    ),
+                                )
+                            },
                         )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "receiveResponseHeadWithHeaders" if arguments.len() == 4 => {
                         let response_callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Str, Type::I64, Type::Str],
@@ -75874,22 +76076,21 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_http_receive_response_head_with_headers({}, {}, {response_callback}, {header_callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
-                    }
-                    "receiveResponseWithTextBody" if arguments.len() == 6 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..3],
-                            &[Type::I64, Type::I64, Type::I64],
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_http_receive_response_head_with_headers({}, {}, {response_callback}, {header_callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "receiveResponseWithTextBody" if arguments.len() == 6 => {
                         let response_callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str, Type::I64, Type::Str],
@@ -75908,102 +76109,95 @@ fn emit_cfg_multi_expr_direct(
                             env,
                             signatures,
                         )?;
-                        Some((
-                            profiled_timeline_call(
-                                "network",
-                                "http.receiveResponseWithTextBody",
-                                format!(
-                                    "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {response_callback}, {header_callback}, {body_callback})",
-                                    rendered[0], rendered[1], rendered[2]
-                                ),
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "http.receiveResponseWithTextBody",
+                                    format!(
+                                        "flux__net_http_receive_response_with_text_body_v2({}, {}, {}, {response_callback}, {header_callback}, {body_callback})",
+                                        rendered[0], rendered[1], rendered[2]
+                                    ),
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     _ => None,
                 },
                 "tls" => match name {
                     "wrap" | "listen" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            arguments,
-                            &[Type::I64, Type::Str, Type::Str],
-                            env,
-                            signatures,
-                        )?;
                         let helper = if name == "wrap" {
                             "flux__tls_wrap"
                         } else {
                             "flux__tls_listen"
                         };
-                        Some((
-                            format!(
-                                "{helper}({}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
-                    }
-                    "read" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            arguments,
+                            &[Type::I64, Type::Str, Type::Str],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "{helper}({}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        let callback = emit_cfg_callback_argument_direct(
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "read" if arguments.len() == 3 => {
+                        let call = emit_cfg_ordered_call_with_callback_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             &arguments[2],
                             &[Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__tls_read({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__tls_read({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "readTimeout" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__tls_read_timeout({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__tls_read_timeout({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "writeTimeout" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__tls_write_timeout({}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__tls_write_timeout({}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     _ => None,
                 },
@@ -76022,61 +76216,50 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "connect" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
+                            |rendered| {
+                                format!("flux__websocket_connect({}, {})", rendered[0], rendered[1])
+                            },
                         )?;
-                        Some((
-                            format!("flux__websocket_connect({}, {})", rendered[0], rendered[1]),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "readText" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..2],
                             &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__websocket_read_text({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__websocket_read_text({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "readBytes" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..2],
                             &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::List(Box::new(Type::I64))],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__websocket_read_bytes({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__websocket_read_bytes({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     _ => None,
                 },
