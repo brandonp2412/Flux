@@ -29508,11 +29508,6 @@ fn source_span_key(span: SourceSpan) -> (u32, usize, usize, usize) {
     (span.source_id.value(), span.line, span.column, span.length)
 }
 
-fn source_span_from_key(key: (u32, usize, usize, usize)) -> SourceSpan {
-    let (source_id, line, column, length) = key;
-    SourceSpan::new(line, column, length).with_source(SourceId::new(source_id))
-}
-
 fn emit_source_line(out: &mut String, span: SourceSpan, source_paths: &HashMap<SourceId, String>) {
     let path = source_paths
         .get(&span.source_id)
@@ -42146,6 +42141,251 @@ enum BufferedListItem {
     },
 }
 
+fn emit_cfg_list_builder_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    shape: &CfgAggregateShape,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let CfgAggregateShape::List(items) = shape else {
+        return None;
+    };
+    let (name, declared_ty) = target;
+    let result_ty = signatures.canonical_type(declared_ty);
+    let Type::List(element) = &result_ty else {
+        return None;
+    };
+    let element_c = c_type(element, signatures);
+    let capacity_name = format!("flux__list_build_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__list_build_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__list_build_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__list_build_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let mut buffered_items = Vec::with_capacity(items.len());
+
+    out.push_str(&format!("{pad}size_t {capacity_name} = 0;\n"));
+    for item in items {
+        match item {
+            CfgListItemShape::Value(value) => {
+                let value = emit_cfg_aggregate_shape_child_direct(
+                    *value,
+                    element,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let value_name = format!("flux__list_build_value_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{element_c} {value_name} = {value};\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n"
+                ));
+                buffered_items.push(BufferedListItem::Scalar(value_name));
+            }
+            CfgListItemShape::Spread {
+                value, optional, ..
+            } => {
+                let spread_ty = if *optional {
+                    Type::Optional(Box::new(Type::List(element.clone())))
+                } else {
+                    Type::List(element.clone())
+                };
+                let spread = emit_cfg_aggregate_shape_child_direct(
+                    *value,
+                    &spread_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                if *optional {
+                    let optional_ty = signatures.canonical_type(&spread_ty);
+                    let Type::Optional(inner) = &optional_ty else {
+                        return None;
+                    };
+                    if !matches!(signatures.canonical_type(inner), Type::List(_)) {
+                        return None;
+                    }
+                    let source_name = format!("flux__list_build_optional_source_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {source_name} = {spread};\n{pad}if ({source_name}.has_value) {{ if (SIZE_MAX - {capacity_name} < {source_name}.value.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} {capacity_name} += {source_name}.value.len; }}\n",
+                        c_type(&optional_ty, signatures)
+                    ));
+                    buffered_items.push(BufferedListItem::OptionalSpread(source_name));
+                } else {
+                    let source_name = format!("flux__list_build_source_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}struct flux__list {source_name} = {spread};\n"
+                    ));
+                    out.push_str(&format!(
+                        "{pad}if (SIZE_MAX - {capacity_name} < {source_name}.len) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}{capacity_name} += {source_name}.len;\n"
+                    ));
+                    buffered_items.push(BufferedListItem::Spread(source_name));
+                }
+            }
+            CfgListItemShape::Optional { value, .. } => {
+                let optional_ty = Type::Optional(element.clone());
+                let optional = emit_cfg_aggregate_shape_child_direct(
+                    *value,
+                    &optional_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let optional_ty = signatures.canonical_type(&optional_ty);
+                let Type::Optional(inner) = &optional_ty else {
+                    return None;
+                };
+                if matches!(inner.as_ref(), Type::Void) {
+                    return None;
+                }
+                let optional_name = format!("flux__list_build_optional_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {optional_name} = {optional};\n{pad}if ({optional_name}.has_value) {{ if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }} ++{capacity_name}; }}\n",
+                    c_type(&optional_ty, signatures)
+                ));
+                buffered_items.push(BufferedListItem::Optional(optional_name));
+            }
+            CfgListItemShape::Conditional {
+                condition,
+                binding,
+                value,
+                else_value,
+                ..
+            } => {
+                let condition_ty = if binding.is_some() {
+                    signatures.canonical_type(&cfg_rewrite_fact_type(*condition, rewrite_facts)?)
+                } else {
+                    Type::Bool
+                };
+                let condition_expr = emit_cfg_aggregate_shape_child_direct(
+                    *condition,
+                    &condition_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let condition_name = format!("flux__list_build_condition_{}", *temp_counter);
+                *temp_counter += 1;
+                let value_name = format!("flux__list_build_value_{}", *temp_counter);
+                *temp_counter += 1;
+                let mut guarded_env = env.clone();
+
+                if let Some(binding) = binding {
+                    let Type::Optional(inner) = &condition_ty else {
+                        return None;
+                    };
+                    let optional_name = format!("flux__list_guard_optional_{}", *temp_counter);
+                    *temp_counter += 1;
+                    out.push_str(&format!(
+                        "{pad}{} {optional_name} = {condition_expr};\n{pad}bool {condition_name} = {optional_name}.has_value;\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n",
+                        c_type(&condition_ty, signatures)
+                    ));
+                    if binding != "_" {
+                        out.push_str(&format!(
+                            "{pad}    {} {} = {optional_name}.value;\n",
+                            c_type(inner, signatures),
+                            local_c_name(binding)
+                        ));
+                        guarded_env.insert(binding.clone(), signatures.canonical_type(inner));
+                    }
+                } else {
+                    out.push_str(&format!(
+                        "{pad}bool {condition_name} = {condition_expr};\n{pad}{element_c} {value_name};\n{pad}if ({condition_name}) {{\n"
+                    ));
+                }
+
+                let then_value = emit_cfg_aggregate_shape_child_direct(
+                    *value,
+                    element,
+                    &guarded_env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                out.push_str(&format!("{pad}    {value_name} = {then_value};\n"));
+                if else_value.is_none() {
+                    out.push_str(&format!(
+                        "{pad}    if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}    ++{capacity_name};\n"
+                    ));
+                }
+                if let Some(else_value) = else_value {
+                    let else_value = emit_cfg_aggregate_shape_child_direct(
+                        *else_value,
+                        element,
+                        env,
+                        signatures,
+                        rewrite_facts,
+                    )?;
+                    out.push_str(&format!(
+                        "{pad}}} else {{\n{pad}    {value_name} = {else_value};\n{pad}}}\n{pad}if ({capacity_name} == SIZE_MAX) {{ fputs(\"Flux runtime error: constructed list is too large\\n\", stderr); abort(); }}\n{pad}++{capacity_name};\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{pad}}}\n"));
+                }
+                buffered_items.push(BufferedListItem::Conditional {
+                    condition: condition_name,
+                    value: value_name,
+                    has_else: else_value.is_some(),
+                });
+            }
+        }
+    }
+
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    for item in buffered_items {
+        match item {
+            BufferedListItem::Scalar(value_name) => {
+                out.push_str(&format!(
+                    "{pad}{buffer_name}[{count_name}++] = {value_name};\n"
+                ));
+            }
+            BufferedListItem::Spread(source_name) => {
+                out.push_str(&format!(
+                    "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
+                ));
+            }
+            BufferedListItem::OptionalSpread(source_name) => {
+                out.push_str(&format!(
+                    "{pad}if ({source_name}.has_value) {{ for (size_t {index_name} = 0; {index_name} < {source_name}.value.len; ++{index_name}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({source_name}.value, {index_name}, sizeof({element_c}))); }} }}\n"
+                ));
+            }
+            BufferedListItem::Optional(optional_name) => {
+                out.push_str(&format!(
+                    "{pad}if ({optional_name}.has_value) {buffer_name}[{count_name}++] = {optional_name}.value;\n"
+                ));
+            }
+            BufferedListItem::Conditional {
+                condition,
+                value,
+                has_else,
+            } => {
+                if has_else {
+                    out.push_str(&format!("{pad}{buffer_name}[{count_name}++] = {value};\n"));
+                } else {
+                    out.push_str(&format!(
+                        "{pad}if ({condition}) {buffer_name}[{count_name}++] = {value};\n"
+                    ));
+                }
+            }
+        }
+    }
+    out.push_str(&format!(
+        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n",
+        local_c_name(name)
+    ));
+    Some(())
+}
+
 fn emit_list_builder_binding(
     out: &mut String,
     pad: &str,
@@ -42158,11 +42398,28 @@ fn emit_list_builder_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = rewrite_facts
-        .aggregates
-        .get(&source_span_key(expr.span))
-        .and_then(|shape| cfg_list_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts))
-        .unwrap_or_else(|| substitute_direct_ir_constant_arguments(expr, rewrite_facts));
+    if let Some(shape) = rewrite_facts.aggregates.get(&source_span_key(expr.span)) {
+        let mut direct = String::new();
+        let mut direct_temp_counter = *temp_counter;
+        if emit_cfg_list_builder_binding(
+            &mut direct,
+            pad,
+            target,
+            shape,
+            env,
+            signatures,
+            rewrite_facts,
+            &mut direct_temp_counter,
+        )
+        .is_some()
+        {
+            out.push_str(&direct);
+            *temp_counter = direct_temp_counter;
+            env.insert(name.to_string(), signatures.canonical_type(declared_ty));
+            return Ok(());
+        }
+    }
+    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     let ExprKind::List(items) = &rewritten.kind else {
         unreachable!()
     };
@@ -42451,42 +42708,6 @@ fn emit_list_builder_binding(
     ));
     env.insert(name.to_string(), result_ty);
     Ok(())
-}
-
-fn cfg_rewrite_expr_as_ast(
-    span_key: (u32, usize, usize, usize),
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> Option<Expr> {
-    let span = source_span_from_key(span_key);
-    if let Some(constant) = rewrite_facts.constants.get(&span_key) {
-        let kind = match constant {
-            ConstantValue::I64(value) => ExprKind::Int(*value),
-            ConstantValue::Bool(value) => ExprKind::Bool(*value),
-            ConstantValue::Str(value) => ExprKind::Str(value.clone()),
-        };
-        return Some(Expr {
-            line: span.line,
-            span,
-            kind,
-        });
-    }
-    if let Some(aggregate) = rewrite_facts.aggregate_constants.get(&span_key) {
-        let mut expr =
-            cfg_aggregate_constant_as_ast(aggregate, &mut CfgSyntheticAstSpans::default());
-        expr.line = span.line;
-        expr.span = span;
-        return Some(expr);
-    }
-    let scalar = rewrite_facts.scalar_exprs.get(&span_key)?;
-    if !cfg_scalar_expr_calls_are_reconstructable(scalar, env, signatures) {
-        return None;
-    }
-    let mut expr = cfg_scalar_expr_as_ast_for_source(scalar, span.source_id);
-    expr.line = span.line;
-    expr.span = span;
-    Some(expr)
 }
 
 fn cfg_aggregate_shape_child_is_direct_safe(
@@ -42786,120 +43007,6 @@ fn emit_cfg_aggregate_shape_direct(
         }
         CfgAggregateShape::ListComprehension { .. } => None,
     }
-}
-
-fn cfg_list_shape_as_ast(
-    root_span: SourceSpan,
-    shape: &CfgAggregateShape,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> Option<Expr> {
-    let CfgAggregateShape::List(items) = shape else {
-        return None;
-    };
-    let mut rewritten = Vec::with_capacity(items.len());
-    for item in items {
-        let expr = match item {
-            CfgListItemShape::Value(value) => {
-                cfg_rewrite_expr_as_ast(*value, env, signatures, rewrite_facts)?
-            }
-            CfgListItemShape::Spread {
-                span,
-                value,
-                optional,
-            } => {
-                let span = source_span_from_key(*span);
-                Expr {
-                    line: span.line,
-                    span,
-                    kind: ExprKind::ListSpread {
-                        value: Box::new(cfg_rewrite_expr_as_ast(
-                            *value,
-                            env,
-                            signatures,
-                            rewrite_facts,
-                        )?),
-                        spread_span: span,
-                        optional: *optional,
-                    },
-                }
-            }
-            CfgListItemShape::Optional { span, value } => {
-                let span = source_span_from_key(*span);
-                Expr {
-                    line: span.line,
-                    span,
-                    kind: ExprKind::ListOptional {
-                        value: Box::new(cfg_rewrite_expr_as_ast(
-                            *value,
-                            env,
-                            signatures,
-                            rewrite_facts,
-                        )?),
-                        question_span: span,
-                    },
-                }
-            }
-            CfgListItemShape::Conditional {
-                span,
-                condition,
-                binding,
-                value,
-                else_value,
-            } => {
-                let span = source_span_from_key(*span);
-                let condition =
-                    cfg_rewrite_expr_as_ast(*condition, env, signatures, rewrite_facts)?;
-                let mut guarded_env = env.clone();
-                let binding = if let Some(name) = binding {
-                    let condition_ty = type_of_expr(&condition, env, signatures).ok()?;
-                    let Type::Optional(inner) = signatures.canonical_type(&condition_ty) else {
-                        return None;
-                    };
-                    if name != "_" {
-                        guarded_env.insert(name.clone(), *inner);
-                    }
-                    Some(crate::ast::PatternBinding {
-                        name: name.clone(),
-                        span,
-                    })
-                } else {
-                    None
-                };
-                let value =
-                    cfg_rewrite_expr_as_ast(*value, &guarded_env, signatures, rewrite_facts)?;
-                let else_value = match else_value {
-                    Some(value) => Some(Box::new(cfg_rewrite_expr_as_ast(
-                        *value,
-                        env,
-                        signatures,
-                        rewrite_facts,
-                    )?)),
-                    None => None,
-                };
-                let else_span = else_value.as_ref().map(|_| span);
-                Expr {
-                    line: span.line,
-                    span,
-                    kind: ExprKind::ListIf {
-                        condition: Box::new(condition),
-                        binding,
-                        value: Box::new(value),
-                        else_value,
-                        if_span: span,
-                        else_span,
-                    },
-                }
-            }
-        };
-        rewritten.push(expr);
-    }
-    Some(Expr {
-        line: root_span.line,
-        span: root_span,
-        kind: ExprKind::List(rewritten),
-    })
 }
 
 fn cfg_rewrite_fact_type(
