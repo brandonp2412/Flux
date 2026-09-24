@@ -37328,13 +37328,23 @@ fn emit_direct_sequence_projection(
         _ => return Ok(None),
     };
 
-    let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
-    sequence.line = expr.line;
-    sequence.span = expr.span;
-    let sequence_kind = sequence_lowering_kind(&sequence, env, signatures, rewrite_facts);
-    if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
-        return Ok(None);
-    }
+    let direct_sorted = matches!(
+        &base.kind,
+        CfgScalarExprKind::Call { callee, .. }
+            if crate::builtin_names::global_impl(callee) == "sorted"
+    );
+    let sequence = if direct_sorted {
+        None
+    } else {
+        let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
+        sequence.line = expr.line;
+        sequence.span = expr.span;
+        let sequence_kind = sequence_lowering_kind(&sequence, env, signatures, rewrite_facts);
+        if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
+            return Ok(None);
+        }
+        Some(sequence)
+    };
 
     let result_ty = signatures.canonical_type(&scalar.ty);
     if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
@@ -37344,7 +37354,21 @@ fn emit_direct_sequence_projection(
     if !matches!(sequence_ty, Type::List(_)) {
         return Ok(None);
     }
-    let emitted = emit_sequence_list_value(out, pad, &sequence, env, signatures, temp_counter)?;
+    let emitted = if direct_sorted {
+        emit_cfg_sequence_sorted_value(out, pad, base, env, signatures, temp_counter)
+            .ok_or_else(|| diag(expr.span, "typed sorted sequence could not be materialized"))?
+    } else {
+        emit_sequence_list_value(
+            out,
+            pad,
+            sequence
+                .as_ref()
+                .expect("non-direct sequence reconstructed"),
+            env,
+            signatures,
+            temp_counter,
+        )?
+    };
     if signatures.canonical_type(&emitted.ty) != sequence_ty {
         return Err(diag(
             expr.span,
@@ -41156,9 +41180,25 @@ fn emit_sequence_sorted_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)?;
+    let direct = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            matches!(
+                &sequence.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "sorted"
+            ) && cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+        })
+        .and_then(|sequence| {
+            emit_cfg_sequence_sorted_value(out, pad, sequence, env, signatures, temp_counter)
+        });
+    let value = if let Some(value) = direct {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_sorted_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -41176,26 +41216,19 @@ fn emit_sequence_sorted_binding(
     Ok(())
 }
 
-fn emit_sequence_sorted_value(
+fn emit_sorted_list_value(
     out: &mut String,
     pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    source: EmittedExpr,
+    result_ty: Type,
     signatures: &Signatures,
     temp_counter: &mut usize,
-) -> Result<EmittedExpr, Diagnostic> {
-    let source_expr = sequence_sorted(expr)
-        .ok_or_else(|| diag(expr.span, "invalid sorted call reached code generation"))?;
-    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+) -> Option<EmittedExpr> {
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "sorted result must have a list type"));
+        return None;
     };
     if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "sorted input type mismatch reached code generation",
-        ));
+        return None;
     }
     let element_ty = signatures.canonical_type(element);
     let source_name = format!("flux__sorted_source_{}", *temp_counter);
@@ -41215,8 +41248,7 @@ fn emit_sequence_sorted_value(
         &key_name,
         &format!("{buffer_name}[{cursor_name} - 1]"),
         &element_ty,
-    )
-    .ok_or_else(|| diag(expr.span, "sorted requires ordered scalar elements"))?;
+    )?;
     out.push_str(&format!(
         "{pad}struct flux__list {source_name} = {};\n",
         source.code
@@ -41233,10 +41265,63 @@ fn emit_sequence_sorted_value(
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {source_name}.len, .stride = sizeof({element_c}) }};\n"
     ));
-    Ok(EmittedExpr {
+    Some(EmittedExpr {
         code: result_name,
         ty: result_ty,
     })
+}
+
+fn emit_cfg_sequence_sorted_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != "sorted" || arguments.len() != 1 {
+        return None;
+    }
+    let source_expr = &arguments[0];
+    let source = if matches!(
+        &source_expr.kind,
+        CfgScalarExprKind::Call { callee, .. }
+            if crate::builtin_names::global_impl(callee) == "sorted"
+    ) {
+        emit_cfg_sequence_sorted_value(out, pad, source_expr, env, signatures, temp_counter)?
+    } else {
+        EmittedExpr {
+            code: emit_cfg_scalar_expr_direct(source_expr, env, signatures)?,
+            ty: signatures.canonical_type(&source_expr.ty),
+        }
+    };
+    emit_sorted_list_value(
+        out,
+        pad,
+        source,
+        signatures.canonical_type(&expr.ty),
+        signatures,
+        temp_counter,
+    )
+}
+
+fn emit_sequence_sorted_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_sorted(expr)
+        .ok_or_else(|| diag(expr.span, "invalid sorted call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_sorted_list_value(out, pad, source, result_ty, signatures, temp_counter)
+        .ok_or_else(|| diag(expr.span, "invalid sorted types reached code generation"))
 }
 
 fn emit_sequence_flatten_binding(
