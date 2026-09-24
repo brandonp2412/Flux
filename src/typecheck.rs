@@ -5674,10 +5674,19 @@ fn type_of_optional_pipe(
             named_args: Vec::new(),
         },
     };
-    let output = signatures.canonical_type(&type_of_expr(&call, &nested_env, signatures)?);
+    let output = type_of_expr(&call, &nested_env, signatures)?;
+    optional_cascade_result_type(expr.span, &output, signatures)
+}
+
+pub(crate) fn optional_cascade_result_type(
+    expr_span: SourceSpan,
+    output: &Type,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    let output = signatures.canonical_type(output);
     if output == Type::Void {
         return Err(diag(
-            expr.span,
+            expr_span,
             "optional cascade stages must return a value",
         ));
     }
@@ -5686,7 +5695,7 @@ fn type_of_optional_pipe(
     } else {
         Type::Optional(Box::new(output))
     };
-    require_known_type(expr.span, &result, signatures)?;
+    require_known_type(expr_span, &result, signatures)?;
     Ok(result)
 }
 
@@ -6129,6 +6138,44 @@ fn json_enum_type_is_supported_inner(
     });
     visiting.remove(&name);
     supported
+}
+
+pub(crate) fn validate_record_literal_field_order(
+    fields: &[crate::ast::RecordLiteralField],
+) -> Result<(), Diagnostic> {
+    let mut saw_named = false;
+    for field in fields {
+        saw_named |= field.name.is_some();
+        if saw_named && field.name.is_none() {
+            return Err(diag(
+                field.value.span,
+                "positional record fields cannot follow named fields",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn record_literal_result_type(
+    fields: &[crate::ast::RecordLiteralField],
+    field_types: &[Type],
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    debug_assert_eq!(fields.len(), field_types.len());
+    let mut record_fields = Vec::with_capacity(fields.len());
+    for (field, ty) in fields.iter().zip(field_types) {
+        if !signatures.is_bootstrap_record_field_type(ty) {
+            return Err(diag(
+                field.value.span,
+                "record fields currently require primitive or nested-record Copy values until aggregate layout and owned move semantics are complete",
+            ));
+        }
+        record_fields.push(RecordTypeField {
+            name: field.name.clone(),
+            ty: ty.clone(),
+        });
+    }
+    Ok(Type::Record(record_fields))
 }
 
 pub(crate) fn binary_result_type(
@@ -7570,29 +7617,12 @@ pub fn type_of_expr(
             }
         }
         ExprKind::RecordLiteral { fields } => {
-            let mut record_fields = Vec::with_capacity(fields.len());
-            let mut saw_named = false;
-            for field in fields {
-                saw_named |= field.name.is_some();
-                if saw_named && field.name.is_none() {
-                    return Err(diag(
-                        field.value.span,
-                        "positional record fields cannot follow named fields",
-                    ));
-                }
-                let ty = type_of_expr(&field.value, env, signatures)?;
-                if !signatures.is_bootstrap_record_field_type(&ty) {
-                    return Err(diag(
-                        field.value.span,
-                        "record fields currently require primitive or nested-record Copy values until aggregate layout and owned move semantics are complete",
-                    ));
-                }
-                record_fields.push(RecordTypeField {
-                    name: field.name.clone(),
-                    ty,
-                });
-            }
-            Ok(Type::Record(record_fields))
+            validate_record_literal_field_order(fields)?;
+            let field_types = fields
+                .iter()
+                .map(|field| type_of_expr(&field.value, env, signatures))
+                .collect::<Result<Vec<_>, _>>()?;
+            record_literal_result_type(fields, &field_types, signatures)
         }
         ExprKind::StructLiteral {
             name,

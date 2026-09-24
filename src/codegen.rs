@@ -44967,8 +44967,6 @@ fn emit_expr(
                     ));
                 }
 
-                let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-                let result_c = c_type(&result_ty, signatures);
                 let input_c = c_type(&Type::Optional(inner.clone()), signatures);
                 let inner_c = c_type(&inner, signatures);
                 let synthetic_name = format!(
@@ -44995,7 +44993,24 @@ fn emit_expr(
                         named_args: Vec::new(),
                     },
                 };
-                let call_code = emit_expr_for_expected(&call, &result_ty, &nested_env, signatures)?;
+                let emitted_call = emit_expr(&call, &nested_env, signatures)?;
+                let result_ty = typecheck::optional_cascade_result_type(
+                    expr.span,
+                    &emitted_call.ty,
+                    signatures,
+                )?;
+                let result_c = c_type(&result_ty, signatures);
+                let call_code = if matches!(
+                    signatures.canonical_type(&emitted_call.ty),
+                    Type::Optional(_)
+                ) {
+                    emitted_call.code
+                } else {
+                    format!(
+                        "({result_c}){{ .has_value = true, .value = {} }}",
+                        emitted_call.code
+                    )
+                };
                 let input_name = format!(
                     "flux__optional_cascade_input_{}_{}",
                     expr.span.line, expr.span.column
@@ -45086,16 +45101,26 @@ fn emit_expr(
             }
         }
         ExprKind::RecordLiteral { fields } => {
-            let ty = type_of_expr(expr, env, signatures)?;
+            typecheck::validate_record_literal_field_order(fields)?;
+            let mut emitted_fields = Vec::with_capacity(fields.len());
+            let mut field_types = Vec::with_capacity(fields.len());
+            for field in fields {
+                let emitted = emit_expr(&field.value, env, signatures)?;
+                field_types.push(emitted.ty.clone());
+                emitted_fields.push(emitted);
+            }
+            let ty = typecheck::record_literal_result_type(fields, &field_types, signatures)?;
             let Type::Record(record_fields) = &ty else {
                 unreachable!("record literal must type as a record");
             };
             let mut rendered = Vec::with_capacity(fields.len());
-            for (index, (field, signature)) in fields.iter().zip(record_fields).enumerate() {
-                let value = emit_expr_for_expected(&field.value, &signature.ty, env, signatures)?;
+            for (index, (emitted, signature)) in
+                emitted_fields.iter().zip(record_fields).enumerate()
+            {
                 rendered.push(format!(
-                    ".{} = {value}",
-                    record_field_c_name(signature.name.as_deref(), index)
+                    ".{} = {}",
+                    record_field_c_name(signature.name.as_deref(), index),
+                    emitted.code
                 ));
             }
             EmittedExpr {
