@@ -37572,6 +37572,261 @@ fn emit_cfg_sequence_flatten_value(
     })
 }
 
+fn cfg_sequence_transform_parts(
+    expr: &CfgScalarExpr,
+) -> Option<(&CfgScalarExpr, &CfgScalarExpr, bool)> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if arguments.len() != 2 {
+        return None;
+    }
+    match crate::builtin_names::global_impl(callee) {
+        "map" => Some((&arguments[0], &arguments[1], false)),
+        "filter" | "where" => Some((&arguments[0], &arguments[1], true)),
+        _ => None,
+    }
+}
+
+fn collect_cfg_sequence_transform_chain<'a>(
+    expr: &'a CfgScalarExpr,
+    stages: &mut Vec<&'a CfgScalarExpr>,
+) -> &'a CfgScalarExpr {
+    let Some((list, _, _)) = cfg_sequence_transform_parts(expr) else {
+        return expr;
+    };
+    let source = collect_cfg_sequence_transform_chain(list, stages);
+    stages.push(expr);
+    source
+}
+
+fn emit_cfg_sequence_transform_stages(
+    out: &mut String,
+    pad: &str,
+    stages: &[&CfgScalarExpr],
+    mut value_name: String,
+    mut value_ty: Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<(String, Type)> {
+    for stage in stages {
+        let (_, callback, filter) = cfg_sequence_transform_parts(stage)?;
+        let Type::Function { params, returns } = signatures.canonical_type(&callback.ty) else {
+            return None;
+        };
+        if params.len() != 1
+            || returns.len() != 1
+            || signatures.canonical_type(&params[0]) != signatures.canonical_type(&value_ty)
+        {
+            return None;
+        }
+        let callback_result_ty = signatures.canonical_type(&returns[0]);
+        let stage_ty = signatures.canonical_type(&stage.ty);
+        let Type::List(output_element) = stage_ty else {
+            return None;
+        };
+        let output_ty = signatures.canonical_type(&output_element);
+        if filter {
+            if callback_result_ty != Type::Bool || output_ty != signatures.canonical_type(&value_ty)
+            {
+                return None;
+            }
+        } else if callback_result_ty != output_ty {
+            return None;
+        }
+
+        if let CfgScalarExprKind::AnonymousFunction {
+            params,
+            body,
+            return_type,
+            ..
+        } = &callback.kind
+        {
+            if params.len() != 1
+                || signatures.canonical_type(&params[0].1) != signatures.canonical_type(&value_ty)
+                || signatures.canonical_type(&body.ty) != callback_result_ty
+                || return_type
+                    .as_ref()
+                    .is_some_and(|ty| signatures.canonical_type(ty) != callback_result_ty)
+            {
+                return None;
+            }
+            let (param_name, param_ty) = &params[0];
+            let mut callback_env = env.clone();
+            callback_env.insert(param_name.clone(), signatures.canonical_type(param_ty));
+            let rendered = emit_cfg_scalar_expr_direct(body, &callback_env, signatures)?;
+            if filter {
+                out.push_str(&format!("{pad}{{\n"));
+                out.push_str(&format!(
+                    "{pad}    {} {} = {value_name};\n",
+                    c_type(param_ty, signatures),
+                    local_c_name(param_name)
+                ));
+                out.push_str(&format!("{pad}    if (!({rendered})) continue;\n"));
+                out.push_str(&format!("{pad}}}\n"));
+                continue;
+            }
+
+            let next_name = format!("flux__transform_value_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!(
+                "{pad}{} {next_name};\n{pad}{{\n",
+                c_type(&output_ty, signatures)
+            ));
+            out.push_str(&format!(
+                "{pad}    {} {} = {value_name};\n",
+                c_type(param_ty, signatures),
+                local_c_name(param_name)
+            ));
+            out.push_str(&format!("{pad}    {next_name} = {rendered};\n"));
+            out.push_str(&format!("{pad}}}\n"));
+            value_name = next_name;
+            value_ty = output_ty;
+            continue;
+        }
+
+        let callback_code = emit_cfg_scalar_expr_direct(callback, env, signatures)?;
+        if filter {
+            out.push_str(&format!(
+                "{pad}if (!{callback_code}({value_name})) continue;\n"
+            ));
+            continue;
+        }
+        let next_name = format!("flux__transform_value_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}{} {next_name} = {callback_code}({value_name});\n",
+            c_type(&output_ty, signatures)
+        ));
+        value_name = next_name;
+        value_ty = output_ty;
+    }
+    Some((value_name, value_ty))
+}
+
+fn emit_cfg_sequence_transform_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let mut stages = Vec::new();
+    let source_expr = collect_cfg_sequence_transform_chain(expr, &mut stages);
+    if stages.is_empty() {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
+        return None;
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let Type::List(output_element) = &result_ty else {
+        return None;
+    };
+
+    let source_name = format!("flux__transform_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__transform_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__transform_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__transform_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__transform_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__transform_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let input_ty = signatures.canonical_type(&input_element);
+    let input_c = c_type(&input_ty, signatures);
+    let output_c = c_type(output_element, signatures);
+
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{output_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+    ));
+    out.push_str(&format!("{pad}size_t {count_name} = 0;\n"));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));\n"
+    ));
+    let body_pad = format!("{pad}    ");
+    let (value_name, value_ty) = emit_cfg_sequence_transform_stages(
+        out,
+        &body_pad,
+        &stages,
+        item_name,
+        input_ty,
+        env,
+        signatures,
+        temp_counter,
+    )?;
+    if signatures.canonical_type(&value_ty) != signatures.canonical_type(output_element) {
+        return None;
+    }
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {value_name};\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({output_c}) }};\n"
+    ));
+    Some(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_transform_binding_direct(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let sequence = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))?;
+    cfg_sequence_transform_parts(sequence)?;
+
+    let mut direct = String::new();
+    let mut direct_temp_counter = *temp_counter;
+    let value = emit_cfg_sequence_transform_value(
+        &mut direct,
+        pad,
+        sequence,
+        env,
+        signatures,
+        &mut direct_temp_counter,
+    )?;
+    let (name, declared_ty) = target;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if signatures.canonical_type(&value.ty) != result_ty {
+        return None;
+    }
+    direct.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    out.push_str(&direct);
+    *temp_counter = direct_temp_counter;
+    env.insert(name.to_string(), result_ty);
+    Some(())
+}
+
 fn emit_cfg_sequence_list_value(
     out: &mut String,
     pad: &str,
@@ -37580,6 +37835,10 @@ fn emit_cfg_sequence_list_value(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Option<EmittedExpr> {
+    if cfg_sequence_transform_parts(expr).is_some() {
+        return emit_cfg_sequence_transform_value(out, pad, expr, env, signatures, temp_counter);
+    }
+
     if let CfgScalarExprKind::Call { callee, arguments } = &expr.kind {
         match crate::builtin_names::global_impl(callee) {
             "chunked" => {
@@ -37769,7 +38028,14 @@ fn emit_cfg_sequence_projection_direct(
         CfgScalarExprKind::Call { callee, .. }
             if matches!(
                 crate::builtin_names::global_impl(callee),
-                "sorted" | "chunked" | "concat" | "distinct" | "flatten"
+                "sorted"
+                    | "chunked"
+                    | "concat"
+                    | "distinct"
+                    | "flatten"
+                    | "map"
+                    | "filter"
+                    | "where"
             )
     ) {
         return None;
@@ -42200,6 +42466,21 @@ fn emit_sequence_transform_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_transform_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
+
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -55837,19 +56118,35 @@ fn main() -> i64 {
             })
             .expect("typed IR should canonicalize the pipeline to a filter call");
         let facts = cfg_rewrite_facts(graph);
-        assert!(
-            facts
-                .sequence_exprs
-                .contains_key(&source_span_key(root.span))
-        );
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("sequence transform should remain available as normalized typed IR");
+        let list_ty = Type::List(Box::new(Type::I64));
+        let base_env = HashMap::from([("values".to_string(), list_ty.clone())]);
+
+        let mut direct_out = String::new();
+        let mut direct_temp_counter = 0;
+        let direct = emit_cfg_sequence_transform_value(
+            &mut direct_out,
+            "",
+            sequence,
+            &base_env,
+            database.signatures(),
+            &mut direct_temp_counter,
+        )
+        .expect("sequence transform should lower directly from typed IR");
+        assert_eq!(direct.ty, list_ty);
+        assert!(direct_out.contains("flux__transform_buffer_"));
+        assert!(direct_out.contains(&function_c_name("double")));
+        assert!(direct_out.contains(&function_c_name("positive")));
 
         let fake = Expr {
             line: root.span.line,
             span: root.span,
             kind: ExprKind::Int(0),
         };
-        let list_ty = Type::List(Box::new(Type::I64));
-        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut env = base_env;
         assert_eq!(
             sequence_lowering_kind(&fake, &env, database.signatures(), &facts),
             Some(SequenceLoweringKind::Transform)
@@ -55871,6 +56168,66 @@ fn main() -> i64 {
         assert!(out.contains("flux__transform_buffer_"));
         assert!(out.contains(&function_c_name("double")));
         assert!(out.contains(&function_c_name("positive")));
+    }
+
+    #[test]
+    fn inline_sequence_callbacks_lower_directly_from_typed_ir() {
+        let source = r#"
+fn exercise(values: i64[], offset: i64) -> i64 {
+    let transformed: i64[] = filter(map(values, fn(value: i64) { value + offset }), fn(value: i64) { value > offset })
+    return transformed.length
+}
+
+fn main() -> i64 {
+    return exercise([1, 2, 3], 1)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("inline sequence callback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if matches!(
+                            crate::builtin_names::global_impl(callee),
+                            "filter" | "where"
+                        )
+                )
+            })
+            .expect("typed IR should retain the terminal filter/where call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("inline transform should remain available as normalized typed IR");
+        let list_ty = Type::List(Box::new(Type::I64));
+        let env = HashMap::from([
+            ("values".to_string(), list_ty.clone()),
+            ("offset".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let emitted = emit_cfg_sequence_transform_value(
+            &mut out,
+            "",
+            sequence,
+            &env,
+            database.signatures(),
+            &mut temp_counter,
+        )
+        .expect("inline callbacks should lower directly from typed IR");
+
+        assert_eq!(emitted.ty, list_ty);
+        assert!(out.contains("flux__transform_buffer_"));
+        assert!(out.contains(&local_c_name("offset")));
+        assert!(out.contains(&local_c_name("value")));
+        assert!(!out.contains("checked-ast-sequence-transform"));
     }
 
     #[test]
