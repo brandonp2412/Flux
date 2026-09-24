@@ -41332,6 +41332,41 @@ fn emit_sequence_sorted_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
+    if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        && matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "sorted"
+                    && arguments.len() == 1
+        )
+    {
+        let mut direct = String::new();
+        let mut direct_temp_counter = *temp_counter;
+        if let Some(value) = emit_cfg_sequence_list_value(
+            &mut direct,
+            pad,
+            sequence,
+            env,
+            signatures,
+            &mut direct_temp_counter,
+        ) {
+            let result_ty = signatures.canonical_type(declared_ty);
+            if value.ty == result_ty {
+                direct.push_str(&format!(
+                    "{pad}{} {} = {};\n",
+                    c_type(declared_ty, signatures),
+                    local_c_name(name),
+                    value.code
+                ));
+                out.push_str(&direct);
+                *temp_counter = direct_temp_counter;
+                env.insert(name.to_string(), result_ty);
+                return Ok(());
+            }
+        }
+    }
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
     let value = emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)?;
@@ -60984,6 +61019,71 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!out.contains("checked-ast-sequence-projection"));
         assert!(!emitted.contains("checked-ast-sequence-projection"));
+    }
+
+    #[test]
+    fn sorted_bindings_lower_from_typed_ir_without_ast_root() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let ordered: i64[] = sorted(values)
+    return ordered[0]
+}
+
+fn main() -> i64 {
+    let values: i64[] = [3, 1, 2]
+    return exercise(values)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sorted binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "sorted"
+                )
+            })
+            .expect("typed IR should retain the sorted root");
+        let facts = cfg_rewrite_facts(graph);
+        assert!(matches!(
+            facts.sequence_exprs.get(&source_span_key(root.span)),
+            Some(CfgScalarExpr {
+                kind: CfgScalarExprKind::Call { callee, .. },
+                ..
+            }) if crate::builtin_names::global_impl(callee) == "sorted"
+        ));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Int(999),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_sorted_binding(
+            &mut out,
+            "",
+            ("ordered", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sorted binding should emit from typed IR");
+
+        assert!(out.contains("flux__sorted_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("ordered")), "{out}");
+        assert!(!out.contains("999"), "{out}");
     }
 
     #[test]
