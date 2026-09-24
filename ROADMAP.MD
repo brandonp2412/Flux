@@ -1778,3 +1778,5 @@ Verified Milestone 29 uncontrolled-selection lifecycle follow-up: literal Toggle
 - [ ] Automatic save-triggered hot reload is production-ready for development workflows.
 - [x] Package ecosystem and platform interoperability are documented and tested in [`docs/package-interoperability.md`](docs/package-interoperability.md), with regression coverage for dependency resolution/lockfiles/cache isolation, native package metadata and C headers, target-selected modules, and direct platform lowering.
 - [x] Flux can build substantial real applications without resorting to an OOP architecture.
+
+    - [x] Verified dead-store field-type follow-up: dead-store elimination now retains type-only normalized CFG facts for field bases, including values whose results are dead, and uses those facts to classify discardable field reads instead of re-running checked-AST type inference. A poisoned checked-AST base regression proves dead field reads keep their normalized struct base type without widening reachability-gated direct-emission facts.

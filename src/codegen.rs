@@ -34580,6 +34580,7 @@ struct CfgListMatchExpr {
 #[derive(Debug, Clone, Default)]
 struct CfgRewriteFacts {
     root_types: HashMap<(u32, usize, usize, usize), Type>,
+    field_base_types: HashMap<(u32, usize, usize, usize), Type>,
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
@@ -35628,6 +35629,29 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         ambiguous_root_types.remove(&span);
     }
 
+    let mut field_base_types = HashMap::new();
+    let mut ambiguous_field_base_types = HashSet::new();
+    for value in cfg.values() {
+        let crate::ir::ControlFlowValueKind::Field { base, .. } = &value.kind else {
+            continue;
+        };
+        let Some(base) = cfg.value(*base) else {
+            continue;
+        };
+        let span = source_span_key(value.span);
+        if ambiguous_field_base_types.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = field_base_types.get(&span) {
+            if existing != &base.ty {
+                field_base_types.remove(&span);
+                ambiguous_field_base_types.insert(span);
+            }
+        } else {
+            field_base_types.insert(span, base.ty.clone());
+        }
+    }
+
     let mut constants = HashMap::new();
     let mut ambiguous_constants = HashSet::new();
     // Consume constants from the typed value graph, not only from name reads.
@@ -35939,6 +35963,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
 
     CfgRewriteFacts {
         root_types,
+        field_base_types,
         constants,
         aggregates,
         aggregate_constants,
@@ -37317,6 +37342,7 @@ fn dead_store_rhs_is_discardable(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
 ) -> bool {
     if typecheck::constant_primitive_value(expr, signatures).is_some()
         || matches!(expr.kind, ExprKind::Nil | ExprKind::Var(_))
@@ -37328,20 +37354,21 @@ fn dead_store_rhs_is_discardable(
         ExprKind::AnonymousFunction { .. } => true,
         ExprKind::List(items) => items
             .iter()
-            .all(|item| dead_store_rhs_is_discardable(item, env, signatures)),
+            .all(|item| dead_store_rhs_is_discardable(item, env, signatures, rewrite_facts)),
         ExprKind::StructLiteral { base, fields, .. } => {
-            base.as_deref()
-                .is_none_or(|base| dead_store_rhs_is_discardable(base, env, signatures))
-                && fields
-                    .iter()
-                    .all(|field| dead_store_rhs_is_discardable(&field.value, env, signatures))
+            base.as_deref().is_none_or(|base| {
+                dead_store_rhs_is_discardable(base, env, signatures, rewrite_facts)
+            }) && fields.iter().all(|field| {
+                dead_store_rhs_is_discardable(&field.value, env, signatures, rewrite_facts)
+            })
         }
         ExprKind::Field { base, name, .. }
-            if dead_store_rhs_is_discardable(base, env, signatures) =>
+            if dead_store_rhs_is_discardable(base, env, signatures, rewrite_facts) =>
         {
-            match type_of_expr(base, env, signatures)
-                .ok()
-                .map(|ty| signatures.canonical_type(&ty))
+            match rewrite_facts
+                .field_base_types
+                .get(&source_span_key(expr.span))
+                .map(|ty| signatures.canonical_type(ty))
             {
                 Some(Type::Named(_)) => true,
                 Some(Type::List(_)) => {
@@ -37362,8 +37389,8 @@ fn dead_store_rhs_is_discardable(
             optional,
         } => {
             !*optional
-                && dead_store_rhs_is_discardable(base, env, signatures)
-                && dead_store_rhs_is_discardable(index, env, signatures)
+                && dead_store_rhs_is_discardable(base, env, signatures, rewrite_facts)
+                && dead_store_rhs_is_discardable(index, env, signatures, rewrite_facts)
                 && resolved_static_list_index(base, index, env, signatures)
                     .ok()
                     .flatten()
@@ -37374,19 +37401,19 @@ fn dead_store_rhs_is_discardable(
             cond,
             else_expr,
         } => {
-            dead_store_rhs_is_discardable(cond, env, signatures)
-                && dead_store_rhs_is_discardable(then_expr, env, signatures)
-                && dead_store_rhs_is_discardable(else_expr, env, signatures)
+            dead_store_rhs_is_discardable(cond, env, signatures, rewrite_facts)
+                && dead_store_rhs_is_discardable(then_expr, env, signatures, rewrite_facts)
+                && dead_store_rhs_is_discardable(else_expr, env, signatures, rewrite_facts)
         }
         ExprKind::Unary {
             op: UnaryOp::Not,
             expr,
-        } => dead_store_rhs_is_discardable(expr, env, signatures),
+        } => dead_store_rhs_is_discardable(expr, env, signatures, rewrite_facts),
         ExprKind::Unary {
             op: UnaryOp::Neg,
             expr,
         } => {
-            dead_store_rhs_is_discardable(expr, env, signatures)
+            dead_store_rhs_is_discardable(expr, env, signatures, rewrite_facts)
                 && i64_expr_result_excludes_min(expr, signatures)
         }
         ExprKind::Binary { left, op, right }
@@ -37394,8 +37421,8 @@ fn dead_store_rhs_is_discardable(
         {
             if matches!(op, BinOp::Sub)
                 && same_pure_i64_expression(left, right, signatures)
-                && dead_store_rhs_is_discardable(left, env, signatures)
-                && dead_store_rhs_is_discardable(right, env, signatures)
+                && dead_store_rhs_is_discardable(left, env, signatures, rewrite_facts)
+                && dead_store_rhs_is_discardable(right, env, signatures, rewrite_facts)
             {
                 return true;
             }
@@ -37405,16 +37432,16 @@ fn dead_store_rhs_is_discardable(
                     CheckedI64Reduction::Left
                     | CheckedI64Reduction::ZeroAfterLeft
                     | CheckedI64Reduction::DivideByConstant(_),
-                ) => dead_store_rhs_is_discardable(left, env, signatures),
+                ) => dead_store_rhs_is_discardable(left, env, signatures, rewrite_facts),
                 Some(CheckedI64Reduction::Right | CheckedI64Reduction::ZeroAfterRight) => {
-                    dead_store_rhs_is_discardable(right, env, signatures)
+                    dead_store_rhs_is_discardable(right, env, signatures, rewrite_facts)
                 }
                 Some(CheckedI64Reduction::NegateLeft) => {
-                    dead_store_rhs_is_discardable(left, env, signatures)
+                    dead_store_rhs_is_discardable(left, env, signatures, rewrite_facts)
                         && i64_expr_result_excludes_min(left, signatures)
                 }
                 Some(CheckedI64Reduction::NegateRight) => {
-                    dead_store_rhs_is_discardable(right, env, signatures)
+                    dead_store_rhs_is_discardable(right, env, signatures, rewrite_facts)
                         && i64_expr_result_excludes_min(right, signatures)
                 }
                 Some(
@@ -37438,8 +37465,8 @@ fn dead_store_rhs_is_discardable(
                     | BinOp::Or
             ) =>
         {
-            dead_store_rhs_is_discardable(left, env, signatures)
-                && dead_store_rhs_is_discardable(right, env, signatures)
+            dead_store_rhs_is_discardable(left, env, signatures, rewrite_facts)
+                && dead_store_rhs_is_discardable(right, env, signatures, rewrite_facts)
         }
         _ => false,
     }
@@ -38374,7 +38401,7 @@ fn emit_block(
                 .dead_assignment_spans
                 .contains(&source_span_key(stmt.span))
         {
-            if dead_store_rhs_is_discardable(expr, env, signatures) {
+            if dead_store_rhs_is_discardable(expr, env, signatures, context.cfg_rewrite_facts) {
                 continue;
             }
             if !expr_contains_await(expr)
@@ -38412,7 +38439,7 @@ fn emit_block(
                     .dead_non_escaping_let_binding_spans
                     .contains(&source_span_key(stmt.span)))
         {
-            if dead_store_rhs_is_discardable(expr, env, signatures) {
+            if dead_store_rhs_is_discardable(expr, env, signatures, context.cfg_rewrite_facts) {
                 continue;
             }
             if !expr_contains_await(expr)
@@ -38459,7 +38486,12 @@ fn emit_block(
                     && context
                         .dead_var_initializer_spans
                         .contains(&source_span_key(stmt.span))
-                    && dead_store_rhs_is_discardable(expr, env, signatures) =>
+                    && dead_store_rhs_is_discardable(
+                        expr,
+                        env,
+                        signatures,
+                        context.cfg_rewrite_facts,
+                    ) =>
             {
                 out.push_str(&format!(
                     "{pad}{} {};\n",
@@ -78827,6 +78859,60 @@ fn main() -> i64 {
         assert!(
             !emitted.contains("flux_redirect_bool"),
             "poisoned checked-AST type must not select boolean redirection: {emitted}"
+        );
+    }
+
+    #[test]
+    fn dead_store_field_safety_uses_typed_ir_base_type_after_ast_poisoning() {
+        let source = r#"
+struct Pair {
+    left: i64
+}
+
+fn main() -> i64 {
+    let pair: Pair = Pair { left: 1 }
+    let _unused: i64 = pair.left
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("dead-store typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist")
+            .clone();
+        let facts = cfg_rewrite_facts(&graph);
+
+        let mut function = database
+            .program()
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist")
+            .clone();
+        let StmtKind::Let { expr, .. } = &mut function.body[1].kind else {
+            panic!("fixture should retain its unused field binding");
+        };
+        let field_span = expr.span;
+        let ExprKind::Field { base, .. } = &mut expr.kind else {
+            panic!("fixture should retain its field read");
+        };
+        assert_eq!(
+            facts.field_base_types.get(&source_span_key(field_span)),
+            Some(&Type::Named("Pair".to_string())),
+            "normalized typed IR should retain the dead field base type"
+        );
+
+        let env = HashMap::from([("pair".to_string(), Type::Named("Pair".to_string()))]);
+        base.kind = ExprKind::Bool(true);
+        assert_eq!(
+            type_of_expr(base, &env, database.signatures())
+                .expect("poisoned checked-AST base should still type"),
+            Type::Bool
+        );
+        assert!(
+            dead_store_rhs_is_discardable(expr, &env, database.signatures(), &facts),
+            "dead-store safety should use the normalized base type instead of re-typing the poisoned AST"
         );
     }
 
