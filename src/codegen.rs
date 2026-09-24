@@ -37328,24 +37328,6 @@ fn emit_direct_sequence_projection(
         _ => return Ok(None),
     };
 
-    let direct_sequence = matches!(
-        &base.kind,
-        CfgScalarExprKind::Call { callee, .. }
-            if matches!(crate::builtin_names::global_impl(callee), "sorted" | "distinct")
-    );
-    let sequence = if direct_sequence {
-        None
-    } else {
-        let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
-        sequence.line = expr.line;
-        sequence.span = expr.span;
-        let sequence_kind = sequence_lowering_kind(&sequence, env, signatures, rewrite_facts);
-        if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
-            return Ok(None);
-        }
-        Some(sequence)
-    };
-
     let result_ty = signatures.canonical_type(&scalar.ty);
     if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
         return Ok(None);
@@ -37354,20 +37336,19 @@ fn emit_direct_sequence_projection(
     if !matches!(sequence_ty, Type::List(_)) {
         return Ok(None);
     }
-    let emitted = if direct_sequence {
-        emit_cfg_sequence_list_value(out, pad, base, env, signatures, temp_counter)
-            .ok_or_else(|| diag(expr.span, "typed sequence could not be materialized"))?
+    let emitted = if let Some(direct) =
+        emit_cfg_sequence_list_value_buffered(out, pad, base, env, signatures, temp_counter)
+    {
+        direct
     } else {
-        emit_sequence_list_value(
-            out,
-            pad,
-            sequence
-                .as_ref()
-                .expect("non-direct sequence reconstructed"),
-            env,
-            signatures,
-            temp_counter,
-        )?
+        let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
+        sequence.line = expr.line;
+        sequence.span = expr.span;
+        let sequence_kind = sequence_lowering_kind(&sequence, env, signatures, rewrite_facts);
+        if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
+            return Ok(None);
+        }
+        emit_sequence_list_value(out, pad, &sequence, env, signatures, temp_counter)?
     };
     if signatures.canonical_type(&emitted.ty) != sequence_ty {
         return Err(diag(
@@ -41332,8 +41313,32 @@ fn emit_cfg_sequence_list_value(
         "distinct" => {
             emit_cfg_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
         }
+        "flatten" => emit_cfg_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter),
         _ => None,
     }
+}
+
+fn emit_cfg_sequence_list_value_buffered(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let mut direct = String::new();
+    let mut direct_temp_counter = *temp_counter;
+    let emitted = emit_cfg_sequence_list_value(
+        &mut direct,
+        pad,
+        expr,
+        env,
+        signatures,
+        &mut direct_temp_counter,
+    )?;
+    out.push_str(&direct);
+    *temp_counter = direct_temp_counter;
+    Some(emitted)
 }
 
 fn emit_sequence_sorted_value(
@@ -41363,9 +41368,25 @@ fn emit_sequence_flatten_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)?;
+    let direct = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            matches!(
+                &sequence.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "flatten"
+            ) && cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+        })
+        .and_then(|sequence| {
+            emit_cfg_sequence_list_value_buffered(out, pad, sequence, env, signatures, temp_counter)
+        });
+    let value = if let Some(value) = direct {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_flatten_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -41383,31 +41404,24 @@ fn emit_sequence_flatten_binding(
     Ok(())
 }
 
-fn emit_sequence_flatten_value(
+fn emit_flatten_list_value(
     out: &mut String,
     pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    source: EmittedExpr,
+    result_ty: Type,
     signatures: &Signatures,
     temp_counter: &mut usize,
-) -> Result<EmittedExpr, Diagnostic> {
-    let source_expr = sequence_flatten(expr)
-        .ok_or_else(|| diag(expr.span, "invalid flatten call reached code generation"))?;
-    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+) -> Option<EmittedExpr> {
     let source_ty = signatures.canonical_type(&source.ty);
     let Type::List(outer_element) = source_ty else {
-        return Err(diag(expr.span, "flatten source must be a nested list"));
+        return None;
     };
     let outer_element = signatures.canonical_type(&outer_element);
     let Type::List(inner_element) = outer_element else {
-        return Err(diag(expr.span, "flatten source elements must be lists"));
+        return None;
     };
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
     if result_ty != Type::List(inner_element.clone()) {
-        return Err(diag(
-            expr.span,
-            "flatten result type mismatch reached code generation",
-        ));
+        return None;
     }
     let source_name = format!("flux__flatten_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -41442,10 +41456,52 @@ fn emit_sequence_flatten_value(
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
     ));
-    Ok(EmittedExpr {
+    Some(EmittedExpr {
         code: result_name,
         ty: result_ty,
     })
+}
+
+fn emit_cfg_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != "flatten" || arguments.len() != 1 {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_source_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    emit_flatten_list_value(
+        out,
+        pad,
+        source,
+        signatures.canonical_type(&expr.ty),
+        signatures,
+        temp_counter,
+    )
+}
+
+fn emit_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_flatten(expr)
+        .ok_or_else(|| diag(expr.span, "invalid flatten call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_flatten_list_value(out, pad, source, result_ty, signatures, temp_counter)
+        .ok_or_else(|| diag(expr.span, "invalid flatten types reached code generation"))
 }
 
 fn distinct_equality(left: &str, right: &str, ty: &Type) -> Option<String> {
@@ -61082,6 +61138,70 @@ fn main() -> i64 {
         assert!(distinct_emitted.contains(".len"), "{distinct_emitted}");
         assert!(!distinct_out.contains("checked-ast-distinct-property"));
         assert!(!distinct_emitted.contains("checked-ast-distinct-property"));
+    }
+
+    #[test]
+    fn flatten_sequence_projection_materializes_directly_from_typed_ir() {
+        let source = r#"
+fn flattenLength(values: i64[][]) -> i64 {
+    return flatten(values).length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("flatten projection typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("flattenLength")
+            .expect("flattenLength CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Field { base, name, .. }
+                        if name == "length"
+                            && graph.value(*base).is_some_and(|base| {
+                                matches!(
+                                    &base.kind,
+                                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                                        if crate::builtin_names::global_impl(callee) == "flatten"
+                                )
+                            })
+                )
+            })
+            .expect("typed IR should retain the flatten projection root");
+        let facts = cfg_rewrite_facts(graph);
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-flatten-property".to_string()),
+        };
+        let mut env = HashMap::from([(
+            "values".to_string(),
+            Type::List(Box::new(Type::List(Box::new(Type::I64)))),
+        )]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let emitted = emit_direct_sequence_projection(
+            &mut out,
+            "",
+            &fake,
+            &Type::I64,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("flatten property should lower")
+        .expect("typed IR should materialize the flatten property");
+        assert!(out.contains("flux__flatten_buffer_"), "{out}");
+        assert!(emitted.contains(".len"), "{emitted}");
+        assert!(!out.contains("checked-ast-flatten-property"));
+        assert!(!emitted.contains("checked-ast-flatten-property"));
     }
 
     #[test]
