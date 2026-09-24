@@ -41395,6 +41395,115 @@ fn collect_cfg_sequence_transform_chain<'a>(
     source
 }
 
+struct PreparedCfgSequenceTransform {
+    source_code: String,
+    input_element: Type,
+    stages: Vec<(String, bool, Type)>,
+    output_element: Type,
+    result_ty: Type,
+}
+
+fn prepare_cfg_sequence_transform(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<PreparedCfgSequenceTransform> {
+    let mut stages = Vec::new();
+    let source_expr = collect_cfg_sequence_transform_chain(expr, &mut stages);
+    if stages.is_empty() {
+        return None;
+    }
+
+    let source_ty = signatures.canonical_type(&source_expr.ty);
+    let Type::List(input_element) = &source_ty else {
+        return None;
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let Type::List(output_element) = &result_ty else {
+        return None;
+    };
+    let source_code = emit_cfg_scalar_expr_direct(source_expr, env, signatures)?;
+
+    let input_element = signatures.canonical_type(input_element);
+    let mut current_ty = input_element.clone();
+    let mut prepared = Vec::with_capacity(stages.len());
+    for stage in stages {
+        let (list, callback, filter) = cfg_sequence_transform_stage(stage)?;
+        let expected_list_ty = Type::List(Box::new(current_ty.clone()));
+        if signatures.canonical_type(&list.ty) != expected_list_ty
+            || !matches!(callback.kind, CfgScalarExprKind::Name(_))
+        {
+            return None;
+        }
+        let callback_ty = signatures.canonical_type(&callback.ty);
+        let Type::Function { params, returns } = callback_ty else {
+            return None;
+        };
+        if params.len() != 1
+            || returns.len() != 1
+            || signatures.canonical_type(&params[0]) != current_ty
+        {
+            return None;
+        }
+        let return_ty = signatures.canonical_type(&returns[0]);
+        let stage_ty = signatures.canonical_type(&stage.ty);
+        let next_ty = if filter {
+            if return_ty != Type::Bool || stage_ty != expected_list_ty {
+                return None;
+            }
+            current_ty.clone()
+        } else {
+            if stage_ty != Type::List(Box::new(return_ty.clone())) {
+                return None;
+            }
+            return_ty
+        };
+        let callback_code = emit_cfg_scalar_expr_direct(callback, env, signatures)?;
+        prepared.push((callback_code, filter, next_ty.clone()));
+        current_ty = next_ty;
+    }
+    let output_element = signatures.canonical_type(output_element);
+    if current_ty != output_element {
+        return None;
+    }
+
+    Some(PreparedCfgSequenceTransform {
+        source_code,
+        input_element,
+        stages: prepared,
+        output_element,
+        result_ty,
+    })
+}
+
+fn emit_prepared_cfg_sequence_transform_stages(
+    out: &mut String,
+    pad: &str,
+    stages: &[(String, bool, Type)],
+    mut value_name: String,
+    mut value_ty: Type,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> (String, Type) {
+    for (callback_code, filter, next_ty) in stages {
+        if *filter {
+            out.push_str(&format!(
+                "{pad}if (!{callback_code}({value_name})) continue;\n"
+            ));
+            continue;
+        }
+        let next_name = format!("flux__transform_value_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}{} {next_name} = {callback_code}({value_name});\n",
+            c_type(next_ty, signatures)
+        ));
+        value_name = next_name;
+        value_ty = next_ty.clone();
+    }
+    (value_name, value_ty)
+}
+
 fn emit_cfg_sequence_transform_value(
     out: &mut String,
     pad: &str,
@@ -41403,68 +41512,9 @@ fn emit_cfg_sequence_transform_value(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<Option<EmittedExpr>, Diagnostic> {
-    let mut stages = Vec::new();
-    let source_expr = collect_cfg_sequence_transform_chain(expr, &mut stages);
-    if stages.is_empty() {
-        return Ok(None);
-    }
-
-    let source_ty = signatures.canonical_type(&source_expr.ty);
-    let Type::List(input_element) = &source_ty else {
+    let Some(prepared) = prepare_cfg_sequence_transform(expr, env, signatures) else {
         return Ok(None);
     };
-    let result_ty = signatures.canonical_type(&expr.ty);
-    let Type::List(output_element) = &result_ty else {
-        return Ok(None);
-    };
-    let Some(source_code) = emit_cfg_scalar_expr_direct(source_expr, env, signatures) else {
-        return Ok(None);
-    };
-
-    let mut current_ty = signatures.canonical_type(input_element);
-    let mut prepared = Vec::with_capacity(stages.len());
-    for stage in stages {
-        let Some((list, callback, filter)) = cfg_sequence_transform_stage(stage) else {
-            return Ok(None);
-        };
-        let expected_list_ty = Type::List(Box::new(current_ty.clone()));
-        if signatures.canonical_type(&list.ty) != expected_list_ty
-            || !matches!(callback.kind, CfgScalarExprKind::Name(_))
-        {
-            return Ok(None);
-        }
-        let callback_ty = signatures.canonical_type(&callback.ty);
-        let Type::Function { params, returns } = callback_ty else {
-            return Ok(None);
-        };
-        if params.len() != 1
-            || returns.len() != 1
-            || signatures.canonical_type(&params[0]) != current_ty
-        {
-            return Ok(None);
-        }
-        let return_ty = signatures.canonical_type(&returns[0]);
-        let stage_ty = signatures.canonical_type(&stage.ty);
-        let next_ty = if filter {
-            if return_ty != Type::Bool || stage_ty != expected_list_ty {
-                return Ok(None);
-            }
-            current_ty.clone()
-        } else {
-            if stage_ty != Type::List(Box::new(return_ty.clone())) {
-                return Ok(None);
-            }
-            return_ty
-        };
-        let Some(callback_code) = emit_cfg_scalar_expr_direct(callback, env, signatures) else {
-            return Ok(None);
-        };
-        prepared.push((callback_code, filter, next_ty.clone()));
-        current_ty = next_ty;
-    }
-    if current_ty != signatures.canonical_type(output_element) {
-        return Ok(None);
-    }
 
     let source_name = format!("flux__transform_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -41478,11 +41528,12 @@ fn emit_cfg_sequence_transform_value(
     *temp_counter += 1;
     let result_name = format!("flux__transform_result_{}", *temp_counter);
     *temp_counter += 1;
-    let input_c = c_type(input_element, signatures);
-    let output_c = c_type(output_element, signatures);
+    let input_c = c_type(&prepared.input_element, signatures);
+    let output_c = c_type(&prepared.output_element, signatures);
 
     out.push_str(&format!(
-        "{pad}struct flux__list {source_name} = {source_code};\n"
+        "{pad}struct flux__list {source_name} = {};\n",
+        prepared.source_code
     ));
     out.push_str(&format!(
         "{pad}{output_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
@@ -41494,25 +41545,16 @@ fn emit_cfg_sequence_transform_value(
     out.push_str(&format!(
         "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));\n"
     ));
-    let mut value_name = item_name;
-    let mut value_ty = signatures.canonical_type(input_element);
-    for (callback_code, filter, next_ty) in prepared {
-        if filter {
-            out.push_str(&format!(
-                "{pad}    if (!{callback_code}({value_name})) continue;\n"
-            ));
-            continue;
-        }
-        let next_name = format!("flux__transform_value_{}", *temp_counter);
-        *temp_counter += 1;
-        out.push_str(&format!(
-            "{pad}    {} {next_name} = {callback_code}({value_name});\n",
-            c_type(&next_ty, signatures)
-        ));
-        value_name = next_name;
-        value_ty = next_ty;
-    }
-    if value_ty != signatures.canonical_type(output_element) {
+    let (value_name, value_ty) = emit_prepared_cfg_sequence_transform_stages(
+        out,
+        &format!("{pad}    "),
+        &prepared.stages,
+        item_name,
+        prepared.input_element.clone(),
+        signatures,
+        temp_counter,
+    );
+    if value_ty != prepared.output_element {
         return Ok(None);
     }
     out.push_str(&format!(
@@ -41525,7 +41567,7 @@ fn emit_cfg_sequence_transform_value(
 
     Ok(Some(EmittedExpr {
         code: result_name,
-        ty: result_ty,
+        ty: prepared.result_ty,
     }))
 }
 
@@ -41943,6 +41985,7 @@ fn emit_cfg_sequence_reduction_binding(
     let Type::List(element) = &list_ty else {
         return Ok(false);
     };
+    let element_ty = signatures.canonical_type(element);
     let result_ty = signatures.canonical_type(&expr.ty);
     let declared_ty = signatures.canonical_type(target.1);
     if result_ty != declared_ty || !signatures.is_copy_type(&result_ty) {
@@ -41956,7 +41999,6 @@ fn emit_cfg_sequence_reduction_binding(
     if params.len() != 2 || returns.len() != 1 {
         return Ok(false);
     }
-    let element_ty = signatures.canonical_type(element);
     if reduce {
         if result_ty != element_ty
             || signatures.canonical_type(&params[0]) != element_ty
@@ -41973,9 +42015,22 @@ fn emit_cfg_sequence_reduction_binding(
         return Ok(false);
     }
 
-    let Some(source_code) = emit_cfg_scalar_expr_direct(list, env, signatures) else {
-        return Ok(false);
-    };
+    let (source_code, source_element, transform_stages) =
+        if let Some(prepared) = prepare_cfg_sequence_transform(list, env, signatures) {
+            if prepared.result_ty != list_ty || prepared.output_element != element_ty {
+                return Ok(false);
+            }
+            (
+                prepared.source_code,
+                prepared.input_element,
+                prepared.stages,
+            )
+        } else {
+            let Some(source_code) = emit_cfg_scalar_expr_direct(list, env, signatures) else {
+                return Ok(false);
+            };
+            (source_code, element_ty.clone(), Vec::new())
+        };
     let Some(reducer_code) = emit_cfg_scalar_expr_direct(reducer, env, signatures) else {
         return Ok(false);
     };
@@ -41997,7 +42052,7 @@ fn emit_cfg_sequence_reduction_binding(
     let item_name = format!("flux__reduce_item_{}", *temp_counter);
     *temp_counter += 1;
     let target_name = local_c_name(target.0);
-    let element_c = c_type(&element_ty, signatures);
+    let source_element_c = c_type(&source_element, signatures);
     out.push_str(&format!(
         "{pad}struct flux__list {source_name} = {source_code};\n"
     ));
@@ -42020,15 +42075,25 @@ fn emit_cfg_sequence_reduction_binding(
     };
 
     out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n"
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c})));\n"
     ));
+    let (value_name, value_ty) = emit_prepared_cfg_sequence_transform_stages(
+        out,
+        &format!("{pad}    "),
+        &transform_stages,
+        item_name,
+        source_element,
+        signatures,
+        temp_counter,
+    );
+    debug_assert_eq!(value_ty, element_ty);
     if let Some(has_value_name) = &has_value_name {
         out.push_str(&format!(
-            "{pad}    if (!{has_value_name}) {{ {target_name} = {item_name}; {has_value_name} = true; }} else {{ {target_name} = {reducer_code}({target_name}, {item_name}); }}\n"
+            "{pad}    if (!{has_value_name}) {{ {target_name} = {value_name}; {has_value_name} = true; }} else {{ {target_name} = {reducer_code}({target_name}, {value_name}); }}\n"
         ));
     } else {
         out.push_str(&format!(
-            "{pad}    {target_name} = {reducer_code}({target_name}, {item_name});\n"
+            "{pad}    {target_name} = {reducer_code}({target_name}, {value_name});\n"
         ));
     }
     out.push_str(&format!("{pad}}}\n"));
