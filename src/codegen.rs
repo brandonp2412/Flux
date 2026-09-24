@@ -39309,7 +39309,11 @@ fn emit_block(
                 ..
             } => {
                 if let Some(binding) = binding {
-                    let optional_type = type_of_expr(cond, env, signatures)?;
+                    let optional_type =
+                        match cfg_rewrite_root_type(cond.span, context.cfg_rewrite_facts) {
+                            Some(ty) => ty,
+                            None => type_of_expr(cond, env, signatures)?,
+                        };
                     let optional = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             cond,
@@ -78155,6 +78159,69 @@ fn main() -> i64 {
         assert!(
             !emitted.contains("flux_redirect_bool"),
             "poisoned checked-AST type must not select boolean redirection: {emitted}"
+        );
+    }
+
+    #[test]
+    fn optional_if_binding_type_uses_typed_ir_after_checked_ast_condition_changes() {
+        let source = r#"
+fn main() -> i64 {
+    let candidate: i64? = 7
+    if let value = candidate:
+        print(value)
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("optional-if typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist")
+            .clone();
+        let facts = cfg_rewrite_facts(&graph);
+
+        let mut function = database
+            .program()
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist")
+            .clone();
+        let StmtKind::If {
+            cond,
+            binding: Some(binding),
+            ..
+        } = &mut function.body[1].kind
+        else {
+            panic!("fixture should retain its optional if binding");
+        };
+        assert_eq!(binding.name, "value");
+        assert_eq!(
+            cfg_rewrite_root_type(cond.span, &facts),
+            Some(Type::Optional(Box::new(Type::I64))),
+            "normalized typed IR should retain the optional condition type"
+        );
+        cond.kind = ExprKind::Bool(true);
+
+        let mut emitted = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut emitted,
+            &function,
+            database.signatures(),
+            &graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("optional if binding should use normalized typed-IR condition type");
+        assert!(emitted.contains("flux__optional_pattern_"), "{emitted}");
+        assert!(
+            emitted.contains("flux__local_candidate"),
+            "typed-IR condition should still read the original optional binding: {emitted}"
+        );
+        assert!(
+            emitted.contains("flux_print_i64(flux__local_value);"),
+            "{emitted}"
         );
     }
 
