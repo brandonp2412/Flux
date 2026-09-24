@@ -77815,14 +77815,10 @@ fn emit_multi_expr(
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
-    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span)) {
-        if let Some(direct) = emit_cfg_multi_expr_direct(multi, env, signatures) {
-            return Ok(direct);
-        }
-        if cfg_scalar_expr_calls_are_reconstructable(multi, env, signatures) {
-            let reconstructed = cfg_scalar_expr_as_ast(multi);
-            return emit_multi_expr_from_ast(&reconstructed, env, signatures, rewrite_facts);
-        }
+    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span))
+        && let Some(direct) = emit_cfg_multi_expr_direct(multi, env, signatures)
+    {
+        return Ok(direct);
     }
 
     // Keep the checked-AST fallback for values whose normalized call shape
