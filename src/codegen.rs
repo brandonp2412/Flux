@@ -43778,7 +43778,10 @@ fn emit_list_builder_binding(
                     continue;
                 }
                 let condition_ty = if binding.is_some() {
-                    type_of_expr(condition, env, signatures)?
+                    signatures.canonical_type(&cfg_rewrite_required_root_type(
+                        condition.span,
+                        rewrite_facts,
+                    )?)
                 } else {
                     Type::Bool
                 };
@@ -44402,8 +44405,11 @@ fn emit_list_comprehension_binding(
     else {
         unreachable!()
     };
-    let iterable_ty = type_of_expr(iterable, env, signatures)?;
-    let Type::List(input_element) = signatures.canonical_type(&iterable_ty) else {
+    let iterable_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        iterable.span,
+        rewrite_facts,
+    )?);
+    let Type::List(input_element) = iterable_ty.clone() else {
         return Err(diag(expr.span, "list comprehension requires a list source"));
     };
     let result_ty = signatures.canonical_type(declared_ty);
@@ -56179,6 +56185,163 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("value")), "{out}");
         assert!(out.contains("flux_mul_i64"), "{out}");
         assert!(out.contains("flux_add_i64"), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_builder_fallback_uses_typed_ir_guard_root_type() {
+        let source = r#"
+fn exercise(maybeValue: i64?) -> i64 {
+    let built: i64[] = [if let bound = maybeValue: bound else: 9]
+    return built.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list builder fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("list builder fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let mut expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "built" => Some(expr.clone()),
+                _ => None,
+            })
+            .expect("built binding should exist");
+        let ExprKind::List(items) = &mut expr.kind else {
+            panic!("built binding should be a list");
+        };
+        let ExprKind::ListIf {
+            condition, binding, ..
+        } = &mut items[0].kind
+        else {
+            panic!("built list should contain an optional guard");
+        };
+        assert!(binding.is_some());
+        condition.kind = ExprKind::Int(999);
+
+        let optional_ty = Type::Optional(Box::new(Type::I64));
+        let mut env = HashMap::from([("maybeValue".to_string(), optional_ty.clone())]);
+        assert_eq!(
+            type_of_expr(condition, &env, database.signatures())
+                .expect("poisoned guard should type"),
+            Type::I64,
+            "checked-AST guard typing should observe the poisoned child kind"
+        );
+
+        let mut facts = cfg_rewrite_facts(graph);
+        assert_eq!(
+            facts.root_types.get(&source_span_key(condition.span)),
+            Some(&optional_ty)
+        );
+        facts.aggregates.remove(&source_span_key(expr.span));
+
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_builder_binding(
+            &mut out,
+            "",
+            ("built", &list_ty),
+            &expr,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("list builder fallback should type its optional guard from typed IR");
+
+        assert!(out.contains(&local_c_name("maybeValue")), "{out}");
+        assert!(out.contains(&local_c_name("bound")), "{out}");
+        assert!(out.contains(&local_c_name("built")), "{out}");
+        assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn list_comprehension_fallback_uses_typed_ir_iterable_root_type() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let projected: i64[] = [value + 1 for value in values]
+    return projected.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("list comprehension fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("list comprehension fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let mut expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "projected" => Some(expr.clone()),
+                _ => None,
+            })
+            .expect("projected binding should exist");
+        let ExprKind::ListComprehension { iterable, .. } = &mut expr.kind else {
+            panic!("projected binding should be a list comprehension");
+        };
+        iterable.kind = ExprKind::Int(999);
+
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        assert_eq!(
+            type_of_expr(iterable, &env, database.signatures())
+                .expect("poisoned iterable should type"),
+            Type::I64,
+            "checked-AST iterable typing should observe the poisoned child kind"
+        );
+
+        let mut facts = cfg_rewrite_facts(graph);
+        assert_eq!(
+            facts.root_types.get(&source_span_key(iterable.span)),
+            Some(&list_ty)
+        );
+        facts.aggregates.remove(&source_span_key(expr.span));
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_list_comprehension_binding(
+            &mut out,
+            "",
+            ("projected", &list_ty),
+            &expr,
+            &mut env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("list comprehension fallback should type its iterable from typed IR");
+
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(out.contains("flux_add_i64"), "{out}");
+        assert!(out.contains(&local_c_name("projected")), "{out}");
         assert!(!out.contains("999"), "{out}");
     }
 
