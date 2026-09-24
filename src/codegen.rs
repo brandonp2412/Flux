@@ -41889,13 +41889,7 @@ fn emit_sequence_chunked_value(
     if size.ty != Type::I64 {
         return Err(diag(expr.span, "chunked size must be i64"));
     }
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-    if result_ty != Type::List(Box::new(source_ty.clone())) {
-        return Err(diag(
-            expr.span,
-            "chunked result type mismatch reached code generation",
-        ));
-    }
+    let result_ty = Type::List(Box::new(source_ty.clone()));
     let source_name = format!("flux__chunked_source_{}", *temp_counter);
     *temp_counter += 1;
     let size_name = format!("flux__chunked_size_{}", *temp_counter);
@@ -42021,16 +42015,10 @@ fn emit_sequence_sorted_value(
     let source_expr = sequence_sorted(expr)
         .ok_or_else(|| diag(expr.span, "invalid sorted call reached code generation"))?;
     let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let result_ty = signatures.canonical_type(&source.ty);
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "sorted result must have a list type"));
+        return Err(diag(expr.span, "sorted source must have a list type"));
     };
-    if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "sorted input type mismatch reached code generation",
-        ));
-    }
     let element_ty = signatures.canonical_type(element);
     let source_name = format!("flux__sorted_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -42136,13 +42124,7 @@ fn emit_sequence_flatten_value(
     let Type::List(inner_element) = outer_element else {
         return Err(diag(expr.span, "flatten source elements must be lists"));
     };
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-    if result_ty != Type::List(inner_element.clone()) {
-        return Err(diag(
-            expr.span,
-            "flatten result type mismatch reached code generation",
-        ));
-    }
+    let result_ty = Type::List(inner_element.clone());
     let source_name = format!("flux__flatten_source_{}", *temp_counter);
     *temp_counter += 1;
     let capacity_name = format!("flux__flatten_capacity_{}", *temp_counter);
@@ -42246,16 +42228,10 @@ fn emit_sequence_distinct_value(
     let source_expr = sequence_distinct(expr)
         .ok_or_else(|| diag(expr.span, "invalid distinct call reached code generation"))?;
     let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let result_ty = signatures.canonical_type(&source.ty);
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "distinct result must have a list type"));
+        return Err(diag(expr.span, "distinct source must have a list type"));
     };
-    if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "distinct input type mismatch reached code generation",
-        ));
-    }
     let element_ty = signatures.canonical_type(element);
     let source_name = format!("flux__distinct_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -42364,13 +42340,11 @@ fn emit_sequence_concat_value(
         .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
     let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
     let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let result_ty = signatures.canonical_type(&left.ty);
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "concat result must have a list type"));
+        return Err(diag(expr.span, "concat source must have a list type"));
     };
-    if signatures.canonical_type(&left.ty) != result_ty
-        || signatures.canonical_type(&right.ty) != result_ty
-    {
+    if signatures.canonical_type(&right.ty) != result_ty {
         return Err(diag(
             expr.span,
             "concat input type mismatch reached code generation",
@@ -62867,6 +62841,114 @@ fn main() -> i64 {
         assert!(out.contains(&local_c_name("values")), "{out}");
         assert!(out.contains(&local_c_name("ordered")), "{out}");
         assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn sequence_fallback_values_derive_types_without_retyping_ast_roots() {
+        let source = r#"
+fn exercise(values: i64[], nested: i64[][]) -> i64 {
+    let chunks: i64[][] = values | chunked 2
+    let joined: i64[] = values | concat values
+    let unique: i64[] = values | distinct
+    let flat: i64[] = nested | flatten
+    let ordered: i64[] = values | sorted
+    return chunks.length + joined.length + unique.length + flat.length + ordered.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence fallback fixture should typecheck");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("sequence fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let list_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(list_ty.clone()));
+        let env = HashMap::from([
+            ("values".to_string(), list_ty.clone()),
+            ("nested".to_string(), nested_ty.clone()),
+        ]);
+
+        for (target, expected_ty) in [
+            ("chunks", nested_ty.clone()),
+            ("joined", list_ty.clone()),
+            ("unique", list_ty.clone()),
+            ("flat", list_ty.clone()),
+            ("ordered", list_ty.clone()),
+        ] {
+            let mut poisoned = function
+                .body
+                .iter()
+                .find_map(|stmt| match &stmt.kind {
+                    StmtKind::Let { name, expr, .. } if name == target => Some(expr.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{target} binding should exist"));
+            let ExprKind::Pipe { optional, .. } = &mut poisoned.kind else {
+                panic!("{target} should be a pipeline");
+            };
+            *optional = true;
+            assert!(
+                type_of_expr(&poisoned, &env, database.signatures()).is_err(),
+                "{target} poison must invalidate checked-AST root typing"
+            );
+
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            let value = match target {
+                "chunks" => emit_sequence_chunked_value(
+                    &mut out,
+                    "",
+                    &poisoned,
+                    &env,
+                    database.signatures(),
+                    &mut temp_counter,
+                ),
+                "joined" => emit_sequence_concat_value(
+                    &mut out,
+                    "",
+                    &poisoned,
+                    &env,
+                    database.signatures(),
+                    &mut temp_counter,
+                ),
+                "unique" => emit_sequence_distinct_value(
+                    &mut out,
+                    "",
+                    &poisoned,
+                    &env,
+                    database.signatures(),
+                    &mut temp_counter,
+                ),
+                "flat" => emit_sequence_flatten_value(
+                    &mut out,
+                    "",
+                    &poisoned,
+                    &env,
+                    database.signatures(),
+                    &mut temp_counter,
+                ),
+                "ordered" => emit_sequence_sorted_value(
+                    &mut out,
+                    "",
+                    &poisoned,
+                    &env,
+                    database.signatures(),
+                    &mut temp_counter,
+                ),
+                _ => unreachable!("sequence fallback target"),
+            }
+            .unwrap_or_else(|diagnostic| panic!("{target} fallback should lower: {diagnostic:?}"));
+
+            assert_eq!(value.ty, expected_ty, "{target}");
+            assert!(out.contains("flux__"), "{target}: {out}");
+        }
     }
 
     #[test]
