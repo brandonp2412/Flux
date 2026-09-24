@@ -37307,72 +37307,51 @@ fn emit_direct_sequence_projection(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<Option<String>, Diagnostic> {
-    let span_key = source_span_key(expr.span);
-    let rewritten = rewrite_facts
-        .scalar_exprs
-        .get(&span_key)
-        .filter(|scalar| match &scalar.kind {
-            CfgScalarExprKind::Index {
-                base,
-                index,
-                optional: false,
-            } => {
-                cfg_sequence_expr_calls_are_reconstructable(base, env, signatures)
-                    && cfg_scalar_expr_calls_are_reconstructable(index, env, signatures)
-            }
-            CfgScalarExprKind::Field {
-                base,
-                optional: false,
-                ..
-            } => cfg_sequence_expr_calls_are_reconstructable(base, env, signatures),
-            _ => false,
-        })
-        .map(|scalar| {
-            let mut reconstructed = cfg_scalar_expr_as_ast_for_source(scalar, expr.span.source_id);
-            reconstructed.line = expr.line;
-            reconstructed.span = expr.span;
-            reconstructed
-        })
-        .unwrap_or_else(|| expr.clone());
-
-    let base = match &rewritten.kind {
-        ExprKind::Index {
+    let Some(scalar) = rewrite_facts.scalar_exprs.get(&source_span_key(expr.span)) else {
+        return Ok(None);
+    };
+    let base = match &scalar.kind {
+        CfgScalarExprKind::Index {
             base,
+            index,
             optional: false,
-            ..
+        } if cfg_sequence_expr_calls_are_reconstructable(base, env, signatures)
+            && cfg_scalar_expr_calls_are_reconstructable(index, env, signatures) =>
+        {
+            base.as_ref()
         }
-        | ExprKind::Field {
+        CfgScalarExprKind::Field {
             base,
             optional: false,
             ..
-        } => base.as_ref(),
+        } if cfg_sequence_expr_calls_are_reconstructable(base, env, signatures) => base.as_ref(),
         _ => return Ok(None),
     };
-    let sequence_kind = sequence_lowering_kind(base, env, signatures, rewrite_facts);
+
+    let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
+    sequence.line = expr.line;
+    sequence.span = expr.span;
+    let sequence_kind = sequence_lowering_kind(&sequence, env, signatures, rewrite_facts);
     if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
         return Ok(None);
     }
 
-    let result_ty = signatures.canonical_type(&type_of_expr(&rewritten, env, signatures)?);
+    let result_ty = signatures.canonical_type(&scalar.ty);
     if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
         return Ok(None);
     }
-
-    let sequence = sequence_expr_for_lowering(base, env, signatures, rewrite_facts);
-    let sequence_ty = signatures.canonical_type(&type_of_expr(&sequence, env, signatures)?);
+    let sequence_ty = signatures.canonical_type(&base.ty);
     if !matches!(sequence_ty, Type::List(_)) {
         return Ok(None);
     }
     let emitted = emit_sequence_list_value(out, pad, &sequence, env, signatures, temp_counter)?;
     if signatures.canonical_type(&emitted.ty) != sequence_ty {
         return Err(diag(
-            base.span,
+            expr.span,
             "sequence projection type changed during code generation",
         ));
     }
 
-    let base_line = base.line;
-    let base_span = base.span;
     let mut temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
     *temp_counter += 1;
     while env.contains_key(&temp_name) {
@@ -37385,26 +37364,31 @@ fn emit_direct_sequence_projection(
         local_c_name(&temp_name),
         emitted.code
     ));
-    env.insert(temp_name.clone(), sequence_ty);
+    env.insert(temp_name.clone(), sequence_ty.clone());
 
-    let mut materialized = rewritten;
-    let replacement = Expr {
-        line: base_line,
-        span: base_span,
-        kind: ExprKind::Var(temp_name),
+    let materialized_base = CfgScalarExpr {
+        ty: sequence_ty,
+        kind: CfgScalarExprKind::Name(temp_name),
     };
-    match &mut materialized.kind {
-        ExprKind::Index { base, .. } | ExprKind::Field { base, .. } => {
-            **base = replacement;
-        }
-        _ => unreachable!("sequence projection shape checked above"),
-    }
-    Ok(Some(emit_expr_for_expected(
-        &materialized,
-        expected,
-        env,
-        signatures,
-    )?))
+    let materialized = CfgScalarExpr {
+        ty: scalar.ty.clone(),
+        kind: match &scalar.kind {
+            CfgScalarExprKind::Index {
+                index, optional, ..
+            } => CfgScalarExprKind::Index {
+                base: Box::new(materialized_base),
+                index: index.clone(),
+                optional: *optional,
+            },
+            CfgScalarExprKind::Field { name, optional, .. } => CfgScalarExprKind::Field {
+                base: Box::new(materialized_base),
+                name: name.clone(),
+                optional: *optional,
+            },
+            _ => unreachable!("sequence projection shape checked above"),
+        },
+    };
+    Ok(emit_cfg_scalar_expr_direct(&materialized, env, signatures))
 }
 
 fn emit_block(
@@ -60756,6 +60740,10 @@ fn sortedIndex(values: i64[], at: i64) -> i64 {
     return sorted(values)[at]
 }
 
+fn sortedLength(values: i64[]) -> i64 {
+    return sorted(values).length
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -60824,6 +60812,58 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!out.contains("checked-ast-sequence-projection"));
         assert!(!emitted.contains("checked-ast-sequence-projection"));
+
+        let length_graph = database
+            .control_flow_graph("sortedLength")
+            .expect("sortedLength CFG should exist");
+        let length_root = length_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Field { base, name, .. }
+                        if name == "length"
+                            && length_graph.value(*base).is_some_and(|base| {
+                                matches!(
+                                    &base.kind,
+                                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                                        if crate::builtin_names::global_impl(callee) == "sorted"
+                                )
+                            })
+                )
+            })
+            .expect("typed IR should retain the sequence property root");
+        let length_facts = cfg_rewrite_facts(length_graph);
+        let length_fake = Expr {
+            line: length_root.span.line,
+            span: length_root.span,
+            kind: ExprKind::Str("checked-ast-sequence-property".to_string()),
+        };
+        let mut length_env =
+            HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let mut length_out = String::new();
+        let mut length_temp_counter = 0;
+        let length_emitted = emit_direct_sequence_projection(
+            &mut length_out,
+            "",
+            &length_fake,
+            &Type::I64,
+            &mut length_env,
+            database.signatures(),
+            &length_facts,
+            &mut length_temp_counter,
+        )
+        .expect("sequence property should lower")
+        .expect("typed IR should materialize the sequence property");
+        assert!(length_out.contains("flux__sorted_buffer_"), "{length_out}");
+        assert!(
+            length_out.contains("__flux_sequence_projection_"),
+            "{length_out}"
+        );
+        assert!(length_emitted.contains(".len"), "{length_emitted}");
+        assert!(!length_out.contains("checked-ast-sequence-property"));
+        assert!(!length_emitted.contains("checked-ast-sequence-property"));
     }
 
     #[test]
