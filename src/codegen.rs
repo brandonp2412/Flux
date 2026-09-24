@@ -39226,7 +39226,10 @@ fn emit_block(
                 redirect,
                 background,
             } => {
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => ty,
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -78090,6 +78093,68 @@ fn main() -> i64 {
         assert!(
             !emitted.contains("true;"),
             "poisoned checked-AST root must not replace the typed-IR effect: {emitted}"
+        );
+    }
+
+    #[test]
+    fn shell_statement_expected_type_uses_typed_ir_after_checked_ast_root_changes() {
+        let source = r#"
+fn increment(value: i64) -> i64 {
+    return value + 1
+}
+
+fn main() -> i64 {
+    increment 7 > "output.txt"
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("shell-statement typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist")
+            .clone();
+        let facts = cfg_rewrite_facts(&graph);
+
+        let mut function = database
+            .program()
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist")
+            .clone();
+        let StmtKind::Shell { expr, .. } = &mut function.body[0].kind else {
+            panic!("fixture should retain its shell statement");
+        };
+        assert_eq!(
+            cfg_rewrite_root_type(expr.span, &facts),
+            Some(Type::I64),
+            "normalized typed IR should retain the shell command result type"
+        );
+        expr.kind = ExprKind::Bool(true);
+
+        let mut emitted = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut emitted,
+            &function,
+            database.signatures(),
+            &graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("shell statement should emit from its normalized typed-IR type");
+        assert!(
+            emitted.contains("flux_redirect_i64"),
+            "typed-IR i64 command result should select i64 redirection: {emitted}"
+        );
+        assert!(
+            emitted.contains(&format!("{}(INT64_C(7))", function_c_name("increment"))),
+            "{emitted}"
+        );
+        assert!(
+            !emitted.contains("flux_redirect_bool"),
+            "poisoned checked-AST type must not select boolean redirection: {emitted}"
         );
     }
 
