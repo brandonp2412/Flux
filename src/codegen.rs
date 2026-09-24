@@ -51304,8 +51304,6 @@ fn emit_cfg_ordered_positional_call_expression_direct<F>(
 where
     F: FnOnce(&[String]) -> String,
 {
-    let rendered =
-        emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?;
     let flexible_count = arguments
         .iter()
         .filter(|argument| {
@@ -51316,6 +51314,8 @@ where
         })
         .count();
     if flexible_count < 2 {
+        let rendered =
+            emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?;
         return Some(render_call(&rendered));
     }
 
@@ -51374,7 +51374,6 @@ fn emit_cfg_ordered_named_call_expression_direct<F>(
 where
     F: FnOnce(&[String]) -> String,
 {
-    let rendered = emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?;
     let flexible_count = arguments
         .iter()
         .filter(|(_, argument)| {
@@ -51385,6 +51384,7 @@ where
         })
         .count();
     if flexible_count < 2 {
+        let rendered = emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?;
         return Some(render_call(&rendered));
     }
 
