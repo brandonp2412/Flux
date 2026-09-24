@@ -42654,17 +42654,61 @@ fn collect_sequence_transform_chain<'a>(expr: &'a Expr, stages: &mut Vec<&'a Exp
     source
 }
 
-fn sequence_transform_fallback_type(
-    expr: &Expr,
+fn sequence_transform_stage_value_type(
+    stage: &Expr,
+    current_value_ty: &Type,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: Option<&CfgRewriteFacts>,
 ) -> Result<Type, Diagnostic> {
-    let ty = match rewrite_facts {
-        Some(rewrite_facts) => cfg_rewrite_required_root_type(expr.span, rewrite_facts)?,
-        None => type_of_expr(expr, env, signatures)?,
+    let transform = sequence_transform(stage).ok_or_else(|| {
+        diag(
+            stage.span,
+            "invalid sequence transform stage reached code generation",
+        )
+    })?;
+    let (callback_expr, filter) = match transform {
+        SequenceTransform::Map { callback, .. } => (callback, false),
+        SequenceTransform::Filter { callback, .. } => (callback, true),
     };
-    Ok(signatures.canonical_type(&ty))
+    if filter {
+        return Ok(current_value_ty.clone());
+    }
+    let callback_ty = if let Some(rewrite_facts) = rewrite_facts {
+        cfg_rewrite_required_root_type(callback_expr.span, rewrite_facts)?
+    } else if matches!(callback_expr.kind, ExprKind::AnonymousFunction { .. }) {
+        typecheck::type_of_sequence_callback(callback_expr, env, signatures)?
+    } else {
+        emit_expr(callback_expr, env, signatures)?.ty
+    };
+    let Type::Function { params, returns } = signatures.canonical_type(&callback_ty) else {
+        return Err(diag(
+            stage.span,
+            "sequence transform requires a function callback",
+        ));
+    };
+    if params.len() != 1 || returns.len() != 1 {
+        return Err(diag(
+            stage.span,
+            "sequence map callback must take one argument and return one value",
+        ));
+    }
+    Ok(signatures.canonical_type(&returns[0]))
+}
+
+fn sequence_transform_result_type(
+    stages: &[&Expr],
+    input_element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: Option<&CfgRewriteFacts>,
+) -> Result<Type, Diagnostic> {
+    let mut value_ty = input_element.clone();
+    for stage in stages {
+        value_ty =
+            sequence_transform_stage_value_type(stage, &value_ty, env, signatures, rewrite_facts)?;
+    }
+    Ok(Type::List(Box::new(value_ty)))
 }
 
 fn emit_sequence_transform_stages(
@@ -42672,32 +42716,12 @@ fn emit_sequence_transform_stages(
     pad: &str,
     stages: &[&Expr],
     mut value_name: String,
+    mut value_ty: Type,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: Option<&CfgRewriteFacts>,
     temp_counter: &mut usize,
 ) -> Result<(String, Type), Diagnostic> {
-    let first_stage = stages
-        .first()
-        .expect("sequence transform stages are non-empty");
-    let first_transform = sequence_transform(first_stage).ok_or_else(|| {
-        diag(
-            first_stage.span,
-            "invalid sequence transform stage reached code generation",
-        )
-    })?;
-    let first_list = match first_transform {
-        SequenceTransform::Map { list, .. } | SequenceTransform::Filter { list, .. } => list,
-    };
-    let first_list_ty =
-        sequence_transform_fallback_type(first_list, env, signatures, rewrite_facts)?;
-    let Type::List(first_element) = first_list_ty else {
-        return Err(diag(
-            first_stage.span,
-            "sequence transform stage requires a list source",
-        ));
-    };
-    let mut value_ty = (*first_element).clone();
     for stage in stages {
         let transform = sequence_transform(stage).ok_or_else(|| {
             diag(
@@ -42742,16 +42766,15 @@ fn emit_sequence_transform_stages(
                 out.push_str(&format!("{pad}}}\n"));
                 continue;
             }
-            let stage_ty = sequence_transform_fallback_type(stage, env, signatures, rewrite_facts)?;
-            let Type::List(output_element) = stage_ty else {
-                return Err(diag(
-                    stage.span,
-                    "sequence transform stage must produce a list",
-                ));
-            };
+            let output_ty = sequence_transform_stage_value_type(
+                stage,
+                &value_ty,
+                env,
+                signatures,
+                rewrite_facts,
+            )?;
             let next_name = format!("flux__transform_value_{}", *temp_counter);
             *temp_counter += 1;
-            let output_ty = (*output_element).clone();
             out.push_str(&format!(
                 "{pad}{} {next_name};\n{pad}{{\n",
                 c_type(&output_ty, signatures)
@@ -42789,16 +42812,10 @@ fn emit_sequence_transform_stages(
             ));
             continue;
         }
-        let stage_ty = sequence_transform_fallback_type(stage, env, signatures, rewrite_facts)?;
-        let Type::List(output_element) = stage_ty else {
-            return Err(diag(
-                stage.span,
-                "sequence transform stage must produce a list",
-            ));
-        };
+        let output_ty =
+            sequence_transform_stage_value_type(stage, &value_ty, env, signatures, rewrite_facts)?;
         let next_name = format!("flux__transform_value_{}", *temp_counter);
         *temp_counter += 1;
-        let output_ty = (*output_element).clone();
         out.push_str(&format!(
             "{pad}{} {next_name} = {}({value_name});\n",
             c_type(&output_ty, signatures),
@@ -42831,7 +42848,8 @@ fn emit_sequence_transform_value(
     let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence transform requires a list source"));
     };
-    let result_ty = sequence_transform_fallback_type(expr, env, signatures, rewrite_facts)?;
+    let result_ty =
+        sequence_transform_result_type(&stages, &input_element, env, signatures, rewrite_facts)?;
     let Type::List(output_element) = &result_ty else {
         return Err(diag(
             expr.span,
@@ -42872,6 +42890,7 @@ fn emit_sequence_transform_value(
         &body_pad,
         &stages,
         item_name,
+        (*input_element).clone(),
         env,
         signatures,
         rewrite_facts,
@@ -43346,6 +43365,7 @@ fn emit_sequence_reduction_binding(
             &body_pad,
             &stages,
             item_name,
+            (*source_element).clone(),
             env,
             signatures,
             Some(rewrite_facts),
@@ -56618,7 +56638,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn sequence_transform_fallback_requires_typed_ir_root_types() {
+    fn sequence_transform_fallback_derives_source_and_result_types_from_children() {
         let source = r#"
 fn double(value: i64) -> i64 {
     return value * 2
@@ -56720,7 +56740,7 @@ fn main() -> i64 {
             let mut env = base_env.clone();
             let mut out = String::new();
             let mut temp_counter = 0;
-            let error = emit_sequence_transform_binding(
+            emit_sequence_transform_binding(
                 &mut out,
                 "",
                 ("transformed", &list_ty),
@@ -56730,14 +56750,40 @@ fn main() -> i64 {
                 &missing,
                 &mut temp_counter,
             )
-            .expect_err(&format!("{label} root type should be required"));
-            assert!(
-                error
-                    .message
-                    .contains("normalized typed IR is missing an expression root type"),
-                "{label}: unexpected diagnostic: {error:?}"
-            );
+            .unwrap_or_else(|error| {
+                panic!("{label} root type should be derived from child values: {error:?}")
+            });
+            assert!(out.contains("flux__transform_buffer_"), "{label}: {out}");
+            assert!(out.contains(&function_c_name("double")), "{label}: {out}");
+            assert!(out.contains(&function_c_name("bump")), "{label}: {out}");
         }
+
+        let first_callback = match sequence_transform(stages[0]).expect("map stage should exist") {
+            SequenceTransform::Map { callback, .. } => callback,
+            SequenceTransform::Filter { .. } => panic!("fixture stage should be a map"),
+        };
+        let mut missing_callback = facts.clone();
+        clear_type_facts(&mut missing_callback, first_callback.span);
+        let mut env = base_env;
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let error = emit_sequence_transform_binding(
+            &mut out,
+            "",
+            ("transformed", &list_ty),
+            expr,
+            &mut env,
+            database.signatures(),
+            &missing_callback,
+            &mut temp_counter,
+        )
+        .expect_err("normalized callback function type should remain authoritative");
+        assert!(
+            error
+                .message
+                .contains("normalized typed IR is missing an expression root type"),
+            "unexpected callback diagnostic: {error:?}"
+        );
     }
 
     #[test]
