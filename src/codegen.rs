@@ -51507,9 +51507,13 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered =
-                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
-            Some(format!("{helper}({})", rendered.join(", ")))
+            emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &expected,
+                env,
+                signatures,
+                |rendered| format!("{helper}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -51521,24 +51525,20 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
             match name {
-                "get" if arguments.len() == 3 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &arguments[..2],
-                        &[Type::Str, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    let callback = emit_cfg_callback_argument_direct(
-                        &arguments[2],
-                        &[Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    Some(format!(
-                        "flux__preferences_get({}, {}, {callback})",
-                        rendered[0], rendered[1]
-                    ))
-                }
+                "get" if arguments.len() == 3 => emit_cfg_ordered_call_with_callback_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                    |rendered, callback| {
+                        format!(
+                            "flux__preferences_get({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        )
+                    },
+                ),
                 "set" | "remove" => {
                     let (helper, expected) = if name == "set" {
                         ("flux__preferences_set", vec![Type::Str, Type::Str])
@@ -51548,10 +51548,13 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != expected.len() {
                         return None;
                     }
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments, &expected, env, signatures,
-                    )?;
-                    Some(format!("{helper}({})", rendered.join(", ")))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| format!("{helper}({})", rendered.join(", ")),
+                    )
                 }
                 _ => None,
             }
@@ -52027,13 +52030,23 @@ fn emit_cfg_scalar_expr_direct(
                             "false".to_string(),
                         )
                     } else {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let runtime_name = if name == "nextIn" {
+                            "next_in"
+                        } else {
+                            "previous_in"
+                        };
+                        return emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Bool],
                             env,
                             signatures,
-                        )?;
-                        (rendered[0].clone(), rendered[1].clone())
+                            |rendered| {
+                                format!(
+                                    "flux__focus_{runtime_name}({}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        );
                     };
                     let runtime_name = if name == "nextIn" {
                         "next_in"
@@ -52085,16 +52098,18 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("flux__text_input_set_caret({position})"))
                 }
                 "setSelection" if ty == Type::Bool && arguments.len() == 2 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    emit_cfg_ordered_call_expression_direct(
                         arguments,
                         &[Type::I64, Type::I64],
                         env,
                         signatures,
-                    )?;
-                    Some(format!(
-                        "flux__text_input_set_selection({}, {})",
-                        rendered[0], rendered[1]
-                    ))
+                        |rendered| {
+                            format!(
+                                "flux__text_input_set_selection({}, {})",
+                                rendered[0], rendered[1]
+                            )
+                        },
+                    )
                 }
                 _ => None,
             }
@@ -52127,9 +52142,13 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered =
-                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
-            Some(format!("{helper}({})", rendered.join(", ")))
+            emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &expected,
+                env,
+                signatures,
+                |rendered| format!("{helper}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -52168,9 +52187,13 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered =
-                emit_cfg_order_safe_call_arguments_direct(arguments, &expected, env, signatures)?;
-            Some(format!("{helper}({})", rendered.join(", ")))
+            emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &expected,
+                env,
+                signatures,
+                |rendered| format!("{helper}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -65928,6 +65951,190 @@ fn main() -> i64 {
                 local_c_name("callback")
             )
         );
+    }
+
+    #[test]
+    fn ordered_scalar_platform_calls_sequence_multiple_computed_copy_arguments() {
+        let source = r#"
+fn stringValue(value: str) -> str {
+    return value
+}
+
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
+fn boolValue(value: bool) -> bool {
+    return value
+}
+
+fn preferenceValue(_value: str) -> void {
+}
+
+fn renameFile(source: str, destination: str) -> error {
+    return fs.rename(stringValue(source), stringValue(destination))
+}
+
+fn preferenceSet(key: str, value: str) -> error {
+    return preferences.set(stringValue(key), stringValue(value))
+}
+
+fn preferenceGet(key: str, fallback: str) -> error {
+    return preferences.get(stringValue(key), stringValue(fallback), preferenceValue)
+}
+
+fn previousFocus(scope: i64, wrap: bool) -> void {
+    focus.previousIn(intValue(scope), boolValue(wrap))
+}
+
+fn selection(start: i64, end: i64) -> bool {
+    return textInput.setSelection(intValue(start), intValue(end))
+}
+
+fn environment(name: str, fallback: str) -> str {
+    return process.env(stringValue(name), stringValue(fallback))
+}
+
+fn localized(key: str, selector: str, fallback: str) -> str {
+    return locale.select(stringValue(key), stringValue(selector), stringValue(fallback))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered scalar platform fixture should typecheck");
+
+        for (function, env, helper, expected_ty, computed_count) in [
+            (
+                "renameFile",
+                HashMap::from([
+                    ("source".to_string(), Type::Str),
+                    ("destination".to_string(), Type::Str),
+                ]),
+                "flux__fs_rename",
+                Type::Error,
+                2usize,
+            ),
+            (
+                "preferenceSet",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                "flux__preferences_set",
+                Type::Error,
+                2usize,
+            ),
+            (
+                "preferenceGet",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                "flux__preferences_get",
+                Type::Error,
+                2usize,
+            ),
+            (
+                "previousFocus",
+                HashMap::from([
+                    ("scope".to_string(), Type::I64),
+                    ("wrap".to_string(), Type::Bool),
+                ]),
+                "flux__focus_previous_in",
+                Type::Void,
+                2usize,
+            ),
+            (
+                "selection",
+                HashMap::from([
+                    ("start".to_string(), Type::I64),
+                    ("end".to_string(), Type::I64),
+                ]),
+                "flux__text_input_set_selection",
+                Type::Bool,
+                2usize,
+            ),
+            (
+                "environment",
+                HashMap::from([
+                    ("name".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                "flux__process_env",
+                Type::Str,
+                2usize,
+            ),
+            (
+                "localized",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("selector".to_string(), Type::Str),
+                    ("fallback".to_string(), Type::Str),
+                ]),
+                "flux__locale_select",
+                Type::Str,
+                3usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("scalar platform CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("scalar platform call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("scalar platform call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function} should emit directly from typed IR"));
+
+            let positions = (0..computed_count)
+                .map(|index| {
+                    direct
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| {
+                            panic!("{function}: missing typed argument {index}: {direct}")
+                        })
+                })
+                .collect::<Vec<_>>();
+            let call = direct
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function}: missing helper {helper}: {direct}"));
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-scalar-platform-order".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("ordered scalar platform call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-scalar-platform-order"));
+        }
     }
 
     #[test]
