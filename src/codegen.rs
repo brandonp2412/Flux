@@ -71539,6 +71539,201 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ordered_network_multi_value_calls_sequence_multiple_computed_arguments() {
+        let source = r#"
+fn accepted(_socket: i64) -> void {
+}
+
+fn networkI64(value: i64) -> i64 {
+    return value
+}
+
+fn networkStr(value: str) -> str {
+    return value
+}
+
+fn connectBoth(host: str, port: i64) -> i64 {
+    let (value, _) = net.connect(networkStr(host), networkI64(port))
+    return value
+}
+
+fn udpBoth(host: str, port: i64) -> i64 {
+    let (value, _) = net.udp(networkStr(host), networkI64(port))
+    return value
+}
+
+fn bindBoth(host: str, port: i64) -> i64 {
+    let (value, _) = net.bind(networkStr(host), networkI64(port))
+    return value
+}
+
+fn listenAll(host: str, port: i64, backlog: i64) -> i64 {
+    let (value, _) = net.listen(networkStr(host), networkI64(port), networkI64(backlog))
+    return value
+}
+
+fn acceptTimeoutBoth(listener: i64, timeout: i64) -> i64 {
+    let (value, _, _) = net.acceptTimeout(networkI64(listener), networkI64(timeout))
+    return value
+}
+
+fn acceptManyBoth(listener: i64, count: i64) -> i64 {
+    let (value, _) = net.acceptMany(networkI64(listener), networkI64(count), accepted)
+    return value
+}
+
+fn acceptManyTimeoutAll(listener: i64, count: i64, timeout: i64) -> i64 {
+    let (value, _, _) = net.acceptManyTimeout(networkI64(listener), networkI64(count), networkI64(timeout), accepted)
+    return value
+}
+
+fn writeTimeoutAll(socket: i64, text: str, timeout: i64) -> i64 {
+    let (value, _) = net.writeTimeout(networkI64(socket), networkStr(text), networkI64(timeout))
+    return value
+}
+
+fn writeFromAll(socket: i64, text: str, offset: i64) -> i64 {
+    let (value, _, _) = net.writeFrom(networkI64(socket), networkStr(text), networkI64(offset))
+    return value
+}
+
+fn writeFromTimeoutAll(socket: i64, text: str, offset: i64, timeout: i64) -> i64 {
+    let (value, _, _) = net.writeFromTimeout(networkI64(socket), networkStr(text), networkI64(offset), networkI64(timeout))
+    return value
+}
+
+fn readableBoth(socket: i64, timeout: i64) -> bool {
+    let (value, _) = net.readable(networkI64(socket), networkI64(timeout))
+    return value
+}
+
+fn writableBoth(socket: i64, timeout: i64) -> bool {
+    let (value, _) = net.writable(networkI64(socket), networkI64(timeout))
+    return value
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered network multi-value fixture should typecheck");
+        let env = HashMap::from([
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+            ("backlog".to_string(), Type::I64),
+            ("listener".to_string(), Type::I64),
+            ("count".to_string(), Type::I64),
+            ("socket".to_string(), Type::I64),
+            ("text".to_string(), Type::Str),
+            ("timeout".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+        ]);
+
+        for (function, source_name, helper, computed_count) in [
+            ("connectBoth", "connect", "flux__net_tcp_connect", 2usize),
+            ("udpBoth", "udp", "flux__net_udp_connect", 2usize),
+            ("bindBoth", "bind", "flux__net_udp_bind", 2usize),
+            ("listenAll", "listen", "flux__net_tcp_listen", 3usize),
+            (
+                "acceptTimeoutBoth",
+                "acceptTimeout",
+                "flux__net_tcp_accept_with_timeout",
+                2usize,
+            ),
+            (
+                "acceptManyBoth",
+                "acceptMany",
+                "flux__net_tcp_accept_many",
+                2usize,
+            ),
+            (
+                "acceptManyTimeoutAll",
+                "acceptManyTimeout",
+                "flux__net_tcp_accept_many_with_timeout",
+                3usize,
+            ),
+            (
+                "writeTimeoutAll",
+                "writeTimeout",
+                "flux__net_send_text_with_timeout",
+                3usize,
+            ),
+            (
+                "writeFromAll",
+                "writeFrom",
+                "flux__net_send_text_progress",
+                3usize,
+            ),
+            (
+                "writeFromTimeoutAll",
+                "writeFromTimeout",
+                "flux__net_send_text_progress_with_timeout",
+                4usize,
+            ),
+            (
+                "readableBoth",
+                "readable",
+                "flux__net_wait_readable",
+                2usize,
+            ),
+            (
+                "writableBoth",
+                "writable",
+                "flux__net_wait_writable",
+                2usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered network CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::QualifiedCall {
+                                namespace,
+                                name,
+                                ..
+                            } if namespace == "net" && name == source_name
+                        )
+                })
+                .unwrap_or_else(|| panic!("{function}: network call should remain in typed IR"));
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| {
+                    panic!("{function}: network call should have typed multi facts")
+                });
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function} should emit directly from typed IR"));
+
+            let positions = (0..computed_count)
+                .map(|index| {
+                    direct
+                        .0
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| panic!("{function}: missing typed argument {index}"))
+                })
+                .collect::<Vec<_>>();
+            let call = direct
+                .0
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function}: missing native helper {helper}"));
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{function}: {}",
+                direct.0
+            );
+        }
+    }
+
+    #[test]
     fn tls_and_websocket_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
 fn text(_value: str) -> void {
@@ -75529,59 +75724,57 @@ fn emit_cfg_multi_expr_direct(
                 },
                 "net" => match name {
                     "connect" | "tcpConnect" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "net.tcpConnect",
+                                    format!(
+                                        "flux__net_tcp_connect({}, {})",
+                                        rendered[0], rendered[1]
+                                    ),
+                                )
+                            },
                         )?;
-                        Some((
-                            profiled_timeline_call(
-                                "network",
-                                "net.tcpConnect",
-                                format!("flux__net_tcp_connect({}, {})", rendered[0], rendered[1]),
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "udpConnect" | "udpBind" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            arguments,
-                            &[Type::Str, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let helper = if name == "udpConnect" {
                             "flux__net_udp_connect"
                         } else {
                             "flux__net_udp_bind"
                         };
-                        Some((
-                            format!("{helper}({}, {})", rendered[0], rendered[1]),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            arguments,
+                            &[Type::Str, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| format!("{helper}({}, {})", rendered[0], rendered[1]),
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "listen" | "tcpListen" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::Str, Type::I64, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "net.tcpListen",
+                                    format!(
+                                        "flux__net_tcp_listen({}, {}, {})",
+                                        rendered[0], rendered[1], rendered[2]
+                                    ),
+                                )
+                            },
                         )?;
-                        Some((
-                            profiled_timeline_call(
-                                "network",
-                                "net.tcpListen",
-                                format!(
-                                    "flux__net_tcp_listen({}, {}, {})",
-                                    rendered[0], rendered[1], rendered[2]
-                                ),
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "accept" | "tcpAccept" if arguments.len() == 1 => {
                         let listener = emit_cfg_ordinary_call_argument_direct(
@@ -75601,64 +75794,53 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "tcpAcceptWithTimeout" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_tcp_accept_with_timeout({}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_tcp_accept_with_timeout({}, {})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "acceptMany" | "tcpAcceptMany" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..2],
                             &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_tcp_accept_many({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_tcp_accept_many({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "tcpAcceptManyWithTimeout" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_tcp_accept_many_with_timeout({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_tcp_accept_many_with_timeout({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "localPort" if arguments.len() == 1 => {
                         let socket = emit_cfg_ordinary_call_argument_direct(
@@ -75674,52 +75856,49 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "sendTextWithTimeout" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_send_text_with_timeout({}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_with_timeout({}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendTextProgress" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_send_text_progress({}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_progress({}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendTextProgressWithTimeout" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_expression_direct(
                             arguments,
                             &[Type::I64, Type::Str, Type::I64, Type::I64],
                             env,
                             signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_send_text_progress_with_timeout({}, {}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_progress_with_timeout({}, {}, {}, {})",
-                                rendered[0], rendered[1], rendered[2], rendered[3]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytes" if arguments.len() == 2 => {
                         let (rendered, bytes) =
@@ -76233,22 +76412,19 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "waitReadable" | "waitWritable" if arguments.len() == 2 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            arguments,
-                            &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let helper = if name == "waitReadable" {
                             "flux__net_wait_readable"
                         } else {
                             "flux__net_wait_writable"
                         };
-                        Some((
-                            format!("{helper}({}, {})", rendered[0], rendered[1]),
-                            "flux__net_bool_error".to_string(),
-                            bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            arguments,
+                            &[Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| format!("{helper}({}, {})", rendered[0], rendered[1]),
+                        )?;
+                        Some((call, "flux__net_bool_error".to_string(), bool_error))
                     }
                     _ => None,
                 },
