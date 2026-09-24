@@ -51628,17 +51628,19 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let rendered = emit_cfg_order_safe_call_arguments_direct(
+            let callback = emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
+            emit_cfg_ordered_call_expression_direct(
                 &arguments[..2],
                 &[Type::Str, Type::Str],
                 env,
                 signatures,
-            )?;
-            let callback = emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
-            Some(format!(
-                "flux__tray_show({}, {}, {callback})",
-                rendered[0], rendered[1]
-            ))
+                |rendered| {
+                    format!(
+                        "flux__tray_show({}, {}, {callback})",
+                        rendered[0], rendered[1]
+                    )
+                },
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -51646,47 +51648,39 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "dialog" && ty == Type::Void => match name.as_str() {
             "alert" | "sheet" if arguments.len() == 2 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    arguments,
-                    &[Type::Str, Type::Str],
-                    env,
-                    signatures,
-                )?;
-                let title = &rendered[0];
-                let message = &rendered[1];
                 let helper = if name == "alert" {
                     "flux__dialog_alert"
                 } else {
                     "flux__dialog_sheet"
                 };
-                Some(format!("{helper}({title}, {message})"))
+                emit_cfg_ordered_call_expression_direct(
+                    arguments,
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| format!("{helper}({}, {})", rendered[0], rendered[1]),
+                )
             }
             "confirm" if arguments.len() == 3 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    &arguments[..2],
-                    &[Type::Str, Type::Str],
-                    env,
-                    signatures,
-                )?;
-                let title = &rendered[0];
-                let message = &rendered[1];
                 let callback =
                     emit_cfg_callback_argument_direct(&arguments[2], &[], env, signatures)?;
-                Some(format!(
-                    "flux__dialog_confirm({title}, {message}, {}, {}, {callback})",
-                    c_string("Cancel"),
-                    c_string("OK")
-                ))
-            }
-            "choose" if arguments.len() == 4 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                emit_cfg_ordered_call_expression_direct(
                     &arguments[..2],
                     &[Type::Str, Type::Str],
                     env,
                     signatures,
-                )?;
-                let title = &rendered[0];
-                let message = &rendered[1];
+                    |rendered| {
+                        format!(
+                            "flux__dialog_confirm({}, {}, {}, {}, {callback})",
+                            rendered[0],
+                            rendered[1],
+                            c_string("Cancel"),
+                            c_string("OK")
+                        )
+                    },
+                )
+            }
+            "choose" if arguments.len() == 4 => {
                 let options = cfg_static_string_list_direct(&arguments[2], signatures)?;
                 if options.is_empty() {
                     return None;
@@ -51702,11 +51696,21 @@ fn emit_cfg_scalar_expr_direct(
                     .map(|value| c_string(value))
                     .collect::<Vec<_>>()
                     .join(", ");
-                Some(format!(
-                    "flux__dialog_choose({title}, {message}, (const char *[]){{{values}}}, INT64_C({}), {}, {callback})",
-                    options.len(),
-                    c_string("Cancel")
-                ))
+                emit_cfg_ordered_call_expression_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__dialog_choose({}, {}, (const char *[]){{{values}}}, INT64_C({}), {}, {callback})",
+                            rendered[0],
+                            rendered[1],
+                            options.len(),
+                            c_string("Cancel")
+                        )
+                    },
+                )
             }
             _ => None,
         },
@@ -52175,32 +52179,33 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(argument.clone());
                     }
                     let expected = vec![Type::Str; scalar_arguments.len()];
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    let callback =
+                        emit_cfg_callback_argument_direct(positional[2], &[], env, signatures)?;
+                    emit_cfg_ordered_call_expression_direct(
                         &scalar_arguments,
                         &expected,
                         env,
                         signatures,
-                    )?;
-                    let title = &rendered[0];
-                    let message = &rendered[1];
-                    let callback =
-                        emit_cfg_callback_argument_direct(positional[2], &[], env, signatures)?;
-                    let mut next_label = 2;
-                    let cancel_label = if cancel_argument.is_some() {
-                        let label = rendered[next_label].clone();
-                        next_label += 1;
-                        label
-                    } else {
-                        c_string("Cancel")
-                    };
-                    let confirm_label = if confirm_argument.is_some() {
-                        rendered[next_label].clone()
-                    } else {
-                        c_string("OK")
-                    };
-                    Some(format!(
-                        "flux__dialog_confirm({title}, {message}, {cancel_label}, {confirm_label}, {callback})"
-                    ))
+                        |rendered| {
+                            let mut next_label = 2;
+                            let cancel_label = if cancel_argument.is_some() {
+                                let label = rendered[next_label].clone();
+                                next_label += 1;
+                                label
+                            } else {
+                                c_string("Cancel")
+                            };
+                            let confirm_label = if confirm_argument.is_some() {
+                                rendered[next_label].clone()
+                            } else {
+                                c_string("OK")
+                            };
+                            format!(
+                                "flux__dialog_confirm({}, {}, {cancel_label}, {confirm_label}, {callback})",
+                                rendered[0], rendered[1]
+                            )
+                        },
+                    )
                 }
                 "choose" => {
                     if positional.len() != 4
@@ -52223,14 +52228,6 @@ fn emit_cfg_scalar_expr_direct(
                         scalar_arguments.push(argument.clone());
                     }
                     let expected = vec![Type::Str; scalar_arguments.len()];
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &scalar_arguments,
-                        &expected,
-                        env,
-                        signatures,
-                    )?;
-                    let title = &rendered[0];
-                    let message = &rendered[1];
                     let options = cfg_static_string_list_direct(positional[2], signatures)?;
                     if options.is_empty() {
                         return None;
@@ -52241,20 +52238,30 @@ fn emit_cfg_scalar_expr_direct(
                         env,
                         signatures,
                     )?;
-                    let cancel_label = if cancel_argument.is_some() {
-                        rendered[2].clone()
-                    } else {
-                        c_string("Cancel")
-                    };
                     let values = options
                         .iter()
                         .map(|value| c_string(value))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    Some(format!(
-                        "flux__dialog_choose({title}, {message}, (const char *[]){{{values}}}, INT64_C({}), {cancel_label}, {callback})",
-                        options.len()
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        &scalar_arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| {
+                            let cancel_label = if cancel_argument.is_some() {
+                                rendered[2].clone()
+                            } else {
+                                c_string("Cancel")
+                            };
+                            format!(
+                                "flux__dialog_choose({}, {}, (const char *[]){{{values}}}, INT64_C({}), {cancel_label}, {callback})",
+                                rendered[0],
+                                rendered[1],
+                                options.len()
+                            )
+                        },
+                    )
                 }
                 _ => None,
             }
@@ -64567,10 +64574,18 @@ fn main() -> i64 {
             ("title".to_string(), Type::Str),
             ("icon".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible tray string inputs must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible tray strings should sequence through typed-IR temporaries");
+        let title_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed tray title should receive a typed-IR temporary");
+        let icon_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("computed tray icon should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__tray_show")
+            .expect("tray call should follow typed-IR argument temporaries");
+        assert!(title_temp < icon_temp && icon_temp < call, "{direct}");
     }
 
     #[test]
@@ -64862,10 +64877,18 @@ fn main() -> i64 {
             ("title".to_string(), Type::Str),
             ("message".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible dialog string inputs must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible dialog strings should sequence through typed-IR temporaries");
+        let title_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed dialog title should receive a typed-IR temporary");
+        let message_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("computed dialog message should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__dialog_confirm")
+            .expect("dialog confirm should follow typed-IR argument temporaries");
+        assert!(title_temp < message_temp && message_temp < call, "{direct}");
 
         let graph = database
             .control_flow_graph("doubleConfirmNamedCall")
@@ -64891,10 +64914,19 @@ fn main() -> i64 {
             ("cancel".to_string(), Type::Str),
             ("accept".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible named dialog string inputs must retain the ordered checked-AST fallback"
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).expect(
+            "two flexible named dialog strings should sequence through typed-IR temporaries",
         );
+        let title_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed named-dialog title should receive a typed-IR temporary");
+        let cancel_temp = direct
+            .find("flux__typed_arg_2")
+            .expect("computed named-dialog cancel label should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__dialog_confirm")
+            .expect("named dialog confirm should follow typed-IR argument temporaries");
+        assert!(title_temp < cancel_temp && cancel_temp < call, "{direct}");
     }
 
     #[test]
