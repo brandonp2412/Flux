@@ -34568,7 +34568,7 @@ fn cfg_scalar_leaf(
     let crate::ir::ControlFlowValueKind::NameRead { name, definitions } = &value.kind else {
         return None;
     };
-    if definitions.is_empty() && !matches!(value.ty, Type::Function { .. }) {
+    if definitions.is_empty() && !matches!(value.ty, Type::Bool | Type::Function { .. }) {
         return None;
     }
     Some(CfgScalarExpr {
@@ -60269,6 +60269,91 @@ fn main() -> i64 {
                 assert_eq!(
                     emitted.matches(&function_c_name("observe")).count(),
                     1,
+                    "{function}: {emitted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_definitionless_boolean_constants_bypass_checked_ast() {
+        let source = r#"
+const YES: bool = true
+const NO: bool = false
+
+fn observe(value: bool) -> bool {
+    return value
+}
+
+fn trueAlias(value: bool) -> bool {
+    return YES == value
+}
+
+fn falseAlias(value: bool) -> bool {
+    return value == NO
+}
+
+fn effectAlias(value: bool) -> bool {
+    return observe(value) == NO
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("boolean constant alias fixture should typecheck");
+        let env = HashMap::from([("value".to_string(), Type::Bool)]);
+
+        for (function, expected_negated, expect_call) in [
+            ("trueAlias", false, false),
+            ("falseAlias", true, false),
+            ("effectAlias", true, true),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("boolean constant alias CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op: BinOp::Eq, .. }
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("typed IR should retain boolean comparison root");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_root = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(!expected_negated),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_root,
+                &Type::Bool,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("boolean constant alias should emit from typed IR");
+
+            if expected_negated {
+                assert!(emitted.contains('!'), "{function}: {emitted}");
+            } else {
+                assert!(!emitted.contains("=="), "{function}: {emitted}");
+            }
+            if expect_call {
+                assert_eq!(
+                    emitted.matches(&function_c_name("observe")).count(),
+                    1,
+                    "{function}: {emitted}"
+                );
+            } else {
+                assert!(
+                    emitted.contains(&local_c_name("value")),
                     "{function}: {emitted}"
                 );
             }
