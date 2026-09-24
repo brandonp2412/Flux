@@ -38496,6 +38496,7 @@ fn emit_block(
                     out,
                     expr,
                     &target,
+                    ty,
                     depth,
                     env,
                     signatures,
@@ -39078,17 +39079,23 @@ fn emit_block(
                         context.cfg_rewrite_facts,
                     ) =>
             {
-                let result_ty = type_of_expr(&values[0], env, signatures)?;
+                let result_ty = context.current_function.returns.first().ok_or_else(|| {
+                    diag(
+                        values[0].span,
+                        "value-producing match return requires one function return type",
+                    )
+                })?;
                 let target = format!("flux__match_result_{}", *temp_counter);
                 *temp_counter += 1;
                 out.push_str(&format!(
                     "{pad}{} {target};\n",
-                    c_type(&result_ty, signatures)
+                    c_type(result_ty, signatures)
                 ));
                 emit_match_expr_into(
                     out,
                     &values[0],
                     &target,
+                    result_ty,
                     depth,
                     env,
                     signatures,
@@ -40489,6 +40496,7 @@ fn emit_match_expr_into(
     out: &mut String,
     expr: &Expr,
     target: &str,
+    result_ty: &Type,
     depth: usize,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
@@ -40505,6 +40513,7 @@ fn emit_match_expr_into(
             out,
             expr,
             target,
+            result_ty,
             depth,
             env,
             signatures,
@@ -40653,11 +40662,10 @@ fn emit_match_expr_into(
                 )?;
                 pattern_conditions.push(c_condition(&guard));
             }
-            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
             if pattern_conditions.is_empty() {
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -40672,7 +40680,7 @@ fn emit_match_expr_into(
                 ));
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -41073,6 +41081,7 @@ fn emit_list_match_expr_into(
     out: &mut String,
     expr: &Expr,
     target: &str,
+    result_ty: &Type,
     depth: usize,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
@@ -41124,6 +41133,7 @@ fn emit_list_match_expr_into(
         return emit_map_match_expr_into(
             out,
             target,
+            result_ty,
             depth,
             &emitted_value.code,
             key,
@@ -41172,10 +41182,9 @@ fn emit_list_match_expr_into(
                     dead_definitions: None,
                 },
             )?;
-            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
             let arm_value = emit_expr_for_expected_with_cfg_proofs(
                 &arm.value,
-                &arm_ty,
+                result_ty,
                 &nested,
                 signatures,
                 checked_i64_cfg_proofs,
@@ -41214,10 +41223,9 @@ fn emit_list_match_expr_into(
                     cfg_rewrite_facts,
                 )?;
                 out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
-                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -41227,10 +41235,9 @@ fn emit_list_match_expr_into(
                 out.push_str(&format!("{pad}        {matched} = true;\n"));
                 out.push_str(&format!("{pad}    }}\n"));
             } else {
-                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -41248,6 +41255,7 @@ fn emit_list_match_expr_into(
 fn emit_map_match_expr_into(
     out: &mut String,
     target: &str,
+    result_ty: &Type,
     depth: usize,
     source_code: &str,
     key_ty: &Type,
@@ -41302,10 +41310,9 @@ fn emit_map_match_expr_into(
 ",
                     c_condition(&guard)
                 ));
-                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -41324,10 +41331,9 @@ fn emit_map_match_expr_into(
 "
                 ));
             } else {
-                let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
                 let arm_value = emit_expr_for_expected_with_cfg_proofs(
                     &arm.value,
-                    &arm_ty,
+                    result_ty,
                     &nested,
                     signatures,
                     checked_i64_cfg_proofs,
@@ -41441,10 +41447,9 @@ fn emit_map_match_expr_into(
 ",
                 c_condition(&guard)
             ));
-            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
             let arm_value = emit_expr_for_expected_with_cfg_proofs(
                 &arm.value,
-                &arm_ty,
+                result_ty,
                 &nested,
                 signatures,
                 checked_i64_cfg_proofs,
@@ -41463,10 +41468,9 @@ fn emit_map_match_expr_into(
 "
             ));
         } else {
-            let arm_ty = type_of_expr(&arm.value, &nested, signatures)?;
             let arm_value = emit_expr_for_expected_with_cfg_proofs(
                 &arm.value,
-                &arm_ty,
+                result_ty,
                 &nested,
                 signatures,
                 checked_i64_cfg_proofs,
@@ -78755,6 +78759,171 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn enum_match_fallback_uses_expected_type_after_arm_ast_poisoning() {
+        let source = r#"
+enum Choice {
+    One(i64)
+    None
+}
+
+fn choose(choice: Choice) -> i64 {
+    return match choice:
+        Choice.One(value): value + 1
+        Choice.None(): 2
+}
+
+fn main() -> i64 {
+    return choose(Choice.One(3))
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("enum match fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("choose")
+            .expect("choose CFG should exist");
+        let matched = graph
+            .values()
+            .iter()
+            .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Match { .. }))
+            .expect("typed IR should retain the match root");
+        let mut facts = cfg_rewrite_facts(graph);
+        facts.match_exprs.remove(&source_span_key(matched.span));
+
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("enum match fallback fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "choose")
+            .expect("choose function should exist");
+        let StmtKind::Return(values) = &mut function.body[0].kind else {
+            panic!("choose should contain a return");
+        };
+        let ExprKind::Match { arms, .. } = &mut values[0].kind else {
+            panic!("choose should return a match expression");
+        };
+        for (index, arm) in arms.iter_mut().enumerate() {
+            arm.value.kind = ExprKind::Str(format!("checked-ast-arm-{index}"));
+        }
+
+        let env = HashMap::from([("choice".to_string(), Type::Named("Choice".to_string()))]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_match_expr_into(
+            &mut out,
+            &values[0],
+            "flux__fallback_match_result",
+            &Type::I64,
+            1,
+            &env,
+            database.signatures(),
+            &mut temp_counter,
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("enum match fallback should use typed arm values");
+
+        assert!(out.contains("switch ("), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(!out.contains("checked-ast-arm-"), "{out}");
+    }
+
+    #[test]
+    fn collection_match_fallbacks_use_expected_type_after_arm_ast_poisoning() {
+        let source = r#"
+fn chooseList(values: i64[]) -> i64 {
+    return match values:
+        []: 0
+        [first, ..._]: first + 1
+}
+
+fn chooseMap(values: map<str, i64>) -> i64 {
+    return match values:
+        {"one": value}: value + 1
+        _: 0
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("collection match fallback fixture should typecheck");
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("collection match fallback fixture should parse");
+
+        for function_name in ["chooseList", "chooseMap"] {
+            let graph = database
+                .control_flow_graph(function_name)
+                .unwrap_or_else(|| panic!("{function_name} CFG should exist"));
+            let matched = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::ListMatch { .. }
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!("{function_name} should retain the collection match root")
+                });
+            let mut facts = cfg_rewrite_facts(graph);
+            facts
+                .list_match_exprs
+                .remove(&source_span_key(matched.span));
+
+            let function = program
+                .functions
+                .iter_mut()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{function_name} should exist"));
+            let StmtKind::Return(values) = &mut function.body[0].kind else {
+                panic!("{function_name} should contain a return");
+            };
+            let ExprKind::ListMatch { arms, .. } = &mut values[0].kind else {
+                panic!("{function_name} should return a collection match");
+            };
+            for (index, arm) in arms.iter_mut().enumerate() {
+                arm.value.kind = ExprKind::Str(format!("checked-ast-collection-arm-{index}"));
+            }
+
+            let source_ty = if function_name == "chooseList" {
+                Type::List(Box::new(Type::I64))
+            } else {
+                Type::Map(Box::new(Type::Str), Box::new(Type::I64))
+            };
+            let env = HashMap::from([("values".to_string(), source_ty)]);
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            emit_match_expr_into(
+                &mut out,
+                &values[0],
+                "flux__fallback_collection_match_result",
+                &Type::I64,
+                1,
+                &env,
+                database.signatures(),
+                &mut temp_counter,
+                &HashMap::new(),
+                &facts,
+            )
+            .unwrap_or_else(|diagnostic| {
+                panic!("{function_name} fallback should use typed arm values: {diagnostic:?}")
+            });
+
+            if function_name == "chooseList" {
+                assert!(out.contains("flux__list_match_"), "{out}");
+                assert!(out.contains(&local_c_name("first")), "{out}");
+            } else {
+                assert!(out.contains("flux__map_match_"), "{out}");
+                assert!(out.contains(&local_c_name("value")), "{out}");
+            }
+            assert!(!out.contains("checked-ast-collection-arm-"), "{out}");
+        }
+    }
+
+    #[test]
     fn dynamic_typed_ir_enum_matches_bypass_checked_ast_rebuild() {
         let source = r#"
 enum Choice {
@@ -78807,6 +78976,7 @@ fn main() -> i64 {
             &mut out,
             &fake,
             "flux__typed_match_result",
+            &Type::I64,
             1,
             &env,
             database.signatures(),
@@ -78876,6 +79046,7 @@ fn main() -> i64 {
             &mut out,
             &fake,
             "flux__typed_list_match_result",
+            &Type::I64,
             1,
             &env,
             database.signatures(),
@@ -78954,6 +79125,7 @@ fn main() -> i64 {
             &mut out,
             &fake,
             "flux__typed_map_match_result",
+            &Type::I64,
             1,
             &env,
             database.signatures(),
