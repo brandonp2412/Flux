@@ -34541,6 +34541,7 @@ struct CfgListMatchExpr {
 
 #[derive(Debug, Clone, Default)]
 struct CfgRewriteFacts {
+    root_types: HashMap<(u32, usize, usize, usize), Type>,
     constants: HashMap<(u32, usize, usize, usize), ConstantValue>,
     aggregates: HashMap<(u32, usize, usize, usize), CfgAggregateShape>,
     aggregate_constants: HashMap<(u32, usize, usize, usize), CfgAggregateConstant>,
@@ -34554,17 +34555,35 @@ struct CfgRewriteFacts {
 fn cfg_rewrite_root_type(span: SourceSpan, rewrite_facts: &CfgRewriteFacts) -> Option<Type> {
     let span = source_span_key(span);
     rewrite_facts
-        .scalar_exprs
+        .root_types
         .get(&span)
-        .or_else(|| rewrite_facts.sequence_exprs.get(&span))
-        .or_else(|| rewrite_facts.multi_exprs.get(&span))
-        .map(|value| value.ty.clone())
+        .cloned()
+        .or_else(|| {
+            rewrite_facts
+                .scalar_exprs
+                .get(&span)
+                .or_else(|| rewrite_facts.sequence_exprs.get(&span))
+                .or_else(|| rewrite_facts.multi_exprs.get(&span))
+                .map(|value| value.ty.clone())
+        })
         .or_else(|| {
             rewrite_facts
                 .aggregate_constants
                 .get(&span)
                 .map(|value| value.ty.clone())
         })
+}
+
+fn cfg_rewrite_required_root_type(
+    span: SourceSpan,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Result<Type, Diagnostic> {
+    cfg_rewrite_root_type(span, rewrite_facts).ok_or_else(|| {
+        diag(
+            span,
+            "normalized typed IR is missing an expression root type during native code generation",
+        )
+    })
 }
 
 fn cfg_literal_aggregate_value(
@@ -35520,6 +35539,25 @@ fn cfg_direct_list_match_expr(
 }
 
 fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
+    let mut root_types = HashMap::new();
+    let mut ambiguous_root_types = HashSet::new();
+    for value in cfg.values().iter().filter(|value| {
+        cfg.is_value_reachable(value.id) && !value.result_index.is_some_and(|index| index > 0)
+    }) {
+        let span = source_span_key(value.span);
+        if ambiguous_root_types.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = root_types.get(&span) {
+            if existing != &value.ty {
+                root_types.remove(&span);
+                ambiguous_root_types.insert(span);
+            }
+        } else {
+            root_types.insert(span, value.ty.clone());
+        }
+    }
+
     let mut constants = HashMap::new();
     let mut ambiguous_constants = HashSet::new();
     // Consume constants from the typed value graph, not only from name reads.
@@ -35830,6 +35868,7 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
     }
 
     CfgRewriteFacts {
+        root_types,
         constants,
         aggregates,
         aggregate_constants,
@@ -38574,18 +38613,20 @@ fn emit_block(
                     .contains_key(&expr_span)
                 {
                     false
-                } else if let Some(ty) = cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts)
-                {
-                    matches!(signatures.canonical_type(&ty), Type::Record(_))
                 } else {
-                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?.1
+                    matches!(
+                        signatures.canonical_type(&cfg_rewrite_required_root_type(
+                            expr.span,
+                            context.cfg_rewrite_facts,
+                        )?),
+                        Type::Record(_)
+                    )
                 };
                 if record_destructure {
-                    let expr_type =
-                        match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                            Some(ty) => signatures.canonical_type(&ty),
-                            None => type_of_expr(expr, env, signatures)?,
-                        };
+                    let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                        expr.span,
+                        context.cfg_rewrite_facts,
+                    )?);
                     let value = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             expr,
@@ -38653,10 +38694,10 @@ fn emit_block(
                 rest,
                 expr,
             } => {
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    expr.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -38735,10 +38776,10 @@ fn emit_block(
                 }
             }
             StmtKind::AssignStructDestructure { fields, expr, .. } => {
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    expr.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -38831,18 +38872,20 @@ fn emit_block(
                     .contains_key(&expr_span)
                 {
                     false
-                } else if let Some(ty) = cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts)
-                {
-                    matches!(signatures.canonical_type(&ty), Type::Record(_))
                 } else {
-                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?.1
+                    matches!(
+                        signatures.canonical_type(&cfg_rewrite_required_root_type(
+                            expr.span,
+                            context.cfg_rewrite_facts,
+                        )?),
+                        Type::Record(_)
+                    )
                 };
                 if record_destructure {
-                    let expr_type =
-                        match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                            Some(ty) => signatures.canonical_type(&ty),
-                            None => type_of_expr(expr, env, signatures)?,
-                        };
+                    let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                        expr.span,
+                        context.cfg_rewrite_facts,
+                    )?);
                     let value = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             expr,
@@ -38947,10 +38990,10 @@ fn emit_block(
                 expr,
                 ..
             } => {
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    expr.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -39029,10 +39072,10 @@ fn emit_block(
                 }
             }
             StmtKind::LetStructDestructure { fields, expr, .. } => {
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    expr.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -39668,11 +39711,10 @@ fn emit_block(
                 body,
                 ..
             } => {
-                let iterable_type =
-                    match cfg_rewrite_root_type(iterable.span, context.cfg_rewrite_facts) {
-                        Some(ty) => signatures.canonical_type(&ty),
-                        None => type_of_expr(iterable, env, signatures)?,
-                    };
+                let iterable_type = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    iterable.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let source = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         iterable,
@@ -44162,9 +44204,15 @@ fn cfg_rewrite_fact_type(
     rewrite_facts: &CfgRewriteFacts,
 ) -> Option<Type> {
     rewrite_facts
-        .scalar_exprs
+        .root_types
         .get(&span)
-        .map(|expr| expr.ty.clone())
+        .cloned()
+        .or_else(|| {
+            rewrite_facts
+                .scalar_exprs
+                .get(&span)
+                .map(|expr| expr.ty.clone())
+        })
         .or_else(|| rewrite_facts.constants.get(&span).map(ConstantValue::ty))
         .or_else(|| {
             rewrite_facts
@@ -78910,6 +78958,56 @@ fn main() -> i64 {
         assert!(out.contains("flux__list_assign_"), "{out}");
         assert!(out.contains("flux__struct_assign_"), "{out}");
         assert!(out.contains("flux__iter_source_"), "{out}");
+    }
+
+    #[test]
+    fn dynamic_aggregate_root_types_survive_without_direct_reconstruction() {
+        let source = r#"
+fn bump(value: i64) -> i64 {
+    return value + 1
+}
+
+fn exercise(include: bool, value: i64) -> i64 {
+    let values: i64[] = [if include: bump(value) else: value]
+    return values.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("dynamic aggregate typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("dynamic aggregate typed-IR fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let source_expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { expr, .. } => Some(expr),
+                _ => None,
+            })
+            .expect("fixture should contain a list binding");
+
+        let source_span = source_span_key(source_expr.span);
+        let facts = cfg_rewrite_facts(graph);
+        assert_eq!(
+            facts.root_types.get(&source_span),
+            Some(&Type::List(Box::new(Type::I64)))
+        );
+        assert!(facts.aggregates.contains_key(&source_span));
+        assert!(!facts.scalar_exprs.contains_key(&source_span));
+        assert!(!facts.sequence_exprs.contains_key(&source_span));
+        assert!(!facts.multi_exprs.contains_key(&source_span));
+        assert!(!facts.aggregate_constants.contains_key(&source_span));
     }
 
     #[test]
