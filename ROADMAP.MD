@@ -1712,3 +1712,5 @@ Verified Milestone 29 uncontrolled-selection lifecycle follow-up: literal Toggle
 - [ ] Automatic save-triggered hot reload is production-ready for development workflows.
 - [x] Package ecosystem and platform interoperability are documented and tested in [`docs/package-interoperability.md`](docs/package-interoperability.md), with regression coverage for dependency resolution/lockfiles/cache isolation, native package metadata and C headers, target-selected modules, and direct platform lowering.
 - [x] Flux can build substantial real applications without resorting to an OOP architecture.
+
+    - Verified ordered network call typed-IR follow-up: scalar borrowed-list sends and multi-value text/byte receive/send boundaries now materialize two-or-more computed Copy scalar arguments in Flux source order before their native network call when any borrowed collection argument is proven reorder-safe. Borrowed storage remains on its allocation-free typed-IR path, callback identity is preserved, and effectful/non-reorder-safe borrowed aggregates retain the established fallback.

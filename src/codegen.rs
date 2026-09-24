@@ -49597,6 +49597,46 @@ fn emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
     Some((rendered_scalars, borrowed))
 }
 
+fn emit_cfg_ordered_call_with_borrowed_list_direct<F>(
+    scalar_arguments: &[CfgScalarExpr],
+    expected_scalars: &[Type],
+    borrowed_argument: &CfgScalarExpr,
+    borrowed_element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    render_call: F,
+) -> Option<String>
+where
+    F: FnOnce(&[String], &str) -> String,
+{
+    let borrowed = emit_cfg_borrowed_list_argument_direct(
+        borrowed_argument,
+        borrowed_element,
+        env,
+        signatures,
+    )?;
+    if cfg_scalar_expr_is_aggregate_reorder_safe(borrowed_argument) {
+        return emit_cfg_ordered_call_expression_direct(
+            scalar_arguments,
+            expected_scalars,
+            env,
+            signatures,
+            |rendered| render_call(rendered, &borrowed),
+        );
+    }
+    if scalar_arguments.len() != expected_scalars.len() {
+        return None;
+    }
+    let rendered = scalar_arguments
+        .iter()
+        .zip(expected_scalars)
+        .map(|(argument, expected)| {
+            emit_cfg_call_argument_direct(argument, expected, env, signatures)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(render_call(&rendered, &borrowed))
+}
+
 fn emit_cfg_callback_argument_direct(
     argument: &CfgScalarExpr,
     params: &[Type],
@@ -50647,19 +50687,17 @@ fn emit_cfg_scalar_expr_direct(
                     },
                 ),
                 "sendTextParts" if arguments.len() == 2 => {
-                    let (rendered, parts) =
-                        emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                            &arguments[..1],
-                            &[Type::I64],
-                            &arguments[1],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                    Some(format!(
-                        "flux__net_send_text_parts({}, {parts})",
-                        rendered[0]
-                    ))
+                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                        &arguments[..1],
+                        &[Type::I64],
+                        &arguments[1],
+                        &Type::Str,
+                        env,
+                        signatures,
+                        |rendered, parts| {
+                            format!("flux__net_send_text_parts({}, {parts})", rendered[0])
+                        },
+                    )
                 }
                 "sendTextTo" if arguments.len() == 4 => emit_cfg_ordered_call_expression_direct(
                     arguments,
@@ -50674,19 +50712,20 @@ fn emit_cfg_scalar_expr_direct(
                     },
                 ),
                 "sendTextToParts" if arguments.len() == 4 => {
-                    let (rendered, parts) =
-                        emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                            &arguments[..3],
-                            &[Type::I64, Type::Str, Type::I64],
-                            &arguments[3],
-                            &Type::Str,
-                            env,
-                            signatures,
-                        )?;
-                    Some(format!(
-                        "flux__net_send_text_to_parts({}, {}, {}, {parts})",
-                        rendered[0], rendered[1], rendered[2]
-                    ))
+                    emit_cfg_ordered_call_with_borrowed_list_direct(
+                        &arguments[..3],
+                        &[Type::I64, Type::Str, Type::I64],
+                        &arguments[3],
+                        &Type::Str,
+                        env,
+                        signatures,
+                        |rendered, parts| {
+                            format!(
+                                "flux__net_send_text_to_parts({}, {}, {}, {parts})",
+                                rendered[0], rendered[1], rendered[2]
+                            )
+                        },
+                    )
                 }
                 "peerAddress" | "localAddress" if arguments.len() == 2 => {
                     let socket = emit_cfg_ordinary_call_argument_direct(
@@ -67998,10 +68037,18 @@ fn main() -> i64 {
             ("port".to_string(), Type::I64),
             ("parts".to_string(), Type::List(Box::new(Type::Str))),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible scalars beside an inert borrowed list must retain the ordered fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible scalars beside an inert borrowed list should emit directly");
+        let socket_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("borrowed-list call should sequence its computed socket");
+        let host_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("borrowed-list call should sequence its computed host");
+        let call = direct
+            .rfind("flux__net_send_text_to_parts")
+            .expect("borrowed-list call should follow ordered scalar temporaries");
+        assert!(socket_temp < host_temp && host_temp < call, "{direct}");
     }
 
     #[test]
@@ -71813,9 +71860,24 @@ fn main() -> i64 {
             .multi_exprs
             .get(&source_span_key(root.span))
             .expect("two-flex text receive should have typed multi-value facts");
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("two flexible text receive scalars should emit directly");
+        let socket_temp = direct
+            .0
+            .find("flux__typed_arg_0")
+            .expect("text receive should sequence its computed socket");
+        let max_bytes_temp = direct
+            .0
+            .find("flux__typed_arg_1")
+            .expect("text receive should sequence its computed byte limit");
+        let call = direct
+            .0
+            .rfind("flux__net_receive_text")
+            .expect("text receive should follow ordered scalar temporaries");
         assert!(
-            emit_cfg_multi_expr_direct(multi, &env, database.signatures()).is_none(),
-            "two flexible text receive scalars must retain ordered fallback"
+            socket_temp < max_bytes_temp && max_bytes_temp < call,
+            "{}",
+            direct.0
         );
     }
 
@@ -72039,9 +72101,24 @@ fn main() -> i64 {
             .multi_exprs
             .get(&source_span_key(root.span))
             .expect("two-flex byte receive should have typed multi-value facts");
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("two flexible byte receive scalars should emit directly");
+        let socket_temp = direct
+            .0
+            .find("flux__typed_arg_0")
+            .expect("byte receive should sequence its computed socket");
+        let max_bytes_temp = direct
+            .0
+            .find("flux__typed_arg_1")
+            .expect("byte receive should sequence its computed byte limit");
+        let call = direct
+            .0
+            .rfind("flux__net_receive_bytes")
+            .expect("byte receive should follow ordered scalar temporaries");
         assert!(
-            emit_cfg_multi_expr_direct(multi, &env, database.signatures()).is_none(),
-            "two flexible byte receive scalars must retain ordered fallback"
+            socket_temp < max_bytes_temp && max_bytes_temp < call,
+            "{}",
+            direct.0
         );
     }
 
@@ -72305,10 +72382,21 @@ fn main() -> i64 {
             .multi_exprs
             .get(&source_span_key(root.span))
             .expect("two-flex borrowed send should have typed multi-value facts");
-        assert!(
-            emit_cfg_multi_expr_direct(multi, &env, database.signatures()).is_none(),
-            "two flexible scalars beside an inert borrowed list must retain ordered fallback"
-        );
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("two flexible scalars beside an inert borrowed list should emit directly");
+        let socket_temp = direct
+            .0
+            .find("flux__typed_arg_0")
+            .expect("borrowed send should sequence its computed socket");
+        let host_temp = direct
+            .0
+            .find("flux__typed_arg_1")
+            .expect("borrowed send should sequence its computed host");
+        let call = direct
+            .0
+            .rfind("flux__net_send_bytes_to")
+            .expect("borrowed send should follow ordered scalar temporaries");
+        assert!(socket_temp < host_temp && host_temp < call, "{}", direct.0);
     }
 
     #[test]
@@ -75281,45 +75369,42 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "sendBytesTo" if arguments.len() == 4 => {
-                        let (rendered, bytes) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &arguments[..3],
-                                &[Type::I64, Type::Str, Type::I64],
-                                &arguments[3],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_bytes_to({}, {}, {}, {bytes})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
-                    }
-                    "receiveBytes" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::Str, Type::I64],
+                            &arguments[3],
+                            &Type::I64,
                             env,
                             signatures,
+                            |rendered, bytes| {
+                                format!(
+                                    "flux__net_send_bytes_to({}, {}, {}, {bytes})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
+                    }
+                    "receiveBytes" if arguments.len() == 3 => {
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::List(Box::new(Type::I64))],
                             env,
                             signatures,
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_bytes({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                format!(
+                                    "flux__net_receive_bytes({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveBytesMany" if arguments.len() == 4 => {
                         let rendered = emit_cfg_order_safe_call_arguments_direct(
@@ -75469,30 +75554,29 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "receiveText" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
                         let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
                         )?;
-                        Some((
-                            profiled_timeline_call(
-                                "network",
-                                "net.receiveText",
-                                format!(
-                                    "flux__net_receive_text({}, {}, {callback})",
-                                    rendered[0], rendered[1]
-                                ),
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_expression_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
+                            env,
+                            signatures,
+                            |rendered| {
+                                profiled_timeline_call(
+                                    "network",
+                                    "net.receiveText",
+                                    format!(
+                                        "flux__net_receive_text({}, {}, {callback})",
+                                        rendered[0], rendered[1]
+                                    ),
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveTextWithTimeout" if arguments.len() == 4 => {
                         let rendered = emit_cfg_order_safe_call_arguments_direct(
