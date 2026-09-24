@@ -3749,6 +3749,26 @@ impl ControlFlowGraph {
             .filter(move |lifetime| lifetime.source_definition == source_definition)
     }
 
+    /// Return active immutable-borrow lifetimes rooted in any exact source
+    /// definition consumed by a normalized move before this CFG node.
+    ///
+    /// This joins the move and lifetime IR by definition identity rather than
+    /// diagnostic names or a checked-AST walk. Bootstrap borrow lifetimes still
+    /// describe the whole source owner, so projected moves conservatively
+    /// return every active lifetime of that owner until projection-specific
+    /// lifetime regions exist.
+    pub fn borrow_lifetimes_before_move(
+        &self,
+        id: ControlFlowNodeId,
+        movement: &OwnershipMove,
+    ) -> impl Iterator<Item = &OwnershipBorrowLifetime> {
+        self.borrow_lifetimes_before(id).filter(move |lifetime| {
+            movement
+                .source_definitions
+                .contains(&lifetime.source_definition)
+        })
+    }
+
     /// Return all normalized immutable-borrow boundaries in deterministic
     /// order. Starts precede ends, and each underlying collection retains the
     /// graph's stable `(from, to, definition)` ordering. The view is borrowed

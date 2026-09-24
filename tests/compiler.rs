@@ -19134,6 +19134,77 @@ fn main() -> i64 {
 }
 
 #[test]
+fn move_lifetime_query_uses_exact_source_definition_identity() {
+    let source = r#"
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn main() -> i64 {
+    if positive(1):
+        let source: i64[] = [10, 20, 30]
+        let view: i64[] = source[1:]
+        print(view[0])
+    else:
+        let source: i64[] = [40, 50, 60]
+        let view: i64[] = source[1:]
+        print(view[0])
+    return 0
+}
+"#;
+
+    let database = fluxc::semantic::SemanticDatabase::analyze(source, SourceId::new(1214))
+        .expect("move/lifetime identity fixture should analyze");
+    let graph = database
+        .control_flow_graph("main")
+        .expect("main should expose a CFG");
+    let lifetimes = graph
+        .borrow_lifetimes()
+        .iter()
+        .filter(|lifetime| lifetime.borrower == "view" && lifetime.source == "source")
+        .collect::<Vec<_>>();
+    assert_eq!(lifetimes.len(), 2);
+    assert_ne!(
+        lifetimes[0].source_definition,
+        lifetimes[1].source_definition
+    );
+
+    for (index, lifetime) in lifetimes.iter().enumerate() {
+        let active_node = lifetime.active_before[0];
+        let movement = fluxc::ir::OwnershipMove {
+            source: "source".to_string(),
+            destination: "destination".to_string(),
+            projection: Vec::new(),
+            value: None,
+            source_definitions: vec![lifetime.source_definition],
+            span: lifetime.origin,
+        };
+        let matches = graph
+            .borrow_lifetimes_before_move(active_node, &movement)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].definition, lifetime.definition);
+
+        let other = lifetimes[1 - index];
+        let unrelated_move = fluxc::ir::OwnershipMove {
+            source: "source".to_string(),
+            destination: "destination".to_string(),
+            projection: Vec::new(),
+            value: None,
+            source_definitions: vec![other.source_definition],
+            span: other.origin,
+        };
+        assert!(
+            graph
+                .borrow_lifetimes_before_move(active_node, &unrelated_move)
+                .next()
+                .is_none(),
+            "same-spelled sibling owners must not share move/lifetime provenance"
+        );
+    }
+}
+
+#[test]
 fn definition_liveness_keeps_same_named_branch_bindings_separate() {
     let source = r#"
 fn positive(value: i64) -> bool {
