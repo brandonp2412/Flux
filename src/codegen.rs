@@ -38413,12 +38413,7 @@ fn emit_block(
                 )?;
             }
             StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. }
-                if match_expr_needs_specialized_lowering(
-                    expr,
-                    env,
-                    signatures,
-                    context.cfg_rewrite_facts,
-                ) =>
+                if match_expr_needs_specialized_lowering(expr, context.cfg_rewrite_facts) =>
             {
                 let target = local_c_name(name);
                 out.push_str(&format!("{pad}{} {target};\n", c_type(ty, signatures)));
@@ -39005,8 +39000,6 @@ fn emit_block(
                 if values.len() == 1
                     && match_expr_needs_specialized_lowering(
                         &values[0],
-                        env,
-                        signatures,
                         context.cfg_rewrite_facts,
                     ) =>
             {
@@ -40205,12 +40198,7 @@ fn emit_list_match_pattern_bindings(
     Ok(())
 }
 
-fn match_expr_needs_specialized_lowering(
-    expr: &Expr,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> bool {
+fn match_expr_needs_specialized_lowering(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> bool {
     if matches!(
         expr.kind,
         ExprKind::Match { .. } | ExprKind::ListMatch { .. }
@@ -40218,18 +40206,8 @@ fn match_expr_needs_specialized_lowering(
         return true;
     }
     let span = source_span_key(expr.span);
-    rewrite_facts
-        .match_exprs
-        .get(&span)
-        .is_some_and(|match_expr| {
-            cfg_match_expr_calls_are_reconstructable(match_expr, env, signatures)
-        })
-        || rewrite_facts
-            .list_match_exprs
-            .get(&span)
-            .is_some_and(|list_match_expr| {
-                cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
-            })
+    rewrite_facts.match_exprs.contains_key(&span)
+        || rewrite_facts.list_match_exprs.contains_key(&span)
 }
 
 fn emit_cfg_struct_pattern_bindings(
@@ -40435,10 +40413,7 @@ fn emit_match_expr_into(
 ) -> Result<(), Diagnostic> {
     if cfg_rewrite_facts
         .list_match_exprs
-        .get(&source_span_key(expr.span))
-        .is_some_and(|list_match_expr| {
-            cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
-        })
+        .contains_key(&source_span_key(expr.span))
         || matches!(expr.kind, ExprKind::ListMatch { .. })
     {
         return emit_list_match_expr_into(
@@ -40456,7 +40431,6 @@ fn emit_match_expr_into(
     if let Some(match_expr) = cfg_rewrite_facts
         .match_exprs
         .get(&source_span_key(expr.span))
-        && cfg_match_expr_calls_are_reconstructable(match_expr, env, signatures)
     {
         let mut direct = String::new();
         let mut direct_temp_counter = *temp_counter;
@@ -41024,7 +40998,6 @@ fn emit_list_match_expr_into(
     if let Some(list_match_expr) = cfg_rewrite_facts
         .list_match_exprs
         .get(&source_span_key(expr.span))
-        && cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
     {
         let mut direct = String::new();
         let mut direct_temp_counter = *temp_counter;
@@ -49531,19 +49504,6 @@ fn emit_cfg_aggregate_constant(
     }
 }
 
-fn cfg_list_match_expr_calls_are_reconstructable(
-    expr: &CfgListMatchExpr,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-) -> bool {
-    cfg_scalar_expr_calls_are_reconstructable(&expr.value, env, signatures)
-        && expr.arms.iter().all(|arm| {
-            arm.guard.as_ref().is_none_or(|guard| {
-                cfg_scalar_expr_calls_are_reconstructable(guard, env, signatures)
-            }) && cfg_scalar_expr_calls_are_reconstructable(&arm.value, env, signatures)
-        })
-}
-
 fn cfg_aggregate_value_is_reorder_safe(value: &CfgAggregateValue) -> bool {
     match value {
         CfgAggregateValue::Scalar(_) | CfgAggregateValue::AbsentOptional => true,
@@ -49793,19 +49753,6 @@ fn cfg_scalar_expr_calls_are_reconstructable(
         | CfgScalarExprKind::Nil
         | CfgScalarExprKind::NoneLiteral => true,
     }
-}
-
-fn cfg_match_expr_calls_are_reconstructable(
-    expr: &CfgMatchExpr,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-) -> bool {
-    cfg_scalar_expr_calls_are_reconstructable(&expr.value, env, signatures)
-        && expr.arms.iter().all(|arm| {
-            arm.guard.as_ref().is_none_or(|guard| {
-                cfg_scalar_expr_calls_are_reconstructable(guard, env, signatures)
-            }) && cfg_scalar_expr_calls_are_reconstructable(&arm.value, env, signatures)
-        })
 }
 
 fn cfg_scalar_expr_is_reusable_pure_primitive(
@@ -77253,12 +77200,7 @@ fn main() -> i64 {
             ("choice".to_string(), Type::Named("Choice".to_string())),
             ("floor".to_string(), Type::I64),
         ]);
-        assert!(match_expr_needs_specialized_lowering(
-            &fake,
-            &env,
-            database.signatures(),
-            &facts,
-        ));
+        assert!(match_expr_needs_specialized_lowering(&fake, &facts));
         let mut out = String::new();
         let mut temp_counter = 0;
         emit_match_expr_into(
@@ -77327,12 +77269,7 @@ fn main() -> i64 {
             ("values".to_string(), Type::List(Box::new(Type::I64))),
             ("floor".to_string(), Type::I64),
         ]);
-        assert!(match_expr_needs_specialized_lowering(
-            &fake,
-            &env,
-            database.signatures(),
-            &facts,
-        ));
+        assert!(match_expr_needs_specialized_lowering(&fake, &facts));
         let mut out = String::new();
         let mut temp_counter = 0;
         emit_match_expr_into(
@@ -77410,12 +77347,7 @@ fn main() -> i64 {
             ),
             ("floor".to_string(), Type::I64),
         ]);
-        assert!(match_expr_needs_specialized_lowering(
-            &fake,
-            &env,
-            database.signatures(),
-            &facts,
-        ));
+        assert!(match_expr_needs_specialized_lowering(&fake, &facts));
         let mut out = String::new();
         let mut temp_counter = 0;
         emit_match_expr_into(
