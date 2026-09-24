@@ -39876,6 +39876,297 @@ fn emit_match_expr_into(
     Ok(())
 }
 
+fn cfg_list_match_condition(
+    pattern: &crate::ir::ControlFlowListMatchPattern,
+    temp: &str,
+) -> Option<String> {
+    match pattern {
+        crate::ir::ControlFlowListMatchPattern::Wildcard => Some("true".to_string()),
+        crate::ir::ControlFlowListMatchPattern::List { bindings, rest } => {
+            if rest.is_some() {
+                Some(format!("{temp}.len >= {}", bindings.len()))
+            } else {
+                Some(format!("{temp}.len == {}", bindings.len()))
+            }
+        }
+        crate::ir::ControlFlowListMatchPattern::Map { .. } => None,
+    }
+}
+
+fn emit_cfg_list_match_pattern_bindings(
+    out: &mut String,
+    pad: &str,
+    pattern: &crate::ir::ControlFlowListMatchPattern,
+    temp: &str,
+    element: &Type,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<()> {
+    match pattern {
+        crate::ir::ControlFlowListMatchPattern::Wildcard => return Some(()),
+        crate::ir::ControlFlowListMatchPattern::Map { .. } => return None,
+        crate::ir::ControlFlowListMatchPattern::List { .. } => {}
+    }
+    let crate::ir::ControlFlowListMatchPattern::List { bindings, rest } = pattern else {
+        unreachable!()
+    };
+    let element_c = c_type(element, signatures);
+    for (index, binding) in bindings.iter().enumerate() {
+        if binding == "_" {
+            continue;
+        }
+        let index_code = if let Some(rest) = rest {
+            if index < rest.index {
+                index.to_string()
+            } else {
+                format!("{temp}.len - {}", bindings.len() - index)
+            }
+        } else {
+            index.to_string()
+        };
+        out.push_str(&format!(
+            "{pad}{element_c} {} = *(({element_c} *)flux_list_at_unchecked({temp}, {index_code}, sizeof({element_c})));\n",
+            local_c_name(binding)
+        ));
+        env.insert(binding.clone(), element.clone());
+    }
+    if let Some(rest) = rest
+        && rest.binding != "_"
+    {
+        let rest_name = local_c_name(&rest.binding);
+        out.push_str(&format!(
+            "{pad}struct flux__list {rest_name} = {{ .data = {temp}.data, .len = {temp}.len - {}, .stride = flux_list_stride({temp}, sizeof({element_c})) }};\n",
+            bindings.len()
+        ));
+        out.push_str(&format!(
+            "{pad}if ({rest_name}.len != 0) {{ {rest_name}.data = flux_list_at_unchecked({temp}, {}, sizeof({element_c})); }}\n",
+            rest.index
+        ));
+        env.insert(rest.binding.clone(), Type::List(Box::new(element.clone())));
+    }
+    Some(())
+}
+
+fn emit_cfg_map_match_expr_into(
+    out: &mut String,
+    target: &str,
+    depth: usize,
+    source_code: &str,
+    key_ty: &Type,
+    value_ty: &Type,
+    arms: &[CfgListMatchExprArm],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let pad = "    ".repeat(depth);
+    let map_name = format!("flux__map_match_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__map {map_name} = {source_code};\n"
+    ));
+    let matched = format!("flux__map_match_done_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!("{pad}bool {matched} = false;\n"));
+    let key_c = c_type(key_ty, signatures);
+    let value_c = c_type(value_ty, signatures);
+
+    for arm in arms {
+        let crate::ir::ControlFlowListMatchPattern::Map { entries } = &arm.pattern else {
+            if !matches!(
+                arm.pattern,
+                crate::ir::ControlFlowListMatchPattern::Wildcard
+            ) {
+                return None;
+            }
+            out.push_str(&format!("{pad}if (!{matched}) {{\n"));
+            let nested = env.clone();
+            if let Some(guard) = &arm.guard {
+                let guard = emit_cfg_scalar_expr(guard, &Type::Bool, &nested, signatures)?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
+                let arm_value =
+                    emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+                out.push_str(&format!("{pad}        {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}        {matched} = true;\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            } else {
+                let arm_value =
+                    emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+                out.push_str(&format!("{pad}    {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}    {matched} = true;\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+            continue;
+        };
+
+        let arm_match = format!("flux__map_arm_match_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!(
+            "{pad}if (!{matched}) {{\n{pad}    bool {arm_match} = true;\n"
+        ));
+        let mut binding_temps = Vec::new();
+        for entry in entries {
+            let key_code = constant_c_value(&entry.key);
+            let found = format!("flux__map_key_found_{}", *temp_counter);
+            *temp_counter += 1;
+            let value_temp = format!("flux__map_value_{}", *temp_counter);
+            *temp_counter += 1;
+            out.push_str(&format!("{pad}    bool {found} = false;\n"));
+            if entry.binding != "_" {
+                out.push_str(&format!(
+                    "{pad}    {value_c} {value_temp} = ({value_c}){{0}};\n"
+                ));
+                binding_temps.push((entry.binding.clone(), value_temp.clone()));
+            }
+            let equal = if *key_ty == Type::Str {
+                format!(
+                    "strcmp(*((const char **)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))), {key_code}) == 0"
+                )
+            } else {
+                format!(
+                    "(*(({key_c} *)flux_list_at_unchecked({map_name}.keys, flux__map_index, sizeof({key_c}))) == {key_code})"
+                )
+            };
+            out.push_str(&format!(
+                "{pad}    for (size_t flux__map_index = 0; flux__map_index < {map_name}.keys.len; ++flux__map_index) {{\n"
+            ));
+            out.push_str(&format!(
+                "{pad}        if ({equal}) {{\n{pad}            {found} = true;\n"
+            ));
+            if entry.binding != "_" {
+                out.push_str(&format!(
+                    "{pad}            {value_temp} = *(({value_c} *)flux_list_at_unchecked({map_name}.values, flux__map_index, sizeof({value_c})));\n"
+                ));
+            }
+            out.push_str(&format!(
+                "{pad}            break;\n{pad}        }}\n{pad}    }}\n{pad}    if (!{found}) {arm_match} = false;\n"
+            ));
+        }
+
+        out.push_str(&format!("{pad}    if ({arm_match}) {{\n"));
+        let mut nested = env.clone();
+        for (name, temp) in binding_temps {
+            out.push_str(&format!(
+                "{pad}        {value_c} {} = {temp};\n",
+                local_c_name(&name)
+            ));
+            nested.insert(name, value_ty.clone());
+        }
+        if let Some(guard) = &arm.guard {
+            let guard = emit_cfg_scalar_expr(guard, &Type::Bool, &nested, signatures)?;
+            out.push_str(&format!("{pad}        if ({}) {{\n", c_condition(&guard)));
+            let arm_value = emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+            out.push_str(&format!("{pad}            {target} = {arm_value};\n"));
+            out.push_str(&format!("{pad}            {matched} = true;\n"));
+            out.push_str(&format!("{pad}        }}\n"));
+        } else {
+            let arm_value = emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+            out.push_str(&format!("{pad}        {target} = {arm_value};\n"));
+            out.push_str(&format!("{pad}        {matched} = true;\n"));
+        }
+        out.push_str(&format!("{pad}    }}\n{pad}}}\n"));
+    }
+    Some(())
+}
+
+fn emit_cfg_list_match_expr_into(
+    out: &mut String,
+    expr: &CfgListMatchExpr,
+    target: &str,
+    depth: usize,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let value_ty = signatures.canonical_type(&expr.value.ty);
+    let emitted_value = emit_cfg_scalar_expr(&expr.value, &value_ty, env, signatures)?;
+    if let Type::Map(key, mapped_value) = &value_ty {
+        return emit_cfg_map_match_expr_into(
+            out,
+            target,
+            depth,
+            &emitted_value,
+            key,
+            mapped_value,
+            &expr.arms,
+            env,
+            signatures,
+            temp_counter,
+        );
+    }
+    let Type::List(element) = &value_ty else {
+        return None;
+    };
+    let temp = format!("flux__list_match_{}", *temp_counter);
+    *temp_counter += 1;
+    let pad = "    ".repeat(depth);
+    out.push_str(&format!(
+        "{pad}struct flux__list {temp} = {emitted_value};\n"
+    ));
+    if expr.arms.iter().all(|arm| arm.guard.is_none()) {
+        for (arm_index, arm) in expr.arms.iter().enumerate() {
+            let condition = cfg_list_match_condition(&arm.pattern, &temp)?;
+            if arm_index == 0 {
+                out.push_str(&format!("{pad}if ({condition}) {{\n"));
+            } else if matches!(
+                arm.pattern,
+                crate::ir::ControlFlowListMatchPattern::Wildcard
+            ) {
+                out.push_str(&format!("{pad}else {{\n"));
+            } else {
+                out.push_str(&format!("{pad}else if ({condition}) {{\n"));
+            }
+            let mut nested = env.clone();
+            emit_cfg_list_match_pattern_bindings(
+                out,
+                &format!("{pad}    "),
+                &arm.pattern,
+                &temp,
+                element,
+                &mut nested,
+                signatures,
+            )?;
+            let arm_value = emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+            out.push_str(&format!("{pad}    {target} = {arm_value};\n"));
+            out.push_str(&format!("{pad}}}\n"));
+        }
+    } else {
+        let matched = format!("flux__list_match_done_{}", *temp_counter);
+        *temp_counter += 1;
+        out.push_str(&format!("{pad}bool {matched} = false;\n"));
+        for arm in &expr.arms {
+            let condition = cfg_list_match_condition(&arm.pattern, &temp)?;
+            out.push_str(&format!("{pad}if (!{matched} && ({condition})) {{\n"));
+            let mut nested = env.clone();
+            emit_cfg_list_match_pattern_bindings(
+                out,
+                &format!("{pad}    "),
+                &arm.pattern,
+                &temp,
+                element,
+                &mut nested,
+                signatures,
+            )?;
+            if let Some(guard) = &arm.guard {
+                let guard = emit_cfg_scalar_expr(guard, &Type::Bool, &nested, signatures)?;
+                out.push_str(&format!("{pad}    if ({}) {{\n", c_condition(&guard)));
+                let arm_value =
+                    emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+                out.push_str(&format!("{pad}        {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}        {matched} = true;\n"));
+                out.push_str(&format!("{pad}    }}\n"));
+            } else {
+                let arm_value =
+                    emit_cfg_scalar_expr(&arm.value, &arm.value.ty, &nested, signatures)?;
+                out.push_str(&format!("{pad}    {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}    {matched} = true;\n"));
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+    }
+    Some(())
+}
+
 fn emit_list_match_expr_into(
     out: &mut String,
     expr: &Expr,
@@ -39892,18 +40183,23 @@ fn emit_list_match_expr_into(
         .get(&source_span_key(expr.span))
         && cfg_list_match_expr_calls_are_reconstructable(list_match_expr, env, signatures)
     {
-        let synthetic = cfg_list_match_expr_as_ast(list_match_expr);
-        return emit_list_match_expr_into(
-            out,
-            &synthetic,
+        let mut direct = String::new();
+        let mut direct_temp_counter = *temp_counter;
+        if emit_cfg_list_match_expr_into(
+            &mut direct,
+            list_match_expr,
             target,
             depth,
             env,
             signatures,
-            temp_counter,
-            &HashMap::new(),
-            &CfgRewriteFacts::default(),
-        );
+            &mut direct_temp_counter,
+        )
+        .is_some()
+        {
+            out.push_str(&direct);
+            *temp_counter = direct_temp_counter;
+            return Ok(());
+        }
     }
     let ExprKind::ListMatch { value, arms } = &expr.kind else {
         return Err(diag(
@@ -48033,10 +48329,6 @@ fn cfg_aggregate_constant_as_ast(
     }
 }
 
-fn cfg_scalar_expr_as_ast(expr: &CfgScalarExpr) -> Expr {
-    cfg_scalar_expr_as_ast_with_spans(expr, &mut CfgSyntheticAstSpans::default())
-}
-
 fn cfg_scalar_expr_as_ast_for_source(expr: &CfgScalarExpr, source_id: SourceId) -> Expr {
     cfg_scalar_expr_as_ast_with_spans(
         expr,
@@ -48270,67 +48562,6 @@ fn cfg_scalar_expr_as_ast_with_spans(
         line: span.line,
         span,
         kind,
-    }
-}
-
-fn cfg_list_match_pattern_as_ast(
-    pattern: &crate::ir::ControlFlowListMatchPattern,
-    span: SourceSpan,
-) -> ListMatchPattern {
-    let binding = |name: &str| crate::ast::PatternBinding {
-        name: name.to_string(),
-        span,
-    };
-    match pattern {
-        crate::ir::ControlFlowListMatchPattern::List { bindings, rest } => ListMatchPattern::List {
-            bindings: bindings.iter().map(|name| binding(name)).collect(),
-            rest: rest.as_ref().map(|rest| crate::ast::ListRestPattern {
-                binding: binding(&rest.binding),
-                index: rest.index,
-            }),
-            span,
-        },
-        crate::ir::ControlFlowListMatchPattern::Wildcard => ListMatchPattern::Wildcard { span },
-        crate::ir::ControlFlowListMatchPattern::Map { entries } => ListMatchPattern::Map {
-            entries: entries
-                .iter()
-                .map(|entry| crate::ast::MapPatternEntry {
-                    key: Expr {
-                        line: span.line,
-                        span,
-                        kind: match &entry.key {
-                            ConstantValue::I64(value) => ExprKind::Int(*value),
-                            ConstantValue::Bool(value) => ExprKind::Bool(*value),
-                            ConstantValue::Str(value) => ExprKind::Str(value.clone()),
-                        },
-                    },
-                    binding: binding(&entry.binding),
-                })
-                .collect(),
-            span,
-        },
-    }
-}
-
-fn cfg_list_match_expr_as_ast(expr: &CfgListMatchExpr) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
-    Expr {
-        line: span.line,
-        span,
-        kind: ExprKind::ListMatch {
-            value: Box::new(cfg_scalar_expr_as_ast(&expr.value)),
-            arms: expr
-                .arms
-                .iter()
-                .map(|arm| crate::ast::ListMatchExprArm {
-                    pattern: cfg_list_match_pattern_as_ast(&arm.pattern, span),
-                    guard: arm.guard.as_ref().map(cfg_scalar_expr_as_ast),
-                    value: cfg_scalar_expr_as_ast(&arm.value),
-                    line: span.line,
-                    span,
-                })
-                .collect(),
-        },
     }
 }
 
@@ -50430,22 +50661,28 @@ fn emit_cfg_ordered_binary_direct(
     let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
         return None;
     };
+    let direct_call = |value: &CfgScalarExpr| {
+        matches!(
+            value.kind,
+            CfgScalarExprKind::Call { .. }
+                | CfgScalarExprKind::NamedCall { .. }
+                | CfgScalarExprKind::QualifiedCall { .. }
+                | CfgScalarExprKind::NamedQualifiedCall { .. }
+        )
+    };
+    let field_with_simple_scalar = matches!(left.kind, CfgScalarExprKind::Field { .. })
+        && matches!(
+            right.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        )
+        || matches!(right.kind, CfgScalarExprKind::Field { .. })
+            && matches!(
+                left.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            );
     if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
         || cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
-        || !matches!(
-            left.kind,
-            CfgScalarExprKind::Call { .. }
-                | CfgScalarExprKind::NamedCall { .. }
-                | CfgScalarExprKind::QualifiedCall { .. }
-                | CfgScalarExprKind::NamedQualifiedCall { .. }
-        )
-        || !matches!(
-            right.kind,
-            CfgScalarExprKind::Call { .. }
-                | CfgScalarExprKind::NamedCall { .. }
-                | CfgScalarExprKind::QualifiedCall { .. }
-                | CfgScalarExprKind::NamedQualifiedCall { .. }
-        )
+        || !(direct_call(left) && direct_call(right) || field_with_simple_scalar)
     {
         return None;
     }
@@ -54762,7 +54999,7 @@ fn main() -> i64 {
             database.signatures()
         ));
 
-        let reconstructed = cfg_scalar_expr_as_ast(sequence);
+        let reconstructed = cfg_scalar_expr_as_ast_for_source(sequence, SourceId::UNKNOWN);
         let ExprKind::Call { name, args, .. } = &reconstructed.kind else {
             panic!("typed sequence root should reconstruct as a call");
         };
