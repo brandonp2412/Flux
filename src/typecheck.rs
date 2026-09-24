@@ -3955,7 +3955,7 @@ pub(crate) fn collect_expr_reads(expr: &Expr, reads: &mut HashSet<String>) {
     }
 }
 
-fn optional_presence_promotion(
+pub(crate) fn optional_presence_promotion(
     cond: &Expr,
     env: &HashMap<String, Type>,
     mutable: &HashSet<String>,

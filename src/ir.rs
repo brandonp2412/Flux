@@ -6940,22 +6940,36 @@ fn collect_evaluation_types(
     if function.asynchronous {
         env.insert("flux__async_context".to_string(), Type::Bool);
     }
+    let mut mutable = HashSet::new();
     let mut evaluations = Vec::new();
-    collect_block_evaluation_types(&function.body, &mut env, signatures, &mut evaluations);
+    collect_block_evaluation_types(
+        &function.body,
+        &mut env,
+        &mut mutable,
+        signatures,
+        &mut evaluations,
+    );
     evaluations
 }
 
 fn collect_block_evaluation_types(
     body: &[Stmt],
     env: &mut HashMap<String, Type>,
+    mutable: &mut HashSet<String>,
     signatures: &Signatures,
     evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
 ) {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Let { name, ty, expr, .. } | StmtKind::Var { name, ty, expr, .. } => {
+            StmtKind::Let { name, ty, expr, .. } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
                 env.insert(name.clone(), signatures.canonical_type(ty));
+                set_binding_mutability(name, false, mutable);
+            }
+            StmtKind::Var { name, ty, expr, .. } => {
+                record_evaluation_type(expr, env, signatures, evaluations);
+                env.insert(name.clone(), signatures.canonical_type(ty));
+                set_binding_mutability(name, true, mutable);
             }
             StmtKind::Assign { expr, .. }
             | StmtKind::AssignMultiDestructure { expr, .. }
@@ -6964,13 +6978,24 @@ fn collect_block_evaluation_types(
             | StmtKind::Expr(expr) => {
                 record_evaluation_type(expr, env, signatures, evaluations);
             }
-            StmtKind::LetDestructure { bindings, expr, .. } => {
+            StmtKind::LetDestructure {
+                bindings,
+                expr,
+                mutable: bindings_mutable,
+                ..
+            } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
                 for binding in bindings {
                     env.insert(binding.name.clone(), signatures.canonical_type(&binding.ty));
+                    set_binding_mutability(&binding.name, *bindings_mutable, mutable);
                 }
             }
-            StmtKind::LetMultiDestructure { bindings, expr, .. } => {
+            StmtKind::LetMultiDestructure {
+                bindings,
+                expr,
+                mutable: bindings_mutable,
+                ..
+            } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
                 if let Ok((types, _)) =
                     typecheck::positional_destructure_types_of_expr(expr, env, signatures)
@@ -6978,6 +7003,7 @@ fn collect_block_evaluation_types(
                     for (binding, ty) in bindings.iter().zip(types) {
                         if binding.name != "_" {
                             env.insert(binding.name.clone(), signatures.canonical_type(&ty));
+                            set_binding_mutability(&binding.name, *bindings_mutable, mutable);
                         }
                     }
                 }
@@ -6986,6 +7012,7 @@ fn collect_block_evaluation_types(
                 bindings,
                 rest,
                 expr,
+                mutable: bindings_mutable,
                 ..
             } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
@@ -6995,12 +7022,14 @@ fn collect_block_evaluation_types(
                     for binding in bindings {
                         if binding.name != "_" {
                             env.insert(binding.name.clone(), (*element).clone());
+                            set_binding_mutability(&binding.name, *bindings_mutable, mutable);
                         }
                     }
                     if let Some(rest) = rest
                         && rest.binding.name != "_"
                     {
                         env.insert(rest.binding.name.clone(), Type::List(element));
+                        set_binding_mutability(&rest.binding.name, *bindings_mutable, mutable);
                     }
                 }
             }
@@ -7008,10 +7037,12 @@ fn collect_block_evaluation_types(
                 struct_name,
                 fields,
                 expr,
+                mutable: bindings_mutable,
                 ..
             } => {
                 record_evaluation_type(expr, env, signatures, evaluations);
                 bind_struct_pattern_fields(fields, struct_name, env, signatures);
+                set_struct_pattern_mutability(fields, *bindings_mutable, mutable);
             }
             StmtKind::Return(values) => {
                 for value in values {
@@ -7033,17 +7064,42 @@ fn collect_block_evaluation_types(
                 ..
             } => {
                 record_evaluation_type(cond, env, signatures, evaluations);
+                let promotion = binding
+                    .is_none()
+                    .then(|| typecheck::optional_presence_promotion(cond, env, mutable, signatures))
+                    .flatten();
                 let mut then_env = env.clone();
+                let mut then_mutable = mutable.clone();
                 if let Some(binding) = binding
                     && binding.name != "_"
                     && let Ok(Type::Optional(inner)) =
                         typecheck::type_of_expr(cond, env, signatures)
                 {
                     then_env.insert(binding.name.clone(), *inner);
+                    set_binding_mutability(&binding.name, false, &mut then_mutable);
                 }
-                collect_block_evaluation_types(body, &mut then_env, signatures, evaluations);
+                if let Some((name, inner, true)) = &promotion {
+                    then_env.insert(name.clone(), inner.clone());
+                }
+                collect_block_evaluation_types(
+                    body,
+                    &mut then_env,
+                    &mut then_mutable,
+                    signatures,
+                    evaluations,
+                );
                 let mut else_env = env.clone();
-                collect_block_evaluation_types(else_body, &mut else_env, signatures, evaluations);
+                let mut else_mutable = mutable.clone();
+                if let Some((name, inner, false)) = &promotion {
+                    else_env.insert(name.clone(), inner.clone());
+                }
+                collect_block_evaluation_types(
+                    else_body,
+                    &mut else_env,
+                    &mut else_mutable,
+                    signatures,
+                    evaluations,
+                );
             }
             StmtKind::ForRange {
                 name,
@@ -7055,8 +7111,16 @@ fn collect_block_evaluation_types(
                 record_evaluation_type(start, env, signatures, evaluations);
                 record_evaluation_type(end, env, signatures, evaluations);
                 let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
                 nested.insert(name.clone(), Type::I64);
-                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+                set_binding_mutability(name, false, &mut nested_mutable);
+                collect_block_evaluation_types(
+                    body,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    evaluations,
+                );
             }
             StmtKind::ForEach {
                 index_name,
@@ -7067,29 +7131,47 @@ fn collect_block_evaluation_types(
             } => {
                 record_evaluation_type(iterable, env, signatures, evaluations);
                 let mut nested = env.clone();
+                let mut nested_mutable = mutable.clone();
                 if let Some(index_name) = index_name {
                     nested.insert(index_name.clone(), Type::I64);
+                    set_binding_mutability(index_name, false, &mut nested_mutable);
                 }
                 if let Ok(ty) = typecheck::type_of_expr(iterable, env, signatures) {
                     match signatures.canonical_type(&ty) {
                         Type::List(element) | Type::Set(element) => {
                             nested.insert(name.clone(), *element);
+                            set_binding_mutability(name, false, &mut nested_mutable);
                         }
                         Type::Map(key, value) => {
                             if let Some(index_name) = index_name {
                                 nested.insert(index_name.clone(), *key);
+                                set_binding_mutability(index_name, false, &mut nested_mutable);
                             }
                             nested.insert(name.clone(), *value);
+                            set_binding_mutability(name, false, &mut nested_mutable);
                         }
                         _ => {}
                     }
                 }
-                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+                collect_block_evaluation_types(
+                    body,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    evaluations,
+                );
             }
             StmtKind::While { cond, body } => {
                 record_evaluation_type(cond, env, signatures, evaluations);
                 let mut nested = env.clone();
-                collect_block_evaluation_types(body, &mut nested, signatures, evaluations);
+                let mut nested_mutable = mutable.clone();
+                collect_block_evaluation_types(
+                    body,
+                    &mut nested,
+                    &mut nested_mutable,
+                    signatures,
+                    evaluations,
+                );
             }
             StmtKind::Match { value, arms } => {
                 record_evaluation_type(value, env, signatures, evaluations);
@@ -7098,37 +7180,53 @@ fn collect_block_evaluation_types(
                     .map(|ty| signatures.canonical_type(&ty));
                 for arm in arms {
                     let mut nested = env.clone();
+                    let mut nested_mutable = mutable.clone();
                     if let Some(Type::Named(enum_name)) = matched_ty.as_ref()
                         && let Some(definition) = signatures.enum_type(enum_name)
                         && let Some(variant) = definition.variant(&arm.variant)
                     {
                         for (pattern, payload) in arm.patterns.iter().zip(&variant.payloads) {
                             bind_match_pattern(pattern, payload, &mut nested, signatures);
+                            set_match_pattern_mutability(pattern, false, &mut nested_mutable);
                         }
                     }
                     if let Some(guard) = &arm.guard {
                         record_evaluation_type(guard, &nested, signatures, evaluations);
                     }
-                    collect_block_evaluation_types(&arm.body, &mut nested, signatures, evaluations);
+                    collect_block_evaluation_types(
+                        &arm.body,
+                        &mut nested,
+                        &mut nested_mutable,
+                        signatures,
+                        evaluations,
+                    );
                 }
             }
             StmtKind::ListMatch { value, arms } => {
                 record_evaluation_type(value, env, signatures, evaluations);
-                let element_ty = typecheck::type_of_expr(value, env, signatures)
+                let binding_ty = typecheck::type_of_expr(value, env, signatures)
                     .ok()
                     .and_then(|ty| match signatures.canonical_type(&ty) {
-                        Type::List(element) => Some(*element),
+                        Type::List(element) | Type::Map(_, element) => Some(*element),
                         _ => None,
                     });
                 for arm in arms {
                     let mut nested = env.clone();
-                    if let Some(element_ty) = element_ty.as_ref() {
-                        bind_list_match_pattern(&arm.pattern, element_ty, &mut nested);
+                    let mut nested_mutable = mutable.clone();
+                    if let Some(binding_ty) = binding_ty.as_ref() {
+                        bind_list_match_pattern(&arm.pattern, binding_ty, &mut nested);
+                        set_list_match_pattern_mutability(&arm.pattern, false, &mut nested_mutable);
                     }
                     if let Some(guard) = &arm.guard {
                         record_evaluation_type(guard, &nested, signatures, evaluations);
                     }
-                    collect_block_evaluation_types(&arm.body, &mut nested, signatures, evaluations);
+                    collect_block_evaluation_types(
+                        &arm.body,
+                        &mut nested,
+                        &mut nested_mutable,
+                        signatures,
+                        evaluations,
+                    );
                 }
             }
         }
@@ -7492,6 +7590,74 @@ fn bind_struct_pattern_fields(
                 signatures.canonical_type(&field_signature.ty),
             );
         }
+    }
+}
+
+fn set_binding_mutability(name: &str, is_mutable: bool, mutable: &mut HashSet<String>) {
+    if name == "_" {
+        return;
+    }
+    if is_mutable {
+        mutable.insert(name.to_string());
+    } else {
+        mutable.remove(name);
+    }
+}
+
+fn set_struct_pattern_mutability(
+    fields: &[crate::ast::StructPatternField],
+    is_mutable: bool,
+    mutable: &mut HashSet<String>,
+) {
+    for field in fields {
+        if let Some(nested) = &field.nested {
+            set_struct_pattern_mutability(&nested.fields, is_mutable, mutable);
+        } else {
+            set_binding_mutability(&field.binding.name, is_mutable, mutable);
+        }
+    }
+}
+
+fn set_match_pattern_mutability(
+    pattern: &crate::ast::MatchPattern,
+    is_mutable: bool,
+    mutable: &mut HashSet<String>,
+) {
+    match pattern {
+        crate::ast::MatchPattern::Binding(binding) => {
+            set_binding_mutability(&binding.name, is_mutable, mutable);
+        }
+        crate::ast::MatchPattern::Struct(pattern) => {
+            set_struct_pattern_mutability(&pattern.fields, is_mutable, mutable);
+        }
+        crate::ast::MatchPattern::Logical { left, right, .. } => {
+            set_match_pattern_mutability(left, is_mutable, mutable);
+            set_match_pattern_mutability(right, is_mutable, mutable);
+        }
+        crate::ast::MatchPattern::Relational(_) => {}
+    }
+}
+
+fn set_list_match_pattern_mutability(
+    pattern: &crate::ast::ListMatchPattern,
+    is_mutable: bool,
+    mutable: &mut HashSet<String>,
+) {
+    match pattern {
+        crate::ast::ListMatchPattern::List { bindings, rest, .. } => {
+            for binding in bindings {
+                set_binding_mutability(&binding.name, is_mutable, mutable);
+            }
+            if let Some(rest) = rest {
+                set_binding_mutability(&rest.binding.name, is_mutable, mutable);
+            }
+        }
+        crate::ast::ListMatchPattern::Map { entries, .. } => {
+            for entry in entries {
+                set_binding_mutability(&entry.binding.name, is_mutable, mutable);
+            }
+        }
+        crate::ast::ListMatchPattern::Wildcard { .. } => {}
     }
 }
 

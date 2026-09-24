@@ -35558,6 +35558,38 @@ fn cfg_rewrite_facts(cfg: &crate::ir::ControlFlowGraph) -> CfgRewriteFacts {
         }
     }
 
+    // A nested typed value can intentionally reuse the source span of the
+    // enclosing expression while carrying a different type. The CFG
+    // evaluation node owns the exact statement/root value, so let that
+    // normalized boundary resolve otherwise-ambiguous same-span value facts.
+    let mut evaluation_root_types = HashMap::new();
+    let mut ambiguous_evaluation_root_types = HashSet::new();
+    for node in cfg
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node.kind, crate::ir::ControlFlowNodeKind::Evaluation(_)))
+    {
+        let Some(ty) = node.value_types.first() else {
+            continue;
+        };
+        let span = source_span_key(node.span);
+        if ambiguous_evaluation_root_types.contains(&span) {
+            continue;
+        }
+        if let Some(existing) = evaluation_root_types.get(&span) {
+            if existing != ty {
+                evaluation_root_types.remove(&span);
+                ambiguous_evaluation_root_types.insert(span);
+            }
+        } else {
+            evaluation_root_types.insert(span, ty.clone());
+        }
+    }
+    for (span, ty) in evaluation_root_types {
+        root_types.insert(span, ty);
+        ambiguous_root_types.remove(&span);
+    }
+
     let mut constants = HashMap::new();
     let mut ambiguous_constants = HashSet::new();
     // Consume constants from the typed value graph, not only from name reads.
@@ -39299,10 +39331,8 @@ fn emit_block(
                 // Discarding an expression's result does not erase its
                 // statically known shape. Keep this boundary on the same
                 // typed-IR proof path as bindings, assignments, and returns.
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => ty,
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type =
+                    cfg_rewrite_required_root_type(expr.span, context.cfg_rewrite_facts)?;
                 let value = emit_expr_for_expected_with_cfg_proofs(
                     expr,
                     &expr_type,
@@ -39318,10 +39348,8 @@ fn emit_block(
                 redirect,
                 background,
             } => {
-                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
-                    Some(ty) => ty,
-                    None => type_of_expr(expr, env, signatures)?,
-                };
+                let expr_type =
+                    cfg_rewrite_required_root_type(expr.span, context.cfg_rewrite_facts)?;
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -39402,10 +39430,7 @@ fn emit_block(
             } => {
                 if let Some(binding) = binding {
                     let optional_type =
-                        match cfg_rewrite_root_type(cond.span, context.cfg_rewrite_facts) {
-                            Some(ty) => ty,
-                            None => type_of_expr(cond, env, signatures)?,
-                        };
+                        cfg_rewrite_required_root_type(cond.span, context.cfg_rewrite_facts)?;
                     let optional = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             cond,
@@ -39819,10 +39844,10 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::Match { value, arms } => {
-                let value_ty = match cfg_rewrite_root_type(value.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(value, env, signatures)?,
-                };
+                let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    value.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         value,
@@ -39976,10 +40001,10 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::ListMatch { value, arms } => {
-                let value_ty = match cfg_rewrite_root_type(value.span, context.cfg_rewrite_facts) {
-                    Some(ty) => signatures.canonical_type(&ty),
-                    None => type_of_expr(value, env, signatures)?,
-                };
+                let value_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+                    value.span,
+                    context.cfg_rewrite_facts,
+                )?);
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         value,
