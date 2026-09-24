@@ -37328,12 +37328,12 @@ fn emit_direct_sequence_projection(
         _ => return Ok(None),
     };
 
-    let direct_sorted = matches!(
+    let direct_sequence = matches!(
         &base.kind,
         CfgScalarExprKind::Call { callee, .. }
-            if crate::builtin_names::global_impl(callee) == "sorted"
+            if matches!(crate::builtin_names::global_impl(callee), "sorted" | "distinct")
     );
-    let sequence = if direct_sorted {
+    let sequence = if direct_sequence {
         None
     } else {
         let mut sequence = cfg_scalar_expr_as_ast_for_source(base, expr.span.source_id);
@@ -37354,9 +37354,9 @@ fn emit_direct_sequence_projection(
     if !matches!(sequence_ty, Type::List(_)) {
         return Ok(None);
     }
-    let emitted = if direct_sorted {
-        emit_cfg_sequence_sorted_value(out, pad, base, env, signatures, temp_counter)
-            .ok_or_else(|| diag(expr.span, "typed sorted sequence could not be materialized"))?
+    let emitted = if direct_sequence {
+        emit_cfg_sequence_list_value(out, pad, base, env, signatures, temp_counter)
+            .ok_or_else(|| diag(expr.span, "typed sequence could not be materialized"))?
     } else {
         emit_sequence_list_value(
             out,
@@ -41285,19 +41285,8 @@ fn emit_cfg_sequence_sorted_value(
     if crate::builtin_names::global_impl(callee) != "sorted" || arguments.len() != 1 {
         return None;
     }
-    let source_expr = &arguments[0];
-    let source = if matches!(
-        &source_expr.kind,
-        CfgScalarExprKind::Call { callee, .. }
-            if crate::builtin_names::global_impl(callee) == "sorted"
-    ) {
-        emit_cfg_sequence_sorted_value(out, pad, source_expr, env, signatures, temp_counter)?
-    } else {
-        EmittedExpr {
-            code: emit_cfg_scalar_expr_direct(source_expr, env, signatures)?,
-            ty: signatures.canonical_type(&source_expr.ty),
-        }
-    };
+    let source =
+        emit_cfg_sequence_source_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
     emit_sorted_list_value(
         out,
         pad,
@@ -41306,6 +41295,45 @@ fn emit_cfg_sequence_sorted_value(
         signatures,
         temp_counter,
     )
+}
+
+fn emit_cfg_sequence_source_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if let Some(sequence) =
+        emit_cfg_sequence_list_value(out, pad, expr, env, signatures, temp_counter)
+    {
+        return Some(sequence);
+    }
+    Some(EmittedExpr {
+        code: emit_cfg_scalar_expr_direct(expr, env, signatures)?,
+        ty: signatures.canonical_type(&expr.ty),
+    })
+}
+
+fn emit_cfg_sequence_list_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    match crate::builtin_names::global_impl(callee) {
+        "sorted" => emit_cfg_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter),
+        "distinct" => {
+            emit_cfg_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)
+        }
+        _ => None,
+    }
 }
 
 fn emit_sequence_sorted_value(
@@ -41440,9 +41468,25 @@ fn emit_sequence_distinct_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)?;
+    let direct = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            matches!(
+                &sequence.kind,
+                CfgScalarExprKind::Call { callee, .. }
+                    if crate::builtin_names::global_impl(callee) == "distinct"
+            ) && cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+        })
+        .and_then(|sequence| {
+            emit_cfg_sequence_distinct_value(out, pad, sequence, env, signatures, temp_counter)
+        });
+    let value = if let Some(value) = direct {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_distinct_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -41460,26 +41504,19 @@ fn emit_sequence_distinct_binding(
     Ok(())
 }
 
-fn emit_sequence_distinct_value(
+fn emit_distinct_list_value(
     out: &mut String,
     pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    source: EmittedExpr,
+    result_ty: Type,
     signatures: &Signatures,
     temp_counter: &mut usize,
-) -> Result<EmittedExpr, Diagnostic> {
-    let source_expr = sequence_distinct(expr)
-        .ok_or_else(|| diag(expr.span, "invalid distinct call reached code generation"))?;
-    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+) -> Option<EmittedExpr> {
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "distinct result must have a list type"));
+        return None;
     };
     if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "distinct input type mismatch reached code generation",
-        ));
+        return None;
     }
     let element_ty = signatures.canonical_type(element);
     let source_name = format!("flux__distinct_source_{}", *temp_counter);
@@ -41503,8 +41540,7 @@ fn emit_sequence_distinct_value(
         &format!("{buffer_name}[{seen_name}]"),
         &item_name,
         &element_ty,
-    )
-    .ok_or_else(|| diag(expr.span, "distinct requires scalar equality"))?;
+    )?;
     out.push_str(&format!(
         "{pad}struct flux__list {source_name} = {};\n",
         source.code
@@ -41527,10 +41563,52 @@ fn emit_sequence_distinct_value(
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
     ));
-    Ok(EmittedExpr {
+    Some(EmittedExpr {
         code: result_name,
         ty: result_ty,
     })
+}
+
+fn emit_cfg_sequence_distinct_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != "distinct" || arguments.len() != 1 {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_source_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    emit_distinct_list_value(
+        out,
+        pad,
+        source,
+        signatures.canonical_type(&expr.ty),
+        signatures,
+        temp_counter,
+    )
+}
+
+fn emit_sequence_distinct_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_distinct(expr)
+        .ok_or_else(|| diag(expr.span, "invalid distinct call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_distinct_list_value(out, pad, source, result_ty, signatures, temp_counter)
+        .ok_or_else(|| diag(expr.span, "invalid distinct types reached code generation"))
 }
 
 fn emit_sequence_concat_binding(
@@ -60829,6 +60907,10 @@ fn sortedLength(values: i64[]) -> i64 {
     return sorted(values).length
 }
 
+fn distinctLength(values: i64[]) -> i64 {
+    return distinct(values).length
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -60949,6 +61031,57 @@ fn main() -> i64 {
         assert!(length_emitted.contains(".len"), "{length_emitted}");
         assert!(!length_out.contains("checked-ast-sequence-property"));
         assert!(!length_emitted.contains("checked-ast-sequence-property"));
+
+        let distinct_graph = database
+            .control_flow_graph("distinctLength")
+            .expect("distinctLength CFG should exist");
+        let distinct_root = distinct_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Field { base, name, .. }
+                        if name == "length"
+                            && distinct_graph.value(*base).is_some_and(|base| {
+                                matches!(
+                                    &base.kind,
+                                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                                        if crate::builtin_names::global_impl(callee) == "distinct"
+                                )
+                            })
+                )
+            })
+            .expect("typed IR should retain the distinct sequence property root");
+        let distinct_facts = cfg_rewrite_facts(distinct_graph);
+        let distinct_fake = Expr {
+            line: distinct_root.span.line,
+            span: distinct_root.span,
+            kind: ExprKind::Str("checked-ast-distinct-property".to_string()),
+        };
+        let mut distinct_env =
+            HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let mut distinct_out = String::new();
+        let mut distinct_temp_counter = 0;
+        let distinct_emitted = emit_direct_sequence_projection(
+            &mut distinct_out,
+            "",
+            &distinct_fake,
+            &Type::I64,
+            &mut distinct_env,
+            database.signatures(),
+            &distinct_facts,
+            &mut distinct_temp_counter,
+        )
+        .expect("distinct property should lower")
+        .expect("typed IR should materialize the distinct property");
+        assert!(
+            distinct_out.contains("flux__distinct_buffer_"),
+            "{distinct_out}"
+        );
+        assert!(distinct_emitted.contains(".len"), "{distinct_emitted}");
+        assert!(!distinct_out.contains("checked-ast-distinct-property"));
+        assert!(!distinct_emitted.contains("checked-ast-distinct-property"));
     }
 
     #[test]
