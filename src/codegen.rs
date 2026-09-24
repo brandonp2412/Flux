@@ -26921,30 +26921,13 @@ fn emit_lambda_body_with_cfg(
     // typed Flux expressions. Build the same normalized CFG used by named
     // functions so backend constant/proof consumption does not silently fall
     // back to the checked AST at this boundary.
-    let synthetic = Function {
-        public: false,
-        foreign_symbol: None,
-        unsafe_foreign: false,
-        pure: false,
-        asynchronous: false,
-        name: format!("flux__lambda_cfg_{}_{}", body.span.line, body.span.column),
-        name_span: body.span,
-        keyword_span: body.span,
-        params: params.to_vec(),
-        returns: expected.into_iter().cloned().collect(),
-        return_span: body.span,
-        return_type_spans: Vec::new(),
-        body: vec![Stmt {
-            line: body.line,
-            span: body.span,
-            keyword_span: body.span,
-            kind: StmtKind::Return(vec![body.clone()]),
-        }],
-        expression_body: true,
-        line: body.line,
-        span: body.span,
-    };
-    let cfg = crate::ir::ControlFlowGraph::from_function(&synthetic, signatures);
+    let cfg = crate::ir::ControlFlowGraph::from_expression_body(
+        &format!("flux__lambda_cfg_{}_{}", body.span.line, body.span.column),
+        params,
+        expected,
+        body,
+        signatures,
+    );
     let rewrite_facts = cfg_rewrite_facts(&cfg);
     let proofs = cfg_checked_i64_proofs(&cfg);
     let body_type = match expected {

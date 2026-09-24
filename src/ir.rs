@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
-use crate::ast::{BinOp, Expr, ExprKind, Function, RecordTypeField, Stmt, StmtKind, Type, UnaryOp};
+use crate::ast::{
+    BinOp, Expr, ExprKind, Function, Param, RecordTypeField, Stmt, StmtKind, Type, UnaryOp,
+};
 use crate::diagnostic::{SourceId, SourceSpan};
 use crate::typecheck::{self, ConstantValue, Signatures};
 
@@ -3184,6 +3186,23 @@ impl ControlFlowGraph {
         builder.finish()
     }
 
+    pub fn from_expression_body(
+        function: &str,
+        params: &[Param],
+        expected: Option<&Type>,
+        body: &Expr,
+        signatures: &Signatures,
+    ) -> Self {
+        let mut builder =
+            ControlFlowBuilder::new_expression_body(function, params, expected, body, signatures);
+        let return_node = builder.node(ControlFlowNodeKind::Return, body.span);
+        builder.edge(return_node, builder.exit, ControlFlowEdgeKind::Return);
+        let body_entry =
+            builder.evaluation_node(ControlFlowEvaluationKind::ReturnValue(0), body, return_node);
+        builder.edge(builder.entry, body_entry, ControlFlowEdgeKind::Next);
+        builder.finish()
+    }
+
     pub fn function(&self) -> &str {
         &self.function
     }
@@ -4549,6 +4568,47 @@ impl<'a> ControlFlowBuilder<'a> {
         };
         builder.entry = builder.node(ControlFlowNodeKind::Entry, function.keyword_span);
         builder.exit = builder.node(ControlFlowNodeKind::Exit, function.return_span);
+        builder
+    }
+
+    fn new_expression_body(
+        function: &str,
+        params: &[Param],
+        expected: Option<&Type>,
+        body: &Expr,
+        signatures: &'a Signatures,
+    ) -> Self {
+        let env = params
+            .iter()
+            .map(|param| (param.name.clone(), signatures.canonical_type(&param.ty)))
+            .collect::<HashMap<_, _>>();
+        let mut evaluation_types = Vec::new();
+        record_evaluation_type(body, &env, signatures, &mut evaluation_types);
+
+        let mut builder = Self {
+            signatures,
+            function: function.to_string(),
+            parameters: params
+                .iter()
+                .map(|param| ControlFlowParameter {
+                    name: param.name.clone(),
+                    ty: param.ty.clone(),
+                    span: param.name_span,
+                })
+                .collect(),
+            returns: expected.into_iter().cloned().collect(),
+            entry: ControlFlowNodeId(0),
+            exit: ControlFlowNodeId(0),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            values: Vec::new(),
+            scoped_definitions: Vec::new(),
+            scoped_definition_stack: Vec::new(),
+            scoped_borrow_sources: BTreeMap::new(),
+            evaluation_types,
+        };
+        builder.entry = builder.node(ControlFlowNodeKind::Entry, body.span);
+        builder.exit = builder.node(ControlFlowNodeKind::Exit, body.span);
         builder
     }
 
