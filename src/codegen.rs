@@ -39477,6 +39477,248 @@ fn match_expr_needs_specialized_lowering(
             })
 }
 
+fn emit_cfg_struct_pattern_bindings(
+    out: &mut String,
+    pad: &str,
+    pattern: &crate::ir::ControlFlowStructPattern,
+    base: &str,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    source_span: SourceSpan,
+) -> Result<(), Diagnostic> {
+    let definition = signatures
+        .struct_type(&pattern.name)
+        .expect("type checking guarantees typed-IR struct pattern type exists");
+    for field in &pattern.fields {
+        let field_signature = definition
+            .field(&field.field)
+            .expect("type checking guarantees typed-IR struct pattern fields exist");
+        let access = format!("{base}.{}", field_c_name(&field.field));
+        if let Some(nested) = &field.nested {
+            let Type::Named(nested_name) = signatures.canonical_type(&field_signature.ty) else {
+                return Err(diag(
+                    source_span,
+                    "nested struct pattern code generation requires a struct value",
+                ));
+            };
+            if nested.name != nested_name {
+                return Err(diag(
+                    source_span,
+                    "nested typed-IR struct pattern type changed during code generation",
+                ));
+            }
+            emit_cfg_struct_pattern_bindings(
+                out,
+                pad,
+                nested,
+                &access,
+                env,
+                signatures,
+                source_span,
+            )?;
+            continue;
+        }
+        if field.binding == "_" {
+            continue;
+        }
+        out.push_str(&format!(
+            "{pad}{} {} = {access};\n",
+            c_type(&field_signature.ty, signatures),
+            local_c_name(&field.binding),
+        ));
+        env.insert(field.binding.clone(), field_signature.ty.clone());
+    }
+    Ok(())
+}
+
+fn emit_cfg_match_pattern_condition(
+    pattern: &crate::ir::ControlFlowMatchPattern,
+    payload_access: &str,
+    payload_ty: &Type,
+    signatures: &Signatures,
+) -> Option<String> {
+    match pattern {
+        crate::ir::ControlFlowMatchPattern::Binding { .. }
+        | crate::ir::ControlFlowMatchPattern::Struct(_) => None,
+        crate::ir::ControlFlowMatchPattern::Relational { op, value } => {
+            let payload_ty = signatures.canonical_type(payload_ty);
+            let right = constant_c_value(value);
+            if payload_ty == Type::Str && matches!(op, BinOp::Eq | BinOp::Ne) {
+                let comparator = if *op == BinOp::Eq { "==" } else { "!=" };
+                Some(format!(
+                    "(strcmp({payload_access}, {right}) {comparator} 0)"
+                ))
+            } else {
+                Some(format!("({payload_access} {} {right})", c_operator(*op)))
+            }
+        }
+        crate::ir::ControlFlowMatchPattern::Logical { left, op, right } => {
+            let left =
+                emit_cfg_match_pattern_condition(left, payload_access, payload_ty, signatures)
+                    .expect("typed-IR logical match pattern sides are relational");
+            let right =
+                emit_cfg_match_pattern_condition(right, payload_access, payload_ty, signatures)
+                    .expect("typed-IR logical match pattern sides are relational");
+            let op = match op {
+                crate::ir::ControlFlowPatternLogicalOp::And => "&&",
+                crate::ir::ControlFlowPatternLogicalOp::Or => "||",
+            };
+            Some(format!("({left} {op} {right})"))
+        }
+    }
+}
+
+fn emit_cfg_match_expr_into(
+    out: &mut String,
+    match_expr: &CfgMatchExpr,
+    source_span: SourceSpan,
+    target: &str,
+    depth: usize,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let value_ty = signatures.canonical_type(&match_expr.value.ty);
+    let Type::Named(enum_name) = &value_ty else {
+        return Err(diag(
+            source_span,
+            "match expression code generation requires an enum value",
+        ));
+    };
+    let emitted_value = emit_cfg_scalar_expr_direct(&match_expr.value, env, signatures)
+        .ok_or_else(|| {
+            diag(
+                source_span,
+                "typed-IR match scrutinee could not be rendered directly",
+            )
+        })?;
+    let definition = signatures.enum_type(enum_name).ok_or_else(|| {
+        diag(
+            source_span,
+            "match expression code generation requires an enum value",
+        )
+    })?;
+    let temp = format!("flux__match_{}", *temp_counter);
+    *temp_counter += 1;
+    let pad = "    ".repeat(depth);
+    out.push_str(&format!(
+        "{pad}struct {} {temp} = {emitted_value};\n",
+        struct_c_name(enum_name),
+    ));
+    out.push_str(&format!("{pad}switch ({temp}.tag) {{\n"));
+    for variant in &definition.variants {
+        let variant_arms = match_expr
+            .arms
+            .iter()
+            .filter(|arm| arm.pattern.variant == variant.name)
+            .collect::<Vec<_>>();
+        if variant_arms.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "{pad}    case {}: {{\n",
+            enum_tag_value_name(enum_name, &variant.name)
+        ));
+        for arm in variant_arms {
+            out.push_str(&format!("{pad}        {{\n"));
+            let mut nested = env.clone();
+            let mut pattern_conditions = Vec::new();
+            for (index, (pattern, payload_ty)) in arm
+                .pattern
+                .patterns
+                .iter()
+                .zip(&variant.payloads)
+                .enumerate()
+            {
+                let payload_access = format!(
+                    "{temp}.payload.{}.v{index}",
+                    enum_payload_member_name(&arm.pattern.variant)
+                );
+                match pattern {
+                    crate::ir::ControlFlowMatchPattern::Binding { name } => {
+                        if name == "_" {
+                            continue;
+                        }
+                        out.push_str(&format!(
+                            "{pad}            {} {} = {payload_access};\n",
+                            c_type(payload_ty, signatures),
+                            local_c_name(name),
+                        ));
+                        nested.insert(name.clone(), payload_ty.clone());
+                    }
+                    crate::ir::ControlFlowMatchPattern::Struct(pattern) => {
+                        let Type::Named(struct_name) = signatures.canonical_type(payload_ty) else {
+                            return Err(diag(
+                                source_span,
+                                "match struct pattern code generation requires a struct value",
+                            ));
+                        };
+                        if pattern.name != struct_name {
+                            return Err(diag(
+                                source_span,
+                                "typed-IR match struct pattern type changed during code generation",
+                            ));
+                        }
+                        emit_cfg_struct_pattern_bindings(
+                            out,
+                            &format!("{pad}            "),
+                            pattern,
+                            &payload_access,
+                            &mut nested,
+                            signatures,
+                            source_span,
+                        )?;
+                    }
+                    crate::ir::ControlFlowMatchPattern::Relational { .. }
+                    | crate::ir::ControlFlowMatchPattern::Logical { .. } => {
+                        if let Some(condition) = emit_cfg_match_pattern_condition(
+                            pattern,
+                            &payload_access,
+                            payload_ty,
+                            signatures,
+                        ) {
+                            pattern_conditions.push(condition);
+                        }
+                    }
+                }
+            }
+            if let Some(guard) = &arm.guard {
+                let guard =
+                    emit_cfg_scalar_expr_direct(guard, &nested, signatures).ok_or_else(|| {
+                        diag(
+                            source_span,
+                            "typed-IR match guard could not be rendered directly",
+                        )
+                    })?;
+                pattern_conditions.push(c_condition(&guard));
+            }
+            let arm_value = emit_cfg_scalar_expr_direct(&arm.value, &nested, signatures)
+                .ok_or_else(|| {
+                    diag(
+                        source_span,
+                        "typed-IR match arm value could not be rendered directly",
+                    )
+                })?;
+            if pattern_conditions.is_empty() {
+                out.push_str(&format!("{pad}            {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}            break;\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}            if ({}) {{\n",
+                    pattern_conditions.join(" && ")
+                ));
+                out.push_str(&format!("{pad}                {target} = {arm_value};\n"));
+                out.push_str(&format!("{pad}                break;\n"));
+                out.push_str(&format!("{pad}            }}\n"));
+            }
+            out.push_str(&format!("{pad}        }}\n"));
+        }
+        out.push_str(&format!("{pad}    }}\n"));
+    }
+    out.push_str(&format!("{pad}}}\n"));
+    Ok(())
+}
+
 fn emit_match_expr_into(
     out: &mut String,
     expr: &Expr,
@@ -39513,17 +39755,15 @@ fn emit_match_expr_into(
         .get(&source_span_key(expr.span))
         && cfg_match_expr_calls_are_reconstructable(match_expr, env, signatures)
     {
-        let synthetic = cfg_match_expr_as_ast(match_expr);
-        return emit_match_expr_into(
+        return emit_cfg_match_expr_into(
             out,
-            &synthetic,
+            match_expr,
+            expr.span,
             target,
             depth,
             env,
             signatures,
             temp_counter,
-            &HashMap::new(),
-            &CfgRewriteFacts::default(),
         );
     }
     let ExprKind::Match { value, arms } = &expr.kind else {
@@ -48043,105 +48283,6 @@ fn cfg_scalar_expr_as_ast_with_spans(
         line: span.line,
         span,
         kind,
-    }
-}
-
-fn cfg_match_pattern_as_ast(
-    pattern: &crate::ir::ControlFlowMatchPattern,
-    span: SourceSpan,
-) -> MatchPattern {
-    match pattern {
-        crate::ir::ControlFlowMatchPattern::Binding { name } => {
-            MatchPattern::Binding(crate::ast::PatternBinding {
-                name: name.clone(),
-                span,
-            })
-        }
-        crate::ir::ControlFlowMatchPattern::Struct(pattern) => {
-            MatchPattern::Struct(cfg_struct_pattern_as_ast(pattern, span))
-        }
-        crate::ir::ControlFlowMatchPattern::Relational { op, value } => {
-            let kind = match value {
-                ConstantValue::I64(value) => ExprKind::Int(*value),
-                ConstantValue::Bool(value) => ExprKind::Bool(*value),
-                ConstantValue::Str(value) => ExprKind::Str(value.clone()),
-            };
-            MatchPattern::Relational(crate::ast::RelationalPattern {
-                op: *op,
-                value: Expr {
-                    line: span.line,
-                    span,
-                    kind,
-                },
-                span,
-            })
-        }
-        crate::ir::ControlFlowMatchPattern::Logical { left, op, right } => MatchPattern::Logical {
-            left: Box::new(cfg_match_pattern_as_ast(left, span)),
-            op: match op {
-                crate::ir::ControlFlowPatternLogicalOp::And => PatternLogicalOp::And,
-                crate::ir::ControlFlowPatternLogicalOp::Or => PatternLogicalOp::Or,
-            },
-            right: Box::new(cfg_match_pattern_as_ast(right, span)),
-            span,
-        },
-    }
-}
-
-fn cfg_struct_pattern_as_ast(
-    pattern: &crate::ir::ControlFlowStructPattern,
-    span: SourceSpan,
-) -> crate::ast::StructPattern {
-    crate::ast::StructPattern {
-        struct_name: pattern.name.clone(),
-        struct_span: span,
-        fields: pattern
-            .fields
-            .iter()
-            .map(|field| StructPatternField {
-                field: field.field.clone(),
-                field_span: span,
-                binding: crate::ast::PatternBinding {
-                    name: field.binding.clone(),
-                    span,
-                },
-                nested: field
-                    .nested
-                    .as_deref()
-                    .map(|nested| Box::new(cfg_struct_pattern_as_ast(nested, span))),
-            })
-            .collect(),
-    }
-}
-
-fn cfg_match_expr_as_ast(expr: &CfgMatchExpr) -> Expr {
-    let span = SourceSpan::new(1, 1, 1);
-    Expr {
-        line: span.line,
-        span,
-        kind: ExprKind::Match {
-            value: Box::new(cfg_scalar_expr_as_ast(&expr.value)),
-            arms: expr
-                .arms
-                .iter()
-                .map(|arm| crate::ast::MatchExprArm {
-                    enum_name: arm.pattern.enum_name.clone(),
-                    enum_span: span,
-                    variant: arm.pattern.variant.clone(),
-                    variant_span: span,
-                    patterns: arm
-                        .pattern
-                        .patterns
-                        .iter()
-                        .map(|pattern| cfg_match_pattern_as_ast(pattern, span))
-                        .collect(),
-                    guard: arm.guard.as_ref().map(cfg_scalar_expr_as_ast),
-                    value: cfg_scalar_expr_as_ast(&arm.value),
-                    line: span.line,
-                    span,
-                })
-                .collect(),
-        },
     }
 }
 
