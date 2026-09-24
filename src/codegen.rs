@@ -50490,14 +50490,6 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("{helper}({value}, {callback})"))
                 }
                 "hmacSha256" | "hmacSha512" if arguments.len() == 3 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &arguments[..2],
-                        &[Type::Str, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    let key = &rendered[0];
-                    let value = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &callback_params,
@@ -50509,7 +50501,15 @@ fn emit_cfg_scalar_expr_direct(
                     } else {
                         "flux__crypto_hmac_sha512"
                     };
-                    Some(format!("{helper}({key}, {value}, {callback})"))
+                    emit_cfg_ordered_call_expression_direct(
+                        &arguments[..2],
+                        &[Type::Str, Type::Str],
+                        env,
+                        signatures,
+                        |rendered| {
+                            format!("{helper}({}, {}, {callback})", rendered[0], rendered[1])
+                        },
+                    )
                 }
                 _ => None,
             }
@@ -51078,14 +51078,6 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &arguments[..2],
-                        &[Type::I64, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    let timestamp = &rendered[0];
-                    let zone = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[
@@ -51103,9 +51095,18 @@ fn emit_cfg_scalar_expr_direct(
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_calendar_zone({timestamp}, {zone}, {callback})"
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                        |rendered| {
+                            format!(
+                                "flux__time_calendar_zone({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            )
+                        },
+                    )
                 }
                 "formatUtc" | "formatLocal" if ty == Type::Error => {
                     if arguments.len() != 2 {
@@ -51134,45 +51135,47 @@ fn emit_cfg_scalar_expr_direct(
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &arguments[..2],
-                        &[Type::I64, Type::I64],
-                        env,
-                        signatures,
-                    )?;
-                    let timestamp = &rendered[0];
-                    let offset = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_format_offset({timestamp}, {offset}, {callback})"
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::I64],
+                        env,
+                        signatures,
+                        |rendered| {
+                            format!(
+                                "flux__time_format_offset({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            )
+                        },
+                    )
                 }
                 "formatZone" if ty == Type::Error => {
                     if arguments.len() != 3 {
                         return None;
                     }
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        &arguments[..2],
-                        &[Type::I64, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    let timestamp = &rendered[0];
-                    let zone = &rendered[1];
                     let callback = emit_cfg_callback_argument_direct(
                         &arguments[2],
                         &[Type::Str],
                         env,
                         signatures,
                     )?;
-                    Some(format!(
-                        "flux__time_format_zone({timestamp}, {zone}, {callback})"
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        &arguments[..2],
+                        &[Type::I64, Type::Str],
+                        env,
+                        signatures,
+                        |rendered| {
+                            format!(
+                                "flux__time_format_zone({}, {}, {callback})",
+                                rendered[0], rendered[1]
+                            )
+                        },
+                    )
                 }
                 "sleep" | "sleepMillis" if ty == Type::Void => {
                     let [duration] = arguments.as_slice() else {
@@ -51212,18 +51215,20 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 4 {
                 return None;
             }
-            let rendered = emit_cfg_order_safe_call_arguments_direct(
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[3], &[Type::Str], env, signatures)?;
+            emit_cfg_ordered_call_expression_direct(
                 &arguments[..3],
                 &[Type::Str, Type::I64, Type::I64],
                 env,
                 signatures,
-            )?;
-            let callback =
-                emit_cfg_callback_argument_direct(&arguments[3], &[Type::Str], env, signatures)?;
-            Some(format!(
-                "flux__str_slice({}, {}, {}, {callback})",
-                rendered[0], rendered[1], rendered[2]
-            ))
+                |rendered| {
+                    format!(
+                        "flux__str_slice({}, {}, {}, {callback})",
+                        rendered[0], rendered[1], rendered[2]
+                    )
+                },
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -51244,18 +51249,20 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != 3 {
                 return None;
             }
-            let rendered = emit_cfg_order_safe_call_arguments_direct(
+            let callback =
+                emit_cfg_callback_argument_direct(&arguments[2], &[Type::Str], env, signatures)?;
+            emit_cfg_ordered_call_expression_direct(
                 &arguments[..2],
                 &[Type::Str, Type::I64],
                 env,
                 signatures,
-            )?;
-            let callback =
-                emit_cfg_callback_argument_direct(&arguments[2], &[Type::Str], env, signatures)?;
-            Some(format!(
-                "flux__fs_read_text({}, {}, {callback})",
-                rendered[0], rendered[1]
-            ))
+                |rendered| {
+                    format!(
+                        "flux__fs_read_text({}, {}, {callback})",
+                        rendered[0], rendered[1]
+                    )
+                },
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -51277,22 +51284,24 @@ fn emit_cfg_scalar_expr_direct(
             arguments,
         } if namespace == "path" && ty == Type::Error => match name.as_str() {
             "join" if arguments.len() == 3 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    &arguments[..2],
-                    &[Type::Str, Type::Str],
-                    env,
-                    signatures,
-                )?;
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[2],
                     &[Type::Str],
                     env,
                     signatures,
                 )?;
-                Some(format!(
-                    "flux__path_join({}, {}, {callback})",
-                    rendered[0], rendered[1]
-                ))
+                emit_cfg_ordered_call_expression_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__path_join({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        )
+                    },
+                )
             }
             "dirname" | "basename" if arguments.len() == 2 => {
                 let value = emit_cfg_ordinary_call_argument_direct(
@@ -68991,6 +69000,194 @@ fn main() -> i64 {
             .expect("callback-qualified call should bypass the checked-AST root");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-callback-qualified-call"));
+        }
+    }
+
+    #[test]
+    fn ordered_callback_qualified_copy_calls_sequence_computed_prefix_arguments() {
+        let source = r#"
+fn converted(_value: str) -> void {
+}
+
+fn calendarParts(
+    _year: i64,
+    _month: i64,
+    _day: i64,
+    _hour: i64,
+    _minute: i64,
+    _second: i64,
+    _millis: i64,
+    _weekday: i64,
+    _dayOfYear: i64,
+    _offsetMinutes: i64
+) -> void {
+}
+
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
+fn stringValue(value: str) -> str {
+    return value
+}
+
+fn hmacBoth(key: str, value: str) -> error {
+    return crypto.hmacSha512(stringValue(key), stringValue(value), converted)
+}
+
+fn calendarZone(value: i64, zone: str) -> error {
+    return time.calendarZone(intValue(value), stringValue(zone), calendarParts)
+}
+
+fn formatOffset(value: i64, offset: i64) -> error {
+    return time.formatOffset(intValue(value), intValue(offset), converted)
+}
+
+fn formatZone(value: i64, zone: str) -> error {
+    return time.formatZone(intValue(value), stringValue(zone), converted)
+}
+
+fn sliceText(value: str, start: i64, end: i64) -> error {
+    return str.slice(stringValue(value), intValue(start), intValue(end), converted)
+}
+
+fn readFile(path: str, maxBytes: i64) -> error {
+    return file.read(stringValue(path), intValue(maxBytes), converted)
+}
+
+fn joinPath(left: str, right: str) -> error {
+    return path.join(stringValue(left), stringValue(right), converted)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered callback-qualified fixture should typecheck");
+
+        for (function, env, helper, computed_count) in [
+            (
+                "hmacBoth",
+                HashMap::from([
+                    ("key".to_string(), Type::Str),
+                    ("value".to_string(), Type::Str),
+                ]),
+                "flux__crypto_hmac_sha512",
+                2usize,
+            ),
+            (
+                "calendarZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                "flux__time_calendar_zone",
+                2usize,
+            ),
+            (
+                "formatOffset",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                ]),
+                "flux__time_format_offset",
+                2usize,
+            ),
+            (
+                "formatZone",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("zone".to_string(), Type::Str),
+                ]),
+                "flux__time_format_zone",
+                2usize,
+            ),
+            (
+                "sliceText",
+                HashMap::from([
+                    ("value".to_string(), Type::Str),
+                    ("start".to_string(), Type::I64),
+                    ("end".to_string(), Type::I64),
+                ]),
+                "flux__str_slice",
+                3usize,
+            ),
+            (
+                "readFile",
+                HashMap::from([
+                    ("path".to_string(), Type::Str),
+                    ("maxBytes".to_string(), Type::I64),
+                ]),
+                "flux__fs_read_text",
+                2usize,
+            ),
+            (
+                "joinPath",
+                HashMap::from([
+                    ("left".to_string(), Type::Str),
+                    ("right".to_string(), Type::Str),
+                ]),
+                "flux__path_join",
+                2usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("callback-qualified CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("callback-qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("callback-qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function} should emit directly from typed IR"));
+
+            let mut previous = None;
+            for index in 0..computed_count {
+                let marker = format!("flux__typed_arg_{index}");
+                let position = direct
+                    .find(&marker)
+                    .unwrap_or_else(|| panic!("{function} should materialize {marker}: {direct}"));
+                if let Some(previous) = previous {
+                    assert!(previous < position, "{function}: {direct}");
+                }
+                previous = Some(position);
+            }
+            let call = direct
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function} should call {helper}: {direct}"));
+            assert!(
+                previous.is_some_and(|position| position < call),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-callback-order".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("ordered callback-qualified call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-callback-order"));
         }
     }
 
