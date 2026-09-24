@@ -40217,12 +40217,36 @@ fn sequence_expr_for_lowering(
     reconstructed
 }
 
+fn cfg_sequence_lowering_kind(expr: &CfgScalarExpr) -> Option<SequenceLoweringKind> {
+    let CfgScalarExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    match crate::builtin_names::global_impl(callee) {
+        "chunked" => Some(SequenceLoweringKind::Chunked),
+        "sorted" => Some(SequenceLoweringKind::Sorted),
+        "flatten" => Some(SequenceLoweringKind::Flatten),
+        "distinct" => Some(SequenceLoweringKind::Distinct),
+        "concat" => Some(SequenceLoweringKind::Concat),
+        "map" | "filter" | "where" => Some(SequenceLoweringKind::Transform),
+        "fold" | "reduce" => Some(SequenceLoweringKind::Reduction),
+        _ => None,
+    }
+}
+
 fn sequence_lowering_kind(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Option<SequenceLoweringKind> {
+    if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        && let Some(kind) = cfg_sequence_lowering_kind(sequence)
+    {
+        return Some(kind);
+    }
+
     let expr = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     if sequence_chunked(&expr).is_some() {
         Some(SequenceLoweringKind::Chunked)
@@ -60145,6 +60169,35 @@ fn main() -> i64 {
             .expect("set/map contains should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-set-map-contains"));
+        }
+    }
+
+    #[test]
+    fn sequence_lowering_kind_classifies_typed_ir_call_roots() {
+        for (callee, expected) in [
+            ("chunked", SequenceLoweringKind::Chunked),
+            ("sorted", SequenceLoweringKind::Sorted),
+            ("flatten", SequenceLoweringKind::Flatten),
+            ("distinct", SequenceLoweringKind::Distinct),
+            ("concat", SequenceLoweringKind::Concat),
+            ("map", SequenceLoweringKind::Transform),
+            ("filter", SequenceLoweringKind::Transform),
+            ("where", SequenceLoweringKind::Transform),
+            ("fold", SequenceLoweringKind::Reduction),
+            ("reduce", SequenceLoweringKind::Reduction),
+        ] {
+            let expr = CfgScalarExpr {
+                ty: Type::Void,
+                kind: CfgScalarExprKind::Call {
+                    callee: callee.to_string(),
+                    arguments: Vec::new(),
+                },
+            };
+            assert_eq!(
+                cfg_sequence_lowering_kind(&expr),
+                Some(expected),
+                "{callee}"
+            );
         }
     }
 
