@@ -51018,27 +51018,38 @@ fn emit_cfg_scalar_expr_direct(
                     let values = render_i64_args(1)?;
                     Some(format!("flux__time_is_leap_year({})", values[0]))
                 }
-                "daysInMonth" if ty == Type::I64 => {
-                    let values = render_i64_args(2)?;
-                    Some(format!(
-                        "flux__time_days_in_month({}, {})",
-                        values[0], values[1]
-                    ))
-                }
+                "daysInMonth" if ty == Type::I64 => emit_cfg_ordered_call_expression_direct(
+                    arguments,
+                    &[Type::I64, Type::I64],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!("flux__time_days_in_month({}, {})", rendered[0], rendered[1])
+                    },
+                ),
                 "daysInYear" if ty == Type::I64 => {
                     let values = render_i64_args(1)?;
                     Some(format!("flux__time_days_in_year({})", values[0]))
                 }
                 "local" if ty == Type::I64 => {
-                    let values = render_i64_args(7)?;
-                    Some(format!(
-                        "flux__time_local_unix_millis({})",
-                        values.join(", ")
-                    ))
+                    let expected = vec![Type::I64; 7];
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| format!("flux__time_local_unix_millis({})", rendered.join(", ")),
+                    )
                 }
                 "utcUnixMillis" if ty == Type::I64 => {
-                    let values = render_i64_args(7)?;
-                    Some(format!("flux__time_utc_unix_millis({})", values.join(", ")))
+                    let expected = vec![Type::I64; 7];
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| format!("flux__time_utc_unix_millis({})", rendered.join(", ")),
+                    )
                 }
                 "utcYear" | "utcMonth" | "utcDay" | "utcHour" | "utcMinute" | "utcSecond"
                 | "utcMillisecond" | "utcWeekday" | "utcDayOfYear" | "localYear" | "localMonth"
@@ -63968,6 +63979,146 @@ fn main() -> i64 {
                 field_c_name("milliseconds")
             )
         );
+    }
+
+    #[test]
+    fn ordered_multi_argument_time_calls_sequence_computed_copy_values() {
+        let source = r#"
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
+fn monthDays(year: i64, month: i64) -> i64 {
+    return time.daysInMonth(intValue(year), intValue(month))
+}
+
+fn localTime(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64
+) -> i64 {
+    return time.local(intValue(year), intValue(month), intValue(day), intValue(hour), intValue(minute), intValue(second), intValue(millisecond))
+}
+
+fn utcTime(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64
+) -> i64 {
+    return time.utcUnixMillis(intValue(year), intValue(month), intValue(day), intValue(hour), intValue(minute), intValue(second), intValue(millisecond))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered multi-argument time fixture should typecheck");
+
+        for (function, env, helper, computed_count) in [
+            (
+                "monthDays",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                ]),
+                "flux__time_days_in_month",
+                2usize,
+            ),
+            (
+                "localTime",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                    ("day".to_string(), Type::I64),
+                    ("hour".to_string(), Type::I64),
+                    ("minute".to_string(), Type::I64),
+                    ("second".to_string(), Type::I64),
+                    ("millisecond".to_string(), Type::I64),
+                ]),
+                "flux__time_local_unix_millis",
+                7usize,
+            ),
+            (
+                "utcTime",
+                HashMap::from([
+                    ("year".to_string(), Type::I64),
+                    ("month".to_string(), Type::I64),
+                    ("day".to_string(), Type::I64),
+                    ("hour".to_string(), Type::I64),
+                    ("minute".to_string(), Type::I64),
+                    ("second".to_string(), Type::I64),
+                    ("millisecond".to_string(), Type::I64),
+                ]),
+                "flux__time_utc_unix_millis",
+                7usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("time-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("time call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("time call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function} should emit directly from typed IR"));
+
+            let mut previous = None;
+            for index in 0..computed_count {
+                let marker = format!("flux__typed_arg_{index}");
+                let position = direct
+                    .find(&marker)
+                    .unwrap_or_else(|| panic!("{function} should materialize {marker}: {direct}"));
+                if let Some(previous) = previous {
+                    assert!(previous < position, "{function}: {direct}");
+                }
+                previous = Some(position);
+            }
+            let call = direct
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function} should call {helper}: {direct}"));
+            assert!(
+                previous.is_some_and(|position| position < call),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-time-call-order".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("ordered time call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-time-call-order"));
+        }
     }
 
     #[test]
