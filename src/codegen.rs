@@ -50696,6 +50696,19 @@ fn cfg_scalar_expr_is_direct_primitive_tree(
                     })
                 }
             }
+            CfgScalarExprKind::Field {
+                base,
+                optional: false,
+                ..
+            } => {
+                let CfgScalarExprKind::Name(name) = &base.kind else {
+                    return false;
+                };
+                env.get(name).is_some_and(|local_ty| {
+                    signatures.canonical_type(local_ty) == signatures.canonical_type(&base.ty)
+                }) && seen_names.insert(name.clone())
+                    && emit_cfg_scalar_expr_direct(expr, env, signatures).is_some()
+            }
             CfgScalarExprKind::Unary { operand, .. } => {
                 !matches!(operand.kind, CfgScalarExprKind::Unary { .. })
                     && visit(operand, env, signatures, seen_names)
@@ -59533,6 +59546,100 @@ fn main() -> i64 {
                 );
             }
         }
+    }
+
+    #[test]
+    fn direct_typed_ir_primitive_trees_accept_named_field_leaves() {
+        let source = r#"
+struct Point {
+    x: i64
+}
+
+fn arithmetic(point: Point, delta: i64) -> i64 {
+    return point.x + delta
+}
+
+fn properties(values: set<i64>) -> bool {
+    return values.count != 2 || !values.nonempty || values.empty
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("field-leaf primitive IR fixture should typecheck");
+
+        let arithmetic = database
+            .control_flow_graph("arithmetic")
+            .expect("arithmetic CFG should exist");
+        let arithmetic_root = arithmetic
+            .values()
+            .iter()
+            .filter(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Add, .. }
+                )
+            })
+            .max_by_key(|value| value.span.length)
+            .expect("typed IR should retain field arithmetic");
+        let arithmetic_facts = cfg_rewrite_facts(arithmetic);
+        let fake_arithmetic = Expr {
+            line: arithmetic_root.span.line,
+            span: arithmetic_root.span,
+            kind: ExprKind::Int(0),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_arithmetic,
+            &Type::I64,
+            &HashMap::from([
+                ("point".to_string(), Type::Named("Point".to_string())),
+                ("delta".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &arithmetic_facts,
+        )
+        .expect("field arithmetic should emit from typed IR");
+        assert!(emitted.contains("flux_add_i64"), "{emitted}");
+        assert!(emitted.contains(&local_c_name("point")), "{emitted}");
+        assert!(emitted.contains(&field_c_name("x")), "{emitted}");
+        assert!(emitted.contains(&local_c_name("delta")), "{emitted}");
+
+        let properties = database
+            .control_flow_graph("properties")
+            .expect("properties CFG should exist");
+        let properties_root = properties
+            .values()
+            .iter()
+            .filter(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Or, .. }
+                )
+            })
+            .max_by_key(|value| value.span.length)
+            .expect("typed IR should retain collection property logic");
+        let properties_facts = cfg_rewrite_facts(properties);
+        let fake_properties = Expr {
+            line: properties_root.span.line,
+            span: properties_root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_properties,
+            &Type::Bool,
+            &HashMap::from([("values".to_string(), Type::Set(Box::new(Type::I64)))]),
+            database.signatures(),
+            &HashMap::new(),
+            &properties_facts,
+        )
+        .expect("collection property logic should emit from typed IR");
+        assert!(emitted.contains(&local_c_name("values")), "{emitted}");
+        assert!(emitted.contains(".len"), "{emitted}");
+        assert!(emitted.contains("||"), "{emitted}");
+        assert!(emitted.contains("!="), "{emitted}");
     }
 
     #[test]
