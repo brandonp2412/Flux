@@ -67400,6 +67400,10 @@ fn chooseDefaultCall(title: str, message: str) -> void {
     dialog.choose(dialogString(title), message, ["One", "Two"], selected)
 }
 
+fn doubleChooseDefaultCall(title: str, message: str) -> void {
+    dialog.choose(dialogString(title), dialogString(message), ["One", "Two"], selected)
+}
+
 fn confirmNamed(title: str, message: str, cancel: str, accept: str) -> void {
     dialog.confirm(title, message, confirmed, cancelLabel: cancel, confirmLabel: accept)
 }
@@ -67656,6 +67660,57 @@ fn main() -> i64 {
             .rfind("flux__dialog_confirm")
             .expect("dialog confirm should follow typed-IR argument temporaries");
         assert!(title_temp < message_temp && message_temp < call, "{direct}");
+
+        let graph = database
+            .control_flow_graph("doubleChooseDefaultCall")
+            .expect("two-call dialog choose CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                )
+            })
+            .expect("two-call dialog choose should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("two-call dialog choose should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("title".to_string(), Type::Str),
+            ("message".to_string(), Type::Str),
+        ]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible choose strings should sequence through typed-IR temporaries");
+        let title_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed choose title should receive a typed-IR temporary");
+        let message_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("computed choose message should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__dialog_choose")
+            .expect("dialog choose should follow typed-IR argument temporaries");
+        assert!(title_temp < message_temp && message_temp < call, "{direct}");
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-dialog-choose-multiflex".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &scalar.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("two-call dialog choose should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-dialog-choose-multiflex"));
 
         let graph = database
             .control_flow_graph("doubleConfirmNamedCall")
