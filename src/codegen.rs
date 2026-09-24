@@ -54520,11 +54520,12 @@ fn emit_cfg_scalar_expr_direct(
         ) || (matches!(signatures.canonical_type(&base.ty), Type::List(_))
             && cfg_borrowed_list_has_named_root(base)) =>
         {
-            let direct_index =
-                matches!(
+            let direct_index = cfg_scalar_expr_is_aggregate_reorder_safe(base)
+                || matches!(
                     index.kind,
                     CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                ) || cfg_scalar_expr_is_direct_primitive_tree(index, env, signatures);
+                )
+                || cfg_scalar_expr_is_direct_primitive_tree(index, env, signatures);
             if !direct_index {
                 return None;
             }
@@ -61093,6 +61094,112 @@ fn main() -> i64 {
             .expect("optional call index should bypass the checked-AST root");
             assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-optional-call-index"));
+        }
+    }
+
+    #[test]
+    fn nonoptional_collection_call_indexes_lower_from_reorder_safe_typed_ir_bases() {
+        let source = r#"
+fn dynamicKey(key: str) -> str {
+    return key
+}
+
+fn dynamicIndex(index: i64) -> i64 {
+    return index
+}
+
+fn mapValue(values: map<str, i64>, key: str) -> i64? {
+    return values[dynamicKey(key)]
+}
+
+fn listValue(values: i64[], index: i64) -> i64 {
+    return values[dynamicIndex(index)]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("non-optional call-index IR fixture should typecheck");
+
+        for (function, values_ty, index_name, index_ty, callee, expected_ty) in [
+            (
+                "mapValue",
+                Type::Map(Box::new(Type::Str), Box::new(Type::I64)),
+                "key",
+                Type::Str,
+                "dynamicKey",
+                Type::Optional(Box::new(Type::I64)),
+            ),
+            (
+                "listValue",
+                Type::List(Box::new(Type::I64)),
+                "index",
+                Type::I64,
+                "dynamicIndex",
+                Type::I64,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("non-optional call-index CFG should exist");
+            let index = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Index {
+                            optional: false,
+                            ..
+                        }
+                    )
+                })
+                .expect("typed IR should retain non-optional index");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("non-optional index should have scalar typed-IR facts");
+            assert!(matches!(
+                &scalar.kind,
+                CfgScalarExprKind::Index {
+                    base,
+                    index,
+                    optional: false,
+                } if matches!(&base.kind, CfgScalarExprKind::Name(name) if name == "values")
+                    && matches!(
+                        &index.kind,
+                        CfgScalarExprKind::Call { callee: actual, .. } if actual == callee
+                    )
+            ));
+
+            let env = HashMap::from([
+                ("values".to_string(), values_ty),
+                (index_name.to_string(), index_ty),
+            ]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("call-valued index should emit from reorder-safe typed-IR base");
+            assert!(direct.contains(&function_c_name(callee)), "{direct}");
+            assert!(direct.contains(&local_c_name("values")), "{direct}");
+
+            let fake = Expr {
+                line: index.span.line,
+                span: index.span,
+                kind: ExprKind::Str("checked-ast-nonoptional-call-index".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &expected_ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("non-optional call index should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+            assert!(!emitted.contains("checked-ast-nonoptional-call-index"));
         }
     }
 
