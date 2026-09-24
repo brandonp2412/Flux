@@ -38567,10 +38567,25 @@ fn emit_block(
                 out.push_str(&format!("{pad}{} = {};\n", local_c_name(name), value));
             }
             StmtKind::AssignMultiDestructure { bindings, expr } => {
-                let (_, record_destructure) =
-                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
+                let expr_span = source_span_key(expr.span);
+                let record_destructure = if context
+                    .cfg_rewrite_facts
+                    .multi_exprs
+                    .contains_key(&expr_span)
+                {
+                    false
+                } else if let Some(ty) = cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts)
+                {
+                    matches!(signatures.canonical_type(&ty), Type::Record(_))
+                } else {
+                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?.1
+                };
                 if record_destructure {
-                    let expr_type = type_of_expr(expr, env, signatures)?;
+                    let expr_type =
+                        match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                            Some(ty) => signatures.canonical_type(&ty),
+                            None => type_of_expr(expr, env, signatures)?,
+                        };
                     let value = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             expr,
@@ -38638,7 +38653,10 @@ fn emit_block(
                 rest,
                 expr,
             } => {
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -38717,7 +38735,10 @@ fn emit_block(
                 }
             }
             StmtKind::AssignStructDestructure { fields, expr, .. } => {
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -38803,10 +38824,25 @@ fn emit_block(
                 else_return,
                 mutable,
             } => {
-                let (_, record_destructure) =
-                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?;
+                let expr_span = source_span_key(expr.span);
+                let record_destructure = if context
+                    .cfg_rewrite_facts
+                    .multi_exprs
+                    .contains_key(&expr_span)
+                {
+                    false
+                } else if let Some(ty) = cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts)
+                {
+                    matches!(signatures.canonical_type(&ty), Type::Record(_))
+                } else {
+                    typecheck::positional_destructure_types_of_expr(expr, env, signatures)?.1
+                };
                 if record_destructure {
-                    let expr_type = type_of_expr(expr, env, signatures)?;
+                    let expr_type =
+                        match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                            Some(ty) => signatures.canonical_type(&ty),
+                            None => type_of_expr(expr, env, signatures)?,
+                        };
                     let value = EmittedExpr {
                         code: emit_expr_for_expected_with_cfg_proofs(
                             expr,
@@ -38911,7 +38947,10 @@ fn emit_block(
                 expr,
                 ..
             } => {
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -38990,7 +39029,10 @@ fn emit_block(
                 }
             }
             StmtKind::LetStructDestructure { fields, expr, .. } => {
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         expr,
@@ -39626,7 +39668,11 @@ fn emit_block(
                 body,
                 ..
             } => {
-                let iterable_type = type_of_expr(iterable, env, signatures)?;
+                let iterable_type =
+                    match cfg_rewrite_root_type(iterable.span, context.cfg_rewrite_facts) {
+                        Some(ty) => signatures.canonical_type(&ty),
+                        None => type_of_expr(iterable, env, signatures)?,
+                    };
                 let source = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         iterable,
@@ -78768,6 +78814,102 @@ fn main() -> i64 {
             assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-ordered-await"));
         }
+    }
+
+    #[test]
+    fn destructure_and_iteration_sources_use_typed_ir_after_ast_poisoning() {
+        let source = r#"
+type PairRecord = (left: i64, right: i64)
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn exercise(values: i64[], unique: set<i64>, mapping: map<str, i64>, pair: PairRecord, point: Point) -> i64 {
+    let (recordLeft, recordRight) = pair
+    let [head, ...rest] = values
+    let Point { x: pointX, y: pointY } = point
+
+    var assignedLeft: i64 = 0
+    var assignedRight: i64 = 0
+    var assignedHead: i64 = 0
+    var assignedTail: i64 = 0
+    var assignedX: i64 = 0
+    var assignedY: i64 = 0
+    (assignedLeft, assignedRight) = pair
+    [assignedHead, assignedTail] = values
+    Point { x: assignedX, y: assignedY } = point
+
+    for value in values:
+        print(value)
+    for value in unique:
+        print(value)
+    for key, value in mapping:
+        print(key)
+        print(value)
+
+    return recordLeft + recordRight + head + rest.length + pointX + pointY + assignedLeft + assignedRight + assignedHead + assignedTail + assignedX + assignedY
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("destructure/iteration typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("destructure/iteration typed-IR fixture should parse");
+        let function = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+
+        let mut poisoned = 0;
+        for stmt in &mut function.body {
+            let source_expr = match &mut stmt.kind {
+                StmtKind::AssignMultiDestructure { expr, .. }
+                | StmtKind::AssignListDestructure { expr, .. }
+                | StmtKind::AssignStructDestructure { expr, .. }
+                | StmtKind::LetMultiDestructure { expr, .. }
+                | StmtKind::LetListDestructure { expr, .. }
+                | StmtKind::LetStructDestructure { expr, .. } => Some(expr),
+                StmtKind::ForEach { iterable, .. } => Some(iterable),
+                _ => None,
+            };
+            if let Some(source_expr) = source_expr {
+                source_expr.kind = ExprKind::Str(format!("checked-ast-source-poison-{poisoned}"));
+                poisoned += 1;
+            }
+        }
+        assert_eq!(
+            poisoned, 9,
+            "fixture should cover six destructures and three iterators"
+        );
+
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut out,
+            function,
+            database.signatures(),
+            graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("destructure and iteration sources should emit from typed IR");
+
+        assert!(!out.contains("checked-ast-source-poison-"), "{out}");
+        assert!(out.contains("flux__record_pattern_"), "{out}");
+        assert!(out.contains("flux__record_assign_"), "{out}");
+        assert!(out.contains("flux__list_pattern_"), "{out}");
+        assert!(out.contains("flux__list_assign_"), "{out}");
+        assert!(out.contains("flux__struct_assign_"), "{out}");
+        assert!(out.contains("flux__iter_source_"), "{out}");
     }
 
     #[test]
