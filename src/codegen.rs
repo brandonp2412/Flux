@@ -44914,10 +44914,12 @@ fn emit_expr(
                 ));
             }
         }
-        ExprKind::AnonymousFunction { .. } => EmittedExpr {
-            code: anonymous_function_c_name(expr.span),
-            ty: type_of_expr(expr, env, signatures)?,
-        },
+        ExprKind::AnonymousFunction { .. } => {
+            return Err(diag(
+                expr.span,
+                "anonymous function value reached legacy expression emission without normalized typed IR",
+            ));
+        }
         ExprKind::Call {
             name,
             args,
@@ -80998,6 +81000,11 @@ fn emit_expr_for_expected(
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
     let expected = signatures.canonical_type(expected);
+    if matches!(expr.kind, ExprKind::AnonymousFunction { .. })
+        && matches!(expected, Type::Function { .. })
+    {
+        return Ok(anonymous_function_c_name(expr.span));
+    }
     if let ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Map(items) = &expr.kind
         && items.is_empty()
     {
