@@ -49409,6 +49409,64 @@ fn emit_cfg_order_safe_call_arguments_direct(
         .collect()
 }
 
+fn emit_cfg_ordered_call_expression_direct<F>(
+    arguments: &[CfgScalarExpr],
+    expected: &[Type],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    render_call: F,
+) -> Option<String>
+where
+    F: FnOnce(&[String]) -> String,
+{
+    if let Some(rendered) =
+        emit_cfg_order_safe_call_arguments_direct(arguments, expected, env, signatures)
+    {
+        return Some(render_call(&rendered));
+    }
+    if arguments.len() != expected.len() {
+        return None;
+    }
+
+    let flexible_count = arguments
+        .iter()
+        .filter(|argument| {
+            !matches!(
+                argument.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            )
+        })
+        .count();
+    if flexible_count < 2 {
+        return None;
+    }
+
+    let mut prelude = String::new();
+    let mut rendered = Vec::with_capacity(arguments.len());
+    for (index, (argument, expected)) in arguments.iter().zip(expected).enumerate() {
+        let expected = signatures.canonical_type(expected);
+        let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+        if matches!(
+            argument.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        ) {
+            rendered.push(value);
+            continue;
+        }
+        let temp = format!("flux__typed_arg_{index}");
+        prelude.push_str(&format!(
+            "{} {temp} = {value}; ",
+            c_type(&expected, signatures)
+        ));
+        rendered.push(temp);
+    }
+
+    Some(format!(
+        "__extension__ ({{ {prelude}{}; }})",
+        render_call(&rendered)
+    ))
+}
+
 fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
     match &argument.kind {
         CfgScalarExprKind::Name(_) => true,
@@ -50039,26 +50097,26 @@ fn emit_cfg_scalar_expr_direct(
             if arguments.len() != variant.payloads.len() {
                 return None;
             }
-            let rendered = if variant.payloads.len() == 1 {
-                vec![emit_cfg_ordinary_call_argument_direct(
+            if variant.payloads.len() == 1 {
+                let rendered = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
                     &variant.payloads[0],
                     env,
                     signatures,
-                )?]
-            } else {
-                emit_cfg_order_safe_call_arguments_direct(
-                    arguments,
-                    &variant.payloads,
-                    env,
-                    signatures,
-                )?
-            };
-            Some(format!(
-                "{}({})",
-                enum_variant_helper_name(namespace, name),
-                rendered.join(", ")
-            ))
+                )?;
+                return Some(format!(
+                    "{}({rendered})",
+                    enum_variant_helper_name(namespace, name)
+                ));
+            }
+            let helper = enum_variant_helper_name(namespace, name);
+            emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &variant.payloads,
+                env,
+                signatures,
+                |rendered| format!("{helper}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -50205,23 +50263,28 @@ fn emit_cfg_scalar_expr_direct(
                             Type::Str,
                         ]
                     };
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments, &expected, env, signatures,
-                    )?;
-                    let keep_alive = rendered.get(6).map_or("false", String::as_str);
-                    Some(profiled_timeline_call(
-                        "network",
-                        "http.request",
-                        format!(
-                            "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {keep_alive})",
-                            rendered[0],
-                            rendered[1],
-                            rendered[2],
-                            rendered[3],
-                            rendered[4],
-                            rendered[5]
-                        ),
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| {
+                            let keep_alive = rendered.get(6).map_or("false", String::as_str);
+                            profiled_timeline_call(
+                                "network",
+                                "http.request",
+                                format!(
+                                    "flux__net_http_send_text_request_v2({}, {}, {}, {}, {}, {}, {keep_alive})",
+                                    rendered[0],
+                                    rendered[1],
+                                    rendered[2],
+                                    rendered[3],
+                                    rendered[4],
+                                    rendered[5]
+                                ),
+                            )
+                        },
+                    )
                 }
                 "requestWithHeaders" | "sendTextRequestWithHeaders"
                     if (7..=8).contains(&arguments.len()) =>
@@ -50248,20 +50311,25 @@ fn emit_cfg_scalar_expr_direct(
                             Type::Str,
                         ]
                     };
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments, &expected, env, signatures,
-                    )?;
-                    let keep_alive = rendered.get(7).map_or("false", String::as_str);
-                    Some(format!(
-                        "flux__net_http_send_text_request_with_headers({}, {}, {}, {}, {}, {}, {}, {keep_alive})",
-                        rendered[0],
-                        rendered[1],
-                        rendered[2],
-                        rendered[3],
-                        rendered[4],
-                        rendered[5],
-                        rendered[6]
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| {
+                            let keep_alive = rendered.get(7).map_or("false", String::as_str);
+                            format!(
+                                "flux__net_http_send_text_request_with_headers({}, {}, {}, {}, {}, {}, {}, {keep_alive})",
+                                rendered[0],
+                                rendered[1],
+                                rendered[2],
+                                rendered[3],
+                                rendered[4],
+                                rendered[5],
+                                rendered[6]
+                            )
+                        },
+                    )
                 }
                 "respondWithHeaders" | "sendTextResponseWithHeaders"
                     if (5..=6).contains(&arguments.len()) =>
@@ -50278,14 +50346,19 @@ fn emit_cfg_scalar_expr_direct(
                     } else {
                         vec![Type::I64, Type::I64, Type::Str, Type::Str, Type::Str]
                     };
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments, &expected, env, signatures,
-                    )?;
-                    let keep_alive = rendered.get(5).map_or("false", String::as_str);
-                    Some(format!(
-                        "flux__net_http_send_text_response_with_headers({}, {}, {}, {}, {}, {keep_alive})",
-                        rendered[0], rendered[1], rendered[2], rendered[3], rendered[4]
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| {
+                            let keep_alive = rendered.get(5).map_or("false", String::as_str);
+                            format!(
+                                "flux__net_http_send_text_response_with_headers({}, {}, {}, {}, {}, {keep_alive})",
+                                rendered[0], rendered[1], rendered[2], rendered[3], rendered[4]
+                            )
+                        },
+                    )
                 }
                 "respond" | "sendTextResponse" if (4..=5).contains(&arguments.len()) => {
                     let expected = if arguments.len() == 5 {
@@ -50293,18 +50366,23 @@ fn emit_cfg_scalar_expr_direct(
                     } else {
                         vec![Type::I64, Type::I64, Type::Str, Type::Str]
                     };
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments, &expected, env, signatures,
-                    )?;
-                    let keep_alive = rendered.get(4).map_or("false", String::as_str);
-                    Some(profiled_timeline_call(
-                        "network",
-                        "http.respond",
-                        format!(
-                            "flux__net_http_send_text_response({}, {}, {}, {}, {keep_alive})",
-                            rendered[0], rendered[1], rendered[2], rendered[3]
-                        ),
-                    ))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &expected,
+                        env,
+                        signatures,
+                        |rendered| {
+                            let keep_alive = rendered.get(4).map_or("false", String::as_str);
+                            profiled_timeline_call(
+                                "network",
+                                "http.respond",
+                                format!(
+                                    "flux__net_http_send_text_response({}, {}, {}, {}, {keep_alive})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
+                                ),
+                            )
+                        },
+                    )
                 }
                 _ => None,
             }
@@ -50314,15 +50392,13 @@ fn emit_cfg_scalar_expr_direct(
             name,
             arguments,
         } if namespace == "tls" && ty == Type::Error => match name.as_str() {
-            "write" if arguments.len() == 2 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    arguments,
-                    &[Type::I64, Type::Str],
-                    env,
-                    signatures,
-                )?;
-                Some(format!("flux__tls_write({}, {})", rendered[0], rendered[1]))
-            }
+            "write" if arguments.len() == 2 => emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &[Type::I64, Type::Str],
+                env,
+                signatures,
+                |rendered| format!("flux__tls_write({}, {})", rendered[0], rendered[1]),
+            ),
             "close" if arguments.len() == 1 => {
                 let session = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
@@ -50341,19 +50417,19 @@ fn emit_cfg_scalar_expr_direct(
         } if namespace == "net" && ty == Type::Error => {
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
-                "sendText" if arguments.len() == 2 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments,
-                        &[Type::I64, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    Some(profiled_timeline_call(
-                        "network",
-                        "net.sendText",
-                        format!("flux__net_send_text({}, {})", rendered[0], rendered[1]),
-                    ))
-                }
+                "sendText" if arguments.len() == 2 => emit_cfg_ordered_call_expression_direct(
+                    arguments,
+                    &[Type::I64, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        profiled_timeline_call(
+                            "network",
+                            "net.sendText",
+                            format!("flux__net_send_text({}, {})", rendered[0], rendered[1]),
+                        )
+                    },
+                ),
                 "sendTextParts" if arguments.len() == 2 => {
                     let (rendered, parts) =
                         emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
@@ -50369,18 +50445,18 @@ fn emit_cfg_scalar_expr_direct(
                         rendered[0]
                     ))
                 }
-                "sendTextTo" if arguments.len() == 4 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments,
-                        &[Type::I64, Type::Str, Type::I64, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    Some(format!(
-                        "flux__net_send_text_to({}, {}, {}, {})",
-                        rendered[0], rendered[1], rendered[2], rendered[3]
-                    ))
-                }
+                "sendTextTo" if arguments.len() == 4 => emit_cfg_ordered_call_expression_direct(
+                    arguments,
+                    &[Type::I64, Type::Str, Type::I64, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__net_send_text_to({}, {}, {}, {})",
+                            rendered[0], rendered[1], rendered[2], rendered[3]
+                        )
+                    },
+                ),
                 "sendTextToParts" if arguments.len() == 4 => {
                     let (rendered, parts) =
                         emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
@@ -61512,10 +61588,35 @@ fn main() -> i64 {
             ("left".to_string(), Type::I64),
             ("right".to_string(), Type::I64),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible enum payloads must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible enum payloads should sequence through typed-IR temporaries");
+        let left_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("left typed-IR argument temporary should be emitted");
+        let right_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("right typed-IR argument temporary should be emitted");
+        let call = direct
+            .rfind(&enum_variant_helper_name("Choice", "Two"))
+            .expect("enum constructor call should follow its temporaries");
+        assert!(left_temp < right_temp && right_temp < call, "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-two-flex-enum".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Named("Choice".to_string()),
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("two flexible enum payloads should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-two-flex-enum"));
     }
 
     #[test]
@@ -67592,10 +67693,35 @@ fn main() -> i64 {
             ("port".to_string(), Type::I64),
             ("text".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible UDP text arguments must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible UDP text arguments should sequence through typed-IR temporaries");
+        let socket_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed socket should receive a typed-IR temporary");
+        let text_temp = direct
+            .find("flux__typed_arg_3")
+            .expect("computed text should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__net_send_text_to")
+            .expect("UDP send should follow typed-IR argument temporaries");
+        assert!(socket_temp < text_temp && text_temp < call, "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-two-flex-network-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("two flexible UDP text arguments should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-two-flex-network-call"));
 
         let graph = database
             .control_flow_graph("doubleCallSendTextToParts")
@@ -68164,10 +68290,35 @@ fn main() -> i64 {
             ("session".to_string(), Type::I64),
             ("value".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible arguments must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible TLS arguments should sequence through typed-IR temporaries");
+        let session_temp = direct
+            .find("flux__typed_arg_0")
+            .expect("computed TLS session should receive a typed-IR temporary");
+        let value_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("computed TLS value should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__tls_write")
+            .expect("TLS write should follow typed-IR argument temporaries");
+        assert!(session_temp < value_temp && value_temp < call, "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-two-flex-tls-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("two flexible TLS arguments should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-two-flex-tls-call"));
     }
 
     #[test]
@@ -68659,10 +68810,35 @@ fn main() -> i64 {
             ("contentType".to_string(), Type::Str),
             ("body".to_string(), Type::Str),
         ]);
-        assert!(
-            emit_cfg_scalar_expr_direct(scalar, &env, database.signatures()).is_none(),
-            "two flexible HTTP arguments must retain the ordered checked-AST fallback"
-        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("two flexible HTTP arguments should sequence through typed-IR temporaries");
+        let method_temp = direct
+            .find("flux__typed_arg_1")
+            .expect("computed HTTP method should receive a typed-IR temporary");
+        let body_temp = direct
+            .find("flux__typed_arg_5")
+            .expect("computed HTTP body should receive a typed-IR temporary");
+        let call = direct
+            .rfind("flux__net_http_send_text_request_v2")
+            .expect("HTTP request should follow typed-IR argument temporaries");
+        assert!(method_temp < body_temp && body_temp < call, "{direct}");
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-two-flex-http-call".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("two flexible HTTP arguments should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-two-flex-http-call"));
     }
 
     #[test]

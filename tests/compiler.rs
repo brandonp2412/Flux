@@ -57,6 +57,64 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_sequences_multiple_flexible_call_arguments_natively() {
+    let source = r#"
+enum Choice {
+    Pair(i64, i64)
+}
+
+fn left() -> i64 {
+    print(1)
+    return 10
+}
+
+fn right() -> i64 {
+    print(2)
+    return 20
+}
+
+fn main() -> i64 {
+    let _choice: Choice = Choice.Pair(left(), right())
+    return 0
+}
+"#;
+    let generated =
+        compile_to_c(source).expect("multi-flex typed-IR call arguments should lower to C");
+    let left_temp = generated
+        .find("flux__typed_arg_0")
+        .expect("left computed argument should be materialized");
+    let right_temp = generated
+        .find("flux__typed_arg_1")
+        .expect("right computed argument should be materialized");
+    assert!(left_temp < right_temp, "{generated}");
+
+    let root = std::env::temp_dir().join(format!("flux-typed-ir-multiflex-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("typed-IR native test directory should be writable");
+    let c_path = root.join("multiflex.c");
+    let exe_path = root.join("multiflex");
+    fs::write(&c_path, generated).expect("typed-IR generated C should be writable");
+    let compile = Command::new("clang")
+        .args(["-std=c11", "-D_GNU_SOURCE", "-O2"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("clang should compile multi-flex typed-IR C");
+    assert!(
+        compile.status.success(),
+        "multi-flex typed-IR C should compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("multi-flex typed-IR native program should run");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n2\n");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn scalar_sequence_projections_lower_without_direct_bindings() {
     let source = r#"
 fn double(value: i64) -> i64 {
