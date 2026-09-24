@@ -41342,6 +41342,35 @@ fn emit_sequence_concat_value(
     )
 }
 
+fn cfg_sequence_transform_stage(
+    expr: &CfgScalarExpr,
+) -> Option<(&CfgScalarExpr, &CfgScalarExpr, bool)> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    let implementation = crate::builtin_names::global_impl(callee);
+    if !matches!(implementation, "map" | "filter" | "where") || arguments.len() != 2 {
+        return None;
+    }
+    Some((
+        &arguments[0],
+        &arguments[1],
+        matches!(implementation, "filter" | "where"),
+    ))
+}
+
+fn collect_cfg_sequence_transform_chain<'a>(
+    expr: &'a CfgScalarExpr,
+    stages: &mut Vec<&'a CfgScalarExpr>,
+) -> &'a CfgScalarExpr {
+    let Some((list, _, _)) = cfg_sequence_transform_stage(expr) else {
+        return expr;
+    };
+    let source = collect_cfg_sequence_transform_chain(list, stages);
+    stages.push(expr);
+    source
+}
+
 fn emit_cfg_sequence_transform_value(
     out: &mut String,
     pad: &str,
@@ -41350,15 +41379,13 @@ fn emit_cfg_sequence_transform_value(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<Option<EmittedExpr>, Diagnostic> {
-    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
-        return Ok(None);
-    };
-    let implementation = crate::builtin_names::global_impl(callee);
-    if !matches!(implementation, "map" | "filter" | "where") || arguments.len() != 2 {
+    let mut stages = Vec::new();
+    let source_expr = collect_cfg_sequence_transform_chain(expr, &mut stages);
+    if stages.is_empty() {
         return Ok(None);
     }
 
-    let source_ty = signatures.canonical_type(&arguments[0].ty);
+    let source_ty = signatures.canonical_type(&source_expr.ty);
     let Type::List(input_element) = &source_ty else {
         return Ok(None);
     };
@@ -41366,35 +41393,54 @@ fn emit_cfg_sequence_transform_value(
     let Type::List(output_element) = &result_ty else {
         return Ok(None);
     };
-    if !matches!(arguments[1].kind, CfgScalarExprKind::Name(_)) {
-        return Ok(None);
-    }
-    let callback_ty = signatures.canonical_type(&arguments[1].ty);
-    let Type::Function { params, returns } = callback_ty else {
+    let Some(source_code) = emit_cfg_scalar_expr_direct(source_expr, env, signatures) else {
         return Ok(None);
     };
-    if params.len() != 1
-        || signatures.canonical_type(&params[0]) != signatures.canonical_type(input_element)
-        || returns.len() != 1
-    {
-        return Ok(None);
-    }
 
-    let filter = matches!(implementation, "filter" | "where");
-    if filter {
-        if result_ty != source_ty || signatures.canonical_type(&returns[0]) != Type::Bool {
+    let mut current_ty = signatures.canonical_type(input_element);
+    let mut prepared = Vec::with_capacity(stages.len());
+    for stage in stages {
+        let Some((list, callback, filter)) = cfg_sequence_transform_stage(stage) else {
+            return Ok(None);
+        };
+        let expected_list_ty = Type::List(Box::new(current_ty.clone()));
+        if signatures.canonical_type(&list.ty) != expected_list_ty
+            || !matches!(callback.kind, CfgScalarExprKind::Name(_))
+        {
             return Ok(None);
         }
-    } else if signatures.canonical_type(&returns[0]) != signatures.canonical_type(output_element) {
+        let callback_ty = signatures.canonical_type(&callback.ty);
+        let Type::Function { params, returns } = callback_ty else {
+            return Ok(None);
+        };
+        if params.len() != 1
+            || returns.len() != 1
+            || signatures.canonical_type(&params[0]) != current_ty
+        {
+            return Ok(None);
+        }
+        let return_ty = signatures.canonical_type(&returns[0]);
+        let stage_ty = signatures.canonical_type(&stage.ty);
+        let next_ty = if filter {
+            if return_ty != Type::Bool || stage_ty != expected_list_ty {
+                return Ok(None);
+            }
+            current_ty.clone()
+        } else {
+            if stage_ty != Type::List(Box::new(return_ty.clone())) {
+                return Ok(None);
+            }
+            return_ty
+        };
+        let Some(callback_code) = emit_cfg_scalar_expr_direct(callback, env, signatures) else {
+            return Ok(None);
+        };
+        prepared.push((callback_code, filter, next_ty.clone()));
+        current_ty = next_ty;
+    }
+    if current_ty != signatures.canonical_type(output_element) {
         return Ok(None);
     }
-
-    let Some(source_code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
-        return Ok(None);
-    };
-    let Some(callback_code) = emit_cfg_scalar_expr_direct(&arguments[1], env, signatures) else {
-        return Ok(None);
-    };
 
     let source_name = format!("flux__transform_source_{}", *temp_counter);
     *temp_counter += 1;
@@ -41424,15 +41470,30 @@ fn emit_cfg_sequence_transform_value(
     out.push_str(&format!(
         "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));\n"
     ));
-    if filter {
+    let mut value_name = item_name;
+    let mut value_ty = signatures.canonical_type(input_element);
+    for (callback_code, filter, next_ty) in prepared {
+        if filter {
+            out.push_str(&format!(
+                "{pad}    if (!{callback_code}({value_name})) continue;\n"
+            ));
+            continue;
+        }
+        let next_name = format!("flux__transform_value_{}", *temp_counter);
+        *temp_counter += 1;
         out.push_str(&format!(
-            "{pad}    if (!{callback_code}({item_name})) continue;\n{pad}    {buffer_name}[{count_name}++] = {item_name};\n"
+            "{pad}    {} {next_name} = {callback_code}({value_name});\n",
+            c_type(&next_ty, signatures)
         ));
-    } else {
-        out.push_str(&format!(
-            "{pad}    {buffer_name}[{count_name}++] = {callback_code}({item_name});\n"
-        ));
+        value_name = next_name;
+        value_ty = next_ty;
     }
+    if value_ty != signatures.canonical_type(output_element) {
+        return Ok(None);
+    }
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {value_name};\n"
+    ));
     out.push_str(&format!("{pad}}}\n"));
     out.push_str(&format!(
         "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({output_c}) }};\n"
