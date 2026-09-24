@@ -49307,6 +49307,22 @@ fn cfg_interface_dispatch_callee_direct(
     Some(function_c_name(mapped))
 }
 
+fn cfg_interface_dispatch_call_signature(member: &Signature, receiver_ty: &Type) -> Signature {
+    let mut signature = member.clone();
+    signature.params.insert(0, receiver_ty.clone());
+    signature.param_details.insert(
+        0,
+        crate::typecheck::ParamSignature {
+            name: "$receiver".to_string(),
+            ty: receiver_ty.clone(),
+            named_only: false,
+            default: None,
+            span: member.span,
+        },
+    );
+    signature
+}
+
 fn cfg_interface_dispatch_multi_shape_direct(
     namespace: &str,
     name: &str,
@@ -52429,21 +52445,16 @@ fn emit_cfg_scalar_expr_direct(
             if !signatures.is_copy_type(&receiver_ty) {
                 return None;
             }
-            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
             let callee =
                 cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
-            let mut rendered = Vec::with_capacity(arguments.len());
-            rendered.push(rendered_receiver);
-            for (argument, parameter) in arguments[1..].iter().zip(&member.params) {
-                let parameter_ty = signatures.canonical_type(parameter);
-                if signatures.canonical_type(&argument.ty) != parameter_ty
-                    || !signatures.is_copy_type(&parameter_ty)
-                {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
-            Some(format!("{callee}({})", rendered.join(", ")))
+            let call_signature = cfg_interface_dispatch_call_signature(member, &receiver_ty);
+            emit_cfg_ordered_positional_call_expression_direct(
+                &call_signature,
+                arguments,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::NamedQualifiedCall {
             namespace,
@@ -52598,41 +52609,16 @@ fn emit_cfg_scalar_expr_direct(
             if !signatures.is_copy_type(&receiver_ty) {
                 return None;
             }
-            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
             let callee =
                 cfg_interface_dispatch_callee_direct(namespace, name, &receiver_ty, signatures)?;
-
-            let supplied = &arguments[1..];
-            let positional = supplied
-                .iter()
-                .filter_map(|(argument_name, argument)| argument_name.is_none().then_some(argument))
-                .collect::<Vec<_>>();
-            let mut positional_index = 0usize;
-            let mut rendered = Vec::with_capacity(arguments.len());
-            rendered.push(rendered_receiver);
-            for parameter in &member.param_details {
-                let argument = if !parameter.named_only && positional_index < positional.len() {
-                    let argument = positional[positional_index];
-                    positional_index += 1;
-                    argument
-                } else {
-                    supplied.iter().find_map(|(argument_name, argument)| {
-                        (argument_name.as_deref() == Some(parameter.name.as_str()))
-                            .then_some(argument)
-                    })?
-                };
-                let parameter_ty = signatures.canonical_type(&parameter.ty);
-                if signatures.canonical_type(&argument.ty) != parameter_ty
-                    || !signatures.is_copy_type(&parameter_ty)
-                {
-                    return None;
-                }
-                rendered.push(emit_cfg_scalar_expr_direct(argument, env, signatures)?);
-            }
-            if positional_index != positional.len() {
-                return None;
-            }
-            Some(format!("{callee}({})", rendered.join(", ")))
+            let call_signature = cfg_interface_dispatch_call_signature(member, &receiver_ty);
+            emit_cfg_ordered_named_call_expression_direct(
+                &call_signature,
+                arguments,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::Index {
             base,
@@ -61547,6 +61533,143 @@ fn main() -> i64 {
             .expect("direct interface receiver should bypass checked AST");
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-interface-direct-receiver"));
+        }
+    }
+
+    #[test]
+    fn ordered_interface_dispatch_sequences_computed_receiver_and_arguments() {
+        let source = r#"
+interface MeasureOrder {
+    fn apply(value: i64) -> i64
+    fn adjust(value: i64, *, delta: i64) -> i64
+}
+
+struct OffsetOrder {
+    amount: i64
+}
+
+fn offsetOrderApply(offset: OffsetOrder, value: i64) -> i64 {
+    return offset.amount + value
+}
+
+fn offsetOrderAdjust(offset: OffsetOrder, value: i64, *, delta: i64) -> i64 {
+    return offset.amount + value + delta
+}
+
+impl MeasureOrder for OffsetOrder {
+    apply: offsetOrderApply
+    adjust: offsetOrderAdjust
+}
+
+fn makeOffsetOrder(amount: i64) -> OffsetOrder {
+    return OffsetOrder { amount: amount }
+}
+
+fn orderedI64(value: i64) -> i64 {
+    return value
+}
+
+fn positionalOrder(first: i64, second: i64) -> i64 {
+    return MeasureOrder.apply(makeOffsetOrder(first), orderedI64(second))
+}
+
+fn namedOrder(first: i64, second: i64, third: i64) -> i64 {
+    return MeasureOrder.adjust(makeOffsetOrder(first), orderedI64(second), delta: orderedI64(third))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered interface dispatch fixture should typecheck");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+            ("third".to_string(), Type::I64),
+        ]);
+
+        for (function, capability, helper, computed_count) in [
+            (
+                "positionalOrder",
+                "apply",
+                function_c_name("offsetOrderApply"),
+                2usize,
+            ),
+            (
+                "namedOrder",
+                "adjust",
+                function_c_name("offsetOrderAdjust"),
+                3usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered interface dispatch CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                            interface,
+                            capability: found,
+                            ..
+                        } | crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                            interface,
+                            capability: found,
+                            ..
+                        } if interface == "MeasureOrder" && found == capability
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!("{function}: interface dispatch should remain in typed IR")
+                });
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| {
+                    panic!("{function}: interface dispatch should have scalar facts")
+                });
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function}: interface dispatch should emit directly"));
+
+            let positions = (0..computed_count)
+                .map(|index| {
+                    direct
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| {
+                            panic!("{function}: missing typed argument {index}: {direct}")
+                        })
+                })
+                .collect::<Vec<_>>();
+            let call = direct
+                .rfind(&helper)
+                .unwrap_or_else(|| panic!("{function}: missing implementation call: {direct}"));
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-interface-order".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("ordered interface dispatch should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-interface-order"));
         }
     }
 
