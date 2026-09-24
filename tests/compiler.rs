@@ -143,6 +143,87 @@ fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_sequences_multiple_flexible_async_call_arguments_natively() {
+    let source = r#"
+fn first() -> i64 {
+    print(1)
+    return 10
+}
+
+fn second() -> i64 {
+    print(2)
+    return 20
+}
+
+async fn combine(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+async fn combineNamed(left: i64, *, right: i64, extra: i64) -> i64 {
+    return left + right + extra
+}
+
+async fn main() -> i64 {
+    let positional: i64 = await combine(first(), second())
+    print(positional)
+    let named: i64 = await combineNamed(first(), extra: second(), right: first())
+    print(named)
+    return 0
+}
+"#;
+
+    let generated =
+        compile_to_c(source).expect("multi-flex async typed-IR arguments should lower to C");
+    assert!(
+        generated.contains("flux__typed_arg_0") && generated.contains("flux__typed_arg_1"),
+        "{generated}"
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-typed-ir-async-multiflex-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("async typed-IR native test directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("async-multiflex");
+    fs::write(&source_path, source).expect("async typed-IR source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("Flux should build async multi-flex fixture");
+    assert!(
+        built.status.success(),
+        "async multi-flex build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("async multi-flex binary should run");
+    assert!(
+        output.status.success(),
+        "async multi-flex binary failed with {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1
+2
+30
+1
+2
+1
+40
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn scalar_sequence_projections_lower_without_direct_bindings() {
     let source = r#"
 fn double(value: i64) -> i64 {

@@ -30226,6 +30226,46 @@ fn emit_async_suspend_expr(
         "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
         function.name.replace('\\', "\\\\").replace('"', "\\\"")
     ));
+    if let Some(cfg_await) = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts)
+        && let CfgScalarExprKind::Await { value } = &cfg_await.kind
+    {
+        let start_callee = async_start_cont_c_name(callee);
+        let resume_callee = async_resume_c_name(&function.name);
+        let render_start = |rendered: &[String]| {
+            let mut start_args = rendered.to_vec();
+            start_args.push(resume_callee.clone());
+            start_args.push("flux__task".to_string());
+            format!("(void){start_callee}({})", start_args.join(", "))
+        };
+        let direct = match &value.kind {
+            CfgScalarExprKind::Call {
+                callee: cfg_callee,
+                arguments,
+            } if cfg_callee == callee => emit_cfg_ordered_positional_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                render_start,
+            ),
+            CfgScalarExprKind::NamedCall {
+                callee: cfg_callee,
+                arguments,
+            } if cfg_callee == callee => emit_cfg_ordered_named_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                render_start,
+            ),
+            _ => None,
+        };
+        if let Some(direct) = direct {
+            out.push_str(&format!("{pad}{direct};\n{pad}return;\n"));
+            return Ok(());
+        }
+    }
+
     let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
     let mut start_args = rendered;
     start_args.push(async_resume_c_name(&function.name));
@@ -49984,68 +50024,70 @@ fn emit_cfg_scalar_expr_direct(
                 interface_pack_helper_name(interface, target)
             ))
         }
-        CfgScalarExprKind::Await { value } => {
-            let (callee, rendered) = match &value.kind {
-                CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
-                    let implementation = crate::builtin_names::global_impl(callee);
-                    if implementation != callee {
-                        return None;
-                    }
-                    let signature = signatures.get(implementation)?;
-                    if !signature.asynchronous
-                        || signature.foreign_symbol.is_some()
-                        || signature.returns.len() > 1
-                    {
-                        return None;
-                    }
-                    let result_ty = signature
-                        .returns
-                        .first()
-                        .map(|ty| signatures.canonical_type(ty))
-                        .unwrap_or(Type::Void);
-                    if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
-                        return None;
-                    }
-                    let rendered = emit_cfg_positional_call_arguments_direct(
-                        signature, arguments, env, signatures,
-                    )?;
-                    (implementation, rendered)
+        CfgScalarExprKind::Await { value } => match &value.kind {
+            CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
+                let implementation = crate::builtin_names::global_impl(callee);
+                if implementation != callee {
+                    return None;
                 }
-                CfgScalarExprKind::NamedCall { callee, arguments } if !env.contains_key(callee) => {
-                    let implementation = crate::builtin_names::global_impl(callee);
-                    if implementation != callee {
-                        return None;
-                    }
-                    let signature = signatures.get(implementation)?;
-                    if !signature.asynchronous
-                        || signature.foreign_symbol.is_some()
-                        || signature.returns.len() > 1
-                    {
-                        return None;
-                    }
-                    let result_ty = signature
-                        .returns
-                        .first()
-                        .map(|ty| signatures.canonical_type(ty))
-                        .unwrap_or(Type::Void);
-                    if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
-                        return None;
-                    }
+                let signature = signatures.get(implementation)?;
+                if !signature.asynchronous
+                    || signature.foreign_symbol.is_some()
+                    || signature.returns.len() > 1
+                {
+                    return None;
+                }
+                let result_ty = signature
+                    .returns
+                    .first()
+                    .map(|ty| signatures.canonical_type(ty))
+                    .unwrap_or(Type::Void);
+                if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
+                    return None;
+                }
+                let await_callee = async_await_c_name(implementation);
+                let start_callee = async_start_c_name(implementation);
+                emit_cfg_ordered_positional_call_expression_direct(
+                    signature,
+                    arguments,
+                    env,
+                    signatures,
+                    |rendered| format!("{await_callee}({start_callee}({}))", rendered.join(", ")),
+                )
+            }
+            CfgScalarExprKind::NamedCall { callee, arguments } if !env.contains_key(callee) => {
+                let implementation = crate::builtin_names::global_impl(callee);
+                if implementation != callee {
+                    return None;
+                }
+                let signature = signatures.get(implementation)?;
+                if !signature.asynchronous
+                    || signature.foreign_symbol.is_some()
+                    || signature.returns.len() > 1
+                {
+                    return None;
+                }
+                let result_ty = signature
+                    .returns
+                    .first()
+                    .map(|ty| signatures.canonical_type(ty))
+                    .unwrap_or(Type::Void);
+                if result_ty != ty || (ty != Type::Void && !signatures.is_copy_type(&ty)) {
+                    return None;
+                }
 
-                    let rendered = emit_cfg_named_call_arguments_direct(
-                        signature, arguments, env, signatures,
-                    )?;
-                    (implementation, rendered)
-                }
-                _ => return None,
-            };
-            Some(format!(
-                "{}({}({}))",
-                async_await_c_name(callee),
-                async_start_c_name(callee),
-                rendered.join(", ")
-            ))
-        }
+                let await_callee = async_await_c_name(implementation);
+                let start_callee = async_start_c_name(implementation);
+                emit_cfg_ordered_named_call_expression_direct(
+                    signature,
+                    arguments,
+                    env,
+                    signatures,
+                    |rendered| format!("{await_callee}({start_callee}({}))", rendered.join(", ")),
+                )
+            }
+            _ => None,
+        },
         CfgScalarExprKind::Call { callee, arguments }
             if crate::builtin_names::global_impl(callee) == "error"
                 && arguments.len() == 1
@@ -72773,6 +72815,26 @@ async fn nestedNamedAwait(left: i64, right: i64, delta: i64) -> i64 {
     return await adjust(left + right, delta: delta)
 }
 
+fn makeValue(value: i64) -> i64 {
+    return value
+}
+
+async fn pair(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+async fn pairNamed(left: i64, *, right: i64, extra: i64) -> i64 {
+    return left + right + extra
+}
+
+async fn orderedAwait(left: i64, right: i64) -> i64 {
+    return await pair(makeValue(left), makeValue(right))
+}
+
+async fn orderedNamedAwait(left: i64, right: i64, extra: i64) -> i64 {
+    return await pairNamed(makeValue(left), extra: makeValue(extra), right: makeValue(right))
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -72955,6 +73017,78 @@ fn main() -> i64 {
             .expect("nested primitive await arguments should bypass the checked-AST root");
             assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-nested-await"));
+        }
+
+        for (function, callee, env, expected_call) in [
+            (
+                "orderedAwait",
+                "pair",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                ]),
+                format!(
+                    "{}(flux__typed_arg_0, flux__typed_arg_1)",
+                    async_start_c_name("pair")
+                ),
+            ),
+            (
+                "orderedNamedAwait",
+                "pairNamed",
+                HashMap::from([
+                    ("left".to_string(), Type::I64),
+                    ("right".to_string(), Type::I64),
+                    ("extra".to_string(), Type::I64),
+                ]),
+                format!(
+                    "{}(flux__typed_arg_0, flux__typed_arg_2, flux__typed_arg_1)",
+                    async_start_c_name("pairNamed")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered await CFG should exist");
+            let awaited = graph
+                .values()
+                .iter()
+                .find(|value| matches!(value.kind, crate::ir::ControlFlowValueKind::Await { .. }))
+                .expect("ordered await should retain the await boundary");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(awaited.span))
+                .expect("ordered await should have typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("multi-flex await should render directly from typed IR");
+            let first = direct
+                .find("flux__typed_arg_0")
+                .expect("first await argument temporary should exist");
+            let second = direct
+                .find("flux__typed_arg_1")
+                .expect("second await argument temporary should exist");
+            let start = direct
+                .rfind(&async_start_c_name(callee))
+                .expect("async start should follow ordered argument temporaries");
+            assert!(first < second && second < start, "{function}: {direct}");
+            assert!(direct.contains(&expected_call), "{function}: {direct}");
+
+            let fake = Expr {
+                line: awaited.span.line,
+                span: awaited.span,
+                kind: ExprKind::Str("checked-ast-ordered-await".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("multi-flex await should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+            assert!(!emitted.contains("checked-ast-ordered-await"));
         }
     }
 
