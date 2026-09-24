@@ -30198,27 +30198,30 @@ fn emit_async_suspend_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    let cfg_await = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts);
-    let rewritten_await =
-        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts);
-    let cfg_callee = cfg_await.and_then(|cfg_await| {
-        let CfgScalarExprKind::Await { value } = &cfg_await.kind else {
-            return None;
-        };
-        match &value.kind {
-            CfgScalarExprKind::Call { callee, .. }
-            | CfgScalarExprKind::NamedCall { callee, .. } => Some(callee.as_str()),
-            _ => None,
-        }
-    });
-    let callee = cfg_callee
-        .or_else(|| direct_await_call(&rewritten_await).map(|(callee, _, _)| callee))
-        .ok_or_else(|| {
+    let cfg_await =
+        cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts).ok_or_else(|| {
             diag(
                 await_expr.span,
-                "async continuation lowering requires a direct async function call",
+                "async continuation suspension is missing normalized typed-IR await facts",
             )
         })?;
+    let CfgScalarExprKind::Await { value } = &cfg_await.kind else {
+        return Err(diag(
+            await_expr.span,
+            "async continuation suspension requires a normalized typed await",
+        ));
+    };
+    let callee = match &value.kind {
+        CfgScalarExprKind::Call { callee, .. } | CfgScalarExprKind::NamedCall { callee, .. } => {
+            callee.as_str()
+        }
+        _ => {
+            return Err(diag(
+                await_expr.span,
+                "async continuation suspension requires a direct typed async call",
+            ));
+        }
+    };
     let signature = signatures.get(callee).ok_or_else(|| {
         diag(
             await_expr.span,
@@ -30231,62 +30234,44 @@ fn emit_async_suspend_expr(
         "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
         function.name.replace('\\', "\\\\").replace('"', "\\\"")
     ));
-    if let Some(cfg_await) = cfg_await
-        && let CfgScalarExprKind::Await { value } = &cfg_await.kind
-    {
-        let start_callee = async_start_cont_c_name(callee);
-        let resume_callee = async_resume_c_name(&function.name);
-        let render_start = |rendered: &[String]| {
-            let mut start_args = rendered.to_vec();
-            start_args.push(resume_callee.clone());
-            start_args.push("flux__task".to_string());
-            format!("(void){start_callee}({})", start_args.join(", "))
-        };
-        let direct = match &value.kind {
-            CfgScalarExprKind::Call {
-                callee: cfg_callee,
-                arguments,
-            } if cfg_callee == callee => emit_cfg_ordered_positional_call_expression_direct(
-                signature,
-                arguments,
-                env,
-                signatures,
-                render_start,
-            ),
-            CfgScalarExprKind::NamedCall {
-                callee: cfg_callee,
-                arguments,
-            } if cfg_callee == callee => emit_cfg_ordered_named_call_expression_direct(
-                signature,
-                arguments,
-                env,
-                signatures,
-                render_start,
-            ),
-            _ => None,
-        };
-        if let Some(direct) = direct {
-            out.push_str(&format!("{pad}{direct};\n{pad}return;\n"));
-            return Ok(());
-        }
+    let start_callee = async_start_cont_c_name(callee);
+    let resume_callee = async_resume_c_name(&function.name);
+    let render_start = |rendered: &[String]| {
+        let mut start_args = rendered.to_vec();
+        start_args.push(resume_callee.clone());
+        start_args.push("flux__task".to_string());
+        format!("(void){start_callee}({})", start_args.join(", "))
+    };
+    let direct = match &value.kind {
+        CfgScalarExprKind::Call {
+            callee: cfg_callee,
+            arguments,
+        } if cfg_callee == callee => emit_cfg_ordered_positional_call_expression_direct(
+            signature,
+            arguments,
+            env,
+            signatures,
+            render_start,
+        ),
+        CfgScalarExprKind::NamedCall {
+            callee: cfg_callee,
+            arguments,
+        } if cfg_callee == callee => emit_cfg_ordered_named_call_expression_direct(
+            signature,
+            arguments,
+            env,
+            signatures,
+            render_start,
+        ),
+        _ => None,
     }
-
-    let (_, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
+    .ok_or_else(|| {
         diag(
             await_expr.span,
-            "async continuation fallback requires the checked direct async call",
+            "async continuation suspension cannot emit its call from normalized typed IR",
         )
     })?;
-    let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
-    let mut start_args = rendered;
-    start_args.push(async_resume_c_name(&function.name));
-    start_args.push("flux__task".to_string());
-    out.push_str(&format!(
-        "{pad}(void){}({});\n",
-        async_start_cont_c_name(callee),
-        start_args.join(", ")
-    ));
-    out.push_str(&format!("{pad}return;\n"));
+    out.push_str(&format!("{pad}{direct};\n{pad}return;\n"));
     Ok(())
 }
 
@@ -50907,7 +50892,37 @@ fn emit_cfg_ordinary_call_argument_direct(
     signatures: &Signatures,
 ) -> Option<String> {
     let expected = signatures.canonical_type(expected);
-    if signatures.canonical_type(&argument.ty) != expected || !signatures.is_copy_type(&expected) {
+    if let CfgScalarExprKind::Name(name) = &argument.kind
+        && env
+            .get(name)
+            .is_some_and(|local_ty| signatures.canonical_type(local_ty) == expected)
+        && signatures.is_copy_type(&expected)
+    {
+        return Some(local_c_name(name));
+    }
+
+    let actual = signatures.canonical_type(&argument.ty);
+    if matches!(argument.kind, CfgScalarExprKind::NoneLiteral)
+        && matches!(expected, Type::Optional(_))
+        && signatures.is_copy_type(&expected)
+    {
+        return Some(format!(
+            "({}){{ .has_value = false }}",
+            c_type(&expected, signatures)
+        ));
+    }
+    if let Type::Optional(inner) = &expected
+        && actual == signatures.canonical_type(inner)
+        && signatures.is_copy_type(&expected)
+    {
+        let rendered = emit_cfg_ordinary_call_argument_direct(argument, inner, env, signatures)?;
+        return Some(format!(
+            "({}){{ .has_value = true, .value = {rendered} }}",
+            c_type(&expected, signatures)
+        ));
+    }
+
+    if actual != expected || !signatures.is_copy_type(&expected) {
         return None;
     }
 
@@ -78041,159 +78056,6 @@ fn main() -> i64 {
         assert!(matches!(items[0].kind, ExprKind::Int(1)));
         assert!(matches!(items[1].kind, ExprKind::Int(2)));
     }
-}
-
-fn substitute_nested_ir_constant_arguments(expr: &Expr, rewrite_facts: &CfgRewriteFacts) -> Expr {
-    // Expression statements have no expected result type, but their root can
-    // still be a pure value already proven by normalized typed IR.  Consume
-    // that fact before walking children so discarded expressions use the same
-    // backend boundary as bindings, assignments, and returns.  The direct
-    // helper preserves the original span while replacing only compiler-known
-    // scalar constants; effectful and ownership-sensitive roots are unchanged.
-    let span = source_span_key(expr.span);
-    if rewrite_facts.constants.contains_key(&span) || rewrite_facts.aggregates.contains_key(&span) {
-        return substitute_direct_ir_constant_arguments(expr, rewrite_facts);
-    }
-    let mut rewritten = expr.clone();
-    let rewrite = |value: &Expr| substitute_direct_ir_constant_arguments(value, rewrite_facts);
-    match &mut rewritten.kind {
-        ExprKind::Await(awaited) => {
-            **awaited = substitute_nested_ir_constant_arguments(awaited, rewrite_facts);
-        }
-        ExprKind::Call {
-            args, named_args, ..
-        }
-        | ExprKind::QualifiedCall {
-            args, named_args, ..
-        } => {
-            for value in args {
-                *value = rewrite(value);
-            }
-            for argument in named_args {
-                argument.value = rewrite(&argument.value);
-            }
-        }
-        ExprKind::ShellCall { args, .. } => {
-            for value in args {
-                *value = rewrite(value);
-            }
-        }
-        ExprKind::Pipe { input, args, .. } => {
-            **input = rewrite(input);
-            for value in args {
-                *value = rewrite(value);
-            }
-        }
-        // Expression statements do not have an expected value type, so they
-        // take this path instead of `emit_expr_for_expected_with_cfg_proofs`.
-        // Keep their root expression connected to the normalized constant
-        // map as well; otherwise a pure binary/unary/conditional expression
-        // would still be rebuilt from the checked AST while the same value is
-        // consumed directly from typed IR at binding and return boundaries.
-        ExprKind::Unary { expr: value, .. }
-        | ExprKind::ListSpread { value, .. }
-        | ExprKind::ListOptional { value, .. } => {
-            **value = rewrite(value);
-        }
-        ExprKind::Binary { left, right, .. } => {
-            **left = rewrite(left);
-            **right = rewrite(right);
-        }
-        ExprKind::Conditional {
-            then_expr,
-            cond,
-            else_expr,
-        } => {
-            **then_expr = rewrite(then_expr);
-            **cond = rewrite(cond);
-            **else_expr = rewrite(else_expr);
-        }
-        ExprKind::Index { base, index, .. } => {
-            **base = rewrite(base);
-            **index = rewrite(index);
-        }
-        ExprKind::Slice {
-            base,
-            start,
-            end,
-            step,
-        } => {
-            **base = rewrite(base);
-            for value in [start, end, step].into_iter().flatten() {
-                **value = rewrite(value);
-            }
-        }
-        ExprKind::List(items) | ExprKind::Set(items) => {
-            for value in items {
-                *value = rewrite(value);
-            }
-        }
-        ExprKind::Map(entries) => {
-            for entry in entries {
-                *entry = rewrite(entry);
-            }
-        }
-        ExprKind::ListIf {
-            condition,
-            value,
-            else_value,
-            ..
-        } => {
-            **condition = rewrite(condition);
-            **value = rewrite(value);
-            if let Some(value) = else_value {
-                **value = rewrite(value);
-            }
-        }
-        ExprKind::ListComprehension {
-            iterable,
-            value,
-            condition,
-            ..
-        } => {
-            **iterable = rewrite(iterable);
-            **value = rewrite(value);
-            if let Some(condition) = condition {
-                **condition = rewrite(condition);
-            }
-        }
-        ExprKind::RecordLiteral { fields } => {
-            for field in fields {
-                field.value = rewrite(&field.value);
-            }
-        }
-        ExprKind::StructLiteral { base, fields, .. } => {
-            if let Some(base) = base {
-                **base = rewrite(base);
-            }
-            for field in fields {
-                field.value = rewrite(&field.value);
-            }
-        }
-        ExprKind::Field { base, .. } => {
-            **base = rewrite(base);
-        }
-        ExprKind::Match { value, arms } => {
-            **value = rewrite(value);
-            for arm in arms {
-                if let Some(guard) = &mut arm.guard {
-                    *guard = rewrite(guard);
-                }
-                arm.value = rewrite(&arm.value);
-            }
-        }
-        ExprKind::ListMatch { value, arms } => {
-            **value = rewrite(value);
-            for arm in arms {
-                if let Some(guard) = &mut arm.guard {
-                    *guard = rewrite(guard);
-                }
-                arm.value = rewrite(&arm.value);
-            }
-        }
-        _ => {}
-    }
-    rewritten
 }
 
 fn emit_expr_for_expected(
