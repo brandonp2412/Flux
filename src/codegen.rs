@@ -50924,6 +50924,7 @@ fn emit_cfg_ordinary_call_argument_direct(
             | CfgScalarExprKind::Conditional { .. }
     ) && !cfg_scalar_expr_is_direct_primitive_tree(argument, env, signatures)
         && emit_cfg_optimized_i64_primitive_direct(argument, env, signatures).is_none()
+        && emit_cfg_coalesce_direct(argument, env, signatures).is_none()
     {
         return None;
     }
@@ -79582,144 +79583,21 @@ fn emit_multi_expr(
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Result<(String, String, Vec<Type>), Diagnostic> {
-    if let Some(multi) = rewrite_facts.multi_exprs.get(&source_span_key(expr.span))
-        && let Some(direct) = emit_cfg_multi_expr_direct(multi, env, signatures)
-    {
-        return Ok(direct);
-    }
-
-    // Keep the checked-AST fallback for values whose normalized call shape
-    // cannot yet be represented safely, while still substituting any scalar
-    // constants already proven by typed IR.
-    let rewritten = substitute_nested_ir_constant_arguments(expr, rewrite_facts);
-    emit_multi_expr_from_ast(&rewritten, env, signatures, rewrite_facts)
-}
-
-fn emit_multi_expr_from_ast(
-    expr: &Expr,
-    env: &HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-) -> Result<(String, String, Vec<Type>), Diagnostic> {
-    match &expr.kind {
-        ExprKind::ShellCall { name, args, .. } => {
-            let call = Expr {
-                line: expr.line,
-                span: expr.span,
-                kind: ExprKind::Call {
-                    name: name.clone(),
-                    args: args.clone(),
-                    named_args: Vec::new(),
-                },
-            };
-            emit_multi_expr_from_ast(&call, env, signatures, rewrite_facts)
-        }
-        ExprKind::Pipe {
-            input, name, args, ..
-        } => {
-            let mut call_args = Vec::with_capacity(args.len() + 1);
-            call_args.push(pipe_input_expr(input, env, signatures));
-            call_args.extend(args.iter().cloned());
-            let call = Expr {
-                line: expr.line,
-                span: expr.span,
-                kind: ExprKind::Call {
-                    name: name.clone(),
-                    args: call_args,
-                    named_args: Vec::new(),
-                },
-            };
-            emit_multi_expr_from_ast(&call, env, signatures, rewrite_facts)
-        }
-        ExprKind::Await(awaited) => {
-            let ExprKind::Call {
-                name,
-                args,
-                named_args,
-            } = &awaited.kind
-            else {
-                return Err(diag(
-                    awaited.span,
-                    "await lowering currently requires a direct async function call",
-                ));
-            };
-            let signature = signatures.get(name).ok_or_else(|| {
-                diag(
-                    awaited.span,
-                    &format!("unknown async function '{name}' during code generation"),
-                )
-            })?;
-            if !signature.asynchronous || signature.returns.len() < 2 {
-                return Err(diag(
-                    awaited.span,
-                    &format!("async function '{name}' does not return multiple values"),
-                ));
-            }
-            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
-            Ok((
-                format!(
-                    "{}({}({}))",
-                    async_await_c_name(name),
-                    async_start_c_name(name),
-                    rendered.join(", ")
-                ),
-                multi_return_struct_name(name),
-                signature.returns.clone(),
-            ))
-        }
-        ExprKind::Call {
-            name,
-            args,
-            named_args,
-        } => {
-            let signature = signatures.get(name).ok_or_else(|| {
-                diag(
-                    expr.span,
-                    &format!("unknown function '{name}' during code generation"),
-                )
-            })?;
-            if signature.returns.len() < 2 {
-                return Err(diag(
-                    expr.span,
-                    &format!("function '{name}' does not return multiple values"),
-                ));
-            }
-            let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
-            Ok((
-                format!("{}({})", function_c_name(name), rendered.join(", ")),
-                multi_return_struct_name(name),
-                signature.returns.clone(),
-            ))
-        }
-        ExprKind::QualifiedCall {
-            namespace,
-            name,
-            args,
-            named_args,
-            ..
-        } => {
-            let (code, returns, mapped) = emit_qualified_call(
-                expr.span, namespace, name, args, named_args, env, signatures,
-            )?;
-            if returns.len() < 2 {
-                return Err(diag(
-                    expr.span,
-                    &format!("qualified call '{namespace}.{name}' does not return multiple values"),
-                ));
-            }
-            let multi_struct = mapped.ok_or_else(|| {
-                diag(
-                    expr.span,
-                    "multi-value interface dispatch is missing its native return shape",
-                )
-            })?;
-            Ok((code, multi_struct, returns))
-        }
-        _ => Err(diag(
+    let multi = rewrite_facts
+        .multi_exprs
+        .get(&source_span_key(expr.span))
+        .ok_or_else(|| {
+            diag(
+                expr.span,
+                "multi-value expression is missing normalized typed-IR facts during code generation",
+            )
+        })?;
+    emit_cfg_multi_expr_direct(multi, env, signatures).ok_or_else(|| {
+        diag(
             expr.span,
-            "only multi-value function or interface calls can be destructured",
-        )),
-    }
+            "multi-value expression cannot be emitted from normalized typed IR",
+        )
+    })
 }
 
 fn interface_targets(
