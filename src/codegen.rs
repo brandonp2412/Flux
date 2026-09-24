@@ -50022,6 +50022,120 @@ fn cfg_i64_additive_shift_composition_is_safe(inner: &CfgScalarExpr, outer_shift
     })
 }
 
+fn cfg_same_i64_binding(left: &CfgScalarExpr, right: &CfgScalarExpr) -> bool {
+    matches!(
+        (&left.kind, &right.kind),
+        (CfgScalarExprKind::Name(left), CfgScalarExprKind::Name(right)) if left == right
+    )
+}
+
+fn cfg_opposite_signed_i64_binding(left: &CfgScalarExpr, right: &CfgScalarExpr) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            CfgScalarExprKind::Name(left),
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            },
+        ) => matches!(&operand.kind, CfgScalarExprKind::Name(right) if left == right),
+        (
+            CfgScalarExprKind::Unary {
+                op: UnaryOp::Neg,
+                operand,
+            },
+            CfgScalarExprKind::Name(right),
+        ) => matches!(&operand.kind, CfgScalarExprKind::Name(left) if left == right),
+        _ => false,
+    }
+}
+
+fn emit_cfg_dynamic_additive_inverse_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    if signatures.canonical_type(&expr.ty) != Type::I64 {
+        return None;
+    }
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&left.ty) != Type::I64
+        || signatures.canonical_type(&right.ty) != Type::I64
+    {
+        return None;
+    }
+
+    let inverse = match op {
+        BinOp::Sub => {
+            matches!(
+                &left.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Add,
+                    left: inner_left,
+                    right: inner_right,
+                } if cfg_same_i64_binding(inner_left, right)
+                    || cfg_same_i64_binding(inner_right, right)
+            ) || matches!(
+                &left.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Sub,
+                    right: inner_right,
+                    ..
+                } if cfg_opposite_signed_i64_binding(inner_right, right)
+            ) || matches!(
+                &right.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Sub,
+                    left: inner_left,
+                    ..
+                } if cfg_same_i64_binding(left, inner_left)
+            )
+        }
+        BinOp::Add => {
+            matches!(
+                &left.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Sub,
+                    right: inner_right,
+                    ..
+                } if cfg_same_i64_binding(inner_right, right)
+            ) || matches!(
+                &right.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Sub,
+                    right: inner_right,
+                    ..
+                } if cfg_same_i64_binding(left, inner_right)
+            ) || matches!(
+                &left.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Add,
+                    left: inner_left,
+                    right: inner_right,
+                } if cfg_opposite_signed_i64_binding(inner_left, right)
+                    || cfg_opposite_signed_i64_binding(inner_right, right)
+            ) || matches!(
+                &right.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Add,
+                    left: inner_left,
+                    right: inner_right,
+                } if cfg_opposite_signed_i64_binding(left, inner_left)
+                    || cfg_opposite_signed_i64_binding(left, inner_right)
+            )
+        }
+        _ => false,
+    };
+    if !inverse {
+        return None;
+    }
+
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    Some(format!("(({left}) {} ({right}))", c_operator(*op)))
+}
+
 fn emit_cfg_partial_constant_additive_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -51880,6 +51994,9 @@ fn emit_cfg_scalar_expr_direct(
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_partial_constant_additive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_dynamic_additive_inverse_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_double_unary_direct(expr, env, signatures) {
@@ -60069,6 +60186,92 @@ fn main() -> i64 {
                 !emitted.contains(rejected_fragment),
                 "{function}: {emitted}"
             );
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_dynamic_additive_inverses_bypass_checked_ast() {
+        let source = r#"
+fn observe(value: i64) -> i64 {
+    return value
+}
+
+fn cancel(value: i64, offset: i64) -> i64 {
+    return (value + offset) - offset
+}
+
+fn cancelNegated(value: i64, offset: i64) -> i64 {
+    return (value + offset) + -offset
+}
+
+fn cancelNegatedEffect(value: i64, offset: i64) -> i64 {
+    return (observe(value) + offset) + -offset
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("dynamic additive inverse fixture should typecheck");
+        let env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+        ]);
+
+        for (function, root_op, raw_operator) in [
+            ("cancel", BinOp::Sub, " - "),
+            ("cancelNegated", BinOp::Add, " + "),
+            ("cancelNegatedEffect", BinOp::Add, " + "),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("dynamic additive inverse CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("typed IR should retain additive inverse root");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_root = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Int(0),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_root,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("dynamic additive inverse should emit from typed IR");
+            assert!(emitted.contains(raw_operator), "{function}: {emitted}");
+            if function == "cancel" {
+                assert!(
+                    !emitted.starts_with("flux_sub_i64("),
+                    "{function}: {emitted}"
+                );
+            } else {
+                assert!(
+                    !emitted.starts_with("flux_add_i64("),
+                    "{function}: {emitted}"
+                );
+            }
+            if function == "cancelNegatedEffect" {
+                assert_eq!(
+                    emitted.matches(&function_c_name("observe")).count(),
+                    1,
+                    "{function}: {emitted}"
+                );
+            }
         }
     }
 
