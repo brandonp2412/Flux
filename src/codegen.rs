@@ -71144,6 +71144,141 @@ fn main() -> i64 {
     }
 
     #[test]
+    fn ordered_interface_multi_value_dispatch_sequences_computed_arguments() {
+        let source = r#"
+interface MeasureMultiOrder {
+    fn split(value: i64) -> (i64, error)
+    fn adjust(value: i64, *, delta: i64) -> (i64, error)
+}
+
+struct OffsetMultiOrder {
+    amount: i64
+}
+
+fn offsetMultiOrderSplit(offset: OffsetMultiOrder, value: i64) -> (i64, error) {
+    return offset.amount + value, nil
+}
+
+fn offsetMultiOrderAdjust(offset: OffsetMultiOrder, value: i64, *, delta: i64) -> (i64, error) {
+    return offset.amount + value + delta, nil
+}
+
+impl MeasureMultiOrder for OffsetMultiOrder {
+    split: offsetMultiOrderSplit
+    adjust: offsetMultiOrderAdjust
+}
+
+fn makeOffsetMultiOrder(amount: i64) -> OffsetMultiOrder {
+    return OffsetMultiOrder { amount: amount }
+}
+
+fn multiOrderI64(value: i64) -> i64 {
+    return value
+}
+
+fn positionalMultiOrder(first: i64, second: i64) -> i64 {
+    let (result, _) = MeasureMultiOrder.split(makeOffsetMultiOrder(first), multiOrderI64(second))
+    return result
+}
+
+fn namedMultiOrder(first: i64, second: i64, third: i64) -> i64 {
+    let (result, _) = MeasureMultiOrder.adjust(makeOffsetMultiOrder(first), multiOrderI64(second), delta: multiOrderI64(third))
+    return result
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered interface multi-value fixture should typecheck");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+            ("third".to_string(), Type::I64),
+        ]);
+
+        for (function, capability, helper, computed_count) in [
+            (
+                "positionalMultiOrder",
+                "split",
+                function_c_name("offsetMultiOrderSplit"),
+                2usize,
+            ),
+            (
+                "namedMultiOrder",
+                "adjust",
+                function_c_name("offsetMultiOrderAdjust"),
+                3usize,
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered interface multi-value CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::InterfaceDispatch {
+                                interface,
+                                capability: found,
+                                ..
+                            } | crate::ir::ControlFlowValueKind::NamedInterfaceDispatch {
+                                interface,
+                                capability: found,
+                                ..
+                            } if interface == "MeasureMultiOrder" && found == capability
+                        )
+                })
+                .unwrap_or_else(|| {
+                    panic!("{function}: multi-value interface dispatch should remain in typed IR")
+                });
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{function}: missing typed multi-value facts"));
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("{function}: multi-value interface dispatch should emit directly")
+                });
+
+            let positions = (0..computed_count)
+                .map(|index| {
+                    direct
+                        .0
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| {
+                            panic!("{function}: missing typed argument {index}: {}", direct.0)
+                        })
+                })
+                .collect::<Vec<_>>();
+            let call = direct
+                .0
+                .rfind(&helper)
+                .unwrap_or_else(|| panic!("{function}: missing implementation call: {}", direct.0));
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{function}: {}",
+                direct.0
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("ordered interface multi-value call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+        }
+    }
+
+    #[test]
     fn simple_qualified_multi_value_calls_emit_from_typed_ir() {
         let source = r#"
 fn tick() -> void {
@@ -75864,27 +75999,21 @@ fn emit_cfg_multi_expr_direct(
                 if !signatures.is_copy_type(&receiver_ty) {
                     return None;
                 }
-                let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
-                let rendered_arguments = emit_cfg_positional_call_arguments_direct(
-                    member,
-                    &arguments[1..],
-                    env,
-                    signatures,
-                )?;
                 let (callee, multi_struct) = cfg_interface_dispatch_multi_shape_direct(
                     namespace,
                     name,
                     &receiver_ty,
                     signatures,
                 )?;
-                let mut rendered = Vec::with_capacity(rendered_arguments.len() + 1);
-                rendered.push(rendered_receiver);
-                rendered.extend(rendered_arguments);
-                return Some((
-                    format!("{callee}({})", rendered.join(", ")),
-                    multi_struct,
-                    member.returns.clone(),
-                ));
+                let call_signature = cfg_interface_dispatch_call_signature(member, &receiver_ty);
+                let call = emit_cfg_ordered_positional_call_expression_direct(
+                    &call_signature,
+                    arguments,
+                    env,
+                    signatures,
+                    |rendered| format!("{callee}({})", rendered.join(", ")),
+                )?;
+                return Some((call, multi_struct, member.returns.clone()));
             }
             let name = crate::builtin_names::qualified_impl(namespace, name);
             let i64_error = vec![Type::I64, Type::Error];
@@ -77113,23 +77242,21 @@ fn emit_cfg_multi_expr_direct(
             if !signatures.is_copy_type(&receiver_ty) {
                 return None;
             }
-            let rendered_receiver = emit_cfg_scalar_expr_direct(receiver, env, signatures)?;
-            let rendered_arguments =
-                emit_cfg_named_call_arguments_direct(member, &arguments[1..], env, signatures)?;
             let (callee, multi_struct) = cfg_interface_dispatch_multi_shape_direct(
                 namespace,
                 name,
                 &receiver_ty,
                 signatures,
             )?;
-            let mut rendered = Vec::with_capacity(rendered_arguments.len() + 1);
-            rendered.push(rendered_receiver);
-            rendered.extend(rendered_arguments);
-            Some((
-                format!("{callee}({})", rendered.join(", ")),
-                multi_struct,
-                member.returns.clone(),
-            ))
+            let call_signature = cfg_interface_dispatch_call_signature(member, &receiver_ty);
+            let call = emit_cfg_ordered_named_call_expression_direct(
+                &call_signature,
+                arguments,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )?;
+            Some((call, multi_struct, member.returns.clone()))
         }
         CfgScalarExprKind::Await { value } => match &value.kind {
             CfgScalarExprKind::Call { callee, arguments } => {
