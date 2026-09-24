@@ -54227,11 +54227,6 @@ fn emit_expr_for_expected_with_cfg_proofs(
         return Ok(value);
     }
     if let Some(shape) = rewrite_facts.aggregates.get(&span) {
-        if let Some(rewritten) =
-            cfg_plain_aggregate_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
-        {
-            return emit_expr_for_expected(&rewritten, expected, env, signatures);
-        }
         if let Some(value) = emit_cfg_ordered_copy_aggregate_shape_direct(
             shape,
             expected,
@@ -54240,6 +54235,11 @@ fn emit_expr_for_expected_with_cfg_proofs(
             rewrite_facts,
         ) {
             return Ok(value);
+        }
+        if let Some(rewritten) =
+            cfg_plain_aggregate_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
+        {
+            return emit_expr_for_expected(&rewritten, expected, env, signatures);
         }
     }
     let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
@@ -55748,6 +55748,8 @@ fn main() -> i64 {
             &record_facts,
         )
         .expect("record shape should emit from typed IR children");
+        assert!(record_code.contains("flux__typed_aggregate_0"));
+        assert!(record_code.contains("flux__typed_aggregate_1"));
         assert!(record_code.contains(&local_c_name("right")));
         assert!(record_code.contains(&local_c_name("left")));
         assert!(!record_code.contains("checked-ast-record"));
