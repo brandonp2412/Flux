@@ -42739,6 +42739,235 @@ fn emit_sequence_transform_value(
     })
 }
 
+fn cfg_sequence_reduction_parts(
+    expr: &CfgScalarExpr,
+) -> Option<(&CfgScalarExpr, Option<&CfgScalarExpr>, &CfgScalarExpr, bool)> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    match crate::builtin_names::global_impl(callee) {
+        "fold" if arguments.len() == 3 => {
+            Some((&arguments[0], Some(&arguments[1]), &arguments[2], false))
+        }
+        "reduce" if arguments.len() == 2 => Some((&arguments[0], None, &arguments[1], true)),
+        _ => None,
+    }
+}
+
+fn emit_cfg_sequence_reducer_application(
+    out: &mut String,
+    pad: &str,
+    target_name: &str,
+    value_name: &str,
+    reducer: &CfgScalarExpr,
+    accumulator_ty: &Type,
+    item_ty: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<()> {
+    let accumulator_ty = signatures.canonical_type(accumulator_ty);
+    let item_ty = signatures.canonical_type(item_ty);
+    let Type::Function { params, returns } = signatures.canonical_type(&reducer.ty) else {
+        return None;
+    };
+    if params.len() != 2
+        || returns.len() != 1
+        || signatures.canonical_type(&params[0]) != accumulator_ty
+        || signatures.canonical_type(&params[1]) != item_ty
+        || signatures.canonical_type(&returns[0]) != accumulator_ty
+    {
+        return None;
+    }
+
+    if let CfgScalarExprKind::AnonymousFunction {
+        params,
+        return_type,
+        body,
+        ..
+    } = &reducer.kind
+    {
+        if params.len() != 2
+            || signatures.canonical_type(&params[0].1) != accumulator_ty
+            || signatures.canonical_type(&params[1].1) != item_ty
+            || signatures.canonical_type(&body.ty) != accumulator_ty
+            || return_type
+                .as_ref()
+                .is_some_and(|ty| signatures.canonical_type(ty) != accumulator_ty)
+        {
+            return None;
+        }
+        let mut callback_env = env.clone();
+        callback_env.insert(params[0].0.clone(), signatures.canonical_type(&params[0].1));
+        callback_env.insert(params[1].0.clone(), signatures.canonical_type(&params[1].1));
+        let rendered = emit_cfg_scalar_expr_direct(body, &callback_env, signatures)?;
+        out.push_str(&format!("{pad}{{\n"));
+        out.push_str(&format!(
+            "{pad}    {} {} = {target_name};\n",
+            c_type(&params[0].1, signatures),
+            local_c_name(&params[0].0)
+        ));
+        out.push_str(&format!(
+            "{pad}    {} {} = {value_name};\n",
+            c_type(&params[1].1, signatures),
+            local_c_name(&params[1].0)
+        ));
+        out.push_str(&format!("{pad}    {target_name} = {rendered};\n"));
+        out.push_str(&format!("{pad}}}\n"));
+        return Some(());
+    }
+
+    let callback = emit_cfg_scalar_expr_direct(reducer, env, signatures)?;
+    out.push_str(&format!(
+        "{pad}{target_name} = {callback}({target_name}, {value_name});\n"
+    ));
+    Some(())
+}
+
+fn emit_cfg_sequence_reduction_binding_direct(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let reduction = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))?;
+    let (list_expr, initial, reducer, reduce) = cfg_sequence_reduction_parts(reduction)?;
+    let (name, declared_ty) = target;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if signatures.canonical_type(&reduction.ty) != result_ty {
+        return None;
+    }
+
+    let mut stages = Vec::new();
+    let source_expr = collect_cfg_sequence_transform_chain(list_expr, &mut stages);
+    let mut direct = String::new();
+    let mut direct_temp_counter = *temp_counter;
+    let source = emit_cfg_sequence_list_value(
+        &mut direct,
+        pad,
+        source_expr,
+        env,
+        signatures,
+        &mut direct_temp_counter,
+    )?;
+    let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
+        return None;
+    };
+    let Type::List(reduced_element) = signatures.canonical_type(&list_expr.ty) else {
+        return None;
+    };
+    let source_element = signatures.canonical_type(&source_element);
+    let reduced_element = signatures.canonical_type(&reduced_element);
+
+    let source_name = format!("flux__reduce_source_{}", direct_temp_counter);
+    direct_temp_counter += 1;
+    let index_name = format!("flux__reduce_index_{}", direct_temp_counter);
+    direct_temp_counter += 1;
+    let item_name = format!("flux__reduce_item_{}", direct_temp_counter);
+    direct_temp_counter += 1;
+    let target_name = local_c_name(name);
+    let source_element_c = c_type(&source_element, signatures);
+    direct.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+
+    let has_value_name = if reduce {
+        if result_ty != reduced_element {
+            return None;
+        }
+        let has_value_name = format!("flux__reduce_has_value_{}", direct_temp_counter);
+        direct_temp_counter += 1;
+        direct.push_str(&format!(
+            "{pad}{} {target_name};\n{pad}bool {has_value_name} = false;\n",
+            c_type(declared_ty, signatures)
+        ));
+        Some(has_value_name)
+    } else {
+        let initial = initial?;
+        if signatures.canonical_type(&initial.ty) != result_ty {
+            return None;
+        }
+        let initial = emit_cfg_scalar_expr_direct(initial, env, signatures)?;
+        direct.push_str(&format!(
+            "{pad}{} {target_name} = {initial};\n",
+            c_type(declared_ty, signatures)
+        ));
+        None
+    };
+
+    direct.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    direct.push_str(&format!(
+        "{pad}    {source_element_c} {item_name} = *(({source_element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({source_element_c})));\n"
+    ));
+    let body_pad = format!("{pad}    ");
+    let (value_name, value_ty) = if stages.is_empty() {
+        (item_name, source_element)
+    } else {
+        emit_cfg_sequence_transform_stages(
+            &mut direct,
+            &body_pad,
+            &stages,
+            item_name,
+            source_element,
+            env,
+            signatures,
+            &mut direct_temp_counter,
+        )?
+    };
+    if signatures.canonical_type(&value_ty) != reduced_element {
+        return None;
+    }
+
+    if let Some(has_value_name) = &has_value_name {
+        direct.push_str(&format!(
+            "{pad}    if (!{has_value_name}) {{ {target_name} = {value_name}; {has_value_name} = true; }} else {{\n"
+        ));
+        emit_cfg_sequence_reducer_application(
+            &mut direct,
+            &format!("{pad}        "),
+            &target_name,
+            &value_name,
+            reducer,
+            &result_ty,
+            &reduced_element,
+            env,
+            signatures,
+        )?;
+        direct.push_str(&format!("{pad}    }}\n"));
+    } else {
+        emit_cfg_sequence_reducer_application(
+            &mut direct,
+            &body_pad,
+            &target_name,
+            &value_name,
+            reducer,
+            &result_ty,
+            &reduced_element,
+            env,
+            signatures,
+        )?;
+    }
+    direct.push_str(&format!("{pad}}}\n"));
+    if let Some(has_value_name) = has_value_name {
+        direct.push_str(&format!(
+            "{pad}if (!{has_value_name}) {{ fputs(\"Flux runtime error: reduce requires a non-empty list\\n\", stderr); abort(); }}\n"
+        ));
+    }
+
+    out.push_str(&direct);
+    *temp_counter = direct_temp_counter;
+    env.insert(name.to_string(), result_ty);
+    Some(())
+}
+
 enum SequenceReduction<'a> {
     Fold {
         list: &'a Expr,
@@ -42856,6 +43085,21 @@ fn emit_sequence_reduction_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_reduction_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
+
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -56370,7 +56614,29 @@ fn main() -> i64 {
             span: root.span,
             kind: ExprKind::Bool(false),
         };
-        let mut env = HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let base_env = HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let mut direct_env = base_env.clone();
+        let mut direct_out = String::new();
+        let mut direct_temp_counter = 0;
+        assert!(
+            emit_cfg_sequence_reduction_binding_direct(
+                &mut direct_out,
+                "",
+                ("total", &Type::I64),
+                &fake,
+                &mut direct_env,
+                database.signatures(),
+                &facts,
+                &mut direct_temp_counter,
+            )
+            .is_some()
+        );
+        assert!(direct_out.contains(&function_c_name("double")));
+        assert!(direct_out.contains(&function_c_name("positive")));
+        assert!(direct_out.contains(&function_c_name("add")));
+        assert!(!direct_out.contains("flux__transform_buffer_"));
+
+        let mut env = base_env;
         assert_eq!(
             sequence_lowering_kind(&fake, &env, database.signatures(), &facts),
             Some(SequenceLoweringKind::Reduction)
@@ -56393,6 +56659,83 @@ fn main() -> i64 {
         assert!(out.contains(&function_c_name("positive")));
         assert!(out.contains(&function_c_name("add")));
         assert!(!out.contains("flux__transform_buffer_"));
+    }
+
+    #[test]
+    fn inline_sequence_reducers_lower_directly_from_typed_ir() {
+        let source = r#"
+fn folded(values: i64[], offset: i64) -> i64 {
+    let total: i64 = fold(map(values, fn(value: i64) { value + offset }), 10, fn(total: i64, value: i64) { total + value + offset })
+    return total
+}
+
+fn reduced(values: i64[], offset: i64) -> i64 {
+    let total: i64 = reduce(filter(values, fn(value: i64) { value > offset }), fn(total: i64, value: i64) { total + value + offset })
+    return total
+}
+
+fn main() -> i64 {
+    return folded([1, 2, 3], 1) + reduced([1, 2, 3], 1)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("inline sequence reduction fixture should typecheck");
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        for (function, operation) in [("folded", "fold"), ("reduced", "reduce")] {
+            let graph = database
+                .control_flow_graph(function)
+                .unwrap_or_else(|| panic!("{function} CFG should exist"));
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == operation
+                    )
+                })
+                .unwrap_or_else(|| panic!("typed IR should retain the {operation} root"));
+            let facts = cfg_rewrite_facts(graph);
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-reduction-root".to_string()),
+            };
+            let mut env = HashMap::from([
+                ("values".to_string(), list_ty.clone()),
+                ("offset".to_string(), Type::I64),
+            ]);
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            assert!(
+                emit_cfg_sequence_reduction_binding_direct(
+                    &mut out,
+                    "",
+                    ("total", &Type::I64),
+                    &fake,
+                    &mut env,
+                    database.signatures(),
+                    &facts,
+                    &mut temp_counter,
+                )
+                .is_some()
+            );
+
+            assert!(out.contains("flux__reduce_source_"), "{operation}: {out}");
+            assert!(out.contains(&local_c_name("offset")), "{operation}: {out}");
+            assert!(out.contains(&local_c_name("total")), "{operation}: {out}");
+            assert!(out.contains(&local_c_name("value")), "{operation}: {out}");
+            assert!(
+                !out.contains("flux__transform_buffer_"),
+                "{operation}: {out}"
+            );
+            assert!(
+                !out.contains("checked-ast-reduction-root"),
+                "{operation}: {out}"
+            );
+        }
     }
 
     #[test]
