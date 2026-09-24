@@ -2112,7 +2112,10 @@ pub(crate) fn function_codegen_cache_identity(
 }
 
 enum FunctionHelper<'a> {
-    Anonymous(&'a Expr),
+    Anonymous {
+        expr: &'a Expr,
+        value: CfgScalarExpr,
+    },
     PartialApplication {
         span: SourceSpan,
         value: CfgScalarExpr,
@@ -2122,7 +2125,7 @@ enum FunctionHelper<'a> {
 impl FunctionHelper<'_> {
     fn span(&self) -> SourceSpan {
         match self {
-            Self::Anonymous(expr) => expr.span,
+            Self::Anonymous { expr, .. } => expr.span,
             Self::PartialApplication { span, .. } => *span,
         }
     }
@@ -2133,7 +2136,7 @@ fn function_helper_codegen_cache_identity(
     source_paths: &HashMap<SourceId, String>,
 ) -> String {
     let identity = match helper {
-        FunctionHelper::Anonymous(expr) => format!("{expr:?}"),
+        FunctionHelper::Anonymous { expr, .. } => format!("{expr:?}"),
         FunctionHelper::PartialApplication { span, value } => {
             format!("bind:{span:?}:{value:?}")
         }
@@ -26670,7 +26673,9 @@ fn function_helper_prototype(
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
     match helper {
-        FunctionHelper::Anonymous(expr) => anonymous_function_prototype(expr, signatures),
+        FunctionHelper::Anonymous { expr, value } => {
+            anonymous_function_prototype(expr.span, value, signatures)
+        }
         FunctionHelper::PartialApplication { span, value } => {
             partial_application_prototype(*span, value, signatures)
         }
@@ -26678,30 +26683,54 @@ fn function_helper_prototype(
 }
 
 fn anonymous_function_prototype(
-    expr: &Expr,
+    span: SourceSpan,
+    value: &CfgScalarExpr,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
-    let ExprKind::AnonymousFunction { params, .. } = &expr.kind else {
+    let CfgScalarExprKind::AnonymousFunction {
+        span: value_span,
+        params,
+        ..
+    } = &value.kind
+    else {
         return Err(diag(
-            expr.span,
-            "expected anonymous function during code generation",
+            span,
+            "expected normalized anonymous function during code generation",
         ));
     };
-    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
+    if *value_span != span {
+        return Err(diag(
+            span,
+            "anonymous function source identity changed after type checking",
+        ));
+    }
     let Type::Function {
         params: param_types,
         returns,
-    } = ty
+    } = signatures.canonical_type(&value.ty)
     else {
         return Err(diag(
-            expr.span,
+            span,
             "anonymous function did not produce a function type",
         ));
     };
     if returns.len() > 1 {
         return Err(diag(
-            expr.span,
+            span,
             "anonymous functions currently support zero or one return value",
+        ));
+    }
+    if params.len() != param_types.len()
+        || params
+            .iter()
+            .zip(param_types.iter())
+            .any(|((_, param_ty), ty)| {
+                signatures.canonical_type(param_ty) != signatures.canonical_type(ty)
+            })
+    {
+        return Err(diag(
+            span,
+            "anonymous function parameter types changed after type checking",
         ));
     }
     let ret = returns
@@ -26714,13 +26743,13 @@ fn anonymous_function_prototype(
         params
             .iter()
             .zip(param_types.iter())
-            .map(|(param, ty)| format!("{} {}", c_type(ty, signatures), local_c_name(&param.name)))
+            .map(|((name, _), ty)| format!("{} {}", c_type(ty, signatures), local_c_name(name)))
             .collect::<Vec<_>>()
             .join(", ")
     };
     Ok(format!(
         "static {ret} {}({params_text})",
-        anonymous_function_c_name(expr.span)
+        anonymous_function_c_name(span)
     ))
 }
 
@@ -26795,8 +26824,8 @@ fn emit_function_helper(
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
     match helper {
-        FunctionHelper::Anonymous(expr) => {
-            emit_anonymous_function(out, expr, signatures, source_paths)
+        FunctionHelper::Anonymous { expr, value } => {
+            emit_anonymous_function(out, expr, value, signatures, source_paths)
         }
         FunctionHelper::PartialApplication { span, value } => {
             emit_partial_application(out, *span, value, signatures, source_paths)
@@ -26807,30 +26836,69 @@ fn emit_function_helper(
 fn emit_anonymous_function(
     out: &mut String,
     expr: &Expr,
+    value: &CfgScalarExpr,
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
-    let ExprKind::AnonymousFunction { params, body, .. } = &expr.kind else {
+    let ExprKind::AnonymousFunction {
+        params: source_params,
+        body,
+        ..
+    } = &expr.kind
+    else {
         return Err(diag(
             expr.span,
-            "expected anonymous function during code generation",
+            "expected anonymous function body during code generation",
         ));
     };
-    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
-    let Type::Function { returns, .. } = ty else {
+    let CfgScalarExprKind::AnonymousFunction { span, params, .. } = &value.kind else {
+        return Err(diag(
+            expr.span,
+            "expected normalized anonymous function during code generation",
+        ));
+    };
+    if *span != expr.span {
+        return Err(diag(
+            expr.span,
+            "anonymous function source identity changed after type checking",
+        ));
+    }
+    let Type::Function {
+        params: param_types,
+        returns,
+    } = signatures.canonical_type(&value.ty)
+    else {
         return Err(diag(
             expr.span,
             "anonymous function did not produce a function type",
         ));
     };
+    if source_params.len() != params.len()
+        || params.len() != param_types.len()
+        || source_params
+            .iter()
+            .zip(params.iter())
+            .zip(param_types.iter())
+            .any(|((source, (name, param_ty)), ty)| {
+                source.name != *name
+                    || signatures.canonical_type(&source.ty) != signatures.canonical_type(param_ty)
+                    || signatures.canonical_type(param_ty) != signatures.canonical_type(ty)
+            })
+    {
+        return Err(diag(
+            expr.span,
+            "anonymous function parameters changed after type checking",
+        ));
+    }
+
     emit_source_line(out, expr.span, source_paths);
-    out.push_str(&anonymous_function_prototype(expr, signatures)?);
+    out.push_str(&anonymous_function_prototype(expr.span, value, signatures)?);
     out.push_str(" {\n");
     let mut env = HashMap::new();
-    for param in params {
-        env.insert(param.name.clone(), signatures.canonical_type(&param.ty));
+    for (name, ty) in params {
+        env.insert(name.clone(), signatures.canonical_type(ty));
     }
-    let body = emit_lambda_body_with_cfg(body, params, returns.first(), &env, signatures)?;
+    let body = emit_lambda_body_with_cfg(body, source_params, returns.first(), &env, signatures)?;
     if returns.is_empty() {
         out.push_str(&format!("    {};\n", body));
     } else {
@@ -29261,7 +29329,20 @@ fn collect_function_helpers<'a>(
             if reachable_anonymous_spans.contains(&span)
                 && matches!(expr.kind, ExprKind::AnonymousFunction { .. })
             {
-                ordered.push((span, FunctionHelper::Anonymous(expr)));
+                let value = rewrite_facts
+                    .scalar_exprs
+                    .get(&span)
+                    .filter(|value| {
+                        matches!(value.kind, CfgScalarExprKind::AnonymousFunction { .. })
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        diag(
+                            expr.span,
+                            "anonymous helper is missing normalized typed IR during code generation",
+                        )
+                    })?;
+                ordered.push((span, FunctionHelper::Anonymous { expr, value }));
             }
         }
 
@@ -77857,6 +77938,88 @@ fn main() -> i64 {
         assert_eq!(
             special_body_emitted,
             anonymous_function_c_name(special_body_anonymous.span)
+        );
+    }
+
+    #[test]
+    fn anonymous_helper_signature_uses_typed_ir_after_checked_ast_return_type_changes() {
+        let source = r#"
+fn pick() -> fn(i64) -> i64 {
+    return fn(value: i64) -> i64 { value + 1 }
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("anonymous helper signature fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist")
+            .clone();
+        let anonymous_span = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
+                )
+            })
+            .expect("typed IR should retain the anonymous function")
+            .span;
+
+        let mut program = database.program().clone();
+        let pick = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "pick")
+            .expect("pick function should exist");
+        let StmtKind::Return(values) = &mut pick.body[0].kind else {
+            panic!("pick should retain its return statement");
+        };
+        let ExprKind::AnonymousFunction { return_type, .. } = &mut values[0].kind else {
+            panic!("pick should retain its anonymous function expression");
+        };
+        *return_type = Some(Type::Bool);
+
+        let function_ir = HashMap::from([("pick".to_string(), graph)]);
+        let reachable = HashSet::from(["pick".to_string()]);
+        let helpers = collect_function_helpers(&program, &reachable, &function_ir)
+            .expect("anonymous helper should pair with normalized typed IR");
+        assert_eq!(helpers.len(), 1);
+
+        let FunctionHelper::Anonymous { expr, value } = &helpers[0] else {
+            panic!("typed IR anonymous value should produce an anonymous helper");
+        };
+        assert_eq!(expr.span, anonymous_span);
+        assert!(matches!(
+            &value.kind,
+            CfgScalarExprKind::AnonymousFunction { span, .. } if *span == anonymous_span
+        ));
+
+        let prototype = function_helper_prototype(&helpers[0], database.signatures())
+            .expect("anonymous helper prototype should use normalized typed IR");
+        assert!(prototype.starts_with("static int64_t "), "{prototype}");
+        assert!(
+            prototype.contains("int64_t flux__local_value"),
+            "{prototype}"
+        );
+
+        let mut emitted = String::new();
+        emit_function_helper(
+            &mut emitted,
+            &helpers[0],
+            database.signatures(),
+            &HashMap::new(),
+        )
+        .expect("anonymous helper should ignore poisoned checked-AST return metadata");
+        assert!(emitted.contains("static int64_t "), "{emitted}");
+        assert!(
+            emitted.contains("return flux_add_i64(flux__local_value, INT64_C(1));"),
+            "{emitted}"
         );
     }
 
