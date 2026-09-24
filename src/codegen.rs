@@ -1503,7 +1503,7 @@ fn emit_c_for_target_with_source_metadata_impl(
     }
     let reachable_enum_variants =
         reachable_enum_variant_helpers(program, signatures, &reachable_functions, &function_ir);
-    let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir);
+    let function_helpers = collect_function_helpers(program, &reachable_functions, &function_ir)?;
     let mut generated_body = String::new();
     let mut used_cache_keys = HashSet::new();
     for helper in &function_helpers {
@@ -2111,15 +2111,38 @@ pub(crate) fn function_codegen_cache_identity(
     )
 }
 
+enum FunctionHelper<'a> {
+    Anonymous(&'a Expr),
+    PartialApplication {
+        span: SourceSpan,
+        value: CfgScalarExpr,
+    },
+}
+
+impl FunctionHelper<'_> {
+    fn span(&self) -> SourceSpan {
+        match self {
+            Self::Anonymous(expr) => expr.span,
+            Self::PartialApplication { span, .. } => *span,
+        }
+    }
+}
+
 fn function_helper_codegen_cache_identity(
-    helper: &Expr,
+    helper: &FunctionHelper<'_>,
     source_paths: &HashMap<SourceId, String>,
 ) -> String {
+    let identity = match helper {
+        FunctionHelper::Anonymous(expr) => format!("{expr:?}"),
+        FunctionHelper::PartialApplication { span, value } => {
+            format!("bind:{span:?}:{value:?}")
+        }
+    };
+    let span = helper.span();
     format!(
-        "helper:{:?}|source_path={}",
-        helper,
+        "helper:{identity}|source_path={}",
         source_paths
-            .get(&helper.span.source_id)
+            .get(&span.source_id)
             .map(String::as_str)
             .unwrap_or_default()
     )
@@ -26615,29 +26638,12 @@ fn partial_application_c_name(span: SourceSpan) -> String {
 }
 
 fn partial_application_prototype(
-    expr: &Expr,
+    span: SourceSpan,
+    value: &CfgScalarExpr,
     signatures: &Signatures,
 ) -> Result<String, Diagnostic> {
-    let ExprKind::Call {
-        name,
-        args,
-        named_args,
-    } = &expr.kind
-    else {
-        return Err(diag(
-            expr.span,
-            "expected bind expression during code generation",
-        ));
-    };
-    if name != "bind" || !named_args.is_empty() || args.len() < 2 {
-        return Err(diag(
-            expr.span,
-            "invalid bind expression reached code generation",
-        ));
-    }
-    let ty = type_of_expr(expr, &HashMap::new(), signatures)?;
-    let Type::Function { params, returns } = ty else {
-        return Err(diag(expr.span, "bind did not produce a function type"));
+    let Type::Function { params, returns } = signatures.canonical_type(&value.ty) else {
+        return Err(diag(span, "bind did not produce a function type"));
     };
     let ret = returns
         .first()
@@ -26655,20 +26661,19 @@ fn partial_application_prototype(
     };
     Ok(format!(
         "static {ret} {}({params_text})",
-        partial_application_c_name(expr.span)
+        partial_application_c_name(span)
     ))
 }
 
-fn function_helper_prototype(expr: &Expr, signatures: &Signatures) -> Result<String, Diagnostic> {
-    match &expr.kind {
-        ExprKind::AnonymousFunction { .. } => anonymous_function_prototype(expr, signatures),
-        ExprKind::Call { name, .. } if name == "bind" => {
-            partial_application_prototype(expr, signatures)
+fn function_helper_prototype(
+    helper: &FunctionHelper<'_>,
+    signatures: &Signatures,
+) -> Result<String, Diagnostic> {
+    match helper {
+        FunctionHelper::Anonymous(expr) => anonymous_function_prototype(expr, signatures),
+        FunctionHelper::PartialApplication { span, value } => {
+            partial_application_prototype(*span, value, signatures)
         }
-        _ => Err(diag(
-            expr.span,
-            "expected function helper during code generation",
-        )),
     }
 }
 
@@ -26721,52 +26726,57 @@ fn anonymous_function_prototype(
 
 fn emit_partial_application(
     out: &mut String,
-    expr: &Expr,
+    span: SourceSpan,
+    value: &CfgScalarExpr,
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
-    let ExprKind::Call {
-        name,
-        args,
-        named_args,
-    } = &expr.kind
-    else {
+    let CfgScalarExprKind::Bind { arguments, .. } = &value.kind else {
         return Err(diag(
-            expr.span,
-            "expected bind expression during code generation",
+            span,
+            "expected normalized bind value during code generation",
         ));
     };
-    if name != "bind" || !named_args.is_empty() || args.len() < 2 {
-        return Err(diag(
-            expr.span,
-            "invalid bind expression reached code generation",
-        ));
+    if arguments.len() < 2 {
+        return Err(diag(span, "invalid bind value reached code generation"));
     }
-    let ExprKind::Var(target_name) = &args[0].kind else {
-        return Err(diag(expr.span, "bind target must be a named function"));
+    let CfgScalarExprKind::Name(target_name) = &arguments[0].kind else {
+        return Err(diag(span, "bind target must be a named function"));
     };
     let signature = signatures.get(target_name).ok_or_else(|| {
         diag(
-            expr.span,
+            span,
             "bind target function disappeared during code generation",
         )
     })?;
-    let bound_count = args.len() - 1;
+    let bound_count = arguments.len() - 1;
+    if bound_count > signature.params.len() {
+        return Err(diag(span, "bind value has too many bound arguments"));
+    }
+    let expected = Type::Function {
+        params: signature.params[bound_count..].to_vec(),
+        returns: signature.returns.clone(),
+    };
+    if signatures.canonical_type(&expected) != signatures.canonical_type(&value.ty) {
+        return Err(diag(span, "bind function type changed after type checking"));
+    }
+
     let mut call_args = Vec::with_capacity(signature.params.len());
-    for arg in &args[1..] {
-        let Some(value) = fold_primitive_expr(arg, &HashMap::new(), signatures)? else {
+    for argument in &arguments[1..] {
+        let CfgScalarExprKind::Constant(constant) = &argument.kind else {
             return Err(diag(
-                arg.span,
+                span,
                 "non-constant bind argument reached code generation",
             ));
         };
-        call_args.push(constant_c_value(&value));
+        call_args.push(constant_c_value(constant));
     }
     for index in 0..signature.params.len().saturating_sub(bound_count) {
         call_args.push(format!("flux__bound_arg_{index}"));
     }
-    emit_source_line(out, expr.span, source_paths);
-    out.push_str(&partial_application_prototype(expr, signatures)?);
+
+    emit_source_line(out, span, source_paths);
+    out.push_str(&partial_application_prototype(span, value, signatures)?);
     out.push_str(" {\n");
     let call = format!("{}({})", function_c_name(target_name), call_args.join(", "));
     if signature.returns.is_empty() {
@@ -26780,21 +26790,17 @@ fn emit_partial_application(
 
 fn emit_function_helper(
     out: &mut String,
-    expr: &Expr,
+    helper: &FunctionHelper<'_>,
     signatures: &Signatures,
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<(), Diagnostic> {
-    match &expr.kind {
-        ExprKind::AnonymousFunction { .. } => {
+    match helper {
+        FunctionHelper::Anonymous(expr) => {
             emit_anonymous_function(out, expr, signatures, source_paths)
         }
-        ExprKind::Call { name, .. } if name == "bind" => {
-            emit_partial_application(out, expr, signatures, source_paths)
+        FunctionHelper::PartialApplication { span, value } => {
+            emit_partial_application(out, *span, value, signatures, source_paths)
         }
-        _ => Err(diag(
-            expr.span,
-            "expected function helper during code generation",
-        )),
     }
 }
 
@@ -29220,7 +29226,7 @@ fn collect_function_helpers<'a>(
     program: &'a Program,
     reachable_functions: &HashSet<String>,
     function_ir: &FunctionIrCache,
-) -> Vec<&'a Expr> {
+) -> Result<Vec<FunctionHelper<'a>>, Diagnostic> {
     let mut functions = Vec::new();
     for function in &program.functions {
         if !reachable_functions.contains(&function.name) {
@@ -29228,10 +29234,13 @@ fn collect_function_helpers<'a>(
         }
         let mut candidates = Vec::new();
         collect_function_helpers_from_block(&function.body, &mut candidates);
-        let Some(cfg) = function_ir.get(&function.name) else {
-            functions.extend(candidates);
-            continue;
-        };
+        let cfg = function_ir.get(&function.name).ok_or_else(|| {
+            diag(
+                function.span,
+                "function helper is missing normalized typed IR during code generation",
+            )
+        })?;
+        let rewrite_facts = cfg_rewrite_facts(cfg);
         let reachable_spans = cfg
             .values()
             .iter()
@@ -29247,13 +29256,38 @@ fn collect_function_helpers<'a>(
             })
             .map(|value| source_span_key(value.span))
             .collect::<HashSet<_>>();
-        functions.extend(
-            candidates
-                .into_iter()
-                .filter(|expr| reachable_spans.contains(&source_span_key(expr.span))),
-        );
+
+        for expr in candidates {
+            let span = source_span_key(expr.span);
+            if !reachable_spans.contains(&span) {
+                continue;
+            }
+            match &expr.kind {
+                ExprKind::AnonymousFunction { .. } => {
+                    functions.push(FunctionHelper::Anonymous(expr));
+                }
+                ExprKind::Call { name, .. } if name == "bind" => {
+                    let value = rewrite_facts
+                        .scalar_exprs
+                        .get(&span)
+                        .filter(|value| matches!(value.kind, CfgScalarExprKind::Bind { .. }))
+                        .cloned()
+                        .ok_or_else(|| {
+                            diag(
+                                expr.span,
+                                "bind helper is missing normalized typed IR during code generation",
+                            )
+                        })?;
+                    functions.push(FunctionHelper::PartialApplication {
+                        span: expr.span,
+                        value,
+                    });
+                }
+                _ => {}
+            }
+        }
     }
-    functions
+    Ok(functions)
 }
 
 fn collect_function_helpers_from_block<'a>(body: &'a [Stmt], functions: &mut Vec<&'a Expr>) {
@@ -77579,6 +77613,27 @@ fn main() -> i64 {
             emit_cfg_scalar_expr(scalar, &function_ty, &HashMap::new(), database.signatures())
                 .expect("bind function value should emit from typed IR");
         assert_eq!(emitted, direct);
+
+        let mut helper = String::new();
+        emit_partial_application(
+            &mut helper,
+            bind.span,
+            scalar,
+            database.signatures(),
+            &HashMap::new(),
+        )
+        .expect("bind helper should emit from normalized typed IR");
+        assert!(
+            helper.contains(&format!(
+                "{}(INT64_C(5), flux__bound_arg_0)",
+                function_c_name("add")
+            )),
+            "{helper}"
+        );
+        assert!(
+            helper.contains(&partial_application_c_name(bind.span)),
+            "{helper}"
+        );
 
         let mut mismatched = scalar.clone();
         mismatched.ty = Type::Function {
