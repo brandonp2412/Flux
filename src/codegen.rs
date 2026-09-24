@@ -40550,7 +40550,10 @@ fn emit_match_expr_into(
             "expected match expression during code generation",
         ));
     };
-    let value_ty = type_of_expr(value, env, signatures)?;
+    let value_ty = match cfg_rewrite_root_type(value.span, cfg_rewrite_facts) {
+        Some(ty) => signatures.canonical_type(&ty),
+        None => type_of_expr(value, env, signatures)?,
+    };
     let emitted_value = EmittedExpr {
         code: emit_expr_for_expected_with_cfg_proofs(
             value,
@@ -41117,7 +41120,10 @@ fn emit_list_match_expr_into(
             "expected list match expression during code generation",
         ));
     };
-    let value_ty = type_of_expr(value, env, signatures)?;
+    let value_ty = match cfg_rewrite_root_type(value.span, cfg_rewrite_facts) {
+        Some(ty) => signatures.canonical_type(&ty),
+        None => type_of_expr(value, env, signatures)?,
+    };
     let emitted_value = EmittedExpr {
         code: emit_expr_for_expected_with_cfg_proofs(
             value,
@@ -78759,7 +78765,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn enum_match_fallback_uses_expected_type_after_arm_ast_poisoning() {
+    fn enum_match_fallback_uses_expected_type_after_ast_poisoning() {
         let source = r#"
 enum Choice {
     One(i64)
@@ -78799,9 +78805,10 @@ fn main() -> i64 {
         let StmtKind::Return(values) = &mut function.body[0].kind else {
             panic!("choose should contain a return");
         };
-        let ExprKind::Match { arms, .. } = &mut values[0].kind else {
+        let ExprKind::Match { value, arms } = &mut values[0].kind else {
             panic!("choose should return a match expression");
         };
+        value.kind = ExprKind::Str("checked-ast-scrutinee".to_string());
         for (index, arm) in arms.iter_mut().enumerate() {
             arm.value.kind = ExprKind::Str(format!("checked-ast-arm-{index}"));
         }
@@ -78825,11 +78832,12 @@ fn main() -> i64 {
 
         assert!(out.contains("switch ("), "{out}");
         assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(!out.contains("checked-ast-scrutinee"), "{out}");
         assert!(!out.contains("checked-ast-arm-"), "{out}");
     }
 
     #[test]
-    fn collection_match_fallbacks_use_expected_type_after_arm_ast_poisoning() {
+    fn collection_match_fallbacks_use_expected_type_after_ast_poisoning() {
         let source = r#"
 fn chooseList(values: i64[]) -> i64 {
     return match values:
@@ -78881,9 +78889,10 @@ fn main() -> i64 {
             let StmtKind::Return(values) = &mut function.body[0].kind else {
                 panic!("{function_name} should contain a return");
             };
-            let ExprKind::ListMatch { arms, .. } = &mut values[0].kind else {
+            let ExprKind::ListMatch { value, arms } = &mut values[0].kind else {
                 panic!("{function_name} should return a collection match");
             };
+            value.kind = ExprKind::Str("checked-ast-collection-scrutinee".to_string());
             for (index, arm) in arms.iter_mut().enumerate() {
                 arm.value.kind = ExprKind::Str(format!("checked-ast-collection-arm-{index}"));
             }
@@ -78919,6 +78928,7 @@ fn main() -> i64 {
                 assert!(out.contains("flux__map_match_"), "{out}");
                 assert!(out.contains(&local_c_name("value")), "{out}");
             }
+            assert!(!out.contains("checked-ast-collection-scrutinee"), "{out}");
             assert!(!out.contains("checked-ast-collection-arm-"), "{out}");
         }
     }
