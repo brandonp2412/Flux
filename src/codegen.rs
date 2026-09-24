@@ -34551,6 +34551,22 @@ struct CfgRewriteFacts {
     list_match_exprs: HashMap<(u32, usize, usize, usize), CfgListMatchExpr>,
 }
 
+fn cfg_rewrite_root_type(span: SourceSpan, rewrite_facts: &CfgRewriteFacts) -> Option<Type> {
+    let span = source_span_key(span);
+    rewrite_facts
+        .scalar_exprs
+        .get(&span)
+        .or_else(|| rewrite_facts.sequence_exprs.get(&span))
+        .or_else(|| rewrite_facts.multi_exprs.get(&span))
+        .map(|value| value.ty.clone())
+        .or_else(|| {
+            rewrite_facts
+                .aggregate_constants
+                .get(&span)
+                .map(|value| value.ty.clone())
+        })
+}
+
 fn cfg_literal_aggregate_value(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -39191,7 +39207,10 @@ fn emit_block(
                 // Discarding an expression's result does not erase its
                 // statically known shape. Keep this boundary on the same
                 // typed-IR proof path as bindings, assignments, and returns.
-                let expr_type = type_of_expr(expr, env, signatures)?;
+                let expr_type = match cfg_rewrite_root_type(expr.span, context.cfg_rewrite_facts) {
+                    Some(ty) => ty,
+                    None => type_of_expr(expr, env, signatures)?,
+                };
                 let value = emit_expr_for_expected_with_cfg_proofs(
                     expr,
                     &expr_type,
@@ -78020,6 +78039,57 @@ fn main() -> i64 {
         assert!(
             emitted.contains("return flux_add_i64(flux__local_value, INT64_C(1));"),
             "{emitted}"
+        );
+    }
+
+    #[test]
+    fn expression_statement_expected_type_uses_typed_ir_after_checked_ast_root_changes() {
+        let source = r#"
+fn main() -> i64 {
+    print(7)
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("expression-statement typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("main")
+            .expect("main CFG should exist")
+            .clone();
+        let facts = cfg_rewrite_facts(&graph);
+
+        let mut function = database
+            .program()
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist")
+            .clone();
+        let StmtKind::Expr(expr) = &mut function.body[0].kind else {
+            panic!("fixture should retain its expression statement");
+        };
+        assert_eq!(
+            cfg_rewrite_root_type(expr.span, &facts),
+            Some(Type::Void),
+            "normalized typed IR should retain the discarded call result type"
+        );
+        expr.kind = ExprKind::Bool(true);
+
+        let mut emitted = String::new();
+        let mut temp_counter = 0;
+        emit_function(
+            &mut emitted,
+            &function,
+            database.signatures(),
+            &graph,
+            &mut temp_counter,
+            &HashMap::new(),
+        )
+        .expect("expression statement should emit from its normalized typed-IR type");
+        assert!(emitted.contains("flux_print_i64(INT64_C(7));"), "{emitted}");
+        assert!(
+            !emitted.contains("true;"),
+            "poisoned checked-AST root must not replace the typed-IR effect: {emitted}"
         );
     }
 
