@@ -51207,10 +51207,6 @@ fn emit_cfg_positional_call_arguments_direct(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<Vec<String>> {
-    if !positional_call_is_reconstructable(signature, arguments.len()) {
-        return None;
-    }
-
     let mut rendered = Vec::with_capacity(signature.param_details.len());
     let mut positional_index = 0usize;
     for parameter in &signature.param_details {
@@ -64384,6 +64380,61 @@ fn main() -> i64 {
 "#;
         let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
             .expect("direct-call IR fixture should typecheck");
+
+        let direct_graph = database
+            .control_flow_graph("direct")
+            .expect("direct-call CFG should exist");
+        let direct_call = direct_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "add"
+                )
+            })
+            .expect("typed IR should retain the direct add call");
+        let direct_facts = cfg_rewrite_facts(direct_graph);
+        let direct_scalar = direct_facts
+            .scalar_exprs
+            .get(&source_span_key(direct_call.span))
+            .expect("direct add call should have scalar typed-IR facts");
+        let CfgScalarExprKind::Call { arguments, .. } = &direct_scalar.kind else {
+            panic!("direct add call should retain positional arguments");
+        };
+        let add_signature = database
+            .signatures()
+            .get("add")
+            .expect("add signature should exist");
+        let direct_env = HashMap::from([
+            ("left".to_string(), Type::I64),
+            ("right".to_string(), Type::I64),
+        ]);
+        assert!(
+            emit_cfg_positional_call_arguments_direct(
+                add_signature,
+                &arguments[..1],
+                &direct_env,
+                database.signatures(),
+            )
+            .is_none(),
+            "missing required positional arguments must be rejected by direct emission"
+        );
+        let too_many_arguments = [
+            arguments[0].clone(),
+            arguments[1].clone(),
+            arguments[0].clone(),
+        ];
+        assert!(
+            emit_cfg_positional_call_arguments_direct(
+                add_signature,
+                &too_many_arguments,
+                &direct_env,
+                database.signatures(),
+            )
+            .is_none(),
+            "extra positional arguments must be rejected by direct emission"
+        );
 
         for (function, callee, env) in [
             (
