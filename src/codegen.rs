@@ -38109,32 +38109,7 @@ fn emit_direct_sequence_projection(
             return Ok(Some(value));
         }
     }
-    let rewritten = rewrite_facts
-        .scalar_exprs
-        .get(&span_key)
-        .filter(|scalar| match &scalar.kind {
-            CfgScalarExprKind::Index {
-                base,
-                index,
-                optional: false,
-            } => {
-                cfg_sequence_expr_calls_are_reconstructable(base, env, signatures)
-                    && cfg_scalar_expr_calls_are_reconstructable(index, env, signatures)
-            }
-            CfgScalarExprKind::Field {
-                base,
-                optional: false,
-                ..
-            } => cfg_sequence_expr_calls_are_reconstructable(base, env, signatures),
-            _ => false,
-        })
-        .map(|scalar| {
-            let mut reconstructed = cfg_scalar_expr_as_ast_for_source(scalar, expr.span.source_id);
-            reconstructed.line = expr.line;
-            reconstructed.span = expr.span;
-            reconstructed
-        })
-        .unwrap_or_else(|| expr.clone());
+    let rewritten = expr.clone();
 
     let base = match &rewritten.kind {
         ExprKind::Index {
