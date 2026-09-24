@@ -26948,7 +26948,9 @@ fn emit_lambda_body_with_cfg(
     let proofs = cfg_checked_i64_proofs(&cfg);
     let body_type = match expected {
         Some(expected) => signatures.canonical_type(expected),
-        None => signatures.canonical_type(&type_of_expr(body, env, signatures)?),
+        None => {
+            signatures.canonical_type(&cfg_rewrite_required_root_type(body.span, &rewrite_facts)?)
+        }
     };
     emit_expr_for_expected_with_cfg_proofs(
         body,
