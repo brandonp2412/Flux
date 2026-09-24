@@ -30203,17 +30203,27 @@ fn emit_async_suspend_expr(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<(), Diagnostic> {
-    let rewritten_await = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts)
-        .map(cfg_scalar_expr_as_ast)
-        .unwrap_or_else(|| {
-            substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts)
-        });
-    let (callee, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
-        diag(
-            await_expr.span,
-            "async continuation lowering requires a direct async function call",
-        )
-    })?;
+    let cfg_await = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts);
+    let rewritten_await =
+        substitute_nested_ir_constant_arguments(await_expr, &plan.cfg_rewrite_facts);
+    let cfg_callee = cfg_await.and_then(|cfg_await| {
+        let CfgScalarExprKind::Await { value } = &cfg_await.kind else {
+            return None;
+        };
+        match &value.kind {
+            CfgScalarExprKind::Call { callee, .. }
+            | CfgScalarExprKind::NamedCall { callee, .. } => Some(callee.as_str()),
+            _ => None,
+        }
+    });
+    let callee = cfg_callee
+        .or_else(|| direct_await_call(&rewritten_await).map(|(callee, _, _)| callee))
+        .ok_or_else(|| {
+            diag(
+                await_expr.span,
+                "async continuation lowering requires a direct async function call",
+            )
+        })?;
     let signature = signatures.get(callee).ok_or_else(|| {
         diag(
             await_expr.span,
@@ -30226,7 +30236,7 @@ fn emit_async_suspend_expr(
         "{pad}flux__profile_timeline_emit(\"task\", \"{}\", \"suspend\", {next_state});\n",
         function.name.replace('\\', "\\\\").replace('"', "\\\"")
     ));
-    if let Some(cfg_await) = cfg_direct_await_expr(await_expr, &plan.cfg_rewrite_facts)
+    if let Some(cfg_await) = cfg_await
         && let CfgScalarExprKind::Await { value } = &cfg_await.kind
     {
         let start_callee = async_start_cont_c_name(callee);
@@ -30266,6 +30276,12 @@ fn emit_async_suspend_expr(
         }
     }
 
+    let (_, args, named_args) = direct_await_call(&rewritten_await).ok_or_else(|| {
+        diag(
+            await_expr.span,
+            "async continuation fallback requires the checked direct async call",
+        )
+    })?;
     let rendered = emit_call_arguments(signature, args, named_args, env, signatures)?;
     let mut start_args = rendered;
     start_args.push(async_resume_c_name(&function.name));
