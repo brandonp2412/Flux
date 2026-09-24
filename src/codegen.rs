@@ -51600,6 +51600,150 @@ fn emit_cfg_short_circuit_binary_direct(
     Some(format!("({left} {} {right})", c_operator(*op)))
 }
 
+fn emit_cfg_dynamic_unary_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Unary { op, operand } = &expr.kind else {
+        return None;
+    };
+    if cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
+        || cfg_scalar_expr_is_aggregate_reorder_safe(expr)
+    {
+        return None;
+    }
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let operand_ty = signatures.canonical_type(&operand.ty);
+    let operand = emit_cfg_scalar_expr_direct(operand, env, signatures)?;
+    match op {
+        UnaryOp::Neg if result_ty == Type::I64 && operand_ty == Type::I64 => {
+            Some(format!("flux_neg_i64({operand})"))
+        }
+        UnaryOp::Not if result_ty == Type::Bool && operand_ty == Type::Bool => {
+            Some(format!("(!{operand})"))
+        }
+        _ => None,
+    }
+}
+
+fn cfg_scalar_expr_uses_checked_mul_div_reduction(expr: &CfgScalarExpr) -> bool {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return false;
+    };
+    match op {
+        BinOp::Mul => {
+            matches!(
+                &left.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Div,
+                    right: divisor,
+                    ..
+                } if divisor == right
+            ) || matches!(
+                &right.kind,
+                CfgScalarExprKind::Binary {
+                    op: BinOp::Div,
+                    right: divisor,
+                    ..
+                } if divisor == left
+            )
+        }
+        BinOp::Div => matches!(
+            &left.kind,
+            CfgScalarExprKind::Binary {
+                op: BinOp::Mul,
+                left: factor_left,
+                right: factor_right,
+            } if factor_left == right || factor_right == right
+        ),
+        _ => false,
+    }
+}
+
+fn emit_cfg_dynamic_binary_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
+        || cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
+        || cfg_scalar_expr_is_aggregate_reorder_safe(expr)
+        || cfg_scalar_expr_uses_checked_mul_div_reduction(expr)
+        || (matches!(
+            left.kind,
+            CfgScalarExprKind::Call { .. }
+                | CfgScalarExprKind::NamedCall { .. }
+                | CfgScalarExprKind::QualifiedCall { .. }
+                | CfgScalarExprKind::NamedQualifiedCall { .. }
+        ) && matches!(
+            right.kind,
+            CfgScalarExprKind::Call { .. }
+                | CfgScalarExprKind::NamedCall { .. }
+                | CfgScalarExprKind::QualifiedCall { .. }
+                | CfgScalarExprKind::NamedQualifiedCall { .. }
+        ))
+    {
+        return None;
+    }
+
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let left_ty = signatures.canonical_type(&left.ty);
+    let right_ty = signatures.canonical_type(&right.ty);
+    if !signatures.is_copy_type(&left_ty) || !signatures.is_copy_type(&right_ty) {
+        return None;
+    }
+
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    match op {
+        BinOp::Add if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            Some(format!("flux_add_i64({left}, {right})"))
+        }
+        BinOp::Sub if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            Some(format!("flux_sub_i64({left}, {right})"))
+        }
+        BinOp::Mul if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            Some(format!("flux_mul_i64({left}, {right})"))
+        }
+        BinOp::Div if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            Some(format!("flux_div_i64({left}, {right})"))
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool && left_ty == Type::Str && right_ty == Type::Str =>
+        {
+            let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+            Some(format!("(strcmp({left}, {right}) {comparator} 0)"))
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool && left_ty == Type::Error && right_ty == Type::Error =>
+        {
+            let equality = format!("flux_error_eq({left}, {right})");
+            if matches!(op, BinOp::Eq) {
+                Some(equality)
+            } else {
+                Some(format!("(!{equality})"))
+            }
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool
+                && left_ty == right_ty
+                && matches!(left_ty, Type::I64 | Type::Bool) =>
+        {
+            Some(format!("({left} {} {right})", c_operator(*op)))
+        }
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            if result_ty == Type::Bool && left_ty == Type::I64 && right_ty == Type::I64 =>
+        {
+            Some(format!("({left} {} {right})", c_operator(*op)))
+        }
+        _ => None,
+    }
+}
+
 fn emit_cfg_ordered_binary_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -51731,7 +51875,13 @@ fn emit_cfg_scalar_expr_direct(
     if let Some(rendered) = emit_cfg_short_circuit_binary_direct(expr, env, signatures) {
         return Some(rendered);
     }
+    if let Some(rendered) = emit_cfg_dynamic_unary_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
     if let Some(rendered) = emit_cfg_ordered_binary_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_dynamic_binary_direct(expr, env, signatures) {
         return Some(rendered);
     }
     match &expr.kind {
@@ -59640,6 +59790,107 @@ fn main() -> i64 {
         assert!(emitted.contains(".len"), "{emitted}");
         assert!(emitted.contains("||"), "{emitted}");
         assert!(emitted.contains("!="), "{emitted}");
+    }
+
+    #[test]
+    fn direct_typed_ir_call_bearing_primitive_trees_preserve_order() {
+        let source = r#"
+fn observe(value: i64) -> i64 {
+    return value
+}
+
+fn positive(value: i64) -> bool {
+    return value > 0
+}
+
+fn mixed(value: i64, offset: i64) -> i64 {
+    return observe(value) + offset
+}
+
+fn guarded(value: i64, enabled: bool) -> bool {
+    return !positive(value) && enabled
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("call-bearing primitive IR fixture should typecheck");
+
+        let mixed = database
+            .control_flow_graph("mixed")
+            .expect("mixed CFG should exist");
+        let mixed_root = mixed
+            .values()
+            .iter()
+            .filter(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::Add, .. }
+                )
+            })
+            .max_by_key(|value| value.span.length)
+            .expect("typed IR should retain mixed call arithmetic");
+        let mixed_facts = cfg_rewrite_facts(mixed);
+        let fake_mixed = Expr {
+            line: mixed_root.span.line,
+            span: mixed_root.span,
+            kind: ExprKind::Int(0),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_mixed,
+            &Type::I64,
+            &HashMap::from([
+                ("value".to_string(), Type::I64),
+                ("offset".to_string(), Type::I64),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &mixed_facts,
+        )
+        .expect("mixed call arithmetic should emit from typed IR");
+        assert!(!emitted.contains("flux__typed_binary_left"), "{emitted}");
+        assert!(!emitted.contains("flux__typed_binary_right"), "{emitted}");
+        assert!(emitted.contains(&function_c_name("observe")), "{emitted}");
+        assert!(emitted.contains(&local_c_name("offset")), "{emitted}");
+
+        let guarded = database
+            .control_flow_graph("guarded")
+            .expect("guarded CFG should exist");
+        let guarded_root = guarded
+            .values()
+            .iter()
+            .filter(|value| {
+                matches!(
+                    value.kind,
+                    crate::ir::ControlFlowValueKind::Binary { op: BinOp::And, .. }
+                )
+            })
+            .max_by_key(|value| value.span.length)
+            .expect("typed IR should retain call-bearing short circuit");
+        let guarded_facts = cfg_rewrite_facts(guarded);
+        let fake_guarded = Expr {
+            line: guarded_root.span.line,
+            span: guarded_root.span,
+            kind: ExprKind::Bool(false),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake_guarded,
+            &Type::Bool,
+            &HashMap::from([
+                ("value".to_string(), Type::I64),
+                ("enabled".to_string(), Type::Bool),
+            ]),
+            database.signatures(),
+            &HashMap::new(),
+            &guarded_facts,
+        )
+        .expect("call-bearing short circuit should emit from typed IR");
+        assert!(emitted.contains(&function_c_name("positive")), "{emitted}");
+        assert!(emitted.contains("&&"), "{emitted}");
+        assert!(emitted.contains('!'), "{emitted}");
+        assert!(emitted.contains(&local_c_name("enabled")), "{emitted}");
     }
 
     #[test]
