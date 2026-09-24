@@ -67831,12 +67831,20 @@ fn alertCall(title: str, message: str) -> void {
     dialog.alert(utilityString(title), message)
 }
 
+fn doubleAlertCall(title: str, message: str) -> void {
+    dialog.alert(utilityString(title), utilityString(message))
+}
+
 fn sheet(title: str, message: str) -> void {
     dialog.sheet(title, message)
 }
 
 fn sheetCall(title: str, message: str) -> void {
     dialog.sheet(utilityString(title), message)
+}
+
+fn doubleSheetCall(title: str, message: str) -> void {
+    dialog.sheet(utilityString(title), utilityString(message))
 }
 
 fn selectionStart() -> i64 {
@@ -68266,6 +68274,67 @@ fn main() -> i64 {
                 local_c_name("callback")
             )
         );
+        for (function, helper) in [
+            ("doubleAlertCall", "flux__dialog_alert"),
+            ("doubleSheetCall", "flux__dialog_sheet"),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .unwrap_or_else(|| panic!("{function} CFG should exist"));
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .unwrap_or_else(|| panic!("{function} dialog call should remain in typed IR"));
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .unwrap_or_else(|| panic!("{function} should have scalar typed-IR facts"));
+            let env = HashMap::from([
+                ("title".to_string(), Type::Str),
+                ("message".to_string(), Type::Str),
+            ]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| {
+                    panic!("{function} should sequence two computed strings from typed IR")
+                });
+            let title_temp = direct
+                .find("flux__typed_arg_0")
+                .unwrap_or_else(|| panic!("{function}: title temporary missing: {direct}"));
+            let message_temp = direct
+                .find("flux__typed_arg_1")
+                .unwrap_or_else(|| panic!("{function}: message temporary missing: {direct}"));
+            let call = direct
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function}: dialog call missing: {direct}"));
+            assert!(
+                title_temp < message_temp && message_temp < call,
+                "{function}: {direct}"
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-dialog-multiflex".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &scalar.ty,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .unwrap_or_else(|_| panic!("{function}: typed-IR dialog emission should bypass AST"));
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-dialog-multiflex"));
+        }
     }
 
     #[test]
