@@ -41941,7 +41941,7 @@ fn emit_sequence_list_value(
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
     if sequence_transform(expr).is_some() {
-        emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)
+        emit_sequence_transform_value(out, pad, expr, env, signatures, None, temp_counter)
     } else if sequence_chunked(expr).is_some() {
         emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)
     } else if sequence_concat(expr).is_some() {
@@ -42548,7 +42548,15 @@ fn emit_sequence_transform_binding(
     }
 
     let (name, declared_ty) = target;
-    let value = emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)?;
+    let value = emit_sequence_transform_value(
+        out,
+        pad,
+        expr,
+        env,
+        signatures,
+        Some(rewrite_facts),
+        temp_counter,
+    )?;
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -42578,6 +42586,19 @@ fn collect_sequence_transform_chain<'a>(expr: &'a Expr, stages: &mut Vec<&'a Exp
     source
 }
 
+fn sequence_transform_fallback_type(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: Option<&CfgRewriteFacts>,
+) -> Result<Type, Diagnostic> {
+    let ty = match rewrite_facts {
+        Some(rewrite_facts) => cfg_rewrite_required_root_type(expr.span, rewrite_facts)?,
+        None => type_of_expr(expr, env, signatures)?,
+    };
+    Ok(signatures.canonical_type(&ty))
+}
+
 fn emit_sequence_transform_stages(
     out: &mut String,
     pad: &str,
@@ -42585,6 +42606,7 @@ fn emit_sequence_transform_stages(
     mut value_name: String,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: Option<&CfgRewriteFacts>,
     temp_counter: &mut usize,
 ) -> Result<(String, Type), Diagnostic> {
     let first_stage = stages
@@ -42599,7 +42621,8 @@ fn emit_sequence_transform_stages(
     let first_list = match first_transform {
         SequenceTransform::Map { list, .. } | SequenceTransform::Filter { list, .. } => list,
     };
-    let first_list_ty = signatures.canonical_type(&type_of_expr(first_list, env, signatures)?);
+    let first_list_ty =
+        sequence_transform_fallback_type(first_list, env, signatures, rewrite_facts)?;
     let Type::List(first_element) = first_list_ty else {
         return Err(diag(
             first_stage.span,
@@ -42651,7 +42674,7 @@ fn emit_sequence_transform_stages(
                 out.push_str(&format!("{pad}}}\n"));
                 continue;
             }
-            let stage_ty = signatures.canonical_type(&type_of_expr(stage, env, signatures)?);
+            let stage_ty = sequence_transform_fallback_type(stage, env, signatures, rewrite_facts)?;
             let Type::List(output_element) = stage_ty else {
                 return Err(diag(
                     stage.span,
@@ -42698,7 +42721,7 @@ fn emit_sequence_transform_stages(
             ));
             continue;
         }
-        let stage_ty = signatures.canonical_type(&type_of_expr(stage, env, signatures)?);
+        let stage_ty = sequence_transform_fallback_type(stage, env, signatures, rewrite_facts)?;
         let Type::List(output_element) = stage_ty else {
             return Err(diag(
                 stage.span,
@@ -42725,6 +42748,7 @@ fn emit_sequence_transform_value(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
+    rewrite_facts: Option<&CfgRewriteFacts>,
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
     let mut stages = Vec::new();
@@ -42739,7 +42763,7 @@ fn emit_sequence_transform_value(
     let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence transform requires a list source"));
     };
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    let result_ty = sequence_transform_fallback_type(expr, env, signatures, rewrite_facts)?;
     let Type::List(output_element) = &result_ty else {
         return Err(diag(
             expr.span,
@@ -42782,6 +42806,7 @@ fn emit_sequence_transform_value(
         item_name,
         env,
         signatures,
+        rewrite_facts,
         temp_counter,
     )?;
     if value_ty != **output_element {
@@ -43255,6 +43280,7 @@ fn emit_sequence_reduction_binding(
             item_name,
             env,
             signatures,
+            Some(rewrite_facts),
             temp_counter,
         )?
     };
@@ -56434,6 +56460,129 @@ fn main() -> i64 {
         assert!(out.contains("flux__transform_buffer_"));
         assert!(out.contains(&function_c_name("double")));
         assert!(out.contains(&function_c_name("positive")));
+    }
+
+    #[test]
+    fn sequence_transform_fallback_requires_typed_ir_root_types() {
+        let source = r#"
+fn double(value: i64) -> i64 {
+    return value * 2
+}
+
+fn bump(value: i64) -> i64 {
+    return value + 1
+}
+
+fn exercise(values: i64[]) -> i64 {
+    let transformed: i64[] = values | map double | map bump
+    return transformed.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence transform fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("sequence transform fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "transformed" => Some(expr),
+                _ => None,
+            })
+            .expect("transformed binding should exist");
+
+        let mut stages = Vec::new();
+        let source_expr = collect_sequence_transform_chain(expr, &mut stages);
+        assert_eq!(stages.len(), 2);
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut facts = cfg_rewrite_facts(graph);
+        assert_eq!(
+            facts.root_types.get(&source_span_key(source_expr.span)),
+            Some(&list_ty)
+        );
+        assert_eq!(
+            facts.root_types.get(&source_span_key(stages[0].span)),
+            Some(&list_ty)
+        );
+        assert_eq!(
+            facts.root_types.get(&source_span_key(expr.span)),
+            Some(&list_ty)
+        );
+        assert!(
+            facts
+                .sequence_exprs
+                .remove(&source_span_key(expr.span))
+                .is_some(),
+            "fixture should begin with a direct typed-IR transform root"
+        );
+
+        let base_env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut env = base_env.clone();
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_transform_binding(
+            &mut out,
+            "",
+            ("transformed", &list_ty),
+            expr,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("transform fallback should consume normalized root types");
+        assert!(out.contains("flux__transform_buffer_"), "{out}");
+        assert!(out.contains(&function_c_name("double")), "{out}");
+        assert!(out.contains(&function_c_name("bump")), "{out}");
+
+        let clear_type_facts = |facts: &mut CfgRewriteFacts, span: SourceSpan| {
+            let span = source_span_key(span);
+            facts.root_types.remove(&span);
+            facts.scalar_exprs.remove(&span);
+            facts.sequence_exprs.remove(&span);
+            facts.multi_exprs.remove(&span);
+            facts.aggregate_constants.remove(&span);
+        };
+        for (label, span) in [
+            ("source", source_expr.span),
+            ("stage", stages[0].span),
+            ("result", expr.span),
+        ] {
+            let mut missing = facts.clone();
+            clear_type_facts(&mut missing, span);
+            let mut env = base_env.clone();
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            let error = emit_sequence_transform_binding(
+                &mut out,
+                "",
+                ("transformed", &list_ty),
+                expr,
+                &mut env,
+                database.signatures(),
+                &missing,
+                &mut temp_counter,
+            )
+            .expect_err(&format!("{label} root type should be required"));
+            assert!(
+                error
+                    .message
+                    .contains("normalized typed IR is missing an expression root type"),
+                "{label}: unexpected diagnostic: {error:?}"
+            );
+        }
     }
 
     #[test]
