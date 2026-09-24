@@ -43131,9 +43131,7 @@ fn emit_inline_sequence_reducer_application(
         c_type(&item.ty, signatures),
         local_c_name(&item.name)
     ));
-    let reduced_ty = type_of_expr(body, &callback_env, signatures)?;
-    let reduced =
-        emit_lambda_body_with_cfg(body, params, Some(&reduced_ty), &callback_env, signatures)?;
+    let reduced = emit_lambda_body_with_cfg(body, params, None, &callback_env, signatures)?;
     out.push_str(&format!("{pad}    {target_name} = {reduced};\n"));
     out.push_str(&format!("{pad}}}\n"));
     Ok(true)
@@ -43185,7 +43183,10 @@ fn emit_sequence_reduction_binding(
     let Type::List(source_element) = signatures.canonical_type(&source.ty) else {
         return Err(diag(expr.span, "sequence reduction requires a list source"));
     };
-    let list_ty = signatures.canonical_type(&type_of_expr(list_expr, env, signatures)?);
+    let list_ty = signatures.canonical_type(&cfg_rewrite_required_root_type(
+        list_expr.span,
+        rewrite_facts,
+    )?);
     let Type::List(element) = list_ty else {
         return Err(diag(
             expr.span,
@@ -56747,6 +56748,106 @@ fn main() -> i64 {
                 "{operation}: {out}"
             );
         }
+    }
+
+    #[test]
+    fn sequence_reduction_fallback_requires_typed_ir_list_root_type() {
+        let source = r#"
+fn exercise(values: i64[]) -> i64 {
+    let total: i64 = fold(values, 10, fn(total: i64, value: i64) { total + value + 1 })
+    return total
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sequence reduction fallback fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("sequence reduction fallback fixture should parse");
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "exercise")
+            .expect("exercise function should exist");
+        let expr = function
+            .body
+            .iter()
+            .find_map(|stmt| match &stmt.kind {
+                StmtKind::Let { name, expr, .. } if name == "total" => Some(expr),
+                _ => None,
+            })
+            .expect("total binding should exist");
+        let list_expr = match sequence_reduction(expr)
+            .expect("total should be a sequence reduction")
+        {
+            SequenceReduction::Fold { list, .. } | SequenceReduction::Reduce { list, .. } => list,
+        };
+        let list_span = source_span_key(list_expr.span);
+        let list_ty = Type::List(Box::new(Type::I64));
+
+        let mut facts = cfg_rewrite_facts(graph);
+        assert_eq!(facts.root_types.get(&list_span), Some(&list_ty));
+        assert!(
+            facts
+                .sequence_exprs
+                .remove(&source_span_key(expr.span))
+                .is_some(),
+            "fixture should begin with a direct typed-IR reduction root"
+        );
+
+        let base_env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut env = base_env.clone();
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_reduction_binding(
+            &mut out,
+            "",
+            ("total", &Type::I64),
+            expr,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("fallback reduction should consume the typed-IR list root type");
+
+        assert!(out.contains("flux__reduce_source_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("total")), "{out}");
+        assert!(out.contains(&local_c_name("value")), "{out}");
+        assert!(out.contains("flux_add_i64"), "{out}");
+
+        let mut missing_root_facts = facts.clone();
+        missing_root_facts.root_types.remove(&list_span);
+        missing_root_facts.scalar_exprs.remove(&list_span);
+        missing_root_facts.sequence_exprs.remove(&list_span);
+        missing_root_facts.multi_exprs.remove(&list_span);
+        missing_root_facts.aggregate_constants.remove(&list_span);
+        let mut env = base_env;
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let error = emit_sequence_reduction_binding(
+            &mut out,
+            "",
+            ("total", &Type::I64),
+            expr,
+            &mut env,
+            database.signatures(),
+            &missing_root_facts,
+            &mut temp_counter,
+        )
+        .expect_err("fallback reduction must require its normalized list root type");
+        assert!(
+            error
+                .message
+                .contains("normalized typed IR is missing an expression root type"),
+            "unexpected diagnostic: {error:?}"
+        );
     }
 
     #[test]
