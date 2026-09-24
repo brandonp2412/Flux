@@ -44767,7 +44767,14 @@ fn emit_expr(
     }
     let emitted = match &expr.kind {
         ExprKind::Map(items) => {
-            let result_ty = type_of_expr(expr, env, signatures)?;
+            let mut emitted_items = Vec::with_capacity(items.len());
+            let result_ty =
+                typecheck::map_literal_result_type(expr.span, items, signatures, |item| {
+                    let emitted = emit_expr(item, env, signatures)?;
+                    let ty = emitted.ty.clone();
+                    emitted_items.push(emitted);
+                    Ok(ty)
+                })?;
             let Type::Map(key, value) = &result_ty else {
                 unreachable!()
             };
@@ -44775,31 +44782,15 @@ fn emit_expr(
             let value_c = c_type(value, signatures);
             let mut keys = Vec::new();
             let mut values = Vec::new();
-            let mut seen = HashSet::new();
-            for pair in items.chunks_exact(2) {
-                let constant = typecheck::constant_primitive_value(&pair[0], signatures)
-                    .expect("map keys are compile-time checked");
-                let duplicate_key = format!("{}:{:?}", constant.ty().name(), constant);
-                if !seen.insert(duplicate_key) {
-                    return Err(diag(pair[0].span, "map literal contains a duplicate key"));
-                }
-                keys.push(emit_expr(&pair[0], env, signatures)?.code);
-                let emitted_value = emit_expr(&pair[1], env, signatures)?;
-                let value_code = if matches!(value.as_ref(), Type::Optional(_))
-                    && !matches!(emitted_value.ty, Type::Optional(_))
-                {
-                    format!(
-                        "(({}){{ .has_value = true, .value = {} }})",
-                        value_c, emitted_value.code
-                    )
-                } else if matches!(value.as_ref(), Type::Optional(_))
-                    && matches!(pair[1].kind, ExprKind::None)
-                {
-                    format!("(({}){{ .has_value = false }})", value_c)
-                } else {
-                    emitted_value.code
-                };
-                values.push(value_code);
+            let mut emitted_items = emitted_items.into_iter();
+            while let Some(key_item) = emitted_items.next() {
+                let value_item = emitted_items
+                    .next()
+                    .expect("map result typing requires complete key/value pairs");
+                keys.push(key_item.code);
+                values.push(coerce_emitted_expr_for_expected(
+                    value_item, value, signatures,
+                ));
             }
             let len = keys.len();
             EmittedExpr {
@@ -44927,10 +44918,44 @@ fn emit_expr(
             code: anonymous_function_c_name(expr.span),
             ty: type_of_expr(expr, env, signatures)?,
         },
-        ExprKind::Call { name, .. } if name == "bind" => EmittedExpr {
-            code: partial_application_c_name(expr.span),
-            ty: type_of_expr(expr, env, signatures)?,
-        },
+        ExprKind::Call {
+            name,
+            args,
+            named_args,
+        } if name == "bind" => {
+            if !named_args.is_empty() || args.len() < 2 {
+                return Err(diag(expr.span, "invalid bind reached code generation"));
+            }
+            let ExprKind::Var(target_name) = &args[0].kind else {
+                return Err(diag(
+                    args[0].span,
+                    "bind target changed after type checking",
+                ));
+            };
+            if env.contains_key(target_name) {
+                return Err(diag(
+                    args[0].span,
+                    "bind target changed to a local function value after type checking",
+                ));
+            }
+            let signature = signatures.get(target_name).ok_or_else(|| {
+                diag(
+                    args[0].span,
+                    "bind target function disappeared during code generation",
+                )
+            })?;
+            let ty = typecheck::partial_application_result_type(
+                expr.span,
+                args[0].span,
+                target_name,
+                args.len() - 1,
+                signature,
+            )?;
+            EmittedExpr {
+                code: partial_application_c_name(expr.span),
+                ty,
+            }
+        }
         ExprKind::ShellCall { name, args, .. } => {
             let call = Expr {
                 line: expr.line,
@@ -45056,15 +45081,27 @@ fn emit_expr(
                     "list literals with spread/if control currently lower only when bound directly to an immutable local value",
                 ));
             }
-            let result_ty = type_of_expr(expr, env, signatures)?;
+            let mut emitted_items = Vec::with_capacity(items.len());
+            let result_ty = typecheck::collection_literal_result_type(
+                expr.span,
+                items,
+                is_set,
+                signatures,
+                |item| {
+                    let emitted = emit_expr(item, env, signatures)?;
+                    let ty = emitted.ty.clone();
+                    emitted_items.push(emitted);
+                    Ok(ty)
+                },
+            )?;
             let element = match &result_ty {
                 Type::List(element) | Type::Set(element) => element,
                 _ => unreachable!(),
             };
             let mut rendered = Vec::with_capacity(items.len());
             let mut seen = HashSet::new();
-            for item in items {
-                let emitted = emit_expr_for_expected(item, element, env, signatures)?;
+            for (item, emitted) in items.iter().zip(emitted_items) {
+                let emitted = coerce_emitted_expr_for_expected(emitted, element, signatures);
                 if is_set {
                     let key = if matches!(item.kind, ExprKind::None) {
                         "none".to_string()
@@ -80982,21 +81019,32 @@ fn emit_expr_for_expected(
         };
     }
     let emitted = emit_expr(expr, env, signatures)?;
+    Ok(coerce_emitted_expr_for_expected(
+        emitted, &expected, signatures,
+    ))
+}
+
+fn coerce_emitted_expr_for_expected(
+    emitted: EmittedExpr,
+    expected: &Type,
+    signatures: &Signatures,
+) -> String {
+    let expected = signatures.canonical_type(expected);
     let actual = signatures.canonical_type(&emitted.ty);
     let Type::Optional(inner) = &expected else {
-        return Ok(emitted.code);
+        return emitted.code;
     };
     let optional_c = c_type(&expected, signatures);
     if matches!(actual, Type::Optional(ref actual_inner) if **actual_inner == Type::Void) {
-        return Ok(format!("({optional_c}){{ .has_value = false }}"));
+        return format!("({optional_c}){{ .has_value = false }}");
     }
     if actual == **inner {
-        return Ok(format!(
+        return format!(
             "({optional_c}){{ .has_value = true, .value = {} }}",
             emitted.code
-        ));
+        );
     }
-    Ok(emitted.code)
+    emitted.code
 }
 
 fn emit_call_arguments(

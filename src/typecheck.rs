@@ -5829,6 +5829,41 @@ pub(crate) fn type_of_sequence_callback(
     }
 }
 
+pub(crate) fn partial_application_result_type(
+    expr_span: SourceSpan,
+    target_span: SourceSpan,
+    target_name: &str,
+    bound_count: usize,
+    signature: &Signature,
+) -> Result<Type, Diagnostic> {
+    if signature.returns.len() > 1 {
+        return Err(diag(
+            target_span,
+            "bind supports functions with zero or one return value",
+        ));
+    }
+    if signature.param_details.iter().any(|param| param.named_only) {
+        return Err(diag(
+            target_span,
+            "bind currently supports positional parameters only",
+        ));
+    }
+    if bound_count > signature.params.len() {
+        return Err(diag(
+            expr_span,
+            &format!(
+                "bind for '{target_name}' can bind at most {} arguments, got {}",
+                signature.params.len(),
+                bound_count
+            ),
+        ));
+    }
+    Ok(Type::Function {
+        params: signature.params[bound_count..].to_vec(),
+        returns: signature.returns.clone(),
+    })
+}
+
 fn type_of_partial_application(
     expr: &Expr,
     args: &[Expr],
@@ -5871,29 +5906,14 @@ fn type_of_partial_application(
         target_name,
         signatures,
     )?;
-    if signature.returns.len() > 1 {
-        return Err(diag(
-            args[0].span,
-            "bind supports functions with zero or one return value",
-        ));
-    }
-    if signature.param_details.iter().any(|param| param.named_only) {
-        return Err(diag(
-            args[0].span,
-            "bind currently supports positional parameters only",
-        ));
-    }
     let bound = &args[1..];
-    if bound.len() > signature.params.len() {
-        return Err(diag(
-            expr.span,
-            &format!(
-                "bind for '{target_name}' can bind at most {} arguments, got {}",
-                signature.params.len(),
-                bound.len()
-            ),
-        ));
-    }
+    let result_ty = partial_application_result_type(
+        expr.span,
+        args[0].span,
+        target_name,
+        bound.len(),
+        signature,
+    )?;
     for (index, (arg, expected)) in bound.iter().zip(&signature.params).enumerate() {
         let actual = type_of_expr(arg, env, signatures)?;
         require_type(
@@ -5915,10 +5935,7 @@ fn type_of_partial_application(
             ));
         }
     }
-    Ok(Type::Function {
-        params: signature.params[bound.len()..].to_vec(),
-        returns: signature.returns.clone(),
-    })
+    Ok(result_ty)
 }
 
 fn is_zero_copy_borrow_rooted_in_named_storage(expr: &Expr) -> bool {
@@ -6138,6 +6155,111 @@ fn json_enum_type_is_supported_inner(
     });
     visiting.remove(&name);
     supported
+}
+
+pub(crate) fn map_literal_result_type<F>(
+    expr_span: SourceSpan,
+    items: &[Expr],
+    signatures: &Signatures,
+    mut item_type: F,
+) -> Result<Type, Diagnostic>
+where
+    F: FnMut(&Expr) -> Result<Type, Diagnostic>,
+{
+    if items.is_empty() || items.len() % 2 != 0 {
+        return Err(diag(
+            expr_span,
+            "map literals require one or more key:value pairs",
+        ));
+    }
+    let key_ty = item_type(&items[0])?;
+    if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
+        return Err(diag(items[0].span, "map keys must be i64, bool, or str"));
+    }
+    let mut value_ty = item_type(&items[1])?;
+    if !matches!(value_ty, Type::Optional(_))
+        && items
+            .iter()
+            .skip(3)
+            .step_by(2)
+            .any(|item| matches!(item.kind, ExprKind::None))
+    {
+        value_ty = Type::Optional(Box::new(value_ty));
+    }
+    let mut seen_keys = HashSet::new();
+    seen_keys.insert(format!(
+        "{}:{:?}",
+        constant_primitive_value(&items[0], signatures)
+            .expect("map keys are compile-time checked")
+            .ty()
+            .name(),
+        constant_primitive_value(&items[0], signatures).expect("map keys are compile-time checked")
+    ));
+    for pair in items.chunks_exact(2).skip(1) {
+        let key = constant_primitive_value(&pair[0], signatures)
+            .expect("map keys are compile-time checked");
+        if !seen_keys.insert(format!("{}:{:?}", key.ty().name(), key)) {
+            return Err(diag(pair[0].span, "map literal contains a duplicate key"));
+        }
+        require_type(pair[0].span, &key_ty, &item_type(&pair[0])?, "map key")?;
+        require_type(pair[1].span, &value_ty, &item_type(&pair[1])?, "map value")?;
+    }
+    Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)))
+}
+
+pub(crate) fn collection_literal_result_type<F>(
+    expr_span: SourceSpan,
+    items: &[Expr],
+    is_set: bool,
+    signatures: &Signatures,
+    mut item_element_type: F,
+) -> Result<Type, Diagnostic>
+where
+    F: FnMut(&Expr) -> Result<Type, Diagnostic>,
+{
+    let Some(first) = items.first() else {
+        return Err(diag(
+            expr_span,
+            if is_set {
+                "empty set literals cannot infer an element type yet"
+            } else {
+                "empty list literals cannot infer an element type yet"
+            },
+        ));
+    };
+    let mut element_ty = item_element_type(first)?;
+    if matches!(element_ty, Type::Void | Type::Function { .. }) {
+        return Err(diag(
+            first.span,
+            &format!("list elements cannot have type {}", element_ty.name()),
+        ));
+    }
+    for item in items.iter().skip(1) {
+        let actual = item_element_type(item)?;
+        if matches!(actual, Type::Optional(ref inner) if matches!(inner.as_ref(), Type::Void))
+            && matches!(element_ty, Type::I64 | Type::Bool | Type::Str)
+        {
+            element_ty = Type::Optional(Box::new(element_ty));
+            continue;
+        }
+        require_type(item.span, &element_ty, &actual, "list element")?;
+    }
+    Ok(if is_set {
+        let valid_set_element = matches!(element_ty, Type::I64 | Type::Bool | Type::Str)
+            || matches!(&element_ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
+            || items
+                .iter()
+                .all(|item| is_unit_enum_constructor(item, signatures));
+        if !valid_set_element {
+            return Err(diag(
+                first.span,
+                "set elements must currently have type i64, bool, str, scalar optionals, or one unit enum type",
+            ));
+        }
+        Type::Set(Box::new(element_ty))
+    } else {
+        Type::List(Box::new(element_ty))
+    })
 }
 
 pub(crate) fn validate_record_literal_field_order(
@@ -6657,12 +6779,6 @@ pub fn type_of_expr(
             type_of_expr(&call, env, signatures)
         }
         ExprKind::Map(items) => {
-            if items.is_empty() || items.len() % 2 != 0 {
-                return Err(diag(
-                    expr.span,
-                    "map literals require one or more key:value pairs",
-                ));
-            }
             let primitive = |item: &Expr| -> Result<Type, Diagnostic> {
                 if matches!(item.kind, ExprKind::None) {
                     return Ok(Type::Optional(Box::new(Type::Void)));
@@ -6753,53 +6869,10 @@ pub fn type_of_expr(
                 }
                 Ok(ty)
             };
-            let key_ty = primitive(&items[0])?;
-            if !matches!(key_ty, Type::I64 | Type::Bool | Type::Str) {
-                return Err(diag(items[0].span, "map keys must be i64, bool, or str"));
-            }
-            let mut value_ty = primitive(&items[1])?;
-            if !matches!(value_ty, Type::Optional(_))
-                && items
-                    .iter()
-                    .skip(3)
-                    .step_by(2)
-                    .any(|item| matches!(item.kind, ExprKind::None))
-            {
-                value_ty = Type::Optional(Box::new(value_ty));
-            }
-            let mut seen_keys = HashSet::new();
-            seen_keys.insert(format!(
-                "{}:{:?}",
-                constant_primitive_value(&items[0], signatures)
-                    .expect("map keys are compile-time checked")
-                    .ty()
-                    .name(),
-                constant_primitive_value(&items[0], signatures)
-                    .expect("map keys are compile-time checked")
-            ));
-            for pair in items.chunks_exact(2).skip(1) {
-                let key = constant_primitive_value(&pair[0], signatures)
-                    .expect("map keys are compile-time checked");
-                if !seen_keys.insert(format!("{}:{:?}", key.ty().name(), key)) {
-                    return Err(diag(pair[0].span, "map literal contains a duplicate key"));
-                }
-                require_type(pair[0].span, &key_ty, &primitive(&pair[0])?, "map key")?;
-                require_type(pair[1].span, &value_ty, &primitive(&pair[1])?, "map value")?;
-            }
-            Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)))
+            map_literal_result_type(expr.span, items, signatures, primitive)
         }
         ExprKind::List(items) | ExprKind::Set(items) => {
             let is_set = matches!(&expr.kind, ExprKind::Set(_));
-            let Some(first) = items.first() else {
-                return Err(diag(
-                    expr.span,
-                    if is_set {
-                        "empty set literals cannot infer an element type yet"
-                    } else {
-                        "empty list literals cannot infer an element type yet"
-                    },
-                ));
-            };
             let item_element_type = |item: &Expr| -> Result<Type, Diagnostic> {
                 if is_set
                     && !matches!(
@@ -6947,40 +7020,7 @@ pub fn type_of_expr(
                     _ => type_of_expr(item, env, signatures),
                 }
             };
-            let mut element_ty = item_element_type(first)?;
-            if matches!(element_ty, Type::Void | Type::Function { .. }) {
-                return Err(diag(
-                    first.span,
-                    &format!("list elements cannot have type {}", element_ty.name()),
-                ));
-            }
-            for item in items.iter().skip(1) {
-                let actual = item_element_type(item)?;
-                if matches!(actual, Type::Optional(ref inner) if matches!(inner.as_ref(), Type::Void))
-                {
-                    if matches!(element_ty, Type::I64 | Type::Bool | Type::Str) {
-                        element_ty = Type::Optional(Box::new(element_ty));
-                        continue;
-                    }
-                }
-                require_type(item.span, &element_ty, &actual, "list element")?;
-            }
-            Ok(if is_set {
-                let valid_set_element = matches!(element_ty, Type::I64 | Type::Bool | Type::Str)
-                    || matches!(&element_ty, Type::Optional(inner) if matches!(inner.as_ref(), Type::I64 | Type::Bool | Type::Str))
-                    || items
-                        .iter()
-                        .all(|item| is_unit_enum_constructor(item, signatures));
-                if !valid_set_element {
-                    return Err(diag(
-                        first.span,
-                        "set elements must currently have type i64, bool, str, scalar optionals, or one unit enum type",
-                    ));
-                }
-                Type::Set(Box::new(element_ty))
-            } else {
-                Type::List(Box::new(element_ty))
-            })
+            collection_literal_result_type(expr.span, items, is_set, signatures, item_element_type)
         }
         ExprKind::ListSpread { .. } => Err(diag(
             expr.span,
