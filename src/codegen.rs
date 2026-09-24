@@ -37297,6 +37297,281 @@ fn record_mutable_declaration(stmt: &Stmt, mutable: &mut HashSet<String>) {
     }
 }
 
+fn emit_cfg_sequence_chunked_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if arguments.len() != 2 {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_list_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    let source_ty = signatures.canonical_type(&source.ty);
+    if !matches!(source_ty, Type::List(_)) {
+        return None;
+    }
+    let size_ty = signatures.canonical_type(&arguments[1].ty);
+    if size_ty != Type::I64 {
+        return None;
+    }
+    let size = emit_cfg_scalar_expr_direct(&arguments[1], env, signatures)?;
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != Type::List(Box::new(source_ty.clone())) {
+        return None;
+    }
+
+    let source_name = format!("flux__chunked_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_name = format!("flux__chunked_size_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_unsigned_name = format!("flux__chunked_size_u_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__chunked_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__chunked_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__chunked_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let start_name = format!("flux__chunked_start_{}", *temp_counter);
+    *temp_counter += 1;
+    let remaining_name = format!("flux__chunked_remaining_{}", *temp_counter);
+    *temp_counter += 1;
+    let len_name = format!("flux__chunked_len_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__chunked_result_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n{pad}int64_t {size_name} = {size};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}if ({size_name} <= 0) {{ fputs(\"Flux runtime error: chunked size must be greater than zero\\n\", stderr); abort(); }}\n{pad}size_t {size_unsigned_name} = (size_t){size_name};\n"
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {count_name} = ({source_name}.len / {size_unsigned_name}) + (({source_name}.len % {size_unsigned_name}) != 0);\n{pad}struct flux__list {buffer_name}[{count_name} > 0 ? {count_name} : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {count_name}; ++{index_name}) {{\n{pad}    size_t {start_name} = {index_name} * {size_unsigned_name};\n{pad}    size_t {remaining_name} = {source_name}.len - {start_name};\n{pad}    size_t {len_name} = {remaining_name} < {size_unsigned_name} ? {remaining_name} : {size_unsigned_name};\n{pad}    {buffer_name}[{index_name}] = (struct flux__list){{ .data = (void *)((unsigned char *){source_name}.data + (ptrdiff_t){start_name} * {source_name}.stride), .len = {len_name}, .stride = {source_name}.stride }};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof(struct flux__list) }};\n"
+    ));
+    Some(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if arguments.len() != 2 {
+        return None;
+    }
+    let left =
+        emit_cfg_sequence_list_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    let right =
+        emit_cfg_sequence_list_value(out, pad, &arguments[1], env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let Type::List(element) = &result_ty else {
+        return None;
+    };
+    if signatures.canonical_type(&left.ty) != result_ty
+        || signatures.canonical_type(&right.ty) != result_ty
+    {
+        return None;
+    }
+
+    let left_name = format!("flux__concat_left_{}", *temp_counter);
+    *temp_counter += 1;
+    let right_name = format!("flux__concat_right_{}", *temp_counter);
+    *temp_counter += 1;
+    let capacity_name = format!("flux__concat_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__concat_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__concat_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__concat_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {left_name} = {};\n{pad}struct flux__list {right_name} = {};\n",
+        left.code, right.code
+    ));
+    out.push_str(&format!(
+        "{pad}if (SIZE_MAX - {left_name}.len < {right_name}.len) {{ fputs(\"Flux runtime error: concatenated list is too large\\n\", stderr); abort(); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {capacity_name} = {left_name}.len + {right_name}.len;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {left_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({left_name}, {index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {right_name}.len; ++{index_name}) {{ {buffer_name}[{left_name}.len + {index_name}] = *(({element_c} *)flux_list_at_unchecked({right_name}, {index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {capacity_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Some(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_distinct_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if arguments.len() != 1 {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_list_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let Type::List(element) = &result_ty else {
+        return None;
+    };
+    if signatures.canonical_type(&source.ty) != result_ty {
+        return None;
+    }
+
+    let element_ty = signatures.canonical_type(element);
+    let source_name = format!("flux__distinct_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__distinct_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__distinct_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__distinct_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let seen_name = format!("flux__distinct_seen_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__distinct_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let duplicate_name = format!("flux__distinct_duplicate_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__distinct_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    let equality = distinct_equality(
+        &format!("{buffer_name}[{seen_name}]"),
+        &item_name,
+        &element_ty,
+    )?;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    for (size_t {seen_name} = 0; {seen_name} < {count_name}; ++{seen_name}) {{ if ({equality}) {{ {duplicate_name} = true; break; }} }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    if (!{duplicate_name}) {buffer_name}[{count_name}++] = {item_name};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Some(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    if arguments.len() != 1 {
+        return None;
+    }
+    let source =
+        emit_cfg_sequence_list_value(out, pad, &arguments[0], env, signatures, temp_counter)?;
+    let source_ty = signatures.canonical_type(&source.ty);
+    let Type::List(outer_element) = source_ty else {
+        return None;
+    };
+    let Type::List(inner_element) = signatures.canonical_type(&outer_element) else {
+        return None;
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != Type::List(inner_element.clone()) {
+        return None;
+    }
+
+    let source_name = format!("flux__flatten_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let capacity_name = format!("flux__flatten_capacity_{}", *temp_counter);
+    *temp_counter += 1;
+    let outer_index = format!("flux__flatten_outer_{}", *temp_counter);
+    *temp_counter += 1;
+    let inner_name = format!("flux__flatten_inner_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__flatten_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__flatten_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let inner_index = format!("flux__flatten_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__flatten_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(&inner_element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n{pad}size_t {capacity_name} = 0;\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{ struct flux__list {inner_name} = *((struct flux__list *)flux_list_at_unchecked({source_name}, {outer_index}, sizeof(struct flux__list))); if (SIZE_MAX - {capacity_name} < {inner_name}.len) {{ fputs(\"Flux runtime error: flattened list is too large\\n\", stderr); abort(); }} {capacity_name} += {inner_name}.len; }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{capacity_name} > 0 ? {capacity_name} : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {outer_index} = 0; {outer_index} < {source_name}.len; ++{outer_index}) {{\n{pad}    struct flux__list {inner_name} = *((struct flux__list *)flux_list_at_unchecked({source_name}, {outer_index}, sizeof(struct flux__list)));\n{pad}    for (size_t {inner_index} = 0; {inner_index} < {inner_name}.len; ++{inner_index}) {{ {buffer_name}[{count_name}++] = *(({element_c} *)flux_list_at_unchecked({inner_name}, {inner_index}, sizeof({element_c}))); }}\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Some(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
 fn emit_cfg_sequence_list_value(
     out: &mut String,
     pad: &str,
@@ -37305,6 +37580,56 @@ fn emit_cfg_sequence_list_value(
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Option<EmittedExpr> {
+    if let CfgScalarExprKind::Call { callee, arguments } = &expr.kind {
+        match crate::builtin_names::global_impl(callee) {
+            "chunked" => {
+                return emit_cfg_sequence_chunked_value(
+                    out,
+                    pad,
+                    expr,
+                    arguments,
+                    env,
+                    signatures,
+                    temp_counter,
+                );
+            }
+            "concat" => {
+                return emit_cfg_sequence_concat_value(
+                    out,
+                    pad,
+                    expr,
+                    arguments,
+                    env,
+                    signatures,
+                    temp_counter,
+                );
+            }
+            "distinct" => {
+                return emit_cfg_sequence_distinct_value(
+                    out,
+                    pad,
+                    expr,
+                    arguments,
+                    env,
+                    signatures,
+                    temp_counter,
+                );
+            }
+            "flatten" => {
+                return emit_cfg_sequence_flatten_value(
+                    out,
+                    pad,
+                    expr,
+                    arguments,
+                    env,
+                    signatures,
+                    temp_counter,
+                );
+            }
+            _ => {}
+        }
+    }
+
     if let CfgScalarExprKind::Call { callee, arguments } = &expr.kind
         && crate::builtin_names::global_impl(callee) == "sorted"
         && arguments.len() == 1
@@ -37369,6 +37694,54 @@ fn emit_cfg_sequence_list_value(
     })
 }
 
+fn emit_cfg_sequence_binding_direct(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    operation: &str,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Option<()> {
+    let sequence = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))?;
+    let CfgScalarExprKind::Call { callee, .. } = &sequence.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != operation {
+        return None;
+    }
+
+    let mut direct = String::new();
+    let mut direct_temp_counter = *temp_counter;
+    let value = emit_cfg_sequence_list_value(
+        &mut direct,
+        pad,
+        sequence,
+        env,
+        signatures,
+        &mut direct_temp_counter,
+    )?;
+    let (name, declared_ty) = target;
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return None;
+    }
+    direct.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    out.push_str(&direct);
+    *temp_counter = direct_temp_counter;
+    env.insert(name.to_string(), result_ty);
+    Some(())
+}
+
 fn emit_cfg_sequence_projection_direct(
     out: &mut String,
     pad: &str,
@@ -37393,9 +37766,11 @@ fn emit_cfg_sequence_projection_direct(
     };
     if !matches!(
         &base.kind,
-        CfgScalarExprKind::Call { callee, arguments }
-            if crate::builtin_names::global_impl(callee) == "sorted"
-                && arguments.len() == 1
+        CfgScalarExprKind::Call { callee, .. }
+            if matches!(
+                crate::builtin_names::global_impl(callee),
+                "sorted" | "chunked" | "concat" | "distinct" | "flatten"
+            )
     ) {
         return None;
     }
@@ -41224,6 +41599,21 @@ fn emit_sequence_chunked_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        "chunked",
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -41460,6 +41850,21 @@ fn emit_sequence_flatten_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        "flatten",
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -41565,6 +41970,21 @@ fn emit_sequence_distinct_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        "distinct",
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -41669,6 +42089,21 @@ fn emit_sequence_concat_binding(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
+    if emit_cfg_sequence_binding_direct(
+        out,
+        pad,
+        target,
+        expr,
+        "concat",
+        env,
+        signatures,
+        rewrite_facts,
+        temp_counter,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
     let (name, declared_ty) = target;
     let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
     let expr = &rewritten;
@@ -61019,6 +61454,121 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!out.contains("checked-ast-sequence-projection"));
         assert!(!emitted.contains("checked-ast-sequence-projection"));
+    }
+
+    #[test]
+    fn simple_sequence_bindings_lower_from_typed_ir_without_ast_roots() {
+        let source = r#"
+fn exercise(values: i64[], nested: i64[][]) -> i64 {
+    let chunks: i64[][] = chunked(values, 2)
+    let joined: i64[] = concat(values, values)
+    let unique: i64[] = distinct(values)
+    let flat: i64[] = flatten(nested)
+    return chunks.length + joined.length + unique.length + flat.length
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("simple sequence typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let list_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(list_ty.clone()));
+        let base_env = HashMap::from([
+            ("values".to_string(), list_ty.clone()),
+            ("nested".to_string(), nested_ty.clone()),
+        ]);
+
+        for (operation, target, target_ty) in [
+            ("chunked", "chunks", nested_ty.clone()),
+            ("concat", "joined", list_ty.clone()),
+            ("distinct", "unique", list_ty.clone()),
+            ("flatten", "flat", list_ty.clone()),
+        ] {
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. }
+                            if crate::builtin_names::global_impl(callee) == operation
+                    )
+                })
+                .unwrap_or_else(|| panic!("typed IR should retain the {operation} root"));
+            assert!(matches!(
+                facts.sequence_exprs.get(&source_span_key(root.span)),
+                Some(CfgScalarExpr {
+                    kind: CfgScalarExprKind::Call { callee, .. },
+                    ..
+                }) if crate::builtin_names::global_impl(callee) == operation
+            ));
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Int(999),
+            };
+            let mut env = base_env.clone();
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            match operation {
+                "chunked" => emit_sequence_chunked_binding(
+                    &mut out,
+                    "",
+                    (target, &target_ty),
+                    &fake,
+                    &mut env,
+                    database.signatures(),
+                    &facts,
+                    &mut temp_counter,
+                ),
+                "concat" => emit_sequence_concat_binding(
+                    &mut out,
+                    "",
+                    (target, &target_ty),
+                    &fake,
+                    &mut env,
+                    database.signatures(),
+                    &facts,
+                    &mut temp_counter,
+                ),
+                "distinct" => emit_sequence_distinct_binding(
+                    &mut out,
+                    "",
+                    (target, &target_ty),
+                    &fake,
+                    &mut env,
+                    database.signatures(),
+                    &facts,
+                    &mut temp_counter,
+                ),
+                "flatten" => emit_sequence_flatten_binding(
+                    &mut out,
+                    "",
+                    (target, &target_ty),
+                    &fake,
+                    &mut env,
+                    database.signatures(),
+                    &facts,
+                    &mut temp_counter,
+                ),
+                _ => unreachable!("simple sequence operation"),
+            }
+            .unwrap_or_else(|diagnostic| panic!("{operation} should lower: {diagnostic:?}"));
+
+            assert!(
+                out.contains(&format!("flux__{operation}_")),
+                "{operation}: {out}"
+            );
+            assert!(out.contains(&local_c_name(target)), "{operation}: {out}");
+            assert!(!out.contains("999"), "{operation}: {out}");
+        }
     }
 
     #[test]
