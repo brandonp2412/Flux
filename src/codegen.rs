@@ -41030,6 +41030,101 @@ fn emit_sequence_list_value(
     }
 }
 
+fn emit_chunked_from_parts(
+    out: &mut String,
+    pad: &str,
+    source: EmittedExpr,
+    size: EmittedExpr,
+    result_ty: Type,
+    temp_counter: &mut usize,
+) -> EmittedExpr {
+    let source_name = format!("flux__chunked_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_name = format!("flux__chunked_size_{}", *temp_counter);
+    *temp_counter += 1;
+    let size_unsigned_name = format!("flux__chunked_size_u_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__chunked_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__chunked_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__chunked_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let start_name = format!("flux__chunked_start_{}", *temp_counter);
+    *temp_counter += 1;
+    let remaining_name = format!("flux__chunked_remaining_{}", *temp_counter);
+    *temp_counter += 1;
+    let len_name = format!("flux__chunked_len_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__chunked_result_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n{pad}int64_t {size_name} = {};\n",
+        source.code, size.code
+    ));
+    out.push_str(&format!(
+        "{pad}if ({size_name} <= 0) {{ fputs(\"Flux runtime error: chunked size must be greater than zero\\n\", stderr); abort(); }}\n{pad}size_t {size_unsigned_name} = (size_t){size_name};\n"
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {count_name} = ({source_name}.len / {size_unsigned_name}) + (({source_name}.len % {size_unsigned_name}) != 0);\n{pad}struct flux__list {buffer_name}[{count_name} > 0 ? {count_name} : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {count_name}; ++{index_name}) {{\n{pad}    size_t {start_name} = {index_name} * {size_unsigned_name};\n{pad}    size_t {remaining_name} = {source_name}.len - {start_name};\n{pad}    size_t {len_name} = {remaining_name} < {size_unsigned_name} ? {remaining_name} : {size_unsigned_name};\n{pad}    {buffer_name}[{index_name}] = (struct flux__list){{ .data = (void *)((unsigned char *){source_name}.data + (ptrdiff_t){start_name} * {source_name}.stride), .len = {len_name}, .stride = {source_name}.stride }};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof(struct flux__list) }};\n"
+    ));
+    EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    }
+}
+
+fn emit_cfg_sequence_chunked_value_direct(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<EmittedExpr> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if crate::builtin_names::global_impl(callee) != "chunked" || arguments.len() != 2 {
+        return None;
+    }
+    let source_expr = &arguments[0];
+    let size_expr = &arguments[1];
+    let source_ty = signatures.canonical_type(&source_expr.ty);
+    let Type::List(_) = &source_ty else {
+        return None;
+    };
+    if signatures.canonical_type(&size_expr.ty) != Type::I64 {
+        return None;
+    }
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != Type::List(Box::new(source_ty.clone())) {
+        return None;
+    }
+    let source = EmittedExpr {
+        code: emit_cfg_scalar_expr_direct(source_expr, env, signatures)?,
+        ty: source_ty,
+    };
+    let size = EmittedExpr {
+        code: emit_cfg_scalar_expr_direct(size_expr, env, signatures)?,
+        ty: Type::I64,
+    };
+    Some(emit_chunked_from_parts(
+        out,
+        pad,
+        source,
+        size,
+        result_ty,
+        temp_counter,
+    ))
+}
+
 fn emit_sequence_chunked_binding(
     out: &mut String,
     pad: &str,
@@ -41041,10 +41136,35 @@ fn emit_sequence_chunked_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+                && cfg_sequence_lowering_kind(sequence) == Some(SequenceLoweringKind::Chunked)
+        }) {
+        let mut direct_out = String::new();
+        let mut next_temp = *temp_counter;
+        if let Some(value) = emit_cfg_sequence_chunked_value_direct(
+            &mut direct_out,
+            pad,
+            sequence,
+            env,
+            signatures,
+            &mut next_temp,
+        ) {
+            out.push_str(&direct_out);
+            *temp_counter = next_temp;
+            value
+        } else {
+            let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+            emit_sequence_chunked_value(out, pad, &rewritten, env, signatures, temp_counter)?
+        }
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_chunked_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     if value.ty != result_ty {
         return Err(diag(
             expr.span,
@@ -41087,46 +41207,14 @@ fn emit_sequence_chunked_value(
             "chunked result type mismatch reached code generation",
         ));
     }
-    let source_name = format!("flux__chunked_source_{}", *temp_counter);
-    *temp_counter += 1;
-    let size_name = format!("flux__chunked_size_{}", *temp_counter);
-    *temp_counter += 1;
-    let size_unsigned_name = format!("flux__chunked_size_u_{}", *temp_counter);
-    *temp_counter += 1;
-    let count_name = format!("flux__chunked_count_{}", *temp_counter);
-    *temp_counter += 1;
-    let buffer_name = format!("flux__chunked_buffer_{}", *temp_counter);
-    *temp_counter += 1;
-    let index_name = format!("flux__chunked_index_{}", *temp_counter);
-    *temp_counter += 1;
-    let start_name = format!("flux__chunked_start_{}", *temp_counter);
-    *temp_counter += 1;
-    let remaining_name = format!("flux__chunked_remaining_{}", *temp_counter);
-    *temp_counter += 1;
-    let len_name = format!("flux__chunked_len_{}", *temp_counter);
-    *temp_counter += 1;
-    let result_name = format!("flux__chunked_result_{}", *temp_counter);
-    *temp_counter += 1;
-    out.push_str(&format!(
-        "{pad}struct flux__list {source_name} = {};\n{pad}int64_t {size_name} = {};\n",
-        source.code, size.code
-    ));
-    out.push_str(&format!(
-        "{pad}if ({size_name} <= 0) {{ fputs(\"Flux runtime error: chunked size must be greater than zero\\n\", stderr); abort(); }}\n{pad}size_t {size_unsigned_name} = (size_t){size_name};\n"
-    ));
-    out.push_str(&format!(
-        "{pad}size_t {count_name} = ({source_name}.len / {size_unsigned_name}) + (({source_name}.len % {size_unsigned_name}) != 0);\n{pad}struct flux__list {buffer_name}[{count_name} > 0 ? {count_name} : 1];\n"
-    ));
-    out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {count_name}; ++{index_name}) {{\n{pad}    size_t {start_name} = {index_name} * {size_unsigned_name};\n{pad}    size_t {remaining_name} = {source_name}.len - {start_name};\n{pad}    size_t {len_name} = {remaining_name} < {size_unsigned_name} ? {remaining_name} : {size_unsigned_name};\n{pad}    {buffer_name}[{index_name}] = (struct flux__list){{ .data = (void *)((unsigned char *){source_name}.data + (ptrdiff_t){start_name} * {source_name}.stride), .len = {len_name}, .stride = {source_name}.stride }};\n{pad}}}\n"
-    ));
-    out.push_str(&format!(
-        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof(struct flux__list) }};\n"
-    ));
-    Ok(EmittedExpr {
-        code: result_name,
-        ty: result_ty,
-    })
+    Ok(emit_chunked_from_parts(
+        out,
+        pad,
+        source,
+        size,
+        result_ty,
+        temp_counter,
+    ))
 }
 
 fn sorted_less(left: &str, right: &str, ty: &Type) -> Option<String> {
@@ -54943,6 +55031,64 @@ fn main() -> i64 {
         assert!(out.contains("flux_mul_i64"), "{out}");
         assert!(out.contains("flux_add_i64"), "{out}");
         assert!(!out.contains("999"), "{out}");
+    }
+
+    #[test]
+    fn direct_typed_ir_chunked_root_emits_without_synthetic_ast() {
+        let source = r#"
+fn exercise(values: i64[], size: i64) -> i64 {
+    let chunks: i64[][] = chunked(values, size)
+    return chunks.length
+}
+
+fn main() -> i64 {
+    return exercise([1, 2, 3], 2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("chunked typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("exercise")
+            .expect("exercise CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "chunked"
+                )
+            })
+            .expect("typed IR should retain the chunked root");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("chunked root should retain normalized sequence facts");
+        let env = HashMap::from([
+            ("values".to_string(), Type::List(Box::new(Type::I64))),
+            ("size".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        let emitted = emit_cfg_sequence_chunked_value_direct(
+            &mut out,
+            "",
+            sequence,
+            &env,
+            database.signatures(),
+            &mut temp_counter,
+        )
+        .expect("direct typed-IR chunked root should render");
+        assert_eq!(
+            emitted.ty,
+            Type::List(Box::new(Type::List(Box::new(Type::I64))))
+        );
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("size")), "{out}");
+        assert!(out.contains("flux__chunked_buffer_"), "{out}");
+        assert!(out.contains("Flux runtime error: chunked size must be greater than zero"));
     }
 
     #[test]
