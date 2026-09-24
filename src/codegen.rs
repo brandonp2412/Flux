@@ -29232,8 +29232,6 @@ fn collect_function_helpers<'a>(
         if !reachable_functions.contains(&function.name) {
             continue;
         }
-        let mut candidates = Vec::new();
-        collect_function_helpers_from_block(&function.body, &mut candidates);
         let cfg = function_ir.get(&function.name).ok_or_else(|| {
             diag(
                 function.span,
@@ -29241,7 +29239,8 @@ fn collect_function_helpers<'a>(
             )
         })?;
         let rewrite_facts = cfg_rewrite_facts(cfg);
-        let reachable_spans = cfg
+
+        let reachable_anonymous_spans = cfg
             .values()
             .iter()
             .filter(|value| cfg.is_value_reachable(value.id))
@@ -29249,43 +29248,61 @@ fn collect_function_helpers<'a>(
                 matches!(
                     &value.kind,
                     crate::ir::ControlFlowValueKind::AnonymousFunction { .. }
-                ) || matches!(
-                    &value.kind,
-                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "bind"
                 )
             })
             .map(|value| source_span_key(value.span))
             .collect::<HashSet<_>>();
 
+        let mut ordered = Vec::new();
+        let mut candidates = Vec::new();
+        collect_function_helpers_from_block(&function.body, &mut candidates);
         for expr in candidates {
             let span = source_span_key(expr.span);
-            if !reachable_spans.contains(&span) {
-                continue;
-            }
-            match &expr.kind {
-                ExprKind::AnonymousFunction { .. } => {
-                    functions.push(FunctionHelper::Anonymous(expr));
-                }
-                ExprKind::Call { name, .. } if name == "bind" => {
-                    let value = rewrite_facts
-                        .scalar_exprs
-                        .get(&span)
-                        .filter(|value| matches!(value.kind, CfgScalarExprKind::Bind { .. }))
-                        .cloned()
-                        .ok_or_else(|| {
-                            diag(
-                                expr.span,
-                                "bind helper is missing normalized typed IR during code generation",
-                            )
-                        })?;
-                    functions.push(FunctionHelper::PartialApplication {
-                        span: expr.span,
-                        value,
-                    });
-                }
-                _ => {}
+            if reachable_anonymous_spans.contains(&span)
+                && matches!(expr.kind, ExprKind::AnonymousFunction { .. })
+            {
+                ordered.push((span, FunctionHelper::Anonymous(expr)));
             }
         }
+
+        let mut seen_bind_spans = HashSet::new();
+        for value in cfg
+            .values()
+            .iter()
+            .filter(|value| cfg.is_value_reachable(value.id))
+            .filter(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "bind"
+                )
+            })
+        {
+            let span = source_span_key(value.span);
+            if !seen_bind_spans.insert(span) {
+                continue;
+            }
+            let scalar = rewrite_facts
+                .scalar_exprs
+                .get(&span)
+                .filter(|value| matches!(value.kind, CfgScalarExprKind::Bind { .. }))
+                .cloned()
+                .ok_or_else(|| {
+                    diag(
+                        value.span,
+                        "bind helper is missing normalized typed IR during code generation",
+                    )
+                })?;
+            ordered.push((
+                span,
+                FunctionHelper::PartialApplication {
+                    span: value.span,
+                    value: scalar,
+                },
+            ));
+        }
+
+        ordered.sort_by_key(|(span, _)| *span);
+        functions.extend(ordered.into_iter().map(|(_, helper)| helper));
     }
     Ok(functions)
 }
@@ -29374,9 +29391,6 @@ fn collect_function_helpers_from_expr<'a>(expr: &'a Expr, functions: &mut Vec<&'
             args,
             named_args,
         } => {
-            if name == "bind" {
-                functions.push(expr);
-            }
             for (index, arg) in args.iter().enumerate() {
                 let inline_sequence_callback = named_args.is_empty()
                     && match name.as_str() {
@@ -77644,6 +77658,84 @@ fn main() -> i64 {
             emit_cfg_scalar_expr_direct(&mismatched, &HashMap::new(), database.signatures())
                 .is_none(),
             "bind direct emission should verify the residual function signature"
+        );
+    }
+
+    #[test]
+    fn bind_helper_discovery_uses_typed_ir_after_checked_ast_root_changes() {
+        let source = r#"
+fn add(left: i64, right: i64) -> i64 {
+    return left + right
+}
+
+fn pick() -> fn(i64) -> i64 {
+    return bind(add, 5)
+}
+
+fn main() -> i64 {
+    let transform: fn(i64) -> i64 = pick()
+    return transform(2)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("bind helper discovery fixture should typecheck");
+        let graph = database
+            .control_flow_graph("pick")
+            .expect("pick CFG should exist")
+            .clone();
+        let bind_span = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "bind"
+                )
+            })
+            .expect("typed IR should retain the bind expression")
+            .span;
+
+        let mut program = database.program().clone();
+        let pick = program
+            .functions
+            .iter_mut()
+            .find(|function| function.name == "pick")
+            .expect("pick function should exist");
+        let StmtKind::Return(values) = &mut pick.body[0].kind else {
+            panic!("pick should retain its return statement");
+        };
+        assert_eq!(values.len(), 1);
+        values[0].kind = ExprKind::Int(999);
+
+        let function_ir = HashMap::from([("pick".to_string(), graph)]);
+        let reachable = HashSet::from(["pick".to_string()]);
+        let helpers = collect_function_helpers(&program, &reachable, &function_ir)
+            .expect("bind helper should be discoverable from typed IR");
+        assert_eq!(helpers.len(), 1);
+
+        let FunctionHelper::PartialApplication { span, value } = &helpers[0] else {
+            panic!("typed IR bind should produce a partial-application helper");
+        };
+        assert_eq!(*span, bind_span);
+        assert!(matches!(
+            &value.kind,
+            CfgScalarExprKind::Bind { arguments, .. } if arguments.len() == 2
+        ));
+
+        let mut emitted = String::new();
+        emit_function_helper(
+            &mut emitted,
+            &helpers[0],
+            database.signatures(),
+            &HashMap::new(),
+        )
+        .expect("IR-discovered bind helper should emit after AST root poisoning");
+        assert!(
+            emitted.contains(&format!(
+                "{}(INT64_C(5), flux__bound_arg_0)",
+                function_c_name("add")
+            )),
+            "{emitted}"
         );
     }
 
