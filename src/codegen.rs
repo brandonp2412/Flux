@@ -40424,60 +40424,26 @@ fn emit_sequence_list_value(
     }
 }
 
-fn emit_sequence_chunked_binding(
+fn emit_chunked_value_from_parts(
     out: &mut String,
     pad: &str,
-    target: (&str, &Type),
-    expr: &Expr,
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-    temp_counter: &mut usize,
-) -> Result<(), Diagnostic> {
-    let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_chunked_value(out, pad, expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(declared_ty);
-    if value.ty != result_ty {
-        return Err(diag(
-            expr.span,
-            "chunked binding type mismatch reached code generation",
-        ));
-    }
-    out.push_str(&format!(
-        "{pad}{} {} = {};\n",
-        c_type(declared_ty, signatures),
-        local_c_name(name),
-        value.code
-    ));
-    env.insert(name.to_string(), result_ty);
-    Ok(())
-}
-
-fn emit_sequence_chunked_value(
-    out: &mut String,
-    pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    source: EmittedExpr,
+    size: EmittedExpr,
+    result_ty: Type,
+    span: SourceSpan,
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
-    let (source_expr, size_expr) = sequence_chunked(expr)
-        .ok_or_else(|| diag(expr.span, "invalid chunked call reached code generation"))?;
-    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let source_ty = signatures.canonical_type(&source.ty);
     let Type::List(_) = &source_ty else {
-        return Err(diag(expr.span, "chunked source must be a list"));
+        return Err(diag(span, "chunked source must be a list"));
     };
-    let size = emit_expr(size_expr, env, signatures)?;
     if size.ty != Type::I64 {
-        return Err(diag(expr.span, "chunked size must be i64"));
+        return Err(diag(span, "chunked size must be i64"));
     }
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
     if result_ty != Type::List(Box::new(source_ty.clone())) {
         return Err(diag(
-            expr.span,
+            span,
             "chunked result type mismatch reached code generation",
         ));
     }
@@ -40523,12 +40489,234 @@ fn emit_sequence_chunked_value(
     })
 }
 
+fn emit_cfg_sequence_chunked_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(None);
+    };
+    if crate::builtin_names::global_impl(callee) != "chunked" || arguments.len() != 2 {
+        return Ok(None);
+    }
+    let source_ty = signatures.canonical_type(&arguments[0].ty);
+    if !matches!(source_ty, Type::List(_))
+        || signatures.canonical_type(&arguments[1].ty) != Type::I64
+    {
+        return Ok(None);
+    }
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != Type::List(Box::new(source_ty.clone())) {
+        return Ok(None);
+    }
+    let Some(source_code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
+        return Ok(None);
+    };
+    let Some(size_code) =
+        emit_cfg_ordinary_call_argument_direct(&arguments[1], &Type::I64, env, signatures)
+    else {
+        return Ok(None);
+    };
+    emit_chunked_value_from_parts(
+        out,
+        pad,
+        EmittedExpr {
+            code: source_code,
+            ty: source_ty,
+        },
+        EmittedExpr {
+            code: size_code,
+            ty: Type::I64,
+        },
+        result_ty,
+        span,
+        signatures,
+        temp_counter,
+    )
+    .map(Some)
+}
+
+fn emit_sequence_chunked_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    {
+        emit_cfg_sequence_chunked_value(
+            out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    } else {
+        None
+    };
+    let value = if let Some(value) = value {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_chunked_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "chunked binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_chunked_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let (source_expr, size_expr) = sequence_chunked(expr)
+        .ok_or_else(|| diag(expr.span, "invalid chunked call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let size = emit_expr(size_expr, env, signatures)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_chunked_value_from_parts(
+        out,
+        pad,
+        source,
+        size,
+        result_ty,
+        expr.span,
+        signatures,
+        temp_counter,
+    )
+}
+
 fn sorted_less(left: &str, right: &str, ty: &Type) -> Option<String> {
     match ty {
         Type::I64 | Type::Bool => Some(format!("({left} < {right})")),
         Type::Str => Some(format!("(strcmp({left}, {right}) < 0)")),
         _ => None,
     }
+}
+
+fn emit_sorted_value_from_source(
+    out: &mut String,
+    pad: &str,
+    source: EmittedExpr,
+    result_ty: Type,
+    span: SourceSpan,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let Type::List(element) = &result_ty else {
+        return Err(diag(span, "sorted result must have a list type"));
+    };
+    if signatures.canonical_type(&source.ty) != result_ty {
+        return Err(diag(
+            span,
+            "sorted input type mismatch reached code generation",
+        ));
+    }
+    let element_ty = signatures.canonical_type(element);
+    let source_name = format!("flux__sorted_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__sorted_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__sorted_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let key_name = format!("flux__sorted_key_{}", *temp_counter);
+    *temp_counter += 1;
+    let cursor_name = format!("flux__sorted_cursor_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__sorted_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    let less = sorted_less(
+        &key_name,
+        &format!("{buffer_name}[{cursor_name} - 1]"),
+        &element_ty,
+    )
+    .ok_or_else(|| diag(span, "sorted requires ordered scalar elements"))?;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {key_name} = {buffer_name}[{index_name}];\n{pad}    size_t {cursor_name} = {index_name};\n{pad}    while ({cursor_name} > 0 && {less}) {{ {buffer_name}[{cursor_name}] = {buffer_name}[{cursor_name} - 1]; --{cursor_name}; }}\n{pad}    {buffer_name}[{cursor_name}] = {key_name};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {source_name}.len, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_sorted_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(None);
+    };
+    if crate::builtin_names::global_impl(callee) != "sorted" || arguments.len() != 1 {
+        return Ok(None);
+    }
+
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if !matches!(result_ty, Type::List(_)) {
+        return Ok(None);
+    }
+    let source_ty = signatures.canonical_type(&arguments[0].ty);
+    if source_ty != result_ty {
+        return Ok(None);
+    }
+    let Some(code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
+        return Ok(None);
+    };
+    let source = EmittedExpr {
+        code,
+        ty: source_ty,
+    };
+    emit_sorted_value_from_source(out, pad, source, result_ty, span, signatures, temp_counter)
+        .map(Some)
 }
 
 fn emit_sequence_sorted_binding(
@@ -40542,9 +40730,28 @@ fn emit_sequence_sorted_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_sorted_value(out, pad, expr, env, signatures, temp_counter)?;
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    {
+        emit_cfg_sequence_sorted_value(
+            out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    } else {
+        None
+    };
+    let value = if let Some(value) = value {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_sorted_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -40574,111 +40781,37 @@ fn emit_sequence_sorted_value(
         .ok_or_else(|| diag(expr.span, "invalid sorted call reached code generation"))?;
     let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-    let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "sorted result must have a list type"));
-    };
-    if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "sorted input type mismatch reached code generation",
-        ));
-    }
-    let element_ty = signatures.canonical_type(element);
-    let source_name = format!("flux__sorted_source_{}", *temp_counter);
-    *temp_counter += 1;
-    let buffer_name = format!("flux__sorted_buffer_{}", *temp_counter);
-    *temp_counter += 1;
-    let index_name = format!("flux__sorted_index_{}", *temp_counter);
-    *temp_counter += 1;
-    let key_name = format!("flux__sorted_key_{}", *temp_counter);
-    *temp_counter += 1;
-    let cursor_name = format!("flux__sorted_cursor_{}", *temp_counter);
-    *temp_counter += 1;
-    let result_name = format!("flux__sorted_result_{}", *temp_counter);
-    *temp_counter += 1;
-    let element_c = c_type(element, signatures);
-    let less = sorted_less(
-        &key_name,
-        &format!("{buffer_name}[{cursor_name} - 1]"),
-        &element_ty,
+    emit_sorted_value_from_source(
+        out,
+        pad,
+        source,
+        result_ty,
+        expr.span,
+        signatures,
+        temp_counter,
     )
-    .ok_or_else(|| diag(expr.span, "sorted requires ordered scalar elements"))?;
-    out.push_str(&format!(
-        "{pad}struct flux__list {source_name} = {};\n",
-        source.code
-    ));
-    out.push_str(&format!(
-        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
-    ));
-    out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{ {buffer_name}[{index_name}] = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c}))); }}\n"
-    ));
-    out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 1; {index_name} < {source_name}.len; ++{index_name}) {{\n{pad}    {element_c} {key_name} = {buffer_name}[{index_name}];\n{pad}    size_t {cursor_name} = {index_name};\n{pad}    while ({cursor_name} > 0 && {less}) {{ {buffer_name}[{cursor_name}] = {buffer_name}[{cursor_name} - 1]; --{cursor_name}; }}\n{pad}    {buffer_name}[{cursor_name}] = {key_name};\n{pad}}}\n"
-    ));
-    out.push_str(&format!(
-        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {source_name}.len, .stride = sizeof({element_c}) }};\n"
-    ));
-    Ok(EmittedExpr {
-        code: result_name,
-        ty: result_ty,
-    })
 }
 
-fn emit_sequence_flatten_binding(
+fn emit_flatten_value_from_source(
     out: &mut String,
     pad: &str,
-    target: (&str, &Type),
-    expr: &Expr,
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-    temp_counter: &mut usize,
-) -> Result<(), Diagnostic> {
-    let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_flatten_value(out, pad, expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(declared_ty);
-    if value.ty != result_ty {
-        return Err(diag(
-            expr.span,
-            "flatten binding type mismatch reached code generation",
-        ));
-    }
-    out.push_str(&format!(
-        "{pad}{} {} = {};\n",
-        c_type(declared_ty, signatures),
-        local_c_name(name),
-        value.code
-    ));
-    env.insert(name.to_string(), result_ty);
-    Ok(())
-}
-
-fn emit_sequence_flatten_value(
-    out: &mut String,
-    pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    source: EmittedExpr,
+    result_ty: Type,
+    span: SourceSpan,
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
-    let source_expr = sequence_flatten(expr)
-        .ok_or_else(|| diag(expr.span, "invalid flatten call reached code generation"))?;
-    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let source_ty = signatures.canonical_type(&source.ty);
     let Type::List(outer_element) = source_ty else {
-        return Err(diag(expr.span, "flatten source must be a nested list"));
+        return Err(diag(span, "flatten source must be a nested list"));
     };
     let outer_element = signatures.canonical_type(&outer_element);
     let Type::List(inner_element) = outer_element else {
-        return Err(diag(expr.span, "flatten source elements must be lists"));
+        return Err(diag(span, "flatten source elements must be lists"));
     };
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
     if result_ty != Type::List(inner_element.clone()) {
         return Err(diag(
-            expr.span,
+            span,
             "flatten result type mismatch reached code generation",
         ));
     }
@@ -40721,6 +40854,123 @@ fn emit_sequence_flatten_value(
     })
 }
 
+fn emit_cfg_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(None);
+    };
+    if crate::builtin_names::global_impl(callee) != "flatten" || arguments.len() != 1 {
+        return Ok(None);
+    }
+    let source_ty = signatures.canonical_type(&arguments[0].ty);
+    let Type::List(outer_element) = &source_ty else {
+        return Ok(None);
+    };
+    let Type::List(inner_element) = signatures.canonical_type(outer_element) else {
+        return Ok(None);
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if result_ty != Type::List(inner_element) {
+        return Ok(None);
+    }
+    let Some(source_code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
+        return Ok(None);
+    };
+    emit_flatten_value_from_source(
+        out,
+        pad,
+        EmittedExpr {
+            code: source_code,
+            ty: source_ty,
+        },
+        result_ty,
+        span,
+        signatures,
+        temp_counter,
+    )
+    .map(Some)
+}
+
+fn emit_sequence_flatten_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    {
+        emit_cfg_sequence_flatten_value(
+            out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    } else {
+        None
+    };
+    let value = if let Some(value) = value {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_flatten_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "flatten binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_flatten_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let source_expr = sequence_flatten(expr)
+        .ok_or_else(|| diag(expr.span, "invalid flatten call reached code generation"))?;
+    let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_flatten_value_from_source(
+        out,
+        pad,
+        source,
+        result_ty,
+        expr.span,
+        signatures,
+        temp_counter,
+    )
+}
+
 fn distinct_equality(left: &str, right: &str, ty: &Type) -> Option<String> {
     match ty {
         Type::I64 | Type::Bool => Some(format!("({left} == {right})")),
@@ -40728,6 +40978,111 @@ fn distinct_equality(left: &str, right: &str, ty: &Type) -> Option<String> {
         Type::Error => Some(format!("flux_error_eq({left}, {right})")),
         _ => None,
     }
+}
+
+fn emit_distinct_value_from_source(
+    out: &mut String,
+    pad: &str,
+    source: EmittedExpr,
+    result_ty: Type,
+    span: SourceSpan,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let Type::List(element) = &result_ty else {
+        return Err(diag(span, "distinct result must have a list type"));
+    };
+    if signatures.canonical_type(&source.ty) != result_ty {
+        return Err(diag(
+            span,
+            "distinct input type mismatch reached code generation",
+        ));
+    }
+    let element_ty = signatures.canonical_type(element);
+    let source_name = format!("flux__distinct_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__distinct_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__distinct_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__distinct_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let seen_name = format!("flux__distinct_seen_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__distinct_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let duplicate_name = format!("flux__distinct_duplicate_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__distinct_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let element_c = c_type(element, signatures);
+    let equality = distinct_equality(
+        &format!("{buffer_name}[{seen_name}]"),
+        &item_name,
+        &element_ty,
+    )
+    .ok_or_else(|| diag(span, "distinct requires scalar equality"))?;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n{pad}size_t {count_name} = 0;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    for (size_t {seen_name} = 0; {seen_name} < {count_name}; ++{seen_name}) {{ if ({equality}) {{ {duplicate_name} = true; break; }} }}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    if (!{duplicate_name}) {buffer_name}[{count_name}++] = {item_name};\n{pad}}}\n"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
+    ));
+    Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    })
+}
+
+fn emit_cfg_sequence_distinct_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(None);
+    };
+    if crate::builtin_names::global_impl(callee) != "distinct" || arguments.len() != 1 {
+        return Ok(None);
+    }
+
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if !matches!(result_ty, Type::List(_)) {
+        return Ok(None);
+    }
+    let source_ty = signatures.canonical_type(&arguments[0].ty);
+    if source_ty != result_ty {
+        return Ok(None);
+    }
+    let Some(code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
+        return Ok(None);
+    };
+    let source = EmittedExpr {
+        code,
+        ty: source_ty,
+    };
+    emit_distinct_value_from_source(out, pad, source, result_ty, span, signatures, temp_counter)
+        .map(Some)
 }
 
 fn emit_sequence_distinct_binding(
@@ -40741,9 +41096,28 @@ fn emit_sequence_distinct_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_distinct_value(out, pad, expr, env, signatures, temp_counter)?;
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    {
+        emit_cfg_sequence_distinct_value(
+            out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    } else {
+        None
+    };
+    let value = if let Some(value) = value {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_distinct_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     let result_ty = signatures.canonical_type(declared_ty);
     if value.ty != result_ty {
         return Err(diag(
@@ -40773,119 +41147,35 @@ fn emit_sequence_distinct_value(
         .ok_or_else(|| diag(expr.span, "invalid distinct call reached code generation"))?;
     let source = emit_sequence_list_value(out, pad, source_expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
-    let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "distinct result must have a list type"));
-    };
-    if signatures.canonical_type(&source.ty) != result_ty {
-        return Err(diag(
-            expr.span,
-            "distinct input type mismatch reached code generation",
-        ));
-    }
-    let element_ty = signatures.canonical_type(element);
-    let source_name = format!("flux__distinct_source_{}", *temp_counter);
-    *temp_counter += 1;
-    let buffer_name = format!("flux__distinct_buffer_{}", *temp_counter);
-    *temp_counter += 1;
-    let count_name = format!("flux__distinct_count_{}", *temp_counter);
-    *temp_counter += 1;
-    let index_name = format!("flux__distinct_index_{}", *temp_counter);
-    *temp_counter += 1;
-    let seen_name = format!("flux__distinct_seen_{}", *temp_counter);
-    *temp_counter += 1;
-    let item_name = format!("flux__distinct_item_{}", *temp_counter);
-    *temp_counter += 1;
-    let duplicate_name = format!("flux__distinct_duplicate_{}", *temp_counter);
-    *temp_counter += 1;
-    let result_name = format!("flux__distinct_result_{}", *temp_counter);
-    *temp_counter += 1;
-    let element_c = c_type(element, signatures);
-    let equality = distinct_equality(
-        &format!("{buffer_name}[{seen_name}]"),
-        &item_name,
-        &element_ty,
+    emit_distinct_value_from_source(
+        out,
+        pad,
+        source,
+        result_ty,
+        expr.span,
+        signatures,
+        temp_counter,
     )
-    .ok_or_else(|| diag(expr.span, "distinct requires scalar equality"))?;
-    out.push_str(&format!(
-        "{pad}struct flux__list {source_name} = {};\n",
-        source.code
-    ));
-    out.push_str(&format!(
-        "{pad}{element_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n{pad}size_t {count_name} = 0;\n"
-    ));
-    out.push_str(&format!(
-        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
-    ));
-    out.push_str(&format!(
-        "{pad}    {element_c} {item_name} = *(({element_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({element_c})));\n{pad}    bool {duplicate_name} = false;\n"
-    ));
-    out.push_str(&format!(
-        "{pad}    for (size_t {seen_name} = 0; {seen_name} < {count_name}; ++{seen_name}) {{ if ({equality}) {{ {duplicate_name} = true; break; }} }}\n"
-    ));
-    out.push_str(&format!(
-        "{pad}    if (!{duplicate_name}) {buffer_name}[{count_name}++] = {item_name};\n{pad}}}\n"
-    ));
-    out.push_str(&format!(
-        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({element_c}) }};\n"
-    ));
-    Ok(EmittedExpr {
-        code: result_name,
-        ty: result_ty,
-    })
 }
 
-fn emit_sequence_concat_binding(
+fn emit_concat_value_from_parts(
     out: &mut String,
     pad: &str,
-    target: (&str, &Type),
-    expr: &Expr,
-    env: &mut HashMap<String, Type>,
-    signatures: &Signatures,
-    rewrite_facts: &CfgRewriteFacts,
-    temp_counter: &mut usize,
-) -> Result<(), Diagnostic> {
-    let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_concat_value(out, pad, expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(declared_ty);
-    if value.ty != result_ty {
-        return Err(diag(
-            expr.span,
-            "concat binding type mismatch reached code generation",
-        ));
-    }
-    out.push_str(&format!(
-        "{pad}{} {} = {};\n",
-        c_type(declared_ty, signatures),
-        local_c_name(name),
-        value.code
-    ));
-    env.insert(name.to_string(), result_ty);
-    Ok(())
-}
-
-fn emit_sequence_concat_value(
-    out: &mut String,
-    pad: &str,
-    expr: &Expr,
-    env: &HashMap<String, Type>,
+    left: EmittedExpr,
+    right: EmittedExpr,
+    result_ty: Type,
+    span: SourceSpan,
     signatures: &Signatures,
     temp_counter: &mut usize,
 ) -> Result<EmittedExpr, Diagnostic> {
-    let (left_expr, right_expr) = sequence_concat(expr)
-        .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
-    let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
-    let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
-    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
     let Type::List(element) = &result_ty else {
-        return Err(diag(expr.span, "concat result must have a list type"));
+        return Err(diag(span, "concat result must have a list type"));
     };
     if signatures.canonical_type(&left.ty) != result_ty
         || signatures.canonical_type(&right.ty) != result_ty
     {
         return Err(diag(
-            expr.span,
+            span,
             "concat input type mismatch reached code generation",
         ));
     }
@@ -40928,6 +41218,128 @@ fn emit_sequence_concat_value(
         code: result_name,
         ty: result_ty,
     })
+}
+
+fn emit_cfg_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<Option<EmittedExpr>, Diagnostic> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return Ok(None);
+    };
+    if crate::builtin_names::global_impl(callee) != "concat" || arguments.len() != 2 {
+        return Ok(None);
+    }
+    let result_ty = signatures.canonical_type(&expr.ty);
+    if !matches!(result_ty, Type::List(_))
+        || signatures.canonical_type(&arguments[0].ty) != result_ty
+        || signatures.canonical_type(&arguments[1].ty) != result_ty
+    {
+        return Ok(None);
+    }
+    let Some(left_code) = emit_cfg_scalar_expr_direct(&arguments[0], env, signatures) else {
+        return Ok(None);
+    };
+    let Some(right_code) = emit_cfg_scalar_expr_direct(&arguments[1], env, signatures) else {
+        return Ok(None);
+    };
+    emit_concat_value_from_parts(
+        out,
+        pad,
+        EmittedExpr {
+            code: left_code,
+            ty: result_ty.clone(),
+        },
+        EmittedExpr {
+            code: right_code,
+            ty: result_ty.clone(),
+        },
+        result_ty,
+        span,
+        signatures,
+        temp_counter,
+    )
+    .map(Some)
+}
+
+fn emit_sequence_concat_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
+    expr: &Expr,
+    env: &mut HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+    temp_counter: &mut usize,
+) -> Result<(), Diagnostic> {
+    let (name, declared_ty) = target;
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+    {
+        emit_cfg_sequence_concat_value(
+            out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            temp_counter,
+        )?
+    } else {
+        None
+    };
+    let value = if let Some(value) = value {
+        value
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_concat_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
+    let result_ty = signatures.canonical_type(declared_ty);
+    if value.ty != result_ty {
+        return Err(diag(
+            expr.span,
+            "concat binding type mismatch reached code generation",
+        ));
+    }
+    out.push_str(&format!(
+        "{pad}{} {} = {};\n",
+        c_type(declared_ty, signatures),
+        local_c_name(name),
+        value.code
+    ));
+    env.insert(name.to_string(), result_ty);
+    Ok(())
+}
+
+fn emit_sequence_concat_value(
+    out: &mut String,
+    pad: &str,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Result<EmittedExpr, Diagnostic> {
+    let (left_expr, right_expr) = sequence_concat(expr)
+        .ok_or_else(|| diag(expr.span, "invalid concat reached code generation"))?;
+    let left = emit_sequence_list_value(out, pad, left_expr, env, signatures, temp_counter)?;
+    let right = emit_sequence_list_value(out, pad, right_expr, env, signatures, temp_counter)?;
+    let result_ty = signatures.canonical_type(&type_of_expr(expr, env, signatures)?);
+    emit_concat_value_from_parts(
+        out,
+        pad,
+        left,
+        right,
+        result_ty,
+        expr.span,
+        signatures,
+        temp_counter,
+    )
 }
 
 fn emit_sequence_transform_binding(
@@ -59222,6 +59634,359 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-set-map-contains"));
         }
+    }
+
+    #[test]
+    fn sorted_binding_roots_lower_directly_from_typed_ir() {
+        let source = r#"
+fn sortedFirst(values: i64[]) -> i64 {
+    let ordered: i64[] = sorted(values)
+    return ordered[0]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("sorted binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("sortedFirst")
+            .expect("sortedFirst CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "sorted"
+                )
+            })
+            .expect("typed IR should retain the sorted call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("sorted call should retain sequence typed-IR facts");
+        assert!(matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "sorted"
+                    && arguments.len() == 1
+        ));
+
+        let fake_text = "checked-ast-sorted-binding";
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str(fake_text.to_string()),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_sorted_binding(
+            &mut out,
+            "",
+            ("ordered", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("sorted binding should lower directly from typed IR");
+
+        assert!(out.contains("flux__sorted_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("ordered")), "{out}");
+        assert!(!out.contains(fake_text), "{out}");
+        assert_eq!(env.get("ordered"), Some(&list_ty));
+    }
+
+    #[test]
+    fn distinct_binding_roots_lower_directly_from_typed_ir() {
+        let source = r#"
+fn distinctFirst(values: i64[]) -> i64 {
+    let unique: i64[] = distinct(values)
+    return unique[0]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("distinct binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("distinctFirst")
+            .expect("distinctFirst CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "distinct"
+                )
+            })
+            .expect("typed IR should retain the distinct call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("distinct call should retain sequence typed-IR facts");
+        assert!(matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "distinct"
+                    && arguments.len() == 1
+        ));
+
+        let fake_text = "checked-ast-distinct-binding";
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str(fake_text.to_string()),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([("values".to_string(), list_ty.clone())]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_distinct_binding(
+            &mut out,
+            "",
+            ("unique", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("distinct binding should lower directly from typed IR");
+
+        assert!(out.contains("flux__distinct_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("unique")), "{out}");
+        assert!(!out.contains(fake_text), "{out}");
+        assert_eq!(env.get("unique"), Some(&list_ty));
+    }
+
+    #[test]
+    fn chunked_binding_roots_lower_directly_from_typed_ir() {
+        let source = r#"
+fn chunkCount(values: i64[], size: i64) -> i64 {
+    let chunks: i64[][] = chunked(values, size)
+    return chunks.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("chunked binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("chunkCount")
+            .expect("chunkCount CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "chunked"
+                )
+            })
+            .expect("typed IR should retain the chunked call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("chunked call should retain sequence typed-IR facts");
+        assert!(matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "chunked"
+                    && arguments.len() == 2
+        ));
+
+        let fake_text = "checked-ast-chunked-binding";
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str(fake_text.to_string()),
+        };
+        let source_ty = Type::List(Box::new(Type::I64));
+        let chunks_ty = Type::List(Box::new(source_ty.clone()));
+        let mut env = HashMap::from([
+            ("values".to_string(), source_ty),
+            ("size".to_string(), Type::I64),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_chunked_binding(
+            &mut out,
+            "",
+            ("chunks", &chunks_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("chunked binding should lower directly from typed IR");
+
+        assert!(out.contains("flux__chunked_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(out.contains(&local_c_name("size")), "{out}");
+        assert!(out.contains(&local_c_name("chunks")), "{out}");
+        assert!(!out.contains(fake_text), "{out}");
+        assert_eq!(env.get("chunks"), Some(&chunks_ty));
+    }
+
+    #[test]
+    fn flatten_binding_roots_lower_directly_from_typed_ir() {
+        let source = r#"
+fn flattenCount(values: i64[][]) -> i64 {
+    let flat: i64[] = flatten(values)
+    return flat.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("flatten binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("flattenCount")
+            .expect("flattenCount CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "flatten"
+                )
+            })
+            .expect("typed IR should retain the flatten call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("flatten call should retain sequence typed-IR facts");
+
+        let fake_text = "checked-ast-flatten-binding";
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str(fake_text.to_string()),
+        };
+        let flat_ty = Type::List(Box::new(Type::I64));
+        let nested_ty = Type::List(Box::new(flat_ty.clone()));
+        let mut env = HashMap::from([("values".to_string(), nested_ty)]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_flatten_binding(
+            &mut out,
+            "",
+            ("flat", &flat_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("flatten binding should lower directly from typed IR");
+
+        assert!(matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "flatten"
+                    && arguments.len() == 1
+        ));
+        assert!(out.contains("flux__flatten_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("values")), "{out}");
+        assert!(!out.contains(fake_text), "{out}");
+        assert_eq!(env.get("flat"), Some(&flat_ty));
+    }
+
+    #[test]
+    fn concat_binding_roots_lower_directly_from_typed_ir() {
+        let source = r#"
+fn concatCount(left: i64[], right: i64[]) -> i64 {
+    let combined: i64[] = concat(left, right)
+    return combined.count
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("concat binding typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("concatCount")
+            .expect("concatCount CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                        if crate::builtin_names::global_impl(callee) == "concat"
+                )
+            })
+            .expect("typed IR should retain the concat call");
+        let facts = cfg_rewrite_facts(graph);
+        let sequence = facts
+            .sequence_exprs
+            .get(&source_span_key(root.span))
+            .expect("concat call should retain sequence typed-IR facts");
+
+        let fake_text = "checked-ast-concat-binding";
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str(fake_text.to_string()),
+        };
+        let list_ty = Type::List(Box::new(Type::I64));
+        let mut env = HashMap::from([
+            ("left".to_string(), list_ty.clone()),
+            ("right".to_string(), list_ty.clone()),
+        ]);
+        let mut out = String::new();
+        let mut temp_counter = 0;
+        emit_sequence_concat_binding(
+            &mut out,
+            "",
+            ("combined", &list_ty),
+            &fake,
+            &mut env,
+            database.signatures(),
+            &facts,
+            &mut temp_counter,
+        )
+        .expect("concat binding should lower directly from typed IR");
+
+        assert!(matches!(
+            &sequence.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if crate::builtin_names::global_impl(callee) == "concat"
+                    && arguments.len() == 2
+        ));
+        assert!(out.contains("flux__concat_buffer_"), "{out}");
+        assert!(out.contains(&local_c_name("left")), "{out}");
+        assert!(out.contains(&local_c_name("right")), "{out}");
+        assert!(!out.contains(fake_text), "{out}");
+        assert_eq!(env.get("combined"), Some(&list_ty));
     }
 
     #[test]
