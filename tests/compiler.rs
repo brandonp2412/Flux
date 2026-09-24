@@ -73,8 +73,23 @@ fn right() -> i64 {
     return 20
 }
 
+fn consume(leftValue: i64, rightValue: i64) -> i64 {
+    return leftValue + rightValue
+}
+
+fn consumeNamed(leftValue: i64, *, rightValue: i64, extra: i64) -> i64 {
+    return leftValue + rightValue + extra
+}
+
+fn apply(transform: fn(i64, i64) -> i64) -> i64 {
+    return transform(left(), right())
+}
+
 fn main() -> i64 {
     let _choice: Choice = Choice.Pair(left(), right())
+    let _positional: i64 = consume(left(), right())
+    let _named: i64 = consumeNamed(left(), extra: right(), rightValue: left())
+    let _functionValue: i64 = apply(consume)
     return 0
 }
 "#;
@@ -87,6 +102,16 @@ fn main() -> i64 {
         .find("flux__typed_arg_1")
         .expect("right computed argument should be materialized");
     assert!(left_temp < right_temp, "{generated}");
+    assert!(
+        generated.matches("flux__typed_arg_0").count() >= 4,
+        "enum, positional, named, and function-value calls should all materialize ordered arguments: {generated}"
+    );
+    assert!(
+        generated.contains(
+            "flux__fn_consumeNamed(flux__typed_arg_0, flux__typed_arg_2, flux__typed_arg_1)"
+        ),
+        "named arguments should evaluate in source order and call in declaration order: {generated}"
+    );
 
     let root = std::env::temp_dir().join(format!("flux-typed-ir-multiflex-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
@@ -110,7 +135,10 @@ fn main() -> i64 {
         .output()
         .expect("multi-flex typed-IR native program should run");
     assert!(output.status.success());
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n2\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1\n2\n1\n2\n1\n2\n1\n1\n2\n"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

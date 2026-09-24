@@ -49707,6 +49707,176 @@ fn emit_cfg_named_call_arguments_direct(
     (positional_index == positional.len()).then_some(rendered)
 }
 
+fn emit_cfg_ordered_positional_call_expression_direct<F>(
+    signature: &Signature,
+    arguments: &[CfgScalarExpr],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    render_call: F,
+) -> Option<String>
+where
+    F: FnOnce(&[String]) -> String,
+{
+    let rendered =
+        emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?;
+    let flexible_count = arguments
+        .iter()
+        .filter(|argument| {
+            !matches!(
+                argument.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            )
+        })
+        .count();
+    if flexible_count < 2 {
+        return Some(render_call(&rendered));
+    }
+
+    let mut positional_index = 0usize;
+    let mut prelude = String::new();
+    let mut ordered = Vec::with_capacity(signature.param_details.len());
+    for parameter in &signature.param_details {
+        if !parameter.named_only && positional_index < arguments.len() {
+            let argument = &arguments[positional_index];
+            let expected = signatures.canonical_type(&parameter.ty);
+            let value =
+                emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+            if matches!(
+                argument.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            ) {
+                ordered.push(value);
+            } else {
+                let temp = format!("flux__typed_arg_{positional_index}");
+                prelude.push_str(&format!(
+                    "{} {temp} = {value}; ",
+                    c_type(&expected, signatures)
+                ));
+                ordered.push(temp);
+            }
+            positional_index += 1;
+            continue;
+        }
+
+        let default = parameter.default.as_ref()?;
+        let expected = signatures.canonical_type(&parameter.ty);
+        if signatures.canonical_type(&default.ty()) != expected
+            || !signatures.is_copy_type(&expected)
+        {
+            return None;
+        }
+        ordered.push(constant_c_value(default));
+    }
+    if positional_index != arguments.len() {
+        return None;
+    }
+
+    Some(format!(
+        "__extension__ ({{ {prelude}{}; }})",
+        render_call(&ordered)
+    ))
+}
+
+fn emit_cfg_ordered_named_call_expression_direct<F>(
+    signature: &Signature,
+    arguments: &[(Option<String>, CfgScalarExpr)],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    render_call: F,
+) -> Option<String>
+where
+    F: FnOnce(&[String]) -> String,
+{
+    let rendered = emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?;
+    let flexible_count = arguments
+        .iter()
+        .filter(|(_, argument)| {
+            !matches!(
+                argument.kind,
+                CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+            )
+        })
+        .count();
+    if flexible_count < 2 {
+        return Some(render_call(&rendered));
+    }
+
+    let positional_parameters = signature
+        .param_details
+        .iter()
+        .filter(|parameter| !parameter.named_only)
+        .collect::<Vec<_>>();
+    let mut positional_index = 0usize;
+    let mut source_rendered = Vec::with_capacity(arguments.len());
+    let mut prelude = String::new();
+
+    for (source_index, (name, argument)) in arguments.iter().enumerate() {
+        let parameter = if let Some(name) = name {
+            signature
+                .param_details
+                .iter()
+                .find(|parameter| parameter.name == *name)?
+        } else {
+            let parameter = *positional_parameters.get(positional_index)?;
+            positional_index += 1;
+            parameter
+        };
+        let expected = signatures.canonical_type(&parameter.ty);
+        let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
+        if matches!(
+            argument.kind,
+            CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
+        ) {
+            source_rendered.push(value);
+        } else {
+            let temp = format!("flux__typed_arg_{source_index}");
+            prelude.push_str(&format!(
+                "{} {temp} = {value}; ",
+                c_type(&expected, signatures)
+            ));
+            source_rendered.push(temp);
+        }
+    }
+
+    let positional_sources = arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (name, _))| name.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    let mut positional_source_index = 0usize;
+    let mut ordered = Vec::with_capacity(signature.param_details.len());
+    for parameter in &signature.param_details {
+        let source_index =
+            if !parameter.named_only && positional_source_index < positional_sources.len() {
+                let index = positional_sources[positional_source_index];
+                positional_source_index += 1;
+                Some(index)
+            } else {
+                arguments.iter().enumerate().find_map(|(index, (name, _))| {
+                    (name.as_deref() == Some(parameter.name.as_str())).then_some(index)
+                })
+            };
+        if let Some(source_index) = source_index {
+            ordered.push(source_rendered.get(source_index)?.clone());
+            continue;
+        }
+
+        let default = parameter.default.as_ref()?;
+        let expected = signatures.canonical_type(&parameter.ty);
+        if signatures.canonical_type(&default.ty()) != expected
+            || !signatures.is_copy_type(&expected)
+        {
+            return None;
+        }
+        ordered.push(constant_c_value(default));
+    }
+
+    Some(format!(
+        "__extension__ ({{ {prelude}{}; }})",
+        render_call(&ordered)
+    ))
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -50036,13 +50206,14 @@ fn emit_cfg_scalar_expr_direct(
             {
                 return None;
             }
-            let mut rendered = Vec::with_capacity(arguments.len());
-            for (argument, parameter) in arguments.iter().zip(&params) {
-                rendered.push(emit_cfg_ordinary_call_argument_direct(
-                    argument, parameter, env, signatures,
-                )?);
-            }
-            Some(format!("{}({})", local_c_name(callee), rendered.join(", ")))
+            let callee = local_c_name(callee);
+            emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &params,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::Call { callee, arguments } if !env.contains_key(callee) => {
             let implementation = crate::builtin_names::global_impl(callee);
@@ -50078,14 +50249,17 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered =
-                emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?;
-
             let callee = signature
                 .foreign_symbol
                 .clone()
                 .unwrap_or_else(|| function_c_name(implementation));
-            Some(format!("{callee}({})", rendered.join(", ")))
+            emit_cfg_ordered_positional_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::QualifiedCall {
             namespace,
@@ -52562,14 +52736,17 @@ fn emit_cfg_scalar_expr_direct(
                 return None;
             }
 
-            let rendered =
-                emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?;
-
             let callee = signature
                 .foreign_symbol
                 .clone()
                 .unwrap_or_else(|| function_c_name(implementation));
-            Some(format!("{callee}({})", rendered.join(", ")))
+            emit_cfg_ordered_named_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                |rendered| format!("{callee}({})", rendered.join(", ")),
+            )
         }
         CfgScalarExprKind::OptionalCascadeCall {
             optional,
