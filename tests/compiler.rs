@@ -224,6 +224,102 @@ async fn main() -> i64 {
 }
 
 #[test]
+fn typed_ir_sequences_multiple_flexible_multi_value_arguments_natively() {
+    let source = r#"
+fn first() -> i64 {
+    print(1)
+    return 10
+}
+
+fn second() -> i64 {
+    print(2)
+    return 20
+}
+
+fn pair(left: i64, right: i64) -> (i64, i64) {
+    return left, right
+}
+
+fn pairNamed(left: i64, *, right: i64, extra: i64) -> (i64, i64) {
+    return left + extra, right
+}
+
+async fn asyncPair(left: i64, right: i64) -> (i64, i64) {
+    return left, right
+}
+
+async fn main() -> i64 {
+    let (left, right) = pair(first(), second())
+    print(left + right)
+    let (namedLeft, namedRight) = pairNamed(first(), extra: second(), right: first())
+    print(namedLeft + namedRight)
+    let (asyncLeft, asyncRight) = await asyncPair(first(), second())
+    print(asyncLeft + asyncRight)
+    return 0
+}
+"#;
+
+    let generated =
+        compile_to_c(source).expect("multi-flex multi-value typed-IR arguments should lower to C");
+    assert!(
+        generated.matches("flux__typed_arg_0").count() >= 3,
+        "{generated}"
+    );
+    assert!(
+        generated.contains(
+            "flux__fn_pairNamed(flux__typed_arg_0, flux__typed_arg_2, flux__typed_arg_1)"
+        ),
+        "{generated}"
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-typed-ir-multivalue-order-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("multi-value ordering test directory should be writable");
+    let source_path = root.join("main.flux");
+    let binary = root.join("multivalue-order");
+    fs::write(&source_path, source).expect("multi-value ordering source should be writable");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("Flux should build multi-value ordering fixture");
+    assert!(
+        built.status.success(),
+        "multi-value ordering build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("multi-value ordering binary should run");
+    assert!(
+        output.status.success(),
+        "multi-value ordering binary failed with {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1
+2
+30
+1
+2
+1
+40
+1
+2
+30
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn scalar_sequence_projections_lower_without_direct_bindings() {
     let source = r#"
 fn double(value: i64) -> i64 {

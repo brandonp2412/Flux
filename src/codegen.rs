@@ -69966,6 +69966,24 @@ fn pair(value: i64, offset: i64) -> (i64, bool) {
     return value + offset, true
 }
 
+fn pairNamed(value: i64, *, offset: i64, extra: i64) -> (i64, bool) {
+    return value + offset + extra, true
+}
+
+fn compute(value: i64) -> i64 {
+    return value
+}
+
+fn ordered(value: i64, offset: i64) -> i64 {
+    let (result, _) = pair(compute(value), compute(offset))
+    return result
+}
+
+fn orderedNamed(value: i64, offset: i64, extra: i64) -> i64 {
+    let (result, _) = pairNamed(compute(value), extra: compute(extra), offset: compute(offset))
+    return result
+}
+
 fn exercise(value: i64) -> i64 {
     let (direct, _) = pair(value, 1)
     let (shell, _) = pair value 2
@@ -70016,6 +70034,87 @@ fn main() -> i64 {
             };
             let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
                 .expect("multi-value call should emit from typed IR");
+            assert_eq!(emitted, direct);
+        }
+
+        for (function, callee, env, expected_call) in [
+            (
+                "ordered",
+                "pair",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                ]),
+                format!(
+                    "{}(flux__typed_arg_0, flux__typed_arg_1)",
+                    function_c_name("pair")
+                ),
+            ),
+            (
+                "orderedNamed",
+                "pairNamed",
+                HashMap::from([
+                    ("value".to_string(), Type::I64),
+                    ("offset".to_string(), Type::I64),
+                    ("extra".to_string(), Type::I64),
+                ]),
+                format!(
+                    "{}(flux__typed_arg_0, flux__typed_arg_2, flux__typed_arg_1)",
+                    function_c_name("pairNamed")
+                ),
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered multi-value CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::Call { callee: value_callee, .. }
+                                | crate::ir::ControlFlowValueKind::NamedCall {
+                                    callee: value_callee,
+                                    ..
+                                } if value_callee == callee
+                        )
+                })
+                .expect("ordered multi-value root should exist");
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("ordered multi-value call should retain typed-IR facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .expect("multi-flex multi-value call should emit directly from typed IR");
+            let first = direct
+                .0
+                .find("flux__typed_arg_0")
+                .expect("first multi-value argument temporary should exist");
+            let second = direct
+                .0
+                .find("flux__typed_arg_1")
+                .expect("second multi-value argument temporary should exist");
+            let call = direct
+                .0
+                .rfind(&function_c_name(callee))
+                .expect("multi-value call should follow ordered temporaries");
+            assert!(first < second && second < call, "{function}: {}", direct.0);
+            assert!(
+                direct.0.contains(&expected_call),
+                "{function}: {}",
+                direct.0
+            );
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Bool(false),
+            };
+            let emitted = emit_multi_expr(&fake, &env, database.signatures(), &facts)
+                .expect("ordered multi-value call should bypass checked AST");
             assert_eq!(emitted, direct);
         }
     }
@@ -74213,23 +74312,33 @@ fn emit_cfg_multi_expr_direct(
         if signature.asynchronous != asynchronous || signature.returns.len() < 2 {
             return None;
         }
-        let rendered = match named_arguments {
-            Some(arguments) => {
-                emit_cfg_named_call_arguments_direct(signature, arguments, env, signatures)?
-            }
-            None => {
-                emit_cfg_positional_call_arguments_direct(signature, arguments, env, signatures)?
+        let render_call = |rendered: &[String]| {
+            if asynchronous {
+                format!(
+                    "{}({}({}))",
+                    async_await_c_name(callee),
+                    async_start_c_name(callee),
+                    rendered.join(", ")
+                )
+            } else {
+                format!("{}({})", function_c_name(callee), rendered.join(", "))
             }
         };
-        let code = if asynchronous {
-            format!(
-                "{}({}({}))",
-                async_await_c_name(callee),
-                async_start_c_name(callee),
-                rendered.join(", ")
-            )
-        } else {
-            format!("{}({})", function_c_name(callee), rendered.join(", "))
+        let code = match named_arguments {
+            Some(arguments) => emit_cfg_ordered_named_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                render_call,
+            )?,
+            None => emit_cfg_ordered_positional_call_expression_direct(
+                signature,
+                arguments,
+                env,
+                signatures,
+                render_call,
+            )?,
         };
         Some((
             code,
