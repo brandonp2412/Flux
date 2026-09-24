@@ -38074,97 +38074,27 @@ fn emit_direct_sequence_projection(
     rewrite_facts: &CfgRewriteFacts,
     temp_counter: &mut usize,
 ) -> Result<Option<String>, Diagnostic> {
-    let span_key = source_span_key(expr.span);
-    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span_key) {
-        let mut direct = String::new();
-        let mut direct_env = env.clone();
-        let mut direct_temp_counter = *temp_counter;
-        if let Some(value) = emit_cfg_sequence_projection_direct(
-            &mut direct,
-            pad,
-            scalar,
-            expected,
-            &mut direct_env,
-            signatures,
-            &mut direct_temp_counter,
-        ) {
-            out.push_str(&direct);
-            *env = direct_env;
-            *temp_counter = direct_temp_counter;
-            return Ok(Some(value));
-        }
-    }
-    let rewritten = expr.clone();
-
-    let base = match &rewritten.kind {
-        ExprKind::Index {
-            base,
-            optional: false,
-            ..
-        }
-        | ExprKind::Field {
-            base,
-            optional: false,
-            ..
-        } => base.as_ref(),
-        _ => return Ok(None),
+    let Some(scalar) = rewrite_facts.scalar_exprs.get(&source_span_key(expr.span)) else {
+        return Ok(None);
     };
-    let sequence_kind = sequence_lowering_kind(base, env, signatures, rewrite_facts);
-    if sequence_kind.is_none() || sequence_kind == Some(SequenceLoweringKind::Reduction) {
-        return Ok(None);
-    }
-
-    let result_ty = signatures.canonical_type(&type_of_expr(&rewritten, env, signatures)?);
-    if result_ty != signatures.canonical_type(expected) || !signatures.is_copy_type(&result_ty) {
-        return Ok(None);
-    }
-
-    let sequence_ty = signatures.canonical_type(&type_of_expr(base, env, signatures)?);
-    if !matches!(sequence_ty, Type::List(_)) {
-        return Ok(None);
-    }
-    let emitted = emit_sequence_list_value(out, pad, base, env, signatures, temp_counter)?;
-    if signatures.canonical_type(&emitted.ty) != sequence_ty {
-        return Err(diag(
-            base.span,
-            "sequence projection type changed during code generation",
-        ));
-    }
-
-    let base_line = base.line;
-    let base_span = base.span;
-    let mut temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
-    *temp_counter += 1;
-    while env.contains_key(&temp_name) {
-        temp_name = format!("__flux_sequence_projection_{}", *temp_counter);
-        *temp_counter += 1;
-    }
-    out.push_str(&format!(
-        "{pad}{} {} = {};\n",
-        c_type(&emitted.ty, signatures),
-        local_c_name(&temp_name),
-        emitted.code
-    ));
-    env.insert(temp_name.clone(), sequence_ty);
-
-    let mut materialized = rewritten;
-    let replacement = Expr {
-        line: base_line,
-        span: base_span,
-        kind: ExprKind::Var(temp_name),
-    };
-    match &mut materialized.kind {
-        ExprKind::Index { base, .. } | ExprKind::Field { base, .. } => {
-            **base = replacement;
-        }
-        _ => unreachable!("sequence projection shape checked above"),
-    }
-    Ok(Some(emit_expr_for_expected(
-        &materialized,
+    let mut direct = String::new();
+    let mut direct_env = env.clone();
+    let mut direct_temp_counter = *temp_counter;
+    let Some(value) = emit_cfg_sequence_projection_direct(
+        &mut direct,
+        pad,
+        scalar,
         expected,
-        env,
+        &mut direct_env,
         signatures,
-    )?))
+        &mut direct_temp_counter,
+    ) else {
+        return Ok(None);
+    };
+    out.push_str(&direct);
+    *env = direct_env;
+    *temp_counter = direct_temp_counter;
+    Ok(Some(value))
 }
 
 fn emit_block(
@@ -62235,6 +62165,10 @@ fn sortedIndex(values: i64[], at: i64) -> i64 {
     return sorted(values)[at]
 }
 
+fn sortedLength(values: i64[]) -> i64 {
+    return sorted(values).length
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -62303,6 +62237,58 @@ fn main() -> i64 {
         assert!(emitted.contains("flux_list_at("), "{emitted}");
         assert!(!out.contains("checked-ast-sequence-projection"));
         assert!(!emitted.contains("checked-ast-sequence-projection"));
+
+        let length_graph = database
+            .control_flow_graph("sortedLength")
+            .expect("sortedLength CFG should exist");
+        let length_root = length_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::Field { base, name, .. }
+                        if name == "length"
+                            && length_graph.value(*base).is_some_and(|base| {
+                                matches!(
+                                    &base.kind,
+                                    crate::ir::ControlFlowValueKind::Call { callee, .. }
+                                        if crate::builtin_names::global_impl(callee) == "sorted"
+                                )
+                            })
+                )
+            })
+            .expect("typed IR should retain the sequence property root");
+        let length_facts = cfg_rewrite_facts(length_graph);
+        let length_fake = Expr {
+            line: length_root.span.line,
+            span: length_root.span,
+            kind: ExprKind::Str("checked-ast-sequence-property".to_string()),
+        };
+        let mut length_env =
+            HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let mut length_out = String::new();
+        let mut length_temp_counter = 0;
+        let length_emitted = emit_direct_sequence_projection(
+            &mut length_out,
+            "",
+            &length_fake,
+            &Type::I64,
+            &mut length_env,
+            database.signatures(),
+            &length_facts,
+            &mut length_temp_counter,
+        )
+        .expect("sequence property should lower")
+        .expect("typed IR should materialize the sequence property");
+        assert!(length_out.contains("flux__sorted_buffer_"), "{length_out}");
+        assert!(
+            length_out.contains("__flux_sequence_projection_"),
+            "{length_out}"
+        );
+        assert!(length_emitted.contains(".len"), "{length_emitted}");
+        assert!(!length_out.contains("checked-ast-sequence-property"));
+        assert!(!length_emitted.contains("checked-ast-sequence-property"));
     }
 
     #[test]
