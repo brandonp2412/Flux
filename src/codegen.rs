@@ -42065,7 +42065,16 @@ fn emit_cfg_sequence_list_value_direct(
             signatures,
             temp_counter,
         ),
-        SequenceLoweringKind::Transform | SequenceLoweringKind::Reduction => None,
+        SequenceLoweringKind::Transform => emit_cfg_sequence_transform_value_direct(
+            out,
+            pad,
+            expr,
+            source_span,
+            env,
+            signatures,
+            temp_counter,
+        ),
+        SequenceLoweringKind::Reduction => None,
     }
 }
 
@@ -42098,6 +42107,285 @@ fn emit_cfg_sequence_operand_direct(
     }))
 }
 
+fn cfg_sequence_transform_parts(
+    expr: &CfgScalarExpr,
+) -> Option<(&CfgScalarExpr, &CfgScalarExpr, bool)> {
+    let CfgScalarExprKind::Call { callee, arguments } = &expr.kind else {
+        return None;
+    };
+    if arguments.len() != 2 {
+        return None;
+    }
+    match crate::builtin_names::global_impl(callee) {
+        "map" => Some((&arguments[0], &arguments[1], false)),
+        "filter" | "where" => Some((&arguments[0], &arguments[1], true)),
+        _ => None,
+    }
+}
+
+fn collect_cfg_sequence_transform_chain<'a>(
+    expr: &'a CfgScalarExpr,
+    stages: &mut Vec<&'a CfgScalarExpr>,
+) -> &'a CfgScalarExpr {
+    let Some((list, _, _)) = cfg_sequence_transform_parts(expr) else {
+        return expr;
+    };
+    let source = collect_cfg_sequence_transform_chain(list, stages);
+    stages.push(expr);
+    source
+}
+
+fn emit_cfg_sequence_transform_stages_direct(
+    out: &mut String,
+    pad: &str,
+    stages: &[&CfgScalarExpr],
+    mut value_name: String,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    source_span: SourceSpan,
+    temp_counter: &mut usize,
+) -> Option<Result<(String, Type), Diagnostic>> {
+    let first_stage = *stages.first()?;
+    let (first_list, _, _) = cfg_sequence_transform_parts(first_stage)?;
+    let Type::List(first_element) = signatures.canonical_type(&first_list.ty) else {
+        return Some(Err(diag(
+            source_span,
+            "sequence transform stage requires a list source",
+        )));
+    };
+    let mut value_ty = (*first_element).clone();
+
+    for stage in stages {
+        let (_, callback, filter) = cfg_sequence_transform_parts(stage)?;
+        match &callback.kind {
+            CfgScalarExprKind::AnonymousFunction {
+                params,
+                return_type: _,
+                body,
+                ..
+            } => {
+                if params.len() != 1 {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform callback requires one parameter",
+                    )));
+                }
+                let (param_name, param_ty) = &params[0];
+                let param_ty = signatures.canonical_type(param_ty);
+                if param_ty != value_ty {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform callback parameter type mismatch reached code generation",
+                    )));
+                }
+                let mut callback_env = env.clone();
+                callback_env.insert(param_name.clone(), param_ty.clone());
+                if filter {
+                    if signatures.canonical_type(&body.ty) != Type::Bool {
+                        return Some(Err(diag(
+                            source_span,
+                            "sequence filter callback must produce bool",
+                        )));
+                    }
+                    let condition = emit_cfg_scalar_expr_direct(body, &callback_env, signatures)?;
+                    out.push_str(&format!("{pad}{{\n"));
+                    out.push_str(&format!(
+                        "{pad}    {} {} = {value_name};\n",
+                        c_type(&param_ty, signatures),
+                        local_c_name(param_name)
+                    ));
+                    out.push_str(&format!("{pad}    if (!{}) continue;\n", condition));
+                    out.push_str(&format!("{pad}}}\n"));
+                    continue;
+                }
+
+                let stage_ty = signatures.canonical_type(&stage.ty);
+                let Type::List(output_element) = stage_ty else {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform stage must produce a list",
+                    )));
+                };
+                let output_ty = signatures.canonical_type(&output_element);
+                if signatures.canonical_type(&body.ty) != output_ty {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence map callback result type mismatch reached code generation",
+                    )));
+                }
+                let mapped = emit_cfg_scalar_expr_direct(body, &callback_env, signatures)?;
+                let next_name = format!("flux__transform_value_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {next_name};\n{pad}{{\n",
+                    c_type(&output_ty, signatures)
+                ));
+                out.push_str(&format!(
+                    "{pad}    {} {} = {value_name};\n",
+                    c_type(&param_ty, signatures),
+                    local_c_name(param_name)
+                ));
+                out.push_str(&format!("{pad}    {next_name} = {mapped};\n"));
+                out.push_str(&format!("{pad}}}\n"));
+                value_name = next_name;
+                value_ty = output_ty;
+            }
+            _ => {
+                let callback_code = emit_cfg_scalar_expr_direct(callback, env, signatures)?;
+                let Type::Function { params, returns } = signatures.canonical_type(&callback.ty)
+                else {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform requires a function callback",
+                    )));
+                };
+                if params.len() != 1 || params[0] != value_ty {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform callback parameter type mismatch reached code generation",
+                    )));
+                }
+                if filter {
+                    if returns != vec![Type::Bool] {
+                        return Some(Err(diag(
+                            source_span,
+                            "sequence filter callback must produce bool",
+                        )));
+                    }
+                    out.push_str(&format!(
+                        "{pad}if (!{callback_code}({value_name})) continue;\n"
+                    ));
+                    continue;
+                }
+                let stage_ty = signatures.canonical_type(&stage.ty);
+                let Type::List(output_element) = stage_ty else {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence transform stage must produce a list",
+                    )));
+                };
+                let output_ty = signatures.canonical_type(&output_element);
+                if returns != vec![output_ty.clone()] {
+                    return Some(Err(diag(
+                        source_span,
+                        "sequence map callback result type mismatch reached code generation",
+                    )));
+                }
+                let next_name = format!("flux__transform_value_{}", *temp_counter);
+                *temp_counter += 1;
+                out.push_str(&format!(
+                    "{pad}{} {next_name} = {callback_code}({value_name});\n",
+                    c_type(&output_ty, signatures)
+                ));
+                value_name = next_name;
+                value_ty = output_ty;
+            }
+        }
+    }
+    Some(Ok((value_name, value_ty)))
+}
+
+fn emit_cfg_sequence_transform_value_direct(
+    out: &mut String,
+    pad: &str,
+    expr: &CfgScalarExpr,
+    source_span: SourceSpan,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    temp_counter: &mut usize,
+) -> Option<Result<EmittedExpr, Diagnostic>> {
+    let mut stages = Vec::new();
+    let source_expr = collect_cfg_sequence_transform_chain(expr, &mut stages);
+    if stages.is_empty() {
+        return None;
+    }
+    let source = match emit_cfg_sequence_operand_direct(
+        out,
+        pad,
+        source_expr,
+        source_span,
+        env,
+        signatures,
+        temp_counter,
+    )? {
+        Ok(source) => source,
+        Err(error) => return Some(Err(error)),
+    };
+    let Type::List(input_element) = signatures.canonical_type(&source.ty) else {
+        return Some(Err(diag(
+            source_span,
+            "sequence transform requires a list source",
+        )));
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let Type::List(output_element) = &result_ty else {
+        return Some(Err(diag(
+            source_span,
+            "sequence transform result must have a list type",
+        )));
+    };
+
+    let source_name = format!("flux__transform_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__transform_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__transform_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__transform_index_{}", *temp_counter);
+    *temp_counter += 1;
+    let item_name = format!("flux__transform_item_{}", *temp_counter);
+    *temp_counter += 1;
+    let result_name = format!("flux__transform_result_{}", *temp_counter);
+    *temp_counter += 1;
+    let input_c = c_type(&input_element, signatures);
+    let output_c = c_type(output_element, signatures);
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {};\n",
+        source.code
+    ));
+    out.push_str(&format!(
+        "{pad}{output_c} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];\n"
+    ));
+    out.push_str(&format!("{pad}size_t {count_name} = 0;\n"));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; ++{index_name}) {{\n"
+    ));
+    out.push_str(&format!(
+        "{pad}    {input_c} {item_name} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));\n"
+    ));
+    let body_pad = format!("{pad}    ");
+    let (value_name, value_ty) = match emit_cfg_sequence_transform_stages_direct(
+        out,
+        &body_pad,
+        &stages,
+        item_name,
+        env,
+        signatures,
+        source_span,
+        temp_counter,
+    )? {
+        Ok(value) => value,
+        Err(error) => return Some(Err(error)),
+    };
+    if value_ty != **output_element {
+        return Some(Err(diag(
+            source_span,
+            "sequence transform fused value type mismatch reached code generation",
+        )));
+    }
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {value_name};\n"
+    ));
+    out.push_str(&format!("{pad}}}\n"));
+    out.push_str(&format!(
+        "{pad}struct flux__list {result_name} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({output_c}) }};\n"
+    ));
+    Some(Ok(EmittedExpr {
+        code: result_name,
+        ty: result_ty,
+    }))
+}
+
 fn emit_sequence_transform_binding(
     out: &mut String,
     pad: &str,
@@ -42109,10 +42397,37 @@ fn emit_sequence_transform_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    let expr = &rewritten;
-    let value = emit_sequence_transform_value(out, pad, expr, env, signatures, temp_counter)?;
     let result_ty = signatures.canonical_type(declared_ty);
+    let value = if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        .filter(|sequence| {
+            cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+                && cfg_sequence_lowering_kind(sequence) == Some(SequenceLoweringKind::Transform)
+        }) {
+        let mut direct_out = String::new();
+        let mut next_temp = *temp_counter;
+        if let Some(value) = emit_cfg_sequence_transform_value_direct(
+            &mut direct_out,
+            pad,
+            sequence,
+            expr.span,
+            env,
+            signatures,
+            &mut next_temp,
+        ) {
+            let value = value?;
+            out.push_str(&direct_out);
+            *temp_counter = next_temp;
+            value
+        } else {
+            let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+            emit_sequence_transform_value(out, pad, &rewritten, env, signatures, temp_counter)?
+        }
+    } else {
+        let rewritten = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
+        emit_sequence_transform_value(out, pad, &rewritten, env, signatures, temp_counter)?
+    };
     if value.ty != result_ty {
         return Err(diag(
             expr.span,
