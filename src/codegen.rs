@@ -49637,6 +49637,29 @@ where
     Some(render_call(&rendered, &borrowed))
 }
 
+fn emit_cfg_ordered_call_with_callback_direct<F>(
+    scalar_arguments: &[CfgScalarExpr],
+    expected_scalars: &[Type],
+    callback_argument: &CfgScalarExpr,
+    callback_params: &[Type],
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    render_call: F,
+) -> Option<String>
+where
+    F: FnOnce(&[String], &str) -> String,
+{
+    let callback =
+        emit_cfg_callback_argument_direct(callback_argument, callback_params, env, signatures)?;
+    emit_cfg_ordered_call_expression_direct(
+        scalar_arguments,
+        expected_scalars,
+        env,
+        signatures,
+        |rendered| render_call(rendered, &callback),
+    )
+}
+
 fn emit_cfg_callback_argument_direct(
     argument: &CfgScalarExpr,
     params: &[Type],
@@ -71625,6 +71648,16 @@ fn doubleRead(socket: i64, maxBytes: i64) -> i64 {
     return count
 }
 
+fn orderedReadManyTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeout: i64) -> i64 {
+    let (count, _, _) = net.readManyTimeout(networkI64(socket), networkI64(maxBytes), networkI64(maxCount), networkI64(timeout), text)
+    return count
+}
+
+fn orderedReadManyFromTimeout(socket: i64, maxBytes: i64, maxCount: i64, timeout: i64) -> i64 {
+    let (count, _, _) = net.readManyFromTimeout(networkI64(socket), networkI64(maxBytes), networkI64(maxCount), networkI64(timeout), datagram)
+    return count
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -71879,6 +71912,63 @@ fn main() -> i64 {
             "{}",
             direct.0
         );
+
+        for (function, source_name, helper) in [
+            (
+                "orderedReadManyTimeout",
+                "readManyTimeout",
+                "flux__net_receive_text_many_with_timeout",
+            ),
+            (
+                "orderedReadManyFromTimeout",
+                "readManyFromTimeout",
+                "flux__net_receive_text_from_many_with_timeout",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("ordered text receive CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    value.result_index == Some(0)
+                        && matches!(
+                            &value.kind,
+                            crate::ir::ControlFlowValueKind::QualifiedCall {
+                                namespace,
+                                name,
+                                ..
+                            } if namespace == "net" && name == source_name
+                        )
+                })
+                .expect("ordered text receive should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let multi = facts
+                .multi_exprs
+                .get(&source_span_key(root.span))
+                .expect("ordered text receive should have typed multi-value facts");
+            let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+                .expect("four computed text receive scalars should emit directly");
+            let positions = (0..4)
+                .map(|index| {
+                    direct
+                        .0
+                        .find(&format!("flux__typed_arg_{index}"))
+                        .unwrap_or_else(|| panic!("{function}: missing typed argument {index}"))
+                })
+                .collect::<Vec<_>>();
+            let call = direct
+                .0
+                .rfind(helper)
+                .unwrap_or_else(|| panic!("{function}: missing receive helper"));
+            assert!(
+                positions.windows(2).all(|pair| pair[0] < pair[1])
+                    && positions.last().is_some_and(|position| *position < call),
+                "{function}: {}",
+                direct.0
+            );
+        }
     }
 
     #[test]
@@ -75592,18 +75682,14 @@ fn emit_cfg_multi_expr_direct(
                         ))
                     }
                     "receiveText" if arguments.len() == 3 => {
-                        let callback = emit_cfg_callback_argument_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
+                            &arguments[..2],
+                            &[Type::I64, Type::I64],
                             &arguments[2],
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
-                        )?;
-                        let call = emit_cfg_ordered_call_expression_direct(
-                            &arguments[..2],
-                            &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                            |rendered| {
+                            |rendered, callback| {
                                 profiled_timeline_call(
                                     "network",
                                     "net.receiveText",
@@ -75617,158 +75703,123 @@ fn emit_cfg_multi_expr_direct(
                         Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveTextWithTimeout" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_with_timeout({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_with_timeout({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "receiveTextMany" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_many({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_many({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveTextManyWithTimeout" if arguments.len() == 5 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..4],
                             &[Type::I64, Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[4],
                             &[Type::I64, Type::Str],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_many_with_timeout({}, {}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_many_with_timeout({}, {}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2], rendered[3]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "receiveTextFrom" if arguments.len() == 3 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..2],
                             &[Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[2],
                             &[Type::I64, Type::Str, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_from({}, {}, {callback})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_from({}, {}, {callback})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveTextFromWithTimeout" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_from_with_timeout({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_from_with_timeout({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "receiveTextFromMany" if arguments.len() == 4 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..3],
                             &[Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[3],
                             &[Type::I64, Type::Str, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_from_many({}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_from_many({}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "receiveTextFromManyWithTimeout" if arguments.len() == 5 => {
-                        let rendered = emit_cfg_order_safe_call_arguments_direct(
+                        let call = emit_cfg_ordered_call_with_callback_direct(
                             &arguments[..4],
                             &[Type::I64, Type::I64, Type::I64, Type::I64],
-                            env,
-                            signatures,
-                        )?;
-                        let callback = emit_cfg_callback_argument_direct(
                             &arguments[4],
                             &[Type::I64, Type::Str, Type::Str, Type::I64],
                             env,
                             signatures,
+                            |rendered, callback| {
+                                format!(
+                                    "flux__net_receive_text_from_many_with_timeout({}, {}, {}, {}, {callback})",
+                                    rendered[0], rendered[1], rendered[2], rendered[3]
+                                )
+                            },
                         )?;
-                        Some((
-                            format!(
-                                "flux__net_receive_text_from_many_with_timeout({}, {}, {}, {}, {callback})",
-                                rendered[0], rendered[1], rendered[2], rendered[3]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "waitReadableMany" | "waitWritableMany" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[1].clone()];
