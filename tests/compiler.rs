@@ -72702,11 +72702,19 @@ fn main() -> i64 {
     assert!(error.message.contains("map key"));
 
     let optional_source = r#"
+fn sideEffectKey() -> str {
+    print(99)
+    return "one"
+}
+
 fn main() -> i64 {
     let values: map<str, i64> = {"one": 1}
     let maybe: map<str, i64>? = values
+    let missing: map<str, i64>? = none
     let present: i64? = maybe?["one"]
+    let skipped: i64? = missing?[sideEffectKey()]
     print(present ?? -1)
+    print(skipped ?? -1)
     return 0
 }
 "#;
@@ -72742,7 +72750,7 @@ fn main() -> i64 {
         .output()
         .expect("optional map index program should run");
     assert!(optional_output.status.success());
-    assert_eq!(String::from_utf8_lossy(&optional_output.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&optional_output.stdout), "1\n-1\n");
     let _ = fs::remove_dir_all(&optional_root);
 }
 

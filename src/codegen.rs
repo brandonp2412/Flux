@@ -44815,16 +44815,19 @@ fn emit_expr(
                 let value_read = format!(
                     "*((({value_c} *)flux_list_at_unchecked({map_source}.values, flux__map_index_i, sizeof({value_c}))))"
                 );
-                let map_present = if optional_base {
-                    format!("{base_name}.has_value && ")
+                let code = if optional_base {
+                    format!(
+                        "__extension__ ({{ {base_c} {base_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; if ({base_name}.has_value) {{ {key_c} {key_name} = {}; for (size_t flux__map_index_i = 0; flux__map_index_i < {map_source}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} }} {result_name}; }})",
+                        base_value.code, index_value.code
+                    )
                 } else {
-                    String::new()
+                    format!(
+                        "__extension__ ({{ {base_c} {base_name} = {}; {key_c} {key_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; for (size_t flux__map_index_i = 0; flux__map_index_i < {map_source}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} {result_name}; }})",
+                        base_value.code, index_value.code
+                    )
                 };
                 return Ok(EmittedExpr {
-                    code: format!(
-                        "__extension__ ({{ {base_c} {base_name} = {}; {key_c} {key_name} = {}; {result_c} {result_name} = ({result_c}){{ .has_value = false }}; if ({map_present}true) {{ for (size_t flux__map_index_i = 0; flux__map_index_i < {map_source}.keys.len; ++flux__map_index_i) {{ if ({equality}) {{ {result_name}.has_value = true; {result_name}.value = {value_read}; break; }} }} }} {result_name}; }})",
-                        base_value.code, index_value.code
-                    ),
+                    code,
                     ty: result_ty,
                 });
             }
@@ -54434,14 +54437,6 @@ fn emit_cfg_scalar_expr_direct(
             index,
             optional: true,
         } => {
-            let direct_index =
-                matches!(
-                    index.kind,
-                    CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
-                ) || cfg_scalar_expr_is_direct_primitive_tree(index, env, signatures);
-            if !direct_index {
-                return None;
-            }
             let Type::Optional(inner) = signatures.canonical_type(&base.ty) else {
                 return None;
             };
@@ -54504,7 +54499,7 @@ fn emit_cfg_scalar_expr_direct(
                         "*((({value_c} *)flux_list_at_unchecked(flux__typed_map_index_base.value.values, flux__typed_map_index_i, sizeof({value_c}))))"
                     );
                     Some(format!(
-                        "__extension__ ({{ {base_c} flux__typed_map_index_base = {rendered_base}; {key_c} flux__typed_map_index_key = {rendered_index}; {result_c} flux__typed_map_index_result = ({result_c}){{ .has_value = false }}; if (flux__typed_map_index_base.has_value) {{ for (size_t flux__typed_map_index_i = 0; flux__typed_map_index_i < flux__typed_map_index_base.value.keys.len; ++flux__typed_map_index_i) {{ if ({equality}) {{ flux__typed_map_index_result.has_value = true; flux__typed_map_index_result.value = {value_read}; break; }} }} }} flux__typed_map_index_result; }})"
+                        "__extension__ ({{ {base_c} flux__typed_map_index_base = {rendered_base}; {result_c} flux__typed_map_index_result = ({result_c}){{ .has_value = false }}; if (flux__typed_map_index_base.has_value) {{ {key_c} flux__typed_map_index_key = {rendered_index}; for (size_t flux__typed_map_index_i = 0; flux__typed_map_index_i < flux__typed_map_index_base.value.keys.len; ++flux__typed_map_index_i) {{ if ({equality}) {{ flux__typed_map_index_result.has_value = true; flux__typed_map_index_result.value = {value_read}; break; }} }} }} flux__typed_map_index_result; }})"
                     ))
                 }
                 _ => None,
@@ -60997,6 +60992,108 @@ fn main() -> i64 {
         .expect("temporary map index should emit from typed IR");
         assert_eq!(emitted, temporary_direct);
         assert!(!emitted.contains("checked-ast-temporary-map-index"));
+    }
+
+    #[test]
+    fn optional_collection_call_indexes_lower_lazily_from_typed_ir() {
+        let source = r#"
+fn dynamicKey() -> str {
+    return "one"
+}
+
+fn dynamicIndex() -> i64 {
+    return 0
+}
+
+fn mapValue(values: map<str, i64>?) -> i64? {
+    return values?[dynamicKey()]
+}
+
+fn listValue(values: i64[]?) -> i64? {
+    return values?[dynamicIndex()]
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("optional call-index IR fixture should typecheck");
+
+        for (function, values_ty, callee) in [
+            (
+                "mapValue",
+                Type::Optional(Box::new(Type::Map(
+                    Box::new(Type::Str),
+                    Box::new(Type::I64),
+                ))),
+                "dynamicKey",
+            ),
+            (
+                "listValue",
+                Type::Optional(Box::new(Type::List(Box::new(Type::I64)))),
+                "dynamicIndex",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("optional call-index CFG should exist");
+            let index = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Index { optional: true, .. }
+                    )
+                })
+                .expect("typed IR should retain optional index");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(index.span))
+                .expect("optional index should have scalar typed-IR facts");
+            assert!(matches!(
+                &scalar.kind,
+                CfgScalarExprKind::Index { index, optional: true, .. }
+                    if matches!(
+                        &index.kind,
+                        CfgScalarExprKind::Call { callee: actual, arguments }
+                            if actual == callee && arguments.is_empty()
+                    )
+            ));
+
+            let env = HashMap::from([("values".to_string(), values_ty)]);
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .expect("call-valued optional index should emit directly from typed IR");
+            let presence = direct
+                .find(".has_value")
+                .expect("optional direct index should test receiver presence");
+            let call = direct
+                .find(&format!("{}(", function_c_name(callee)))
+                .expect("optional direct index should retain the typed call");
+            assert!(
+                presence < call,
+                "index call must remain after the receiver presence check: {direct}"
+            );
+
+            let fake = Expr {
+                line: index.span.line,
+                span: index.span,
+                kind: ExprKind::Str("checked-ast-optional-call-index".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Optional(Box::new(Type::I64)),
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("optional call index should bypass the checked-AST root");
+            assert_eq!(emitted, direct);
+            assert!(!emitted.contains("checked-ast-optional-call-index"));
+        }
     }
 
     #[test]
