@@ -51961,6 +51961,29 @@ fn emit_cfg_scalar_expr_direct(
             emit_cfg_ordinary_call_argument_direct(&arguments[0], &Type::Str, env, signatures)
         }
         CfgScalarExprKind::Call { callee, arguments }
+            if crate::builtin_names::global_impl(callee) == "drop"
+                && arguments.len() == 1
+                && ty == Type::Void =>
+        {
+            let value = &arguments[0];
+            let value_ty = signatures.canonical_type(&value.ty);
+            let is_non_copy_collection =
+                matches!(value_ty, Type::List(_) | Type::Set(_) | Type::Map(_, _))
+                    || matches!(
+                        value_ty,
+                        Type::Optional(ref inner)
+                            if matches!(
+                                inner.as_ref(),
+                                Type::List(_) | Type::Set(_) | Type::Map(_, _)
+                            )
+                    );
+            if !is_non_copy_collection || !matches!(value.kind, CfgScalarExprKind::Name(_)) {
+                return None;
+            }
+            let rendered = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+            Some(format!("(void)({rendered})"))
+        }
+        CfgScalarExprKind::Call { callee, arguments }
             if crate::builtin_names::global_impl(callee) == "print"
                 && arguments.len() == 1
                 && ty == Type::Void =>
@@ -63789,6 +63812,77 @@ fn main() -> i64 {
 
         assert_eq!(emitted, local_c_name("value"));
         assert!(!emitted.contains("checked-ast-interpolation-root"));
+    }
+
+    #[test]
+    fn consuming_drop_effect_lowers_from_typed_ir_without_ast_shape() {
+        let source = r#"
+fn consume() -> void {
+    let values: i64[] = [1, 2, 3]
+    drop(values)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("drop typed-IR fixture should typecheck");
+        let graph = database
+            .control_flow_graph("consume")
+            .expect("drop CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.ty == Type::Void
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::Call { callee, .. } if callee == "drop"
+                    )
+            })
+            .expect("typed IR should retain the consuming drop call");
+        assert!(root.ownership.is_effect_only());
+
+        let facts = cfg_rewrite_facts(graph);
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("drop should have scalar typed-IR facts");
+        assert!(matches!(
+            &scalar.kind,
+            CfgScalarExprKind::Call { callee, arguments }
+                if callee == "drop"
+                    && matches!(
+                        arguments.as_slice(),
+                        [CfgScalarExpr {
+                            kind: CfgScalarExprKind::Name(name),
+                            ..
+                        }] if name == "values"
+                    )
+        ));
+
+        let env = HashMap::from([("values".to_string(), Type::List(Box::new(Type::I64)))]);
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("consuming drop should emit directly from typed IR");
+        assert_eq!(direct, format!("(void)({})", local_c_name("values")));
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-drop".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Void,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("consuming drop should bypass the checked-AST root");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-drop"));
     }
 
     #[test]
