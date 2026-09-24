@@ -32322,9 +32322,21 @@ fn main() -> i64 {
     assert!(generated.contains(
         "static inline struct flux__type_User flux__update_User__age(struct flux__type_User base, int64_t value_age)"
     ));
-    assert!(
-        generated.contains("flux__update_User__age(flux__fn_make_user(INT64_C(41)), INT64_C(42))")
+    assert_eq!(
+        generated.matches("flux__fn_make_user(INT64_C(41))").count(),
+        1,
+        "struct-update base should be evaluated exactly once"
     );
+    let base = generated
+        .find("flux__typed_aggregate_base = flux__fn_make_user(INT64_C(41))")
+        .expect("struct-update base should be materialized before updated fields");
+    let field = generated
+        .find("flux__typed_aggregate_0 = INT64_C(42)")
+        .expect("updated field should be materialized explicitly");
+    let update = generated
+        .find("flux__update_User__age(flux__typed_aggregate_base, flux__typed_aggregate_0)")
+        .expect("struct update should consume the ordered typed-IR temporaries");
+    assert!(base < field && field < update, "{generated}");
 }
 
 #[test]

@@ -42002,6 +42002,165 @@ fn cfg_plain_aggregate_shape_as_ast(
     })
 }
 
+fn emit_cfg_aggregate_shape_child_direct(
+    span: (u32, usize, usize, usize),
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    if let Some(constant) = rewrite_facts.constants.get(&span)
+        && signatures.canonical_type(&constant.ty()) == expected
+    {
+        return Some(constant_c_value(constant));
+    }
+    if let Some(aggregate) = rewrite_facts.aggregate_constants.get(&span)
+        && signatures.canonical_type(&aggregate.ty) == expected
+    {
+        return emit_cfg_aggregate_constant(aggregate, &expected, env, signatures);
+    }
+    if let Some(scalar) = rewrite_facts.scalar_exprs.get(&span)
+        && signatures.canonical_type(&scalar.ty) == expected
+        && let Some(rendered) = emit_cfg_scalar_expr_direct(scalar, env, signatures)
+    {
+        return Some(rendered);
+    }
+    let shape = rewrite_facts.aggregates.get(&span)?;
+    emit_cfg_ordered_copy_aggregate_shape_direct(shape, &expected, env, signatures, rewrite_facts)
+}
+
+fn emit_cfg_ordered_copy_aggregate_shape_direct(
+    shape: &CfgAggregateShape,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<String> {
+    let expected = signatures.canonical_type(expected);
+    if !signatures.is_copy_type(&expected) {
+        return None;
+    }
+
+    match shape {
+        CfgAggregateShape::Record(fields) => {
+            let Type::Record(record_fields) = &expected else {
+                return None;
+            };
+            if fields.len() != record_fields.len() {
+                return None;
+            }
+
+            let mut prelude = String::new();
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (index, ((shape_name, span), field)) in fields.iter().zip(record_fields).enumerate()
+            {
+                if shape_name != &field.name {
+                    return None;
+                }
+                let field_ty = signatures.canonical_type(&field.ty);
+                if !signatures.is_copy_type(&field_ty) {
+                    return None;
+                }
+                let value = emit_cfg_aggregate_shape_child_direct(
+                    *span,
+                    &field_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let temp = format!("flux__typed_aggregate_{index}");
+                prelude.push_str(&format!(
+                    "{} {temp} = {value}; ",
+                    c_type(&field_ty, signatures)
+                ));
+                rendered.push(format!(
+                    ".{} = {temp}",
+                    record_field_c_name(field.name.as_deref(), index)
+                ));
+            }
+
+            Some(format!(
+                "__extension__ ({{ {prelude}({}){{ {} }}; }})",
+                c_type(&expected, signatures),
+                rendered.join(", ")
+            ))
+        }
+        CfgAggregateShape::Struct { name, base, fields } => {
+            if expected != Type::Named(name.clone()) {
+                return None;
+            }
+            let definition = signatures.struct_type(name)?;
+            let mut prelude = String::new();
+            let mut rendered = Vec::with_capacity(fields.len());
+
+            let base_temp = if let Some(span) = base {
+                let base_ty = Type::Named(name.clone());
+                let value = emit_cfg_aggregate_shape_child_direct(
+                    *span,
+                    &base_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let temp = "flux__typed_aggregate_base";
+                prelude.push_str(&format!(
+                    "{} {temp} = {value}; ",
+                    c_type(&base_ty, signatures)
+                ));
+                Some(temp)
+            } else {
+                None
+            };
+
+            for (index, (field_name, span)) in fields.iter().enumerate() {
+                let field = definition.field(field_name)?;
+                let field_ty = signatures.canonical_type(&field.ty);
+                if !signatures.is_copy_type(&field_ty) {
+                    return None;
+                }
+                let value = emit_cfg_aggregate_shape_child_direct(
+                    *span,
+                    &field_ty,
+                    env,
+                    signatures,
+                    rewrite_facts,
+                )?;
+                let temp = format!("flux__typed_aggregate_{index}");
+                prelude.push_str(&format!(
+                    "{} {temp} = {value}; ",
+                    c_type(&field_ty, signatures)
+                ));
+                rendered.push((field_name, temp));
+            }
+
+            let value = if let Some(base_temp) = base_temp {
+                let mut args = Vec::with_capacity(rendered.len() + 1);
+                args.push(base_temp.to_string());
+                args.extend(rendered.iter().map(|(_, value)| value.clone()));
+                format!(
+                    "{}({})",
+                    struct_update_helper_name_from_names(
+                        name,
+                        fields.iter().map(|(field_name, _)| field_name.as_str()),
+                    ),
+                    args.join(", ")
+                )
+            } else {
+                let fields = rendered
+                    .iter()
+                    .map(|(field_name, value)| format!(".{} = {value}", field_c_name(field_name)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("((struct {}){{ {fields} }})", struct_c_name(name))
+            };
+
+            Some(format!("__extension__ ({{ {prelude}{value}; }})"))
+        }
+        _ => None,
+    }
+}
+
 fn cfg_list_shape_as_ast(
     root_span: SourceSpan,
     shape: &CfgAggregateShape,
@@ -53429,11 +53588,21 @@ fn emit_expr_for_expected_with_cfg_proofs(
     {
         return Ok(value);
     }
-    if let Some(shape) = rewrite_facts.aggregates.get(&span)
-        && let Some(rewritten) =
+    if let Some(shape) = rewrite_facts.aggregates.get(&span) {
+        if let Some(rewritten) =
             cfg_plain_aggregate_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
-    {
-        return emit_expr_for_expected(&rewritten, expected, env, signatures);
+        {
+            return emit_expr_for_expected(&rewritten, expected, env, signatures);
+        }
+        if let Some(value) = emit_cfg_ordered_copy_aggregate_shape_direct(
+            shape,
+            expected,
+            env,
+            signatures,
+            rewrite_facts,
+        ) {
+            return Ok(value);
+        }
     }
     let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     emit_expr_for_expected(&rewritten, expected, env, signatures)
@@ -55053,7 +55222,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn effectful_struct_shape_stays_on_checked_ast_fallback() {
+    fn effectful_copy_struct_shape_emits_from_ordered_typed_ir() {
         let source = r#"
 struct Pair {
     left: i64
@@ -55105,7 +55274,130 @@ fn main() -> i64 {
                 &facts,
             )
             .is_none(),
-            "effectful aggregate children must keep the checked-AST fallback"
+            "effectful aggregate children must not rebuild a checked-AST root"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-struct".to_string()),
+        };
+        let direct = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &root.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful Copy struct should emit from ordered typed IR");
+        assert!(direct.contains("flux__typed_aggregate_0"), "{direct}");
+        assert!(direct.contains(&function_c_name("observe")), "{direct}");
+        assert!(!direct.contains("checked-ast-effectful-struct"), "{direct}");
+    }
+
+    #[test]
+    fn effectful_copy_struct_update_emits_from_ordered_typed_ir() {
+        let source = r#"
+struct PairUpdate {
+    left: i64
+    right: i64
+}
+
+fn observeUpdate(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn makePairUpdate(value: i64) -> PairUpdate {
+    return PairUpdate { left: value, right: value }
+}
+
+fn exerciseUpdate(first: i64, second: i64) -> i64 {
+    let pair: PairUpdate = PairUpdate { ..makePairUpdate(first), right: observeUpdate(second) }
+    return pair.right
+}
+
+fn main() -> i64 {
+    return exerciseUpdate(7, 8)
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4250))
+            .expect("effectful struct update typed-IR fixture should analyze");
+        let graph = database
+            .control_flow_graph("exerciseUpdate")
+            .expect("exerciseUpdate CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::StructLiteral {
+                        name,
+                        base: Some(_),
+                        fields,
+                    } if name == "PairUpdate" && fields.len() == 1
+                )
+            })
+            .expect("struct update should have a typed-IR root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("struct update should retain aggregate shape");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        assert!(
+            cfg_plain_aggregate_shape_as_ast(
+                root.span,
+                shape,
+                &env,
+                database.signatures(),
+                &facts,
+            )
+            .is_none(),
+            "effectful struct update must not rebuild a checked-AST root"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-struct-update".to_string()),
+        };
+        let direct = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &root.ty,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful Copy struct update should emit from ordered typed IR");
+        let base = direct
+            .find("flux__typed_aggregate_base")
+            .expect("struct-update base should be materialized");
+        let field = direct
+            .find("flux__typed_aggregate_0")
+            .expect("struct-update field should be materialized");
+        let helper = struct_update_helper_name_from_names("PairUpdate", ["right"]);
+        let call = direct
+            .rfind(&helper)
+            .expect("struct-update helper should be invoked");
+        assert!(base < field && field < call, "{direct}");
+        assert!(
+            direct.contains(&function_c_name("makePairUpdate")),
+            "{direct}"
+        );
+        assert!(
+            direct.contains(&function_c_name("observeUpdate")),
+            "{direct}"
+        );
+        assert!(
+            !direct.contains("checked-ast-effectful-struct-update"),
+            "{direct}"
         );
     }
 
@@ -75055,7 +75347,7 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn effectful_aggregate_children_stay_on_safe_fallback() {
+    fn effectful_list_stays_safe_while_copy_record_emits_from_typed_ir() {
         let source = r#"
 fn effect(value: i64) -> i64 {
     print(value)
@@ -75125,38 +75417,59 @@ fn main() -> i64 {
             "effectful list children must not rebuild a root that could reorder effects"
         );
 
-        for (function, expected_kind) in [("buildRecord", "record")] {
-            let graph = database
-                .control_flow_graph(function)
-                .unwrap_or_else(|| panic!("{function} CFG should exist"));
-            let root = graph
-                .values()
-                .iter()
-                .find(|value| match (expected_kind, &value.kind) {
-                    ("set", crate::ir::ControlFlowValueKind::Set { items }) => items.len() == 2,
-                    ("record", crate::ir::ControlFlowValueKind::RecordLiteral { fields }) => {
-                        fields.len() == 2
-                    }
-                    _ => false,
-                })
-                .unwrap_or_else(|| panic!("typed IR should retain the {expected_kind} root"));
-            let facts = cfg_rewrite_facts(graph);
-            let shape = facts
-                .aggregates
-                .get(&source_span_key(root.span))
-                .unwrap_or_else(|| panic!("{expected_kind} structural facts should remain"));
-            assert!(
-                cfg_plain_aggregate_shape_as_ast(
-                    root.span,
-                    shape,
-                    &HashMap::new(),
-                    database.signatures(),
-                    &facts,
+        let graph = database
+            .control_flow_graph("buildRecord")
+            .expect("buildRecord CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::RecordLiteral { fields } if fields.len() == 2
                 )
-                .is_none(),
-                "effectful {expected_kind} children must stay on the checked-AST fallback"
-            );
-        }
+            })
+            .expect("typed IR should retain the record root");
+        let facts = cfg_rewrite_facts(graph);
+        let shape = facts
+            .aggregates
+            .get(&source_span_key(root.span))
+            .expect("record structural facts should remain");
+        assert!(
+            cfg_plain_aggregate_shape_as_ast(
+                root.span,
+                shape,
+                &HashMap::new(),
+                database.signatures(),
+                &facts,
+            )
+            .is_none(),
+            "effectful record children must not rebuild a checked-AST root"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-record".to_string()),
+        };
+        let direct = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &root.ty,
+            &HashMap::new(),
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful Copy record should emit from ordered typed IR");
+        let left = direct
+            .find("flux__typed_aggregate_0")
+            .expect("first record field should be materialized");
+        let right = direct
+            .find("flux__typed_aggregate_1")
+            .expect("second record field should be materialized");
+        assert!(left < right, "{direct}");
+        assert!(direct.contains(&function_c_name("effect")), "{direct}");
+        assert!(!direct.contains("checked-ast-effectful-record"), "{direct}");
     }
 
     #[test]
