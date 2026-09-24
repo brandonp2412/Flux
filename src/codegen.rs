@@ -50771,21 +50771,19 @@ fn emit_cfg_scalar_expr_direct(
                     Some(format!("{helper}({socket}, {callback})"))
                 }
                 "setNonblocking" | "setNoDelay" | "setKeepAlive" if arguments.len() == 2 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments,
-                        &[Type::I64, Type::Bool],
-                        env,
-                        signatures,
-                    )?;
-                    let socket = &rendered[0];
-                    let enabled = &rendered[1];
                     let helper = match name {
                         "setNonblocking" => "flux__net_set_nonblocking",
                         "setNoDelay" => "flux__net_set_no_delay",
                         "setKeepAlive" => "flux__net_set_keep_alive",
                         _ => unreachable!(),
                     };
-                    Some(format!("{helper}({socket}, {enabled})"))
+                    emit_cfg_ordered_call_expression_direct(
+                        arguments,
+                        &[Type::I64, Type::Bool],
+                        env,
+                        signatures,
+                        |rendered| format!("{helper}({}, {})", rendered[0], rendered[1]),
+                    )
                 }
                 "shutdownRead" | "shutdownWrite" | "close" if arguments.len() == 1 => {
                     let socket = emit_cfg_ordinary_call_argument_direct(
@@ -50810,18 +50808,18 @@ fn emit_cfg_scalar_expr_direct(
             name,
             arguments,
         } if namespace == "websocket" && ty == Type::Error => match name.as_str() {
-            "writeText" if arguments.len() == 2 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    arguments,
-                    &[Type::I64, Type::Str],
-                    env,
-                    signatures,
-                )?;
-                Some(format!(
-                    "flux__websocket_write_text({}, {})",
-                    rendered[0], rendered[1]
-                ))
-            }
+            "writeText" if arguments.len() == 2 => emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &[Type::I64, Type::Str],
+                env,
+                signatures,
+                |rendered| {
+                    format!(
+                        "flux__websocket_write_text({}, {})",
+                        rendered[0], rendered[1]
+                    )
+                },
+            ),
             "writeBytes" if arguments.len() == 2 => {
                 let (rendered, bytes) =
                     emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
@@ -50838,33 +50836,31 @@ fn emit_cfg_scalar_expr_direct(
                 ))
             }
             "ping" | "pong" if arguments.len() == 2 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
-                    arguments,
-                    &[Type::I64, Type::Str],
-                    env,
-                    signatures,
-                )?;
-                let session = &rendered[0];
-                let payload = &rendered[1];
                 let helper = if name == "ping" {
                     "flux__websocket_write_ping"
                 } else {
                     "flux__websocket_write_pong"
                 };
-                Some(format!("{helper}({session}, {payload})"))
-            }
-            "closeWithCode" if arguments.len() == 3 => {
-                let rendered = emit_cfg_order_safe_call_arguments_direct(
+                emit_cfg_ordered_call_expression_direct(
                     arguments,
-                    &[Type::I64, Type::I64, Type::Str],
+                    &[Type::I64, Type::Str],
                     env,
                     signatures,
-                )?;
-                Some(format!(
-                    "flux__websocket_close_with_code({}, {}, {})",
-                    rendered[0], rendered[1], rendered[2]
-                ))
+                    |rendered| format!("{helper}({}, {})", rendered[0], rendered[1]),
+                )
             }
+            "closeWithCode" if arguments.len() == 3 => emit_cfg_ordered_call_expression_direct(
+                arguments,
+                &[Type::I64, Type::I64, Type::Str],
+                env,
+                signatures,
+                |rendered| {
+                    format!(
+                        "flux__websocket_close_with_code({}, {}, {})",
+                        rendered[0], rendered[1], rendered[2]
+                    )
+                },
+            ),
             "close" if arguments.len() == 1 => {
                 let session = emit_cfg_ordinary_call_argument_direct(
                     &arguments[0],
@@ -50892,18 +50888,13 @@ fn emit_cfg_scalar_expr_direct(
                     )?;
                     Some(format!("flux__sqlite_close({database})"))
                 }
-                "execute" if arguments.len() == 2 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
-                        arguments,
-                        &[Type::I64, Type::Str],
-                        env,
-                        signatures,
-                    )?;
-                    Some(format!(
-                        "flux__sqlite_execute({}, {})",
-                        rendered[0], rendered[1]
-                    ))
-                }
+                "execute" if arguments.len() == 2 => emit_cfg_ordered_call_expression_direct(
+                    arguments,
+                    &[Type::I64, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| format!("flux__sqlite_execute({}, {})", rendered[0], rendered[1]),
+                ),
                 _ => None,
             }
         }
@@ -50949,16 +50940,13 @@ fn emit_cfg_scalar_expr_direct(
             let name = crate::builtin_names::qualified_impl(namespace, name);
             match name {
                 "send" if ty == Type::Error && arguments.len() == 2 => {
-                    let rendered = emit_cfg_order_safe_call_arguments_direct(
+                    emit_cfg_ordered_call_expression_direct(
                         arguments,
                         &[Type::I64, Type::I64],
                         env,
                         signatures,
-                    )?;
-                    Some(format!(
-                        "flux__channel_send({}, {})",
-                        rendered[0], rendered[1]
-                    ))
+                        |rendered| format!("flux__channel_send({}, {})", rendered[0], rendered[1]),
+                    )
                 }
                 "close" if ty == Type::Error && arguments.len() == 1 => {
                     let handle = emit_cfg_ordinary_call_argument_direct(
@@ -68072,6 +68060,128 @@ fn main() -> i64 {
             .rfind("flux__net_send_text_to_parts")
             .expect("borrowed-list call should follow ordered scalar temporaries");
         assert!(socket_temp < host_temp && host_temp < call, "{direct}");
+    }
+
+    #[test]
+    fn ordered_specialized_qualified_copy_calls_sequence_multiple_computed_arguments() {
+        let source = r#"
+fn intValue(value: i64) -> i64 {
+    return value
+}
+
+fn boolValue(value: bool) -> bool {
+    return value
+}
+
+fn textValue(value: str) -> str {
+    return value
+}
+
+fn networkSet(socket: i64, enabled: bool) -> error {
+    return net.setNonblocking(intValue(socket), boolValue(enabled))
+}
+
+fn websocketWrite(session: i64, value: str) -> error {
+    return websocket.writeText(intValue(session), textValue(value))
+}
+
+fn sqliteExecute(database: i64, sql: str) -> error {
+    return sqlite.execute(intValue(database), textValue(sql))
+}
+
+fn channelSend(handle: i64, value: i64) -> error {
+    return channel.send(intValue(handle), intValue(value))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("ordered specialized qualified-call fixture should typecheck");
+
+        for (function, env, helper) in [
+            (
+                "networkSet",
+                HashMap::from([
+                    ("socket".to_string(), Type::I64),
+                    ("enabled".to_string(), Type::Bool),
+                ]),
+                "flux__net_set_nonblocking",
+            ),
+            (
+                "websocketWrite",
+                HashMap::from([
+                    ("session".to_string(), Type::I64),
+                    ("value".to_string(), Type::Str),
+                ]),
+                "flux__websocket_write_text",
+            ),
+            (
+                "sqliteExecute",
+                HashMap::from([
+                    ("database".to_string(), Type::I64),
+                    ("sql".to_string(), Type::Str),
+                ]),
+                "flux__sqlite_execute",
+            ),
+            (
+                "channelSend",
+                HashMap::from([
+                    ("handle".to_string(), Type::I64),
+                    ("value".to_string(), Type::I64),
+                ]),
+                "flux__channel_send",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("qualified-call CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .find(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall { .. }
+                    )
+                })
+                .expect("qualified call should remain in typed IR");
+            let facts = cfg_rewrite_facts(graph);
+            let scalar = facts
+                .scalar_exprs
+                .get(&source_span_key(root.span))
+                .expect("qualified call should have scalar typed-IR facts");
+            let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+                .unwrap_or_else(|| panic!("{function} should emit directly from typed IR"));
+            let first = direct
+                .find("flux__typed_arg_0")
+                .expect("first computed argument should be materialized");
+            let second = direct
+                .find("flux__typed_arg_1")
+                .expect("second computed argument should be materialized");
+            let call = direct
+                .rfind(helper)
+                .expect("qualified native helper should follow materialized arguments");
+            assert!(first < second && second < call, "{function}: {direct}");
+
+            let fake = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Str("checked-ast-qualified-call-order".to_string()),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake,
+                &Type::Error,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("ordered qualified call should bypass checked AST");
+            assert_eq!(emitted, direct, "{function}");
+            assert!(!emitted.contains("checked-ast-qualified-call-order"));
+        }
     }
 
     #[test]
