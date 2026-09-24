@@ -72160,6 +72160,11 @@ fn doubleWriteBytesTo(socket: i64, host: str, port: i64, bytes: i64[]) -> i64 {
     return sent
 }
 
+fn tripleWriteBytesFromTimeout(socket: i64, bytes: i64[], offset: i64, timeout: i64) -> i64 {
+    let (sent, _, _) = net.writeBytesFromTimeout(networkI64(socket), bytes, networkI64(offset), networkI64(timeout))
+    return sent
+}
+
 fn main() -> i64 {
     return 0
 }
@@ -72397,6 +72402,53 @@ fn main() -> i64 {
             .rfind("flux__net_send_bytes_to")
             .expect("borrowed send should follow ordered scalar temporaries");
         assert!(socket_temp < host_temp && host_temp < call, "{}", direct.0);
+
+        let graph = database
+            .control_flow_graph("tripleWriteBytesFromTimeout")
+            .expect("three-flex borrowed progress send CFG should exist");
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                value.result_index == Some(0)
+                    && matches!(
+                        &value.kind,
+                        crate::ir::ControlFlowValueKind::QualifiedCall {
+                            namespace,
+                            name,
+                            ..
+                        } if namespace == "net" && name == "writeBytesFromTimeout"
+                    )
+            })
+            .expect("three-flex borrowed progress send should remain in typed IR");
+        let facts = cfg_rewrite_facts(graph);
+        let multi = facts
+            .multi_exprs
+            .get(&source_span_key(root.span))
+            .expect("three-flex borrowed progress send should have typed multi-value facts");
+        let direct = emit_cfg_multi_expr_direct(multi, &env, database.signatures())
+            .expect("three computed scalars around an inert borrowed list should emit directly");
+        let socket_temp = direct
+            .0
+            .find("flux__typed_arg_0")
+            .expect("borrowed progress send should sequence its socket");
+        let offset_temp = direct
+            .0
+            .find("flux__typed_arg_1")
+            .expect("borrowed progress send should sequence its offset");
+        let timeout_temp = direct
+            .0
+            .find("flux__typed_arg_2")
+            .expect("borrowed progress send should sequence its timeout");
+        let call = direct
+            .0
+            .rfind("flux__net_send_bytes_progress_with_timeout")
+            .expect("borrowed progress send should follow ordered scalar temporaries");
+        assert!(
+            socket_temp < offset_temp && offset_temp < timeout_temp && timeout_temp < call,
+            "{}",
+            direct.0
+        );
     }
 
     #[test]
@@ -75223,43 +75275,39 @@ fn emit_cfg_multi_expr_direct(
                     }
                     "sendBytesProgress" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let (rendered, bytes) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_bytes_progress({}, {bytes}, {})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, bytes| {
+                                format!(
+                                    "flux__net_send_bytes_progress({}, {bytes}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytesWithTimeout" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let (rendered, bytes) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_bytes_with_timeout({}, {bytes}, {})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, bytes| {
+                                format!(
+                                    "flux__net_send_bytes_with_timeout({}, {bytes}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendBytesProgressWithTimeout" if arguments.len() == 4 => {
                         let scalar_arguments = [
@@ -75267,63 +75315,57 @@ fn emit_cfg_multi_expr_direct(
                             arguments[2].clone(),
                             arguments[3].clone(),
                         ];
-                        let (rendered, bytes) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::I64,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_bytes_progress_with_timeout({}, {bytes}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::I64,
+                            env,
+                            signatures,
+                            |rendered, bytes| {
+                                format!(
+                                    "flux__net_send_bytes_progress_with_timeout({}, {bytes}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendTextPartsProgress" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let (rendered, parts) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::Str,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_parts_progress({}, {parts}, {})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                            |rendered, parts| {
+                                format!(
+                                    "flux__net_send_text_parts_progress({}, {parts}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendTextPartsWithTimeout" if arguments.len() == 3 => {
                         let scalar_arguments = [arguments[0].clone(), arguments[2].clone()];
-                        let (rendered, parts) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::Str,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_parts_with_timeout({}, {parts}, {})",
-                                rendered[0], rendered[1]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                            |rendered, parts| {
+                                format!(
+                                    "flux__net_send_text_parts_with_timeout({}, {parts}, {})",
+                                    rendered[0], rendered[1]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendTextPartsProgressWithTimeout" if arguments.len() == 4 => {
                         let scalar_arguments = [
@@ -75331,42 +75373,38 @@ fn emit_cfg_multi_expr_direct(
                             arguments[2].clone(),
                             arguments[3].clone(),
                         ];
-                        let (rendered, parts) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &scalar_arguments,
-                                &[Type::I64, Type::I64, Type::I64],
-                                &arguments[1],
-                                &Type::Str,
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_text_parts_progress_with_timeout({}, {parts}, {}, {})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_bool_error".to_string(),
-                            i64_bool_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &scalar_arguments,
+                            &[Type::I64, Type::I64, Type::I64],
+                            &arguments[1],
+                            &Type::Str,
+                            env,
+                            signatures,
+                            |rendered, parts| {
+                                format!(
+                                    "flux__net_send_text_parts_progress_with_timeout({}, {parts}, {}, {})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_bool_error".to_string(), i64_bool_error))
                     }
                     "sendBytesToParts" if arguments.len() == 4 => {
-                        let (rendered, parts) =
-                            emit_cfg_order_safe_scalar_arguments_with_borrowed_list_direct(
-                                &arguments[..3],
-                                &[Type::I64, Type::Str, Type::I64],
-                                &arguments[3],
-                                &Type::List(Box::new(Type::I64)),
-                                env,
-                                signatures,
-                            )?;
-                        Some((
-                            format!(
-                                "flux__net_send_bytes_to_parts({}, {}, {}, {parts})",
-                                rendered[0], rendered[1], rendered[2]
-                            ),
-                            "flux__net_i64_error".to_string(),
-                            i64_error,
-                        ))
+                        let call = emit_cfg_ordered_call_with_borrowed_list_direct(
+                            &arguments[..3],
+                            &[Type::I64, Type::Str, Type::I64],
+                            &arguments[3],
+                            &Type::List(Box::new(Type::I64)),
+                            env,
+                            signatures,
+                            |rendered, parts| {
+                                format!(
+                                    "flux__net_send_bytes_to_parts({}, {}, {}, {parts})",
+                                    rendered[0], rendered[1], rendered[2]
+                                )
+                            },
+                        )?;
+                        Some((call, "flux__net_i64_error".to_string(), i64_error))
                     }
                     "sendBytesTo" if arguments.len() == 4 => {
                         let call = emit_cfg_ordered_call_with_borrowed_list_direct(
