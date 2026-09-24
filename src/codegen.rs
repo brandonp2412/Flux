@@ -50155,6 +50155,224 @@ where
     ))
 }
 
+fn emit_cfg_presence_comparison_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&expr.ty) != Type::Bool || !matches!(op, BinOp::Eq | BinOp::Ne) {
+        return None;
+    }
+
+    let optional_presence = |value: &CfgScalarExpr, absence: &CfgScalarExpr| -> Option<String> {
+        let Type::Optional(inner) = signatures.canonical_type(&value.ty) else {
+            return None;
+        };
+        if *inner == Type::Void || !matches!(absence.kind, CfgScalarExprKind::NoneLiteral) {
+            return None;
+        }
+        let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+        Some(if matches!(op, BinOp::Eq) {
+            format!("(!({value}).has_value)")
+        } else {
+            format!("(({value}).has_value)")
+        })
+    };
+    if let Some(rendered) = optional_presence(left, right) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = optional_presence(right, left) {
+        return Some(rendered);
+    }
+
+    let error_presence = |value: &CfgScalarExpr, absence: &CfgScalarExpr| -> Option<String> {
+        if signatures.canonical_type(&value.ty) != Type::Error
+            || !matches!(absence.kind, CfgScalarExprKind::Nil)
+        {
+            return None;
+        }
+        let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+        let equality = format!("flux_error_eq({value}, NULL)");
+        Some(if matches!(op, BinOp::Eq) {
+            equality
+        } else {
+            format!("(!{equality})")
+        })
+    };
+    error_presence(left, right).or_else(|| error_presence(right, left))
+}
+
+fn emit_cfg_coalesce_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary {
+        op: BinOp::Coalesce,
+        left,
+        right,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    let Type::Optional(inner) = signatures.canonical_type(&left.ty) else {
+        return None;
+    };
+    let result_ty = signatures.canonical_type(&expr.ty);
+
+    if *inner == Type::Void {
+        return emit_cfg_scalar_expr_direct(right, env, signatures)
+            .filter(|_| signatures.canonical_type(&right.ty) == result_ty);
+    }
+    if !signatures.is_copy_type(&inner) {
+        return None;
+    }
+
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right_ty = signatures.canonical_type(&right.ty);
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    let optional_ty = Type::Optional(inner.clone());
+    let optional_c = c_type(&optional_ty, signatures);
+
+    match result_ty {
+        Type::Optional(result_inner)
+            if signatures.canonical_type(&result_inner) == signatures.canonical_type(&inner)
+                && right_ty == Type::Optional(result_inner.clone()) =>
+        {
+            let result_ty = Type::Optional(result_inner);
+            let result_c = c_type(&result_ty, signatures);
+            Some(format!(
+                "__extension__ ({{ {optional_c} flux__coalesce_value = {left}; flux__coalesce_value.has_value ? ({result_c}){{ .has_value = true, .value = flux__coalesce_value.value }} : {right}; }})"
+            ))
+        }
+        result_ty if result_ty == signatures.canonical_type(&inner) && right_ty == result_ty => {
+            Some(format!(
+                "__extension__ ({{ {optional_c} flux__coalesce_value = {left}; flux__coalesce_value.has_value ? flux__coalesce_value.value : {right}; }})"
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn emit_cfg_short_circuit_binary_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if signatures.canonical_type(&expr.ty) != Type::Bool
+        || signatures.canonical_type(&left.ty) != Type::Bool
+        || signatures.canonical_type(&right.ty) != Type::Bool
+        || !matches!(op, BinOp::And | BinOp::Or)
+        || cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
+    {
+        return None;
+    }
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    Some(format!("({left} {} {right})", c_operator(*op)))
+}
+
+fn emit_cfg_ordered_binary_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
+        || cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
+        || !matches!(
+            left.kind,
+            CfgScalarExprKind::Call { .. }
+                | CfgScalarExprKind::NamedCall { .. }
+                | CfgScalarExprKind::QualifiedCall { .. }
+                | CfgScalarExprKind::NamedQualifiedCall { .. }
+        )
+        || !matches!(
+            right.kind,
+            CfgScalarExprKind::Call { .. }
+                | CfgScalarExprKind::NamedCall { .. }
+                | CfgScalarExprKind::QualifiedCall { .. }
+                | CfgScalarExprKind::NamedQualifiedCall { .. }
+        )
+    {
+        return None;
+    }
+
+    let result_ty = signatures.canonical_type(&expr.ty);
+    let left_ty = signatures.canonical_type(&left.ty);
+    let right_ty = signatures.canonical_type(&right.ty);
+    if !signatures.is_copy_type(&left_ty) || !signatures.is_copy_type(&right_ty) {
+        return None;
+    }
+
+    let operation = match op {
+        BinOp::Add if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            "flux_add_i64(flux__typed_binary_left, flux__typed_binary_right)".to_string()
+        }
+        BinOp::Sub if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            "flux_sub_i64(flux__typed_binary_left, flux__typed_binary_right)".to_string()
+        }
+        BinOp::Mul if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            "flux_mul_i64(flux__typed_binary_left, flux__typed_binary_right)".to_string()
+        }
+        BinOp::Div if result_ty == Type::I64 && left_ty == Type::I64 && right_ty == Type::I64 => {
+            "flux_div_i64(flux__typed_binary_left, flux__typed_binary_right)".to_string()
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool && left_ty == Type::Str && right_ty == Type::Str =>
+        {
+            let comparator = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+            format!("(strcmp(flux__typed_binary_left, flux__typed_binary_right) {comparator} 0)")
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool && left_ty == Type::Error && right_ty == Type::Error =>
+        {
+            let equality =
+                "flux_error_eq(flux__typed_binary_left, flux__typed_binary_right)".to_string();
+            if matches!(op, BinOp::Eq) {
+                equality
+            } else {
+                format!("(!{equality})")
+            }
+        }
+        BinOp::Eq | BinOp::Ne
+            if result_ty == Type::Bool
+                && left_ty == right_ty
+                && matches!(left_ty, Type::I64 | Type::Bool) =>
+        {
+            format!(
+                "(flux__typed_binary_left {} flux__typed_binary_right)",
+                c_operator(*op)
+            )
+        }
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            if result_ty == Type::Bool && left_ty == Type::I64 && right_ty == Type::I64 =>
+        {
+            format!(
+                "(flux__typed_binary_left {} flux__typed_binary_right)",
+                c_operator(*op)
+            )
+        }
+        _ => return None,
+    };
+
+    let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+    let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+    Some(format!(
+        "__extension__ ({{ {} flux__typed_binary_left = {left}; {} flux__typed_binary_right = {right}; {operation}; }})",
+        c_type(&left_ty, signatures),
+        c_type(&right_ty, signatures),
+    ))
+}
+
 fn emit_cfg_scalar_expr_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
@@ -50180,6 +50398,18 @@ fn emit_cfg_scalar_expr_direct(
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_reused_pure_primitive_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_presence_comparison_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_coalesce_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_short_circuit_binary_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_ordered_binary_direct(expr, env, signatures) {
         return Some(rendered);
     }
     match &expr.kind {
@@ -53427,8 +53657,7 @@ fn emit_cfg_scalar_expr_direct(
             op: UnaryOp::Borrow,
             operand,
         } if (matches!(operand.kind, CfgScalarExprKind::Name(_))
-            || (matches!(signatures.canonical_type(&operand.ty), Type::List(_))
-                && cfg_borrowed_list_has_named_root(operand)))
+            || cfg_borrowed_list_has_named_root(operand))
             && ty == signatures.canonical_type(&operand.ty) =>
         {
             emit_cfg_scalar_expr_direct(operand, env, signatures)
@@ -53537,11 +53766,7 @@ fn emit_cfg_scalar_expr(
     if ty != expected || !cfg_scalar_expr_calls_are_reconstructable(expr, env, signatures) {
         return None;
     }
-    if let Some(rendered) = emit_cfg_scalar_expr_direct(expr, env, signatures) {
-        return Some(rendered);
-    }
-    let synthetic = cfg_scalar_expr_as_ast(expr);
-    emit_expr_for_expected(&synthetic, &ty, env, signatures).ok()
+    emit_cfg_scalar_expr_direct(expr, env, signatures)
 }
 
 fn emit_expr_for_expected_with_cfg_proofs(
