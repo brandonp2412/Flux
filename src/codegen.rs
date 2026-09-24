@@ -42902,13 +42902,33 @@ fn cfg_list_shape_as_ast(
     })
 }
 
-fn cfg_list_comprehension_shape_as_ast(
-    root_span: SourceSpan,
+fn cfg_rewrite_fact_type(
+    span: (u32, usize, usize, usize),
+    rewrite_facts: &CfgRewriteFacts,
+) -> Option<Type> {
+    rewrite_facts
+        .scalar_exprs
+        .get(&span)
+        .map(|expr| expr.ty.clone())
+        .or_else(|| rewrite_facts.constants.get(&span).map(ConstantValue::ty))
+        .or_else(|| {
+            rewrite_facts
+                .aggregate_constants
+                .get(&span)
+                .map(|aggregate| aggregate.ty.clone())
+        })
+}
+
+fn emit_cfg_list_comprehension_binding(
+    out: &mut String,
+    pad: &str,
+    target: (&str, &Type),
     shape: &CfgAggregateShape,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
-) -> Option<Expr> {
+    temp_counter: &mut usize,
+) -> Option<()> {
     let CfgAggregateShape::ListComprehension {
         binding,
         iterable,
@@ -42918,35 +42938,94 @@ fn cfg_list_comprehension_shape_as_ast(
     else {
         return None;
     };
-    let iterable_expr = cfg_rewrite_expr_as_ast(*iterable, env, signatures, rewrite_facts)?;
-    let iterable_ty = type_of_expr(&iterable_expr, env, signatures).ok()?;
-    let Type::List(element) = signatures.canonical_type(&iterable_ty) else {
+    let (name, declared_ty) = target;
+    let result_ty = signatures.canonical_type(declared_ty);
+    let Type::List(output_element) = &result_ty else {
         return None;
     };
+    let iterable_ty = signatures.canonical_type(&cfg_rewrite_fact_type(*iterable, rewrite_facts)?);
+    let Type::List(input_element) = &iterable_ty else {
+        return None;
+    };
+    let source = emit_cfg_aggregate_shape_child_direct(
+        *iterable,
+        &iterable_ty,
+        env,
+        signatures,
+        rewrite_facts,
+    )?;
+
+    let source_name = format!("flux__list_source_{}", *temp_counter);
+    *temp_counter += 1;
+    let buffer_name = format!("flux__list_buffer_{}", *temp_counter);
+    *temp_counter += 1;
+    let count_name = format!("flux__list_count_{}", *temp_counter);
+    *temp_counter += 1;
+    let index_name = format!("flux__list_index_{}", *temp_counter);
+    *temp_counter += 1;
+    out.push_str(&format!(
+        "{pad}struct flux__list {source_name} = {source};
+"
+    ));
+    out.push_str(&format!(
+        "{pad}{} {buffer_name}[{source_name}.len > 0 ? {source_name}.len : 1];
+",
+        c_type(output_element, signatures)
+    ));
+    out.push_str(&format!(
+        "{pad}size_t {count_name} = 0;
+"
+    ));
+    out.push_str(&format!(
+        "{pad}for (size_t {index_name} = 0; {index_name} < {source_name}.len; {index_name}++) {{
+"
+    ));
+
     let mut nested = env.clone();
-    nested.insert(binding.clone(), *element);
-    let value_expr = cfg_rewrite_expr_as_ast(*value, &nested, signatures, rewrite_facts)?;
-    let condition_expr = match condition {
-        Some(span) => Some(cfg_rewrite_expr_as_ast(
-            *span,
+    let binding_c = local_c_name(binding);
+    let input_c = c_type(input_element, signatures);
+    out.push_str(&format!(
+        "{pad}    {input_c} {binding_c} = *(({input_c} *)flux_list_at_unchecked({source_name}, {index_name}, sizeof({input_c})));
+"
+    ));
+    nested.insert(binding.clone(), (**input_element).clone());
+
+    if let Some(condition) = condition {
+        let condition = emit_cfg_aggregate_shape_child_direct(
+            *condition,
+            &Type::Bool,
             &nested,
             signatures,
             rewrite_facts,
-        )?),
-        None => None,
-    };
-
-    Some(Expr {
-        line: root_span.line,
-        span: root_span,
-        kind: ExprKind::ListComprehension {
-            value: Box::new(value_expr),
-            binding: binding.clone(),
-            binding_span: root_span,
-            iterable: Box::new(iterable_expr),
-            condition: condition_expr.map(Box::new),
-        },
-    })
+        )?;
+        out.push_str(&format!(
+            "{pad}    if (!{}) continue;
+",
+            c_condition(&condition)
+        ));
+    }
+    let value = emit_cfg_aggregate_shape_child_direct(
+        *value,
+        output_element,
+        &nested,
+        signatures,
+        rewrite_facts,
+    )?;
+    out.push_str(&format!(
+        "{pad}    {buffer_name}[{count_name}++] = {value};
+"
+    ));
+    out.push_str(&format!(
+        "{pad}}}
+"
+    ));
+    out.push_str(&format!(
+        "{pad}struct flux__list {} = (struct flux__list){{ .data = (void *){buffer_name}, .len = {count_name}, .stride = sizeof({}) }};
+",
+        local_c_name(name),
+        c_type(output_element, signatures)
+    ));
+    Some(())
 }
 
 fn emit_list_comprehension_binding(
@@ -42961,13 +43040,28 @@ fn emit_list_comprehension_binding(
     temp_counter: &mut usize,
 ) -> Result<(), Diagnostic> {
     let (name, declared_ty) = target;
-    let rewritten = rewrite_facts
-        .aggregates
-        .get(&source_span_key(expr.span))
-        .and_then(|shape| {
-            cfg_list_comprehension_shape_as_ast(expr.span, shape, env, signatures, rewrite_facts)
-        })
-        .unwrap_or_else(|| substitute_direct_ir_constant_arguments(expr, rewrite_facts));
+    if let Some(shape) = rewrite_facts.aggregates.get(&source_span_key(expr.span)) {
+        let mut direct = String::new();
+        let mut direct_temp_counter = *temp_counter;
+        if emit_cfg_list_comprehension_binding(
+            &mut direct,
+            pad,
+            target,
+            shape,
+            env,
+            signatures,
+            rewrite_facts,
+            &mut direct_temp_counter,
+        )
+        .is_some()
+        {
+            out.push_str(&direct);
+            *temp_counter = direct_temp_counter;
+            env.insert(name.to_string(), signatures.canonical_type(declared_ty));
+            return Ok(());
+        }
+    }
+    let rewritten = substitute_direct_ir_constant_arguments(expr, rewrite_facts);
     let ExprKind::ListComprehension {
         value,
         binding,
