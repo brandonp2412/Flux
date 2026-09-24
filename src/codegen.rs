@@ -40801,26 +40801,48 @@ fn sequence_expr_for_lowering(
     reconstructed
 }
 
+fn cfg_sequence_lowering_kind(expr: &CfgScalarExpr) -> Option<SequenceLoweringKind> {
+    let CfgScalarExprKind::Call { callee, .. } = &expr.kind else {
+        return None;
+    };
+    match crate::builtin_names::global_impl(callee) {
+        "chunked" => Some(SequenceLoweringKind::Chunked),
+        "sorted" => Some(SequenceLoweringKind::Sorted),
+        "flatten" => Some(SequenceLoweringKind::Flatten),
+        "distinct" => Some(SequenceLoweringKind::Distinct),
+        "concat" => Some(SequenceLoweringKind::Concat),
+        "map" | "filter" | "where" => Some(SequenceLoweringKind::Transform),
+        "fold" | "reduce" => Some(SequenceLoweringKind::Reduction),
+        _ => None,
+    }
+}
+
 fn sequence_lowering_kind(
     expr: &Expr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
     rewrite_facts: &CfgRewriteFacts,
 ) -> Option<SequenceLoweringKind> {
-    let expr = sequence_expr_for_lowering(expr, env, signatures, rewrite_facts);
-    if sequence_chunked(&expr).is_some() {
+    if let Some(sequence) = rewrite_facts
+        .sequence_exprs
+        .get(&source_span_key(expr.span))
+        && cfg_sequence_expr_calls_are_reconstructable(sequence, env, signatures)
+    {
+        return cfg_sequence_lowering_kind(sequence);
+    }
+    if sequence_chunked(expr).is_some() {
         Some(SequenceLoweringKind::Chunked)
-    } else if sequence_sorted(&expr).is_some() {
+    } else if sequence_sorted(expr).is_some() {
         Some(SequenceLoweringKind::Sorted)
-    } else if sequence_flatten(&expr).is_some() {
+    } else if sequence_flatten(expr).is_some() {
         Some(SequenceLoweringKind::Flatten)
-    } else if sequence_distinct(&expr).is_some() {
+    } else if sequence_distinct(expr).is_some() {
         Some(SequenceLoweringKind::Distinct)
-    } else if sequence_concat(&expr).is_some() {
+    } else if sequence_concat(expr).is_some() {
         Some(SequenceLoweringKind::Concat)
-    } else if sequence_transform(&expr).is_some() {
+    } else if sequence_transform(expr).is_some() {
         Some(SequenceLoweringKind::Transform)
-    } else if sequence_reduction(&expr).is_some() {
+    } else if sequence_reduction(expr).is_some() {
         Some(SequenceLoweringKind::Reduction)
     } else {
         None
