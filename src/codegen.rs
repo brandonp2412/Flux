@@ -54480,7 +54480,7 @@ fn emit_cfg_scalar_expr_direct(
             base,
             index,
             optional: true,
-        } if matches!(base.kind, CfgScalarExprKind::Name(_)) => {
+        } => {
             let direct_index =
                 matches!(
                     index.kind,
@@ -60522,6 +60522,10 @@ fn optional(values: i64[]?, at: i64) -> i64? {
     return values?[at]
 }
 
+fn optionalBorrow(values: i64[]?, at: i64) -> i64? {
+    return (borrow values)?[at]
+}
+
 fn temporary(at: i64) -> i64 {
     return [1, 2][at]
 }
@@ -60541,6 +60545,7 @@ fn main() -> i64 {
             ("direct", false, false),
             ("borrowed", false, true),
             ("optional", true, false),
+            ("optionalBorrow", true, true),
         ] {
             let graph = database
                 .control_flow_graph(function)
