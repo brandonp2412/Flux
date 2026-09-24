@@ -51627,14 +51627,12 @@ fn emit_cfg_dynamic_unary_direct(
     }
 }
 
-fn emit_cfg_call_bearing_mul_div_reduction_direct(
+fn emit_cfg_mul_div_reduction_direct(
     expr: &CfgScalarExpr,
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Option<String> {
-    if signatures.canonical_type(&expr.ty) != Type::I64
-        || cfg_scalar_expr_is_aggregate_reorder_safe(expr)
-    {
+    if signatures.canonical_type(&expr.ty) != Type::I64 {
         return None;
     }
     let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
@@ -51914,7 +51912,7 @@ fn emit_cfg_scalar_expr_direct(
     if let Some(rendered) = emit_cfg_ordered_binary_direct(expr, env, signatures) {
         return Some(rendered);
     }
-    if let Some(rendered) = emit_cfg_call_bearing_mul_div_reduction_direct(expr, env, signatures) {
+    if let Some(rendered) = emit_cfg_mul_div_reduction_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_dynamic_binary_direct(expr, env, signatures) {
@@ -60001,6 +59999,74 @@ fn main() -> i64 {
             assert_eq!(
                 emitted.matches(&function_c_name("observe")).count(),
                 1,
+                "{function}: {emitted}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_typed_ir_inline_mul_div_reductions_bypass_checked_ast() {
+        let source = r#"
+fn divideThenMultiply(value: i64, divisor: i64) -> i64 {
+    return (value / divisor) * divisor
+}
+
+fn multiplyThenDivide(value: i64, divisor: i64) -> i64 {
+    return (value * divisor) / divisor
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("inline mul/div reduction fixture should typecheck");
+        let env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("divisor".to_string(), Type::I64),
+        ]);
+
+        for (function, root_op, expected_fragment, rejected_fragment) in [
+            ("divideThenMultiply", BinOp::Mul, " * ", "flux_mul_i64("),
+            (
+                "multiplyThenDivide",
+                BinOp::Div,
+                "flux_div_nonzero_i64(",
+                "flux_div_i64(",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("inline reduction CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("typed IR should retain inline reduction root");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_root = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Int(0),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_root,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("inline mul/div reduction should emit from typed IR");
+            assert!(emitted.contains(expected_fragment), "{function}: {emitted}");
+            assert!(
+                !emitted.contains(rejected_fragment),
                 "{function}: {emitted}"
             );
         }
