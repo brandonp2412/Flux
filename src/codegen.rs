@@ -50898,43 +50898,39 @@ fn emit_cfg_order_safe_call_arguments_direct(
         return None;
     }
 
-    if let Some(rendered) = arguments
-        .iter()
-        .zip(expected)
-        .map(|(argument, expected)| {
-            emit_cfg_call_argument_direct(argument, expected, env, signatures)
-        })
-        .collect::<Option<Vec<_>>>()
-    {
-        return Some(rendered);
-    }
-
+    let mut rendered = Vec::with_capacity(arguments.len());
     let mut flexible_index = None;
-    for (index, argument) in arguments.iter().enumerate() {
-        if matches!(
+    let mut nontrivial_count = 0usize;
+    for (index, (argument, expected)) in arguments.iter().zip(expected).enumerate() {
+        if !matches!(
             argument.kind,
             CfgScalarExprKind::Name(_) | CfgScalarExprKind::Constant(_)
         ) {
+            nontrivial_count += 1;
+        }
+        if let Some(value) = emit_cfg_call_argument_direct(argument, expected, env, signatures) {
+            rendered.push(value);
             continue;
         }
         if flexible_index.replace(index).is_some() {
             return None;
         }
+        rendered.push(String::new());
     }
-    let flexible_index = flexible_index?;
 
-    arguments
-        .iter()
-        .zip(expected)
-        .enumerate()
-        .map(|(index, (argument, expected))| {
-            if index == flexible_index {
-                emit_cfg_ordinary_call_argument_direct(argument, expected, env, signatures)
-            } else {
-                emit_cfg_call_argument_direct(argument, expected, env, signatures)
-            }
-        })
-        .collect()
+    let Some(flexible_index) = flexible_index else {
+        return Some(rendered);
+    };
+    if nontrivial_count > 1 {
+        return None;
+    }
+    rendered[flexible_index] = emit_cfg_ordinary_call_argument_direct(
+        &arguments[flexible_index],
+        &expected[flexible_index],
+        env,
+        signatures,
+    )?;
+    Some(rendered)
 }
 
 fn emit_cfg_ordered_call_expression_direct<F>(
