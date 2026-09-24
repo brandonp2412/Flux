@@ -39731,7 +39731,10 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::Match { value, arms } => {
-                let value_ty = type_of_expr(value, env, signatures)?;
+                let value_ty = match cfg_rewrite_root_type(value.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(value, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         value,
@@ -39885,7 +39888,10 @@ fn emit_block(
                 out.push_str(&format!("{pad}}}\n"));
             }
             StmtKind::ListMatch { value, arms } => {
-                let value_ty = type_of_expr(value, env, signatures)?;
+                let value_ty = match cfg_rewrite_root_type(value.span, context.cfg_rewrite_facts) {
+                    Some(ty) => signatures.canonical_type(&ty),
+                    None => type_of_expr(value, env, signatures)?,
+                };
                 let value = EmittedExpr {
                     code: emit_expr_for_expected_with_cfg_proofs(
                         value,
@@ -78761,6 +78767,99 @@ fn main() -> i64 {
             .expect("multi-flex await should bypass the checked-AST root");
             assert_eq!(emitted, direct);
             assert!(!emitted.contains("checked-ast-ordered-await"));
+        }
+    }
+
+    #[test]
+    fn statement_match_scrutinees_use_typed_ir_after_ast_poisoning() {
+        let source = r#"
+enum Choice {
+    One(i64)
+    None
+}
+
+fn chooseEnum(choice: Choice) -> i64 {
+    match choice:
+        Choice.One(value):
+            print(value)
+        Choice.None():
+            print(0)
+    return 0
+}
+
+fn chooseList(values: i64[]) -> i64 {
+    match values:
+        []:
+            print(0)
+        [first, ..._]:
+            print(first)
+    return 0
+}
+
+fn chooseMap(values: map<str, i64>) -> i64 {
+    match values:
+        {"one": value}:
+            print(value)
+        _:
+            print(0)
+    return 0
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("statement match typed-IR fixture should typecheck");
+        let mut program = crate::parser::parse_with_source(source, SourceId::UNKNOWN)
+            .expect("statement match typed-IR fixture should parse");
+
+        for function_name in ["chooseEnum", "chooseList", "chooseMap"] {
+            let graph = database
+                .control_flow_graph(function_name)
+                .unwrap_or_else(|| panic!("{function_name} CFG should exist"));
+            let function = program
+                .functions
+                .iter_mut()
+                .find(|function| function.name == function_name)
+                .unwrap_or_else(|| panic!("{function_name} should exist"));
+
+            match &mut function.body[0].kind {
+                StmtKind::Match { value, .. } | StmtKind::ListMatch { value, .. } => {
+                    value.kind =
+                        ExprKind::Str(format!("checked-ast-statement-scrutinee-{function_name}"));
+                }
+                _ => panic!("{function_name} should start with a match statement"),
+            }
+
+            let mut out = String::new();
+            let mut temp_counter = 0;
+            emit_function(
+                &mut out,
+                function,
+                database.signatures(),
+                graph,
+                &mut temp_counter,
+                &HashMap::new(),
+            )
+            .unwrap_or_else(|diagnostic| {
+                panic!("{function_name} should emit from typed IR: {diagnostic:?}")
+            });
+
+            assert!(
+                !out.contains("checked-ast-statement-scrutinee-"),
+                "{function_name}: {out}"
+            );
+            if function_name == "chooseEnum" {
+                assert!(out.contains("switch ("), "{out}");
+                assert!(out.contains(&local_c_name("choice")), "{out}");
+            } else if function_name == "chooseList" {
+                assert!(out.contains("flux__list_match_"), "{out}");
+                assert!(out.contains(&local_c_name("values")), "{out}");
+            } else {
+                assert!(out.contains("flux__map_match_"), "{out}");
+                assert!(out.contains(&local_c_name("values")), "{out}");
+            }
         }
     }
 
