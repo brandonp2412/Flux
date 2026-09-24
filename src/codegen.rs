@@ -51684,13 +51684,28 @@ fn emit_cfg_dynamic_unary_direct(
     }
 }
 
-fn cfg_scalar_expr_uses_checked_mul_div_reduction(expr: &CfgScalarExpr) -> bool {
+fn emit_cfg_call_bearing_mul_div_reduction_direct(
+    expr: &CfgScalarExpr,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<String> {
+    if signatures.canonical_type(&expr.ty) != Type::I64
+        || cfg_scalar_expr_is_aggregate_reorder_safe(expr)
+    {
+        return None;
+    }
     let CfgScalarExprKind::Binary { op, left, right } = &expr.kind else {
-        return false;
+        return None;
     };
+    if signatures.canonical_type(&left.ty) != Type::I64
+        || signatures.canonical_type(&right.ty) != Type::I64
+    {
+        return None;
+    }
+
     match op {
         BinOp::Mul => {
-            matches!(
+            let matching_division = matches!(
                 &left.kind,
                 CfgScalarExprKind::Binary {
                     op: BinOp::Div,
@@ -51704,17 +51719,36 @@ fn cfg_scalar_expr_uses_checked_mul_div_reduction(expr: &CfgScalarExpr) -> bool 
                     right: divisor,
                     ..
                 } if divisor == left
-            )
+            );
+            if !matching_division {
+                return None;
+            }
+            let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+            Some(format!("(({left}) * ({right}))"))
         }
-        BinOp::Div => matches!(
-            &left.kind,
-            CfgScalarExprKind::Binary {
+        BinOp::Div => {
+            let CfgScalarExprKind::Binary {
                 op: BinOp::Mul,
                 left: factor_left,
                 right: factor_right,
-            } if factor_left == right || factor_right == right
-        ),
-        _ => false,
+            } = &left.kind
+            else {
+                return None;
+            };
+            if factor_left != right && factor_right != right {
+                return None;
+            }
+            let right_constant = cfg_scalar_i64_constant(right);
+            let left = emit_cfg_scalar_expr_direct(left, env, signatures)?;
+            let right = emit_cfg_scalar_expr_direct(right, env, signatures)?;
+            match right_constant {
+                Some(0) => None,
+                Some(_) => Some(format!("(({left}) / ({right}))")),
+                None => Some(format!("flux_div_nonzero_i64({left}, {right})")),
+            }
+        }
+        _ => None,
     }
 }
 
@@ -51729,7 +51763,6 @@ fn emit_cfg_dynamic_binary_direct(
     if matches!(op, BinOp::And | BinOp::Or | BinOp::Coalesce)
         || cfg_scalar_expr_is_direct_primitive_tree(expr, env, signatures)
         || cfg_scalar_expr_is_aggregate_reorder_safe(expr)
-        || cfg_scalar_expr_uses_checked_mul_div_reduction(expr)
         || (matches!(
             left.kind,
             CfgScalarExprKind::Call { .. }
@@ -51936,6 +51969,9 @@ fn emit_cfg_scalar_expr_direct(
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_ordered_binary_direct(expr, env, signatures) {
+        return Some(rendered);
+    }
+    if let Some(rendered) = emit_cfg_call_bearing_mul_div_reduction_direct(expr, env, signatures) {
         return Some(rendered);
     }
     if let Some(rendered) = emit_cfg_dynamic_binary_direct(expr, env, signatures) {
@@ -59948,6 +59984,83 @@ fn main() -> i64 {
         assert!(emitted.contains("&&"), "{emitted}");
         assert!(emitted.contains('!'), "{emitted}");
         assert!(emitted.contains(&local_c_name("enabled")), "{emitted}");
+    }
+
+    #[test]
+    fn direct_typed_ir_call_bearing_mul_div_reductions_bypass_checked_ast() {
+        let source = r#"
+fn observe(value: i64) -> i64 {
+    return value
+}
+
+fn divideThenMultiply(value: i64, divisor: i64) -> i64 {
+    return (observe(value) / divisor) * divisor
+}
+
+fn multiplyThenDivide(value: i64, divisor: i64) -> i64 {
+    return (observe(value) * divisor) / divisor
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::UNKNOWN)
+            .expect("call-bearing mul/div reduction fixture should typecheck");
+        let env = HashMap::from([
+            ("value".to_string(), Type::I64),
+            ("divisor".to_string(), Type::I64),
+        ]);
+
+        for (function, root_op, expected_fragment, rejected_fragment) in [
+            ("divideThenMultiply", BinOp::Mul, " * ", "flux_mul_i64("),
+            (
+                "multiplyThenDivide",
+                BinOp::Div,
+                "flux_div_nonzero_i64(",
+                "flux_div_i64(",
+            ),
+        ] {
+            let graph = database
+                .control_flow_graph(function)
+                .expect("reduction CFG should exist");
+            let root = graph
+                .values()
+                .iter()
+                .filter(|value| {
+                    matches!(
+                        value.kind,
+                        crate::ir::ControlFlowValueKind::Binary { op, .. } if op == root_op
+                    )
+                })
+                .max_by_key(|value| value.span.length)
+                .expect("typed IR should retain reduction root");
+            let facts = cfg_rewrite_facts(graph);
+            let fake_root = Expr {
+                line: root.span.line,
+                span: root.span,
+                kind: ExprKind::Int(0),
+            };
+            let emitted = emit_expr_for_expected_with_cfg_proofs(
+                &fake_root,
+                &Type::I64,
+                &env,
+                database.signatures(),
+                &HashMap::new(),
+                &facts,
+            )
+            .expect("call-bearing mul/div reduction should emit from typed IR");
+            assert!(emitted.contains(expected_fragment), "{function}: {emitted}");
+            assert!(
+                !emitted.contains(rejected_fragment),
+                "{function}: {emitted}"
+            );
+            assert_eq!(
+                emitted.matches(&function_c_name("observe")).count(),
+                1,
+                "{function}: {emitted}"
+            );
+        }
     }
 
     #[test]
