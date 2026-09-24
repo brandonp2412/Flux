@@ -77819,10 +77819,6 @@ fn emit_multi_expr(
         if let Some(direct) = emit_cfg_multi_expr_direct(multi, env, signatures) {
             return Ok(direct);
         }
-        if cfg_scalar_expr_calls_are_reconstructable(multi, env, signatures) {
-            let reconstructed = cfg_scalar_expr_as_ast(multi);
-            return emit_multi_expr_from_ast(&reconstructed, env, signatures, rewrite_facts);
-        }
     }
 
     // Keep the checked-AST fallback for values whose normalized call shape
