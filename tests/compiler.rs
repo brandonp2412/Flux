@@ -10312,6 +10312,207 @@ fn http_chunked_text_response_body_is_decoded_bounded_and_does_not_overread() {
 }
 
 #[test]
+fn http_chunked_trailer_callbacks_preserve_order_and_socket_boundary() {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("HTTP trailer callback listener should bind");
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut request_stream, _) = listener
+            .accept()
+            .expect("HTTP trailer request reader should connect");
+        request_stream
+            .write_all(
+                b"POST /trailers HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\nX-Request: one\r\nX-Trim:\t two \t\r\n\r\nTAIL",
+            )
+            .expect("chunked HTTP request with trailers should be writable");
+        let (mut response_stream, _) = listener
+            .accept()
+            .expect("HTTP trailer response reader should connect");
+        response_stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Head: yes\r\n\r\n4\r\nbody\r\n0\r\nX-Response: three\r\nX-Trim:\t four \t\r\n\r\nTAIL",
+            )
+            .expect("chunked HTTP response with trailers should be writable");
+    });
+
+    let root = std::env::temp_dir().join(format!(
+        "flux-http-trailer-callbacks-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("HTTP trailer callback fixture should be writable");
+    let source_path = root.join("trailers.flux");
+    fs::write(
+        &source_path,
+        format!(
+            r#"fn request(_socket: i64, method: str, target: str, version: str) -> void {{
+    print(method)
+    print(target)
+    print(version)
+}}
+fn response(_socket: i64, version: str, status: i64, reason: str) -> void {{
+    print(version)
+    print(status)
+    print(reason)
+}}
+fn header(_socket: i64, name: str, value: str) -> void {{
+    print(name)
+    print(value)
+}}
+fn body(_socket: i64, value: str) -> void {{
+    print(value)
+}}
+fn trailer(_socket: i64, name: str, value: str) -> void {{
+    print(name)
+    print(value)
+}}
+fn tail(_socket: i64, value: str) -> void {{
+    print(value)
+}}
+fn main() -> i64 {{
+    let (requestSocket, requestConnectError) = net.tcpConnect("127.0.0.1", {port})
+    print(requestConnectError)
+    let (_, requestError) = http.readRequestBodyTrailers(requestSocket, 4096, 1024, request, header, body, trailer)
+    print(requestError)
+    let (_, requestTailError) = net.receiveText(requestSocket, 4, tail)
+    print(requestTailError)
+    print(net.close(requestSocket))
+    let (responseSocket, responseConnectError) = net.tcpConnect("127.0.0.1", {port})
+    print(responseConnectError)
+    let (_, responseError) = http.readResponseBodyTrailers(responseSocket, 4096, 1024, response, header, body, trailer)
+    print(responseError)
+    let (_, responseTailError) = net.receiveText(responseSocket, 4, tail)
+    print(responseTailError)
+    print(net.close(responseSocket))
+    return 0
+}}
+"#
+        ),
+    )
+    .expect("HTTP trailer callback source should be writable");
+    let binary = root.join("trailers");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("HTTP trailer callback binary should build");
+    assert!(
+        built.status.success(),
+        "HTTP trailer callback fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("HTTP trailer callback binary should run");
+    server
+        .join()
+        .expect("HTTP trailer callback writer should finish");
+    assert!(
+        run.status.success(),
+        "HTTP trailer callback fixture failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "nil
+POST
+/trailers
+HTTP/1.1
+Host
+example.test
+Transfer-Encoding
+chunked
+body
+X-Request
+one
+X-Trim
+two
+nil
+TAIL
+nil
+nil
+nil
+HTTP/1.1
+200
+OK
+Transfer-Encoding
+chunked
+X-Head
+yes
+body
+X-Response
+three
+X-Trim
+four
+nil
+TAIL
+nil
+nil
+"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn http_trailer_readers_are_typed_and_lower_text_and_binary_bodies() {
+    let source = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn textBody(_socket: i64, _value: str) -> void {
+}
+fn binaryBody(_socket: i64, _value: i64[]) -> void {
+}
+fn trailer(_socket: i64, _name: str, _value: str) -> void {
+}
+fn main() -> i64 {
+    let (requestTextBytes, requestTextError) = http.readRequestBodyTrailers(1, 4096, 1024, request, header, textBody, trailer)
+    let (requestBinaryBytes, requestBinaryError) = http.readRequestBytesTrailers(1, 4096, 1024, request, header, binaryBody, trailer)
+    let (responseTextBytes, responseTextError) = http.readResponseBodyTrailers(1, 4096, 1024, response, header, textBody, trailer)
+    let (responseBinaryBytes, responseBinaryError) = http.readResponseBytesTrailers(1, 4096, 1024, response, header, binaryBody, trailer)
+    print(requestTextBytes)
+    print(requestTextError)
+    print(requestBinaryBytes)
+    print(requestBinaryError)
+    print(responseTextBytes)
+    print(responseTextError)
+    print(responseBinaryBytes)
+    print(responseBinaryError)
+    return 0
+}
+"#;
+    check_source(source).expect("HTTP trailer readers should typecheck for text and binary bodies");
+    let generated = compile_to_c(source).expect("HTTP trailer readers should lower natively");
+    assert!(generated.contains("flux__net_http_receive_request_with_text_body_v3("));
+    assert!(generated.contains("flux__net_http_receive_request_with_binary_body_v3("));
+    assert!(generated.contains("flux__net_http_receive_response_with_text_body_v3("));
+    assert!(generated.contains("flux__net_http_receive_response_with_binary_body_v3("));
+    assert!(generated.contains("trailer_callback(socket_handle, trailer_name, trailer_value)"));
+
+    let invalid = r#"
+fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _value: str) -> void {
+}
+fn badTrailer(_name: str, _value: str) -> void {
+}
+fn main() -> i64 {
+    let (_received, _failure) = http.readRequestBodyTrailers(1, 4096, 1024, request, header, body, badTrailer)
+    return 0
+}
+"#;
+    let error = check_source(invalid).expect_err("HTTP trailer callbacks should include socket");
+    assert!(error.message.contains("trailerCallback"));
+}
+
+#[test]
 fn http_connection_close_text_response_body_is_bounded_and_runnable() {
     let listener =
         TcpListener::bind("127.0.0.1:0").expect("HTTP close-delimited listener should bind");

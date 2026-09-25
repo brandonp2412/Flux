@@ -1874,9 +1874,23 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "readRequestBodyTrailers",
+            3,
+            "fn http.readRequestBodyTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "readRequestBytes",
             3,
             "fn http.readRequestBytes(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readRequestBytesTrailers",
+            3,
+            "fn http.readRequestBytesTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
@@ -1923,9 +1937,23 @@ fn add_qualified_namespace_completions(
         push_completion_item(
             items,
             seen,
+            "readResponseBodyTrailers",
+            3,
+            "fn http.readResponseBodyTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
             "readResponseBytes",
             3,
             "fn http.readResponseBytes(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void) -> (i64, error)",
+        );
+        push_completion_item(
+            items,
+            seen,
+            "readResponseBytesTrailers",
+            3,
+            "fn http.readResponseBytesTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
         );
         push_completion_item(
             items,
@@ -4253,7 +4281,7 @@ fn signature_help_for_document_cached(
                 }
                 "receiveRequestWithTextBody" => {
                     return Some(signature_help_for_builtin(
-                        "http.receiveRequestWithTextBody",
+                        "http.readRequestBody",
                         &[
                             "socket: i64",
                             "maxHeadBytes: i64",
@@ -4266,9 +4294,25 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "receiveRequestWithTextBodyTrailers" => {
+                    return Some(signature_help_for_builtin(
+                        "http.readRequestBodyTrailers",
+                        &[
+                            "socket: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "requestCallback: fn(i64, str, str, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, str) -> void",
+                            "trailerCallback: fn(i64, str, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
                 "receiveRequestWithBinaryBody" => {
                     return Some(signature_help_for_builtin(
-                        "http.receiveRequestWithBinaryBody",
+                        "http.readRequestBytes",
                         &[
                             "socket: i64",
                             "maxHeadBytes: i64",
@@ -4276,6 +4320,22 @@ fn signature_help_for_document_cached(
                             "requestCallback: fn(i64, str, str, str) -> void",
                             "headerCallback: fn(i64, str, str) -> void",
                             "bodyCallback: fn(i64, i64[]) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveRequestWithBinaryBodyTrailers" => {
+                    return Some(signature_help_for_builtin(
+                        "http.readRequestBytesTrailers",
+                        &[
+                            "socket: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "requestCallback: fn(i64, str, str, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, i64[]) -> void",
+                            "trailerCallback: fn(i64, str, str) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
@@ -4327,7 +4387,7 @@ fn signature_help_for_document_cached(
                 }
                 "receiveResponseWithTextBody" => {
                     return Some(signature_help_for_builtin(
-                        "http.receiveResponseWithTextBody",
+                        "http.readResponseBody",
                         &[
                             "socket: i64",
                             "maxHeadBytes: i64",
@@ -4340,9 +4400,25 @@ fn signature_help_for_document_cached(
                         active_parameter,
                     ));
                 }
+                "receiveResponseWithTextBodyTrailers" => {
+                    return Some(signature_help_for_builtin(
+                        "http.readResponseBodyTrailers",
+                        &[
+                            "socket: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "responseCallback: fn(i64, str, i64, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, str) -> void",
+                            "trailerCallback: fn(i64, str, str) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
                 "receiveResponseWithBinaryBody" => {
                     return Some(signature_help_for_builtin(
-                        "http.receiveResponseWithBinaryBody",
+                        "http.readResponseBytes",
                         &[
                             "socket: i64",
                             "maxHeadBytes: i64",
@@ -4350,6 +4426,22 @@ fn signature_help_for_document_cached(
                             "responseCallback: fn(i64, str, i64, str) -> void",
                             "headerCallback: fn(i64, str, str) -> void",
                             "bodyCallback: fn(i64, i64[]) -> void",
+                        ],
+                        "(i64, error)",
+                        active_parameter,
+                    ));
+                }
+                "receiveResponseWithBinaryBodyTrailers" => {
+                    return Some(signature_help_for_builtin(
+                        "http.readResponseBytesTrailers",
+                        &[
+                            "socket: i64",
+                            "maxHeadBytes: i64",
+                            "maxBodyBytes: i64",
+                            "responseCallback: fn(i64, str, i64, str) -> void",
+                            "headerCallback: fn(i64, str, str) -> void",
+                            "bodyCallback: fn(i64, i64[]) -> void",
+                            "trailerCallback: fn(i64, str, str) -> void",
                         ],
                         "(i64, error)",
                         active_parameter,
@@ -10961,6 +11053,68 @@ mod tests {
                 PositionEncoding::Utf8,
             )
             .expect("HTTP client call should have signature help")
+            .to_json();
+            assert!(help.contains(expected));
+        }
+    }
+
+    #[test]
+    fn signature_help_supports_http_trailer_readers() {
+        let uri = "file:///tmp/http-trailer-signatures.flux";
+        let source = "fn request(_socket: i64, _method: str, _target: str, _version: str) -> void {
+}
+fn response(_socket: i64, _version: str, _status: i64, _reason: str) -> void {
+}
+fn header(_socket: i64, _name: str, _value: str) -> void {
+}
+fn body(_socket: i64, _body: str) -> void {
+}
+fn binaryBody(_socket: i64, _body: i64[]) -> void {
+}
+fn trailer(_socket: i64, _name: str, _value: str) -> void {
+}
+fn main() -> i64 {
+    let (_a, _ae) = http.readRequestBodyTrailers(1, 4096, 1024, request, header, body, trailer)
+    let (_b, _be) = http.readRequestBytesTrailers(1, 4096, 1024, request, header, binaryBody, trailer)
+    let (_c, _ce) = http.readResponseBodyTrailers(1, 4096, 1024, response, header, body, trailer)
+    let (_d, _de) = http.readResponseBytesTrailers(1, 4096, 1024, response, header, binaryBody, trailer)
+    return 0
+}
+";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        for (needle, expected) in [
+            (
+                "http.readRequestBodyTrailers(",
+                "fn http.readRequestBodyTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            ),
+            (
+                "http.readRequestBytesTrailers(",
+                "fn http.readRequestBytesTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, requestCallback: fn(i64, str, str, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            ),
+            (
+                "http.readResponseBodyTrailers(",
+                "fn http.readResponseBodyTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, str) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            ),
+            (
+                "http.readResponseBytesTrailers(",
+                "fn http.readResponseBytesTrailers(socket: i64, maxHeadBytes: i64, maxBodyBytes: i64, responseCallback: fn(i64, str, i64, str) -> void, headerCallback: fn(i64, str, str) -> void, bodyCallback: fn(i64, i64[]) -> void, trailerCallback: fn(i64, str, str) -> void) -> (i64, error)",
+            ),
+        ] {
+            let line_index = source
+                .lines()
+                .position(|line| line.contains(needle))
+                .expect("HTTP trailer call line should exist");
+            let line = source.lines().nth(line_index).unwrap();
+            let cursor = line.find(needle).unwrap() + needle.len();
+            let help = signature_help_for_document(
+                uri,
+                source,
+                &documents,
+                line_index,
+                cursor,
+                PositionEncoding::Utf8,
+            )
+            .expect("HTTP trailer call should have signature help")
             .to_json();
             assert!(help.contains(expected));
         }

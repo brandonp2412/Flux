@@ -11266,12 +11266,14 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "receiveRequestWithTextBody" => {
-                if args.len() != 6 {
+            "receiveRequestWithTextBody" | "receiveRequestWithTextBodyTrailers" => {
+                let with_trailers = name == "receiveRequestWithTextBodyTrailers";
+                let expected_arguments = if with_trailers { 7 } else { 6 };
+                if args.len() != expected_arguments {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.receiveRequestWithTextBody expects 6 arguments, got {}",
+                            "http.{name} expects {expected_arguments} arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -11342,14 +11344,30 @@ fn check_qualified_call(
                     &body_callback,
                     "http.receiveRequestWithTextBody bodyCallback",
                 )?;
+                if with_trailers {
+                    let trailer_callback =
+                        signatures.canonical_type(&type_of_expr(&args[6], env, signatures)?);
+                    let expected_trailer_callback = Type::Function {
+                        params: vec![Type::I64, Type::Str, Type::Str],
+                        returns: Vec::new(),
+                    };
+                    require_type(
+                        args[6].span,
+                        &expected_trailer_callback,
+                        &trailer_callback,
+                        &format!("http.{name} trailerCallback"),
+                    )?;
+                }
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "receiveRequestWithBinaryBody" => {
-                if args.len() != 6 {
+            "receiveRequestWithBinaryBody" | "receiveRequestWithBinaryBodyTrailers" => {
+                let with_trailers = name == "receiveRequestWithBinaryBodyTrailers";
+                let expected_arguments = if with_trailers { 7 } else { 6 };
+                if args.len() != expected_arguments {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.receiveRequestWithBinaryBody expects 6 arguments, got {}",
+                            "http.{name} expects {expected_arguments} arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -11420,6 +11438,20 @@ fn check_qualified_call(
                     &body_callback,
                     "http.receiveRequestWithBinaryBody bodyCallback",
                 )?;
+                if with_trailers {
+                    let trailer_callback =
+                        signatures.canonical_type(&type_of_expr(&args[6], env, signatures)?);
+                    let expected_trailer_callback = Type::Function {
+                        params: vec![Type::I64, Type::Str, Type::Str],
+                        returns: Vec::new(),
+                    };
+                    require_type(
+                        args[6].span,
+                        &expected_trailer_callback,
+                        &trailer_callback,
+                        &format!("http.{name} trailerCallback"),
+                    )?;
+                }
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "serve" | "serveOnce" | "serveConcurrent" | "serveConcurrentLimit" => {
@@ -11591,12 +11623,14 @@ fn check_qualified_call(
                 )?;
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "receiveResponseWithTextBody" => {
-                if args.len() != 6 {
+            "receiveResponseWithTextBody" | "receiveResponseWithTextBodyTrailers" => {
+                let with_trailers = name == "receiveResponseWithTextBodyTrailers";
+                let expected_arguments = if with_trailers { 7 } else { 6 };
+                if args.len() != expected_arguments {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.receiveResponseWithTextBody expects 6 arguments, got {}",
+                            "http.{name} expects {expected_arguments} arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -11667,14 +11701,30 @@ fn check_qualified_call(
                     &body_callback,
                     "http.receiveResponseWithTextBody bodyCallback",
                 )?;
+                if with_trailers {
+                    let trailer_callback =
+                        signatures.canonical_type(&type_of_expr(&args[6], env, signatures)?);
+                    let expected_trailer_callback = Type::Function {
+                        params: vec![Type::I64, Type::Str, Type::Str],
+                        returns: Vec::new(),
+                    };
+                    require_type(
+                        args[6].span,
+                        &expected_trailer_callback,
+                        &trailer_callback,
+                        &format!("http.{name} trailerCallback"),
+                    )?;
+                }
                 return Ok(vec![Type::I64, Type::Error]);
             }
-            "receiveResponseWithBinaryBody" => {
-                if args.len() != 6 {
+            "receiveResponseWithBinaryBody" | "receiveResponseWithBinaryBodyTrailers" => {
+                let with_trailers = name == "receiveResponseWithBinaryBodyTrailers";
+                let expected_arguments = if with_trailers { 7 } else { 6 };
+                if args.len() != expected_arguments {
                     return Err(diag(
                         span,
                         &format!(
-                            "http.receiveResponseWithBinaryBody expects 6 arguments, got {}",
+                            "http.{name} expects {expected_arguments} arguments, got {}",
                             args.len()
                         ),
                     ));
@@ -11745,6 +11795,20 @@ fn check_qualified_call(
                     &body_callback,
                     "http.receiveResponseWithBinaryBody bodyCallback",
                 )?;
+                if with_trailers {
+                    let trailer_callback =
+                        signatures.canonical_type(&type_of_expr(&args[6], env, signatures)?);
+                    let expected_trailer_callback = Type::Function {
+                        params: vec![Type::I64, Type::Str, Type::Str],
+                        returns: Vec::new(),
+                    };
+                    require_type(
+                        args[6].span,
+                        &expected_trailer_callback,
+                        &trailer_callback,
+                        &format!("http.{name} trailerCallback"),
+                    )?;
+                }
                 return Ok(vec![Type::I64, Type::Error]);
             }
             "request" | "sendTextRequest" => {
