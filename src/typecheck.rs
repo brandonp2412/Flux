@@ -7,7 +7,7 @@ use crate::ast::{
     UnaryOp,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticStage, SourceId, SourceSpan};
-use crate::ir::ControlFlowGraph;
+use crate::ir::{ControlFlowGraph, ControlFlowValueOwnership, OwnershipCallArgumentKind};
 
 #[cfg(test)]
 thread_local! {
@@ -3998,27 +3998,6 @@ fn check_block_all(
     loop_depth: usize,
 ) {
     for stmt in body {
-        if let StmtKind::Expr(Expr {
-            kind:
-                ExprKind::Call {
-                    name,
-                    args,
-                    named_args,
-                },
-            ..
-        }) = &stmt.kind
-            && name == "drop"
-            && args.len() == 1
-            && named_args.is_empty()
-            && let ExprKind::Var(name) = &args[0].kind
-            && borrowed_collection_parameters.contains(name)
-        {
-            diagnostics.push(diag(
-                args[0].span,
-                &format!("cannot consume borrowed collection parameter '{name}'"),
-            ));
-            continue;
-        }
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -5217,6 +5196,7 @@ fn check_cfg_moved_reads(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let graph = ControlFlowGraph::from_function(function, signatures);
+    check_cfg_consuming_ownership(&graph, diagnostics);
     for node in graph.nodes() {
         let Some(state) = graph.move_state_before(node.id) else {
             continue;
@@ -5282,6 +5262,44 @@ fn check_cfg_moved_reads(
         diagnostics.push(diagnostic);
     }
     check_cfg_live_borrow_moves(&graph, diagnostics);
+}
+
+fn check_cfg_consuming_ownership(graph: &ControlFlowGraph, diagnostics: &mut Vec<Diagnostic>) {
+    for node in graph.nodes() {
+        if !graph.is_reachable(node.id) {
+            continue;
+        }
+        for call in &node.ownership.calls {
+            for (index, kind) in call.argument_kinds.iter().enumerate() {
+                if *kind != OwnershipCallArgumentKind::Consuming {
+                    continue;
+                }
+                let definitions = call.consuming_argument_definitions_at(index);
+                if definitions.is_empty()
+                    || definitions.iter().all(|definition| {
+                        graph.definition_ownership(*definition)
+                            == Some(ControlFlowValueOwnership::Owned)
+                    })
+                {
+                    continue;
+                }
+                let name = definitions
+                    .iter()
+                    .find_map(|definition| graph.definition_name(*definition))
+                    .unwrap_or("<unknown>");
+                let span = call
+                    .arguments
+                    .get(index)
+                    .and_then(|value| graph.value(*value))
+                    .map(|value| value.span)
+                    .unwrap_or(call.span);
+                diagnostics.push(diag(
+                    span,
+                    &format!("cannot consume borrowed collection binding '{name}'"),
+                ));
+            }
+        }
+    }
 }
 
 fn check_cfg_live_borrow_moves(graph: &ControlFlowGraph, diagnostics: &mut Vec<Diagnostic>) {
