@@ -6526,6 +6526,10 @@ fn semantic_identifier_kind(
         {
             return Some(view_symbol);
         }
+        if let Some(local) = cfg_local_symbol_for_position(database, source_id, line, column, word)
+        {
+            return Some(local);
+        }
         if let Some(local) =
             visible_local_symbol_for_position(database, source, source_id, line, word)
         {
@@ -14176,6 +14180,53 @@ fn main() -> i64 {
                 SemanticTokenKind::Parameter as i64,
             ]
         );
+    }
+
+    #[test]
+    fn semantic_tokens_respect_anonymous_parameter_scope() {
+        let uri = "file:///tmp/semantic-anonymous-shadow.flux";
+        let source = r#"fn main() -> i64 {
+    let value: str = "outer"
+    let values: i64[] = [1]
+    let mapped: i64[] = map(values, fn(value: i64) { value + 1 })
+    print(value)
+    return mapped.first
+}
+"#;
+        let data = semantic_tokens(uri, source, PositionEncoding::Utf8);
+        let numbers = data
+            .iter()
+            .map(|value| match value {
+                JsonValue::Number(number) => *number,
+                _ => panic!("semantic token data must be numeric"),
+            })
+            .collect::<Vec<_>>();
+        let (chunks, remainder) = numbers.as_chunks::<5>();
+        assert!(remainder.is_empty());
+
+        let callback_start = source.lines().nth(3).unwrap().rfind("value").unwrap() as i64;
+        let outer_start = source.lines().nth(4).unwrap().find("value").unwrap() as i64;
+        let mut line = 0i64;
+        let mut start = 0i64;
+        let mut callback_kind = None;
+        let mut outer_kind = None;
+        for token in chunks {
+            line += token[0];
+            start = if token[0] == 0 {
+                start + token[1]
+            } else {
+                token[1]
+            };
+            if line == 3 && start == callback_start {
+                callback_kind = Some(token[3]);
+            }
+            if line == 4 && start == outer_start {
+                outer_kind = Some(token[3]);
+            }
+        }
+
+        assert_eq!(callback_kind, Some(SemanticTokenKind::Parameter as i64));
+        assert_eq!(outer_kind, Some(SemanticTokenKind::Variable as i64));
     }
 
     #[test]
