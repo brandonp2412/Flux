@@ -25449,15 +25449,24 @@ fn json_temporary_maps_accept_dynamic_copy_aggregate_arrays() {
 struct Item {
     value: i64
 }
+enum Choice {
+    Number(i64)
+    Empty
+}
 fn encoded(value: str) -> void {
     print(value)
 }
-fn encode(value: i64) -> error {
+fn encodeItem(value: i64) -> error {
     return json.encode(map{"items": [Item { value: value }]}, encoded)
 }
+fn encodeChoice(value: i64) -> error {
+    return json.encode(map{"choices": [Choice.Number(value)]}, encoded)
+}
 fn main() -> i64 {
-    let result: error = encode(7)
-    print(result)
+    let itemResult: error = encodeItem(7)
+    let choiceResult: error = encodeChoice(8)
+    print(itemResult)
+    print(choiceResult)
     return 0
 }
 "#;
@@ -25495,6 +25504,8 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         r#"{"items":[{"value":7}]}
+{"choices":[{"Number":8}]}
+nil
 nil
 "#
     );
