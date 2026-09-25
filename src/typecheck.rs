@@ -15182,6 +15182,21 @@ fn check_await(
     )
 }
 
+fn type_of_call_argument(
+    expr: &Expr,
+    expected: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Result<Type, Diagnostic> {
+    if matches!(&expr.kind, ExprKind::List(items) if items.is_empty()) {
+        let expected = signatures.canonical_type(expected);
+        if matches!(expected, Type::List(_)) {
+            return Ok(expected);
+        }
+    }
+    type_of_expr(expr, env, signatures)
+}
+
 fn check_call(
     span: SourceSpan,
     name: &str,
@@ -15280,7 +15295,7 @@ fn check_declared_call(
 
     let mut supplied = HashSet::new();
     for (index, (arg, expected)) in args.iter().zip(&positional).enumerate() {
-        let actual = type_of_expr(arg, env, signatures)?;
+        let actual = type_of_call_argument(arg, &expected.ty, env, signatures)?;
         require_type(
             arg.span,
             &expected.ty,
@@ -15315,7 +15330,7 @@ fn check_declared_call(
             )
             .with_label(expected.span, format!("'{}' is declared here", arg.name)));
         }
-        let actual = type_of_expr(&arg.value, env, signatures)?;
+        let actual = type_of_call_argument(&arg.value, &expected.ty, env, signatures)?;
         require_type(
             arg.value.span,
             &expected.ty,

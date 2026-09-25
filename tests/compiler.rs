@@ -460,6 +460,33 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_list_call_arguments_inherit_parameter_types() {
+    let source = r#"
+fn consume(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn consumeNamed(seed: i64, *, values: i64[]) -> i64 {
+    return seed + values.count
+}
+
+fn main() -> i64 {
+    let positional: i64 = consume([])
+    return positional + consumeNamed(3, values: [])
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("empty list call arguments should inherit their parameter list type");
+    assert!(
+        generated
+            .contains("(struct flux__list){ .data = NULL, .len = 0, .stride = sizeof(int64_t) }"),
+        "{generated}"
+    );
+    assert!(generated.contains("flux__fn_consume"), "{generated}");
+    assert!(generated.contains("flux__fn_consumeNamed"), "{generated}");
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {
