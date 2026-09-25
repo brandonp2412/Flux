@@ -10427,6 +10427,112 @@ fn main() -> i64 {
 }
 
 #[test]
+fn general_uri_reference_resolution_is_bounded_borrowed_tree_shaken_and_runnable() {
+    let source = r##"
+fn resolved(value: str) -> void {
+    print(value)
+}
+
+fn main() -> i64 {
+    print(uri.resolve("http://a/b/c/d;p?q", "g:h", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "./g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "g/", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "/g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "//g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "?y", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "#s", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", ".", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "..", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "../g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "../../g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "../../../g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "/./g", resolved))
+    print(uri.resolve("http://a/b/c/d;p?q", "/../g", resolved))
+    print(uri.resolve("custom:a/b/c", "../d?x=1#f", resolved))
+    print(uri.resolve("not-a-base", "g", resolved))
+    print(uri.resolve("http://a/b", "%ZZ", resolved))
+    return 0
+}
+"##;
+    check_source(source).expect("URI reference resolution should typecheck");
+    let generated = compile_to_c(source).expect("URI reference resolution should lower natively");
+    assert!(generated.contains("flux__uri_resolve("));
+    assert!(generated.contains("flux__uri_remove_dot_segments("));
+    assert!(generated.contains("flux__bounded_url_length("));
+    assert!(generated.contains("invalid URI resolve callback"));
+    assert!(!generated.contains("#include <sys/socket.h>"));
+
+    let invalid_callback = check_source(
+        "fn resolved(_value: str, _extra: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.resolve(\"http://a/b\", \"c\", resolved))\n    return 0\n}\n",
+    )
+    .expect_err("URI resolver callback shape must be exact");
+    assert!(invalid_callback.message.contains("uri.resolve callback"));
+
+    let unused = r#"
+fn resolved(_value: str) -> void {
+}
+fn hidden() -> void {
+    print(uri.resolve("http://a/b", "c", resolved))
+}
+fn main() -> i64 {
+    return 0
+}
+"#;
+    let unused_generated = compile_to_c(unused).expect("dead URI resolver should tree-shake");
+    assert!(!unused_generated.contains("flux__uri_resolve("));
+
+    let root = std::env::temp_dir().join(format!("flux-uri-resolve-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("URI resolve fixture should be writable");
+    let source_path = root.join("uri-resolve.flux");
+    fs::write(&source_path, source).expect("URI resolve Flux source should be writable");
+    let binary = root.join("uri-resolve");
+    let built = Command::new(env!("CARGO_BIN_EXE_flux"))
+        .arg("build")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("URI resolve Flux binary should build");
+    assert!(
+        built.status.success(),
+        "URI resolve fixture build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = Command::new(&binary)
+        .output()
+        .expect("URI resolve Flux binary should run");
+    assert!(run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        concat!(
+            "g:h\nnil\n",
+            "http://a/b/c/g\nnil\n",
+            "http://a/b/c/g\nnil\n",
+            "http://a/b/c/g/\nnil\n",
+            "http://a/g\nnil\n",
+            "http://g\nnil\n",
+            "http://a/b/c/d;p?y\nnil\n",
+            "http://a/b/c/d;p?q#s\nnil\n",
+            "http://a/b/c/d;p?q\nnil\n",
+            "http://a/b/c/\nnil\n",
+            "http://a/b/\nnil\n",
+            "http://a/b/g\nnil\n",
+            "http://a/g\nnil\n",
+            "http://a/g\nnil\n",
+            "http://a/g\nnil\n",
+            "http://a/g\nnil\n",
+            "custom:a/d?x=1#f\nnil\n",
+            "URI base must include a scheme\n",
+            "URI contains an invalid percent escape\n",
+        )
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn general_uri_component_decoding_is_bounded_borrowed_and_tree_shaken() {
     let source = r#"
 fn decoded(value: str) -> void {

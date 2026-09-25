@@ -5058,6 +5058,7 @@ fn emit_runtime_prelude(
 
     if runtime_usage.contains("flux__url_parse_http(")
         || runtime_usage.contains("flux__uri_parse(")
+        || runtime_usage.contains("flux__uri_resolve(")
         || runtime_usage.contains("flux__url_decode_component(")
         || runtime_usage.contains("flux__url_encode_component(")
         || runtime_usage.contains("flux__uri_normalize(")
@@ -5243,6 +5244,271 @@ fn emit_runtime_prelude(
     return NULL;
 }
 "#);
+    }
+    if runtime_usage.contains("flux__uri_resolve(") {
+        out.push_str(r##"struct flux__uri_reference_parts {
+    const char *scheme;
+    size_t scheme_length;
+    bool has_scheme;
+    const char *authority;
+    size_t authority_length;
+    bool has_authority;
+    const char *path;
+    size_t path_length;
+    const char *query;
+    size_t query_length;
+    bool has_query;
+    const char *fragment;
+    size_t fragment_length;
+    bool has_fragment;
+};
+
+static inline const char *flux__uri_parse_reference_parts(const char *value, size_t length, bool require_scheme, struct flux__uri_reference_parts *parts) {
+    if (value == NULL || parts == NULL) return "invalid URI reference";
+    if (require_scheme && length == 0) return "URI base must not be empty";
+    for (size_t index = 0; index < length; index += 1) {
+        unsigned char byte = (unsigned char)value[index];
+        if (byte <= 0x20 || byte == 0x7f) return "URI contains whitespace or control characters";
+        if (byte >= 0x80) return "URI contains raw non-ASCII bytes; percent-encode UTF-8";
+        if (byte == '%') {
+            if (index + 2 >= length) return "URI contains an incomplete percent escape";
+            unsigned char high = (unsigned char)value[index + 1];
+            unsigned char low = (unsigned char)value[index + 2];
+            bool high_hex = (high >= '0' && high <= '9') || (high >= 'a' && high <= 'f') || (high >= 'A' && high <= 'F');
+            bool low_hex = (low >= '0' && low <= '9') || (low >= 'a' && low <= 'f') || (low >= 'A' && low <= 'F');
+            if (!high_hex || !low_hex) return "URI contains an invalid percent escape";
+            index += 2;
+        }
+    }
+
+    size_t fragment_at = length;
+    for (size_t index = 0; index < length; index += 1) {
+        if (value[index] == '#') { fragment_at = index; break; }
+    }
+    size_t query_at = fragment_at;
+    for (size_t index = 0; index < fragment_at; index += 1) {
+        if (value[index] == '?') { query_at = index; break; }
+    }
+    size_t main_end = query_at;
+    parts->has_fragment = fragment_at < length;
+    parts->fragment = parts->has_fragment ? value + fragment_at + 1 : value + length;
+    parts->fragment_length = parts->has_fragment ? length - fragment_at - 1 : 0;
+    parts->has_query = query_at < fragment_at;
+    parts->query = parts->has_query ? value + query_at + 1 : value + fragment_at;
+    parts->query_length = parts->has_query ? fragment_at - query_at - 1 : 0;
+
+    size_t colon_at = main_end;
+    for (size_t index = 0; index < main_end; index += 1) {
+        if (value[index] == ':') { colon_at = index; break; }
+        if (value[index] == '/') break;
+    }
+    parts->has_scheme = colon_at < main_end;
+    parts->scheme = value;
+    parts->scheme_length = parts->has_scheme ? colon_at : 0;
+    size_t cursor = 0;
+    if (parts->has_scheme) {
+        if (colon_at == 0) return "URI scheme is invalid";
+        for (size_t index = 0; index < colon_at; index += 1) {
+            unsigned char byte = (unsigned char)value[index];
+            bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+                || (index > 0 && ((byte >= '0' && byte <= '9') || byte == '+' || byte == '-' || byte == '.'));
+            if (!valid) return "URI scheme is invalid";
+        }
+        cursor = colon_at + 1;
+    } else if (require_scheme) {
+        return "URI base must include a scheme";
+    }
+
+    parts->has_authority = cursor + 1 < main_end && value[cursor] == '/' && value[cursor + 1] == '/';
+    if (parts->has_authority) {
+        size_t authority_start = cursor + 2;
+        size_t authority_end = authority_start;
+        while (authority_end < main_end && value[authority_end] != '/') authority_end += 1;
+        parts->authority = value + authority_start;
+        parts->authority_length = authority_end - authority_start;
+        parts->path = value + authority_end;
+        parts->path_length = main_end - authority_end;
+    } else {
+        parts->authority = value + cursor;
+        parts->authority_length = 0;
+        parts->path = value + cursor;
+        parts->path_length = main_end - cursor;
+    }
+    return NULL;
+}
+
+static inline bool flux__uri_append_bytes(char output[65537], size_t *output_length, const char *value, size_t value_length) {
+    if (output == NULL || output_length == NULL || value == NULL) return false;
+    if (value_length > 65536 - *output_length) return false;
+    memcpy(output + *output_length, value, value_length);
+    *output_length += value_length;
+    return true;
+}
+
+static inline void flux__uri_remove_last_segment(char output[65537], size_t *output_length) {
+    if (output == NULL || output_length == NULL || *output_length == 0) return;
+    size_t cut = *output_length;
+    while (cut > 0 && output[cut - 1] != '/') cut -= 1;
+    *output_length = cut > 0 ? cut - 1 : 0;
+}
+
+static inline bool flux__uri_remove_dot_segments(const char *input, size_t input_length, char output[65537], size_t *output_length) {
+    if (input == NULL || output == NULL || output_length == NULL) return false;
+    size_t cursor = 0;
+    size_t written = 0;
+    while (cursor < input_length) {
+        size_t remaining = input_length - cursor;
+        if (remaining >= 3 && memcmp(input + cursor, "../", 3) == 0) { cursor += 3; continue; }
+        if (remaining >= 2 && memcmp(input + cursor, "./", 2) == 0) { cursor += 2; continue; }
+        if (remaining >= 3 && memcmp(input + cursor, "/./", 3) == 0) { cursor += 2; continue; }
+        if (remaining == 2 && memcmp(input + cursor, "/.", 2) == 0) {
+            if (written >= 65536) return false;
+            output[written++] = '/';
+            cursor += 2;
+            continue;
+        }
+        if (remaining >= 4 && memcmp(input + cursor, "/../", 4) == 0) {
+            cursor += 3;
+            flux__uri_remove_last_segment(output, &written);
+            continue;
+        }
+        if (remaining == 3 && memcmp(input + cursor, "/..", 3) == 0) {
+            flux__uri_remove_last_segment(output, &written);
+            if (written >= 65536) return false;
+            output[written++] = '/';
+            cursor += 3;
+            continue;
+        }
+        if ((remaining == 1 && input[cursor] == '.') || (remaining == 2 && input[cursor] == '.' && input[cursor + 1] == '.')) {
+            cursor = input_length;
+            continue;
+        }
+        size_t segment_end = cursor;
+        if (input[segment_end] == '/') segment_end += 1;
+        while (segment_end < input_length && input[segment_end] != '/') segment_end += 1;
+        size_t segment_length = segment_end - cursor;
+        if (segment_length > 65536 - written) return false;
+        memcpy(output + written, input + cursor, segment_length);
+        written += segment_length;
+        cursor = segment_end;
+    }
+    output[written] = '\0';
+    *output_length = written;
+    return true;
+}
+
+static inline const char *flux__uri_resolve(const char *base, const char *reference, void (*callback)(const char *)) {
+    if (callback == NULL) return "invalid URI resolve callback";
+    size_t base_length = 0;
+    size_t reference_length = 0;
+    if (!flux__bounded_url_length(base, &base_length)) return "URI base exceeds 65536 bytes";
+    if (!flux__bounded_url_length(reference, &reference_length)) return "URI reference exceeds 65536 bytes";
+    struct flux__uri_reference_parts base_parts;
+    struct flux__uri_reference_parts reference_parts;
+    const char *error = flux__uri_parse_reference_parts(base, base_length, true, &base_parts);
+    if (error != NULL) return error;
+    error = flux__uri_parse_reference_parts(reference, reference_length, false, &reference_parts);
+    if (error != NULL) return error;
+
+    const char *target_scheme = reference_parts.has_scheme ? reference_parts.scheme : base_parts.scheme;
+    size_t target_scheme_length = reference_parts.has_scheme ? reference_parts.scheme_length : base_parts.scheme_length;
+    const char *target_authority = NULL;
+    size_t target_authority_length = 0;
+    bool target_has_authority = false;
+    const char *target_query = NULL;
+    size_t target_query_length = 0;
+    bool target_has_query = false;
+    const char *target_path = NULL;
+    size_t target_path_length = 0;
+    char merged_path[65537];
+    char resolved_path[65537];
+
+    if (reference_parts.has_scheme) {
+        target_has_authority = reference_parts.has_authority;
+        target_authority = reference_parts.authority;
+        target_authority_length = reference_parts.authority_length;
+        if (!flux__uri_remove_dot_segments(reference_parts.path, reference_parts.path_length, resolved_path, &target_path_length)) return "resolved URI exceeds 65536 bytes";
+        target_path = resolved_path;
+        target_has_query = reference_parts.has_query;
+        target_query = reference_parts.query;
+        target_query_length = reference_parts.query_length;
+    } else if (reference_parts.has_authority) {
+        target_has_authority = true;
+        target_authority = reference_parts.authority;
+        target_authority_length = reference_parts.authority_length;
+        if (!flux__uri_remove_dot_segments(reference_parts.path, reference_parts.path_length, resolved_path, &target_path_length)) return "resolved URI exceeds 65536 bytes";
+        target_path = resolved_path;
+        target_has_query = reference_parts.has_query;
+        target_query = reference_parts.query;
+        target_query_length = reference_parts.query_length;
+    } else {
+        target_has_authority = base_parts.has_authority;
+        target_authority = base_parts.authority;
+        target_authority_length = base_parts.authority_length;
+        if (reference_parts.path_length == 0) {
+            target_path = base_parts.path;
+            target_path_length = base_parts.path_length;
+            if (reference_parts.has_query) {
+                target_has_query = true;
+                target_query = reference_parts.query;
+                target_query_length = reference_parts.query_length;
+            } else {
+                target_has_query = base_parts.has_query;
+                target_query = base_parts.query;
+                target_query_length = base_parts.query_length;
+            }
+        } else {
+            if (reference_parts.path[0] == '/') {
+                if (!flux__uri_remove_dot_segments(reference_parts.path, reference_parts.path_length, resolved_path, &target_path_length)) return "resolved URI exceeds 65536 bytes";
+            } else {
+                size_t merged_length = 0;
+                if (base_parts.has_authority && base_parts.path_length == 0) {
+                    merged_path[merged_length++] = '/';
+                } else {
+                    size_t prefix_length = 0;
+                    for (size_t index = base_parts.path_length; index > 0; index -= 1) {
+                        if (base_parts.path[index - 1] == '/') { prefix_length = index; break; }
+                    }
+                    if (prefix_length > 0) {
+                        memcpy(merged_path, base_parts.path, prefix_length);
+                        merged_length = prefix_length;
+                    }
+                }
+                if (reference_parts.path_length > 65536 - merged_length) return "resolved URI exceeds 65536 bytes";
+                memcpy(merged_path + merged_length, reference_parts.path, reference_parts.path_length);
+                merged_length += reference_parts.path_length;
+                merged_path[merged_length] = '\0';
+                if (!flux__uri_remove_dot_segments(merged_path, merged_length, resolved_path, &target_path_length)) return "resolved URI exceeds 65536 bytes";
+            }
+            target_path = resolved_path;
+            target_has_query = reference_parts.has_query;
+            target_query = reference_parts.query;
+            target_query_length = reference_parts.query_length;
+        }
+    }
+
+    char output[65537];
+    size_t output_length = 0;
+    if (!flux__uri_append_bytes(output, &output_length, target_scheme, target_scheme_length)
+        || !flux__uri_append_bytes(output, &output_length, ":", 1)) return "resolved URI exceeds 65536 bytes";
+    if (target_has_authority) {
+        if (!flux__uri_append_bytes(output, &output_length, "//", 2)
+            || !flux__uri_append_bytes(output, &output_length, target_authority, target_authority_length)) return "resolved URI exceeds 65536 bytes";
+    }
+    if (!flux__uri_append_bytes(output, &output_length, target_path, target_path_length)) return "resolved URI exceeds 65536 bytes";
+    if (target_has_query) {
+        if (!flux__uri_append_bytes(output, &output_length, "?", 1)
+            || !flux__uri_append_bytes(output, &output_length, target_query, target_query_length)) return "resolved URI exceeds 65536 bytes";
+    }
+    if (reference_parts.has_fragment) {
+        if (!flux__uri_append_bytes(output, &output_length, "#", 1)
+            || !flux__uri_append_bytes(output, &output_length, reference_parts.fragment, reference_parts.fragment_length)) return "resolved URI exceeds 65536 bytes";
+    }
+    output[output_length] = '\0';
+    callback(output);
+    return NULL;
+}
+"##);
     }
     if runtime_usage.contains("flux__json_parse(")
         || runtime_usage.contains("flux__json_validate(")
@@ -50956,10 +51222,29 @@ fn emit_qualified_call(
         ));
     }
     if namespace == "uri" {
-        if !named_args.is_empty()
-            || !matches!(name, "parse" | "decode" | "encode" | "normalize")
-            || args.len() != 2
-        {
+        if !named_args.is_empty() {
+            return Err(diag(span, "invalid URI call reached code generation"));
+        }
+        if name == "resolve" {
+            if args.len() != 3 {
+                return Err(diag(
+                    span,
+                    "invalid URI resolve call reached code generation",
+                ));
+            }
+            let base = emit_expr(&args[0], env, signatures)?;
+            let reference = emit_expr(&args[1], env, signatures)?;
+            let callback = emit_expr(&args[2], env, signatures)?;
+            return Ok((
+                format!(
+                    "flux__uri_resolve({}, {}, {})",
+                    base.code, reference.code, callback.code
+                ),
+                vec![Type::Error],
+                None,
+            ));
+        }
+        if !matches!(name, "parse" | "decode" | "encode" | "normalize") || args.len() != 2 {
             return Err(diag(span, "invalid URI call reached code generation"));
         }
         let value = emit_expr(&args[0], env, signatures)?;
@@ -56597,6 +56882,29 @@ fn emit_cfg_scalar_expr_direct(
             name,
             arguments,
         } if namespace == "uri" && ty == Type::Error => {
+            if name == "resolve" {
+                if arguments.len() != 3 {
+                    return None;
+                }
+                let callback = emit_cfg_callback_argument_direct(
+                    &arguments[2],
+                    &[Type::Str],
+                    env,
+                    signatures,
+                )?;
+                return emit_cfg_ordered_call_expression_direct(
+                    &arguments[..2],
+                    &[Type::Str, Type::Str],
+                    env,
+                    signatures,
+                    |rendered| {
+                        format!(
+                            "flux__uri_resolve({}, {}, {callback})",
+                            rendered[0], rendered[1]
+                        )
+                    },
+                );
+            }
             if arguments.len() != 2 {
                 return None;
             }

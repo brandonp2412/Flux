@@ -12430,36 +12430,50 @@ fn check_qualified_call(
         }
     }
     if namespace == "uri" {
-        if !matches!(name.as_str(), "parse" | "decode" | "encode" | "normalize")
-            || !named_args.is_empty()
-            || args.len() != 2
-        {
+        if !named_args.is_empty() {
             return Err(diag(
                 *name_span,
                 &format!("uri module has no function '{name}' or invalid arguments"),
             ));
         }
-        let value = type_of_expr(&args[0], env, signatures)?;
-        require_type(
-            args[0].span,
-            &Type::Str,
-            &value,
-            &format!("uri.{name} value"),
-        )?;
-        let callback = signatures.canonical_type(&type_of_expr(&args[1], env, signatures)?);
-        let expected = if name == "parse" {
-            Type::Function {
-                params: vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
-                returns: Vec::new(),
-            }
-        } else {
-            Type::Function {
-                params: vec![Type::Str],
-                returns: Vec::new(),
+        let (value_count, callback_index, callback_params) = match name.as_str() {
+            "parse" => (
+                1usize,
+                1usize,
+                vec![Type::Str, Type::Str, Type::Str, Type::Str, Type::Str],
+            ),
+            "decode" | "encode" | "normalize" => (1usize, 1usize, vec![Type::Str]),
+            "resolve" => (2usize, 2usize, vec![Type::Str]),
+            _ => {
+                return Err(diag(
+                    *name_span,
+                    &format!("uri module has no function '{name}'"),
+                ));
             }
         };
+        if args.len() != callback_index + 1 {
+            return Err(diag(
+                *name_span,
+                &format!("uri.{name} expects {} arguments", callback_index + 1),
+            ));
+        }
+        for (index, argument) in args.iter().take(value_count).enumerate() {
+            let value = type_of_expr(argument, env, signatures)?;
+            require_type(
+                argument.span,
+                &Type::Str,
+                &value,
+                &format!("uri.{name} string argument {}", index + 1),
+            )?;
+        }
+        let callback =
+            signatures.canonical_type(&type_of_expr(&args[callback_index], env, signatures)?);
+        let expected = Type::Function {
+            params: callback_params,
+            returns: Vec::new(),
+        };
         require_type(
-            args[1].span,
+            args[callback_index].span,
             &expected,
             &callback,
             &format!("uri.{name} callback"),

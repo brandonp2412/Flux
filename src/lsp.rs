@@ -1729,6 +1729,13 @@ fn add_qualified_namespace_completions(
             3,
             "fn uri.normalize(value: str, callback: fn(str) -> void) -> error",
         );
+        push_completion_item(
+            items,
+            seen,
+            "resolve",
+            3,
+            "fn uri.resolve(base: str, reference: str, callback: fn(str) -> void) -> error",
+        );
         return true;
     }
     if namespace == "path" {
@@ -4153,6 +4160,12 @@ fn signature_help_for_document_cached(
                 "decode" | "encode" | "normalize" => Some(signature_help_for_builtin(
                     &format!("uri.{implementation_member}"),
                     &["value: str", "callback: fn(str) -> void"],
+                    "error",
+                    active_parameter,
+                )),
+                "resolve" => Some(signature_help_for_builtin(
+                    "uri.resolve",
+                    &["base: str", "reference: str", "callback: fn(str) -> void"],
                     "error",
                     active_parameter,
                 )),
@@ -11166,6 +11179,53 @@ fn main() -> i64 {
             "fn uri.parse(value: str, callback: fn(str, str, str, str, str) -> void) -> error"
         ));
         assert!(items.contains("fn uri.normalize(value: str, callback: fn(str) -> void) -> error"));
+    }
+
+    #[test]
+    fn uri_resolve_completion_and_signature_help_are_builtin() {
+        let uri = "file:///tmp/uri-resolve-signature.flux";
+        let source = "fn resolved(_value: str) -> void {\n}\nfn main() -> i64 {\n    print(uri.resolve(\"http://a/b\", \"c\", resolved))\n    return 0\n}\n";
+        let documents = HashMap::from([(uri.to_string(), source.to_string())]);
+        let line_index = source
+            .lines()
+            .position(|line| line.contains("uri.resolve("))
+            .expect("URI resolve call line should exist");
+        let line = source.lines().nth(line_index).unwrap();
+        let needle = "uri.resolve(";
+        let cursor = line.find(needle).unwrap() + needle.len();
+        let help = signature_help_for_document(
+            uri,
+            source,
+            &documents,
+            line_index,
+            cursor,
+            PositionEncoding::Utf8,
+        )
+        .expect("URI resolve call should have signature help")
+        .to_json();
+        assert!(help.contains(
+            "fn uri.resolve(base: str, reference: str, callback: fn(str) -> void) -> error"
+        ));
+
+        let completion_source = format!("{source}    uri.\n");
+        let completion_line = completion_source
+            .lines()
+            .position(|line| line.trim() == "uri.")
+            .expect("URI completion line should exist");
+        let line = completion_source.lines().nth(completion_line).unwrap();
+        let completion_documents = HashMap::from([(uri.to_string(), completion_source.clone())]);
+        let items = JsonValue::Array(completion_items_at_cursor(
+            uri,
+            &completion_source,
+            &completion_documents,
+            Some(completion_line),
+            Some(line.len()),
+            PositionEncoding::Utf8,
+        ))
+        .to_json();
+        assert!(items.contains(
+            "fn uri.resolve(base: str, reference: str, callback: fn(str) -> void) -> error"
+        ));
     }
 
     #[test]
