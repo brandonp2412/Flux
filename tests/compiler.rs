@@ -487,6 +487,55 @@ fn main() -> i64 {
 }
 
 #[test]
+fn empty_collection_call_arguments_inherit_parameter_types() {
+    let source = r#"
+fn countList(values: i64[]) -> i64 {
+    return values.count
+}
+
+fn countSet(values: set<i64>) -> i64 {
+    return values.count
+}
+
+fn countSetNamed(seed: i64, *, values: set<i64>) -> i64 {
+    return seed + values.count
+}
+
+fn applyList(transform: fn(i64[]) -> i64) -> i64 {
+    return transform([])
+}
+
+fn applySet(transform: fn(set<i64>) -> i64) -> i64 {
+    return transform({})
+}
+
+fn main() -> i64 {
+    let listCount: i64 = applyList(countList)
+    let setCount: i64 = applySet(countSet)
+    return listCount + setCount + countSet({}) + countSetNamed(3, values: {})
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("empty list and set call arguments should inherit exact parameter types");
+    assert!(
+        generated
+            .contains("(struct flux__list){ .data = NULL, .len = 0, .stride = sizeof(int64_t) }"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_borrowed_list"),
+        "empty list calls should lower through typed-IR borrowed descriptors: {generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_borrowed_set"),
+        "empty set calls should lower through typed-IR borrowed descriptors: {generated}"
+    );
+    assert!(generated.contains("flux__fn_countList"), "{generated}");
+    assert!(generated.contains("flux__fn_countSet"), "{generated}");
+    assert!(generated.contains("flux__fn_countSetNamed"), "{generated}");
+}
+
+#[test]
 fn map_calls_with_computed_copy_peers_use_ordered_typed_ir_storage() {
     let source = r#"
 fn observeBefore(value: i64) -> i64 {

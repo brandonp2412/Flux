@@ -7379,6 +7379,61 @@ fn record_inline_sequence_callback_types(
     }
 }
 
+fn call_argument_expected_type(
+    callee: &str,
+    positional_index: usize,
+    name: Option<&str>,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<Type> {
+    if let Some(Type::Function { params, .. }) = env.get(callee) {
+        return name
+            .is_none()
+            .then(|| params.get(positional_index).cloned())
+            .flatten();
+    }
+
+    let signature = signatures.get(callee)?;
+    if let Some(name) = name {
+        return signature
+            .param_details
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .map(|parameter| parameter.ty.clone());
+    }
+    signature
+        .param_details
+        .iter()
+        .filter(|parameter| !parameter.named_only)
+        .nth(positional_index)
+        .map(|parameter| parameter.ty.clone())
+}
+
+fn record_contextual_empty_collection_type(
+    expr: &Expr,
+    expected: Option<Type>,
+    signatures: &Signatures,
+    evaluations: &mut Vec<(SourceSpan, Vec<Type>)>,
+) {
+    let Some(expected) = expected.map(|ty| signatures.canonical_type(&ty)) else {
+        return;
+    };
+    let contextual = matches!(
+        (&expr.kind, &expected),
+        (ExprKind::List(items), Type::List(_)) if items.is_empty()
+    ) || matches!(
+        (&expr.kind, &expected),
+        (ExprKind::Set(items), Type::Set(_)) if items.is_empty()
+    );
+    if contextual
+        && !evaluations
+            .iter()
+            .any(|(candidate, _)| *candidate == expr.span)
+    {
+        evaluations.push((expr.span, vec![expected]));
+    }
+}
+
 fn record_expr_types(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -7421,10 +7476,22 @@ fn record_expr_types(
                     record_inline_sequence_callback_types(arg, env, signatures, evaluations);
                 } else {
                     record_expr_types(arg, env, signatures, evaluations);
+                    record_contextual_empty_collection_type(
+                        arg,
+                        call_argument_expected_type(name, index, None, env, signatures),
+                        signatures,
+                        evaluations,
+                    );
                 }
             }
             for arg in named_args {
                 record_expr_types(&arg.value, env, signatures, evaluations);
+                record_contextual_empty_collection_type(
+                    &arg.value,
+                    call_argument_expected_type(name, args.len(), Some(&arg.name), env, signatures),
+                    signatures,
+                    evaluations,
+                );
             }
         }
         ExprKind::QualifiedCall {

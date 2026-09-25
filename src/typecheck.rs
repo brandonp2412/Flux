@@ -15188,11 +15188,15 @@ fn type_of_call_argument(
     env: &HashMap<String, Type>,
     signatures: &Signatures,
 ) -> Result<Type, Diagnostic> {
-    if matches!(&expr.kind, ExprKind::List(items) if items.is_empty()) {
-        let expected = signatures.canonical_type(expected);
-        if matches!(expected, Type::List(_)) {
+    let expected = signatures.canonical_type(expected);
+    match &expr.kind {
+        ExprKind::List(items) if items.is_empty() && matches!(expected, Type::List(_)) => {
             return Ok(expected);
         }
+        ExprKind::Set(items) if items.is_empty() && matches!(expected, Type::Set(_)) => {
+            return Ok(expected);
+        }
+        _ => {}
     }
     type_of_expr(expr, env, signatures)
 }
@@ -15232,7 +15236,7 @@ fn check_call(
             ));
         }
         for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
-            let actual = type_of_expr(arg, env, signatures)?;
+            let actual = type_of_call_argument(arg, expected, env, signatures)?;
             require_type(
                 arg.span,
                 expected,

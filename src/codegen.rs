@@ -54670,9 +54670,6 @@ fn emit_cfg_call_scoped_borrowed_list_direct_indexed(
     let CfgAggregateConstantKind::List(values) = &aggregate.kind else {
         return None;
     };
-    if values.is_empty() {
-        return None;
-    }
 
     let element = signatures.canonical_type(element);
     let element_c = c_type(&element, signatures);
@@ -54680,6 +54677,15 @@ fn emit_cfg_call_scoped_borrowed_list_direct_indexed(
         Some(index) => format!("flux__typed_borrowed_list_{index}"),
         None => "flux__typed_borrowed_list".to_string(),
     };
+    if values.is_empty() {
+        return Some((
+            format!(
+                "struct flux__list {borrowed} = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({element_c}) }}; "
+            ),
+            borrowed,
+        ));
+    }
+
     let mut prelude = String::new();
     let mut items = Vec::with_capacity(values.len());
     for (index, value) in values.iter().enumerate() {
@@ -54717,9 +54723,6 @@ fn emit_cfg_call_scoped_borrowed_set_direct_indexed(
     let CfgAggregateConstantKind::Set(values) = &aggregate.kind else {
         return None;
     };
-    if values.is_empty() {
-        return None;
-    }
 
     let element = signatures.canonical_type(element);
     let element_c = c_type(&element, signatures);
@@ -54727,6 +54730,15 @@ fn emit_cfg_call_scoped_borrowed_set_direct_indexed(
         Some(index) => format!("flux__typed_borrowed_set_{index}"),
         None => "flux__typed_borrowed_set".to_string(),
     };
+    if values.is_empty() {
+        return Some((
+            format!(
+                "struct flux__list {borrowed} = (struct flux__list){{ .data = NULL, .len = 0, .stride = sizeof({element_c}) }}; "
+            ),
+            borrowed,
+        ));
+    }
+
     let mut prelude = String::new();
     let mut seen = HashSet::new();
     let mut items = Vec::with_capacity(values.len());
