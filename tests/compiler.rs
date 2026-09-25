@@ -66,6 +66,43 @@ fn main() -> i64 {
 }
 
 #[test]
+fn effectful_copy_map_json_temporary_uses_ordered_typed_ir_storage() {
+    let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn captureJson(_value: str) -> void {
+}
+
+fn main() -> i64 {
+    json.encode(map{"left": (value: observeLeft(7)), "right": (value: observeRight(8))}, captureJson)
+    return 0
+}
+"#;
+    let generated = compile_to_c(source)
+        .expect("effectful Copy map JSON temporary should lower through typed IR");
+    assert!(
+        generated.contains("flux__typed_borrowed_map_keys"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__typed_borrowed_map_values"),
+        "{generated}"
+    );
+    assert!(
+        generated.contains("flux__json_encode_map_aggregate_"),
+        "{generated}"
+    );
+}
+
+#[test]
 fn typed_ir_proves_short_circuit_result_from_left_constant() {
     let source = r#"
 fn choose(value: bool) -> bool {

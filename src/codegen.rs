@@ -37276,6 +37276,113 @@ fn cfg_call_scoped_list_aggregate(
     }))
 }
 
+fn cfg_call_scoped_copy_aggregate_value(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<CfgAggregateValue> {
+    if let Some(value) = cfg_literal_aggregate_value(cfg, id) {
+        return Some(value);
+    }
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) || !value.ownership.is_copy() {
+        return None;
+    }
+    match &value.kind {
+        crate::ir::ControlFlowValueKind::RecordLiteral { fields } => Some(
+            CfgAggregateValue::Aggregate(Box::new(CfgAggregateConstant {
+                ty: value.ty.clone(),
+                kind: CfgAggregateConstantKind::Record(
+                    fields
+                        .iter()
+                        .map(|(name, id)| {
+                            Some((
+                                name.clone(),
+                                cfg_call_scoped_copy_aggregate_value(cfg, *id)?,
+                            ))
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                ),
+            })),
+        ),
+        crate::ir::ControlFlowValueKind::StructLiteral { name, base, fields } => {
+            let base = match base {
+                Some(id) => Some(cfg_call_scoped_copy_aggregate_value(cfg, *id)?),
+                None => None,
+            };
+            Some(CfgAggregateValue::Aggregate(Box::new(
+                CfgAggregateConstant {
+                    ty: value.ty.clone(),
+                    kind: CfgAggregateConstantKind::Struct {
+                        name: name.clone(),
+                        base,
+                        fields: fields
+                            .iter()
+                            .map(|(field, id)| {
+                                Some((
+                                    field.clone(),
+                                    cfg_call_scoped_copy_aggregate_value(cfg, *id)?,
+                                ))
+                            })
+                            .collect::<Option<Vec<_>>>()?,
+                    },
+                },
+            )))
+        }
+        crate::ir::ControlFlowValueKind::InterfacePack {
+            interface,
+            target,
+            value: packed,
+        } if matches!(&value.ty, Type::Named(returned) if returned == interface) => {
+            Some(CfgAggregateValue::InterfacePack {
+                interface: interface.clone(),
+                target: target.clone(),
+                value: Box::new(cfg_call_scoped_copy_aggregate_value(cfg, *packed)?),
+            })
+        }
+        crate::ir::ControlFlowValueKind::QualifiedCall {
+            namespace,
+            name,
+            arguments,
+        } if matches!(&value.ty, Type::Named(returned) if returned == namespace) => {
+            Some(CfgAggregateValue::EnumVariant {
+                enum_name: namespace.clone(),
+                variant: name.clone(),
+                payloads: arguments
+                    .iter()
+                    .map(|id| cfg_call_scoped_copy_aggregate_value(cfg, *id))
+                    .collect::<Option<Vec<_>>>()?,
+            })
+        }
+        _ => Some(CfgAggregateValue::Direct(cfg_direct_scalar_expr(cfg, id)?)),
+    }
+}
+
+fn cfg_call_scoped_map_aggregate(
+    cfg: &crate::ir::ControlFlowGraph,
+    id: crate::ir::ControlFlowValueId,
+) -> Option<Box<CfgAggregateConstant>> {
+    let value = cfg.value(id)?;
+    if !cfg.is_value_reachable(id) {
+        return None;
+    }
+    let crate::ir::ControlFlowValueKind::Map { entries } = &value.kind else {
+        return None;
+    };
+    let entries = entries
+        .iter()
+        .map(|(key, value)| {
+            Some((
+                cfg.proven_scalar_constant(*key)?.clone(),
+                cfg_call_scoped_copy_aggregate_value(cfg, *value)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Box::new(CfgAggregateConstant {
+        ty: value.ty.clone(),
+        kind: CfgAggregateConstantKind::Map(entries),
+    }))
+}
+
 fn cfg_scalar_leaf(
     cfg: &crate::ir::ControlFlowGraph,
     id: crate::ir::ControlFlowValueId,
@@ -37335,8 +37442,9 @@ fn cfg_borrowed_index_base(
         return None;
     }
     if matches!(&value.kind, crate::ir::ControlFlowValueKind::Map { .. }) {
-        let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)? else {
-            return None;
+        let aggregate = match cfg_literal_aggregate_value(cfg, id) {
+            Some(CfgAggregateValue::Aggregate(aggregate)) => aggregate,
+            _ => cfg_call_scoped_map_aggregate(cfg, id)?,
         };
         return Some(CfgScalarExpr {
             ty: value.ty.clone(),
@@ -37466,10 +37574,17 @@ fn cfg_borrowed_collection_field_base(
     if !matches!(&value.ty, Type::Set(_) | Type::Map(_, _)) {
         return None;
     }
-    if matches!(
-        &value.kind,
-        crate::ir::ControlFlowValueKind::Set { .. } | crate::ir::ControlFlowValueKind::Map { .. }
-    ) {
+    if matches!(&value.kind, crate::ir::ControlFlowValueKind::Map { .. }) {
+        let aggregate = match cfg_literal_aggregate_value(cfg, id) {
+            Some(CfgAggregateValue::Aggregate(aggregate)) => aggregate,
+            _ => cfg_call_scoped_map_aggregate(cfg, id)?,
+        };
+        return Some(CfgScalarExpr {
+            ty: value.ty.clone(),
+            kind: CfgScalarExprKind::Aggregate(aggregate),
+        });
+    }
+    if matches!(&value.kind, crate::ir::ControlFlowValueKind::Set { .. }) {
         let CfgAggregateValue::Aggregate(aggregate) = cfg_literal_aggregate_value(cfg, id)? else {
             return None;
         };
@@ -52882,6 +52997,9 @@ fn emit_cfg_aggregate_constant(
             ))
         }
         (CfgAggregateConstantKind::Map(entries), Type::Map(key, value)) => {
+            if !cfg_aggregate_constant_is_reorder_safe(aggregate) {
+                return None;
+            }
             if entries
                 .iter()
                 .any(|(entry_key, _)| !scalar_matches(entry_key, key))
@@ -54451,6 +54569,69 @@ fn cfg_borrowed_list_has_named_root(argument: &CfgScalarExpr) -> bool {
         }
         _ => false,
     }
+}
+
+fn emit_cfg_call_scoped_borrowed_map_direct(
+    argument: &CfgScalarExpr,
+    key: &Type,
+    value: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+) -> Option<(String, String)> {
+    let expected = Type::Map(Box::new(key.clone()), Box::new(value.clone()));
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
+        || !signatures.is_copy_type(key)
+        || !signatures.is_copy_type(value)
+    {
+        return None;
+    }
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    if cfg_aggregate_constant_is_reorder_safe(aggregate) {
+        return None;
+    }
+    let CfgAggregateConstantKind::Map(entries) = &aggregate.kind else {
+        return None;
+    };
+    if entries.is_empty() {
+        return None;
+    }
+
+    let key = signatures.canonical_type(key);
+    let value = signatures.canonical_type(value);
+    let key_c = c_type(&key, signatures);
+    let value_c = c_type(&value, signatures);
+    let mut prelude = String::new();
+    let mut keys = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+    for (index, (entry_key, entry_value)) in entries.iter().enumerate() {
+        if signatures.canonical_type(&entry_key.ty()) != key {
+            return None;
+        }
+        let key_rendered = constant_c_value(entry_key);
+        let value_rendered = emit_cfg_aggregate_value(entry_value, &value, env, signatures)?;
+        let key_temp = format!("flux__typed_borrowed_map_key_{index}");
+        let value_temp = format!("flux__typed_borrowed_map_value_{index}");
+        prelude.push_str(&format!("{key_c} {key_temp} = {key_rendered}; "));
+        prelude.push_str(&format!("{value_c} {value_temp} = {value_rendered}; "));
+        keys.push(key_temp);
+        values.push(value_temp);
+    }
+
+    let key_storage = "flux__typed_borrowed_map_keys";
+    let value_storage = "flux__typed_borrowed_map_values";
+    let borrowed = "flux__typed_borrowed_map";
+    prelude.push_str(&format!(
+        "{key_c} {key_storage}[{}] = {{ {} }}; {value_c} {value_storage}[{}] = {{ {} }}; struct flux__map {borrowed} = (struct flux__map){{ .keys = (struct flux__list){{ .data = (void *){key_storage}, .len = {}, .stride = sizeof({key_c}) }}, .values = (struct flux__list){{ .data = (void *){value_storage}, .len = {}, .stride = sizeof({value_c}) }} }}; ",
+        entries.len(),
+        keys.join(", "),
+        entries.len(),
+        values.join(", "),
+        entries.len(),
+        entries.len()
+    ));
+    Some((prelude, borrowed.to_string()))
 }
 
 fn emit_cfg_call_scoped_borrowed_list_direct(
@@ -57272,42 +57453,57 @@ fn emit_cfg_scalar_expr_direct(
                     return None;
                 }
                 let mapped = signatures.canonical_type(mapped);
-                let temporary_mapped_supported = json_map_value_kind(&mapped, signatures).is_ok();
+                let aggregate_mapped = json_map_contains_aggregate(&mapped, signatures);
+                let temporary_mapped_supported =
+                    json_map_value_kind(&mapped, signatures).is_ok() || aggregate_mapped;
                 if is_literal && !temporary_mapped_supported {
                     return None;
                 }
-                let value = emit_cfg_scalar_expr_direct(value, env, signatures)?;
+                let call_scoped = if is_literal {
+                    emit_cfg_call_scoped_borrowed_map_direct(value, key, &mapped, env, signatures)
+                } else {
+                    None
+                };
+                let value = match &call_scoped {
+                    Some((_, borrowed)) => borrowed.clone(),
+                    None => emit_cfg_scalar_expr_direct(value, env, signatures)?,
+                };
                 let callback = emit_cfg_callback_argument_direct(
                     &arguments[1],
                     &[Type::Str],
                     env,
                     signatures,
                 )?;
-                if is_named && json_map_contains_aggregate(&mapped, signatures) {
+                let call = if aggregate_mapped {
                     let map_ty = Type::Map(Box::new(Type::Str), Box::new(mapped.clone()));
                     let helper = json_map_aggregate_helper_name(&map_ty, signatures);
-                    return Some(format!("{helper}({value}, {callback})"));
-                }
-                let kind = json_map_value_kind(&mapped, signatures).ok()?;
-                let helper = if kind >= 200000 {
-                    ("flux__json_encode_map_map", kind)
-                } else if kind >= 100006 {
-                    ("flux__json_encode_map_map", kind - 6)
-                } else if (100003..=100005).contains(&kind) {
-                    ("flux__json_encode_nested_object", kind)
-                } else if kind >= 100000 {
-                    ("flux__json_encode_optional_object", kind)
-                } else if kind >= 6 {
-                    ("flux__json_encode_map_map", kind - 6)
-                } else if kind >= 3 {
-                    ("flux__json_encode_nested_object", kind - 3)
+                    format!("{helper}({value}, {callback})")
                 } else {
-                    ("flux__json_encode_object", kind)
+                    let kind = json_map_value_kind(&mapped, signatures).ok()?;
+                    let helper = if kind >= 200000 {
+                        ("flux__json_encode_map_map", kind)
+                    } else if kind >= 100006 {
+                        ("flux__json_encode_map_map", kind - 6)
+                    } else if (100003..=100005).contains(&kind) {
+                        ("flux__json_encode_nested_object", kind)
+                    } else if kind >= 100000 {
+                        ("flux__json_encode_optional_object", kind)
+                    } else if kind >= 6 {
+                        ("flux__json_encode_map_map", kind - 6)
+                    } else if kind >= 3 {
+                        ("flux__json_encode_nested_object", kind - 3)
+                    } else {
+                        ("flux__json_encode_object", kind)
+                    };
+                    if helper.0 == "flux__json_encode_map_map" {
+                        format!("{}({value}, {}, 0, {callback})", helper.0, helper.1)
+                    } else {
+                        format!("{}({value}, {}, {callback})", helper.0, helper.1)
+                    }
                 };
-                Some(if helper.0 == "flux__json_encode_map_map" {
-                    format!("{}({value}, {}, 0, {callback})", helper.0, helper.1)
-                } else {
-                    format!("{}({value}, {}, {callback})", helper.0, helper.1)
+                Some(match call_scoped {
+                    Some((prelude, _)) => format!("__extension__ ({{ {prelude}{call}; }})"),
+                    None => call,
                 })
             }
             "encode" if arguments.len() == 2 => {
@@ -75893,6 +76089,113 @@ fn main() -> i64 {
             assert_eq!(emitted, direct, "{function}");
             assert!(!emitted.contains("checked-ast-json-nested-list-temporary"));
         }
+    }
+
+    #[test]
+    fn effectful_copy_map_json_temporary_emits_from_ordered_typed_ir() {
+        let source = r#"
+fn observeLeft(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeRight(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn jsonMapTemporaryText(_value: str) -> void {
+}
+
+fn encode(first: i64, second: i64) -> error {
+    return json.encode(map{"left": (value: observeLeft(first)), "right": (value: observeRight(second))}, jsonMapTemporaryText)
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4256))
+            .expect("effectful map JSON temporary fixture should typecheck");
+        let graph = database
+            .control_flow_graph("encode")
+            .expect("encode CFG should exist");
+        let facts = cfg_rewrite_facts(graph);
+        let root = graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    &value.kind,
+                    crate::ir::ControlFlowValueKind::QualifiedCall {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "json" && name == "encode"
+                )
+            })
+            .expect("JSON map call should remain in typed IR");
+        let scalar = facts
+            .scalar_exprs
+            .get(&source_span_key(root.span))
+            .expect("JSON map call should have scalar typed-IR facts");
+        let env = HashMap::from([
+            ("first".to_string(), Type::I64),
+            ("second".to_string(), Type::I64),
+        ]);
+        let CfgScalarExprKind::QualifiedCall { arguments, .. } = &scalar.kind else {
+            panic!("JSON map root should preserve qualified typed-IR facts");
+        };
+        assert!(
+            emit_cfg_scalar_expr_direct(&arguments[0], &env, database.signatures()).is_none(),
+            "effectful map aggregate should require an ordered call-scoped consumer"
+        );
+        let direct = emit_cfg_scalar_expr_direct(scalar, &env, database.signatures())
+            .expect("effectful Copy map JSON temporary should emit directly");
+        let left = direct
+            .find(&function_c_name("observeLeft"))
+            .expect("left effect should be materialized");
+        let right = direct
+            .find(&function_c_name("observeRight"))
+            .expect("right effect should be materialized");
+        assert!(left < right, "{direct}");
+        assert_eq!(
+            direct.matches(&function_c_name("observeLeft")).count(),
+            1,
+            "{direct}"
+        );
+        assert_eq!(
+            direct.matches(&function_c_name("observeRight")).count(),
+            1,
+            "{direct}"
+        );
+        assert!(direct.starts_with("__extension__ ({ "), "{direct}");
+        assert!(direct.contains("flux__typed_borrowed_map_keys"), "{direct}");
+        assert!(
+            direct.contains("flux__typed_borrowed_map_values"),
+            "{direct}"
+        );
+        assert!(
+            direct.contains("flux__json_encode_map_aggregate_"),
+            "{direct}"
+        );
+
+        let fake = Expr {
+            line: root.span.line,
+            span: root.span,
+            kind: ExprKind::Str("checked-ast-effectful-map-json".to_string()),
+        };
+        let emitted = emit_expr_for_expected_with_cfg_proofs(
+            &fake,
+            &Type::Error,
+            &env,
+            database.signatures(),
+            &HashMap::new(),
+            &facts,
+        )
+        .expect("effectful Copy map JSON temporary should bypass checked AST");
+        assert_eq!(emitted, direct);
+        assert!(!emitted.contains("checked-ast-effectful-map-json"));
     }
 
     #[test]
