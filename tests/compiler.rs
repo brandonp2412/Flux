@@ -75325,12 +75325,14 @@ fn main() -> i64 {
     let generated = fluxc::codegen::emit_c(&program, &signatures)
         .expect("set literal should lower to native C");
     assert!(generated.contains("struct flux__list"));
-    assert!(generated.contains("INT64_C(1), INT64_C(2), INT64_C(3)"));
+    assert!(generated.contains("flux__typed_borrowed_set_value_0 = INT64_C(1)"));
+    assert!(generated.contains("flux__typed_borrowed_set_value_1 = INT64_C(2)"));
+    assert!(generated.contains("flux__typed_borrowed_set_value_3 = INT64_C(3)"));
     assert!(
         generated.contains(".len = 3"),
         "deduplicated set length must match storage"
     );
-    assert!(!generated.contains("INT64_C(1), INT64_C(2), INT64_C(1), INT64_C(3)"));
+    assert!(!generated.contains("flux__typed_borrowed_set_value_2"));
 }
 
 #[test]

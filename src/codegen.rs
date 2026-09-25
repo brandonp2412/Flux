@@ -54698,6 +54698,73 @@ fn emit_cfg_call_scoped_borrowed_list_direct_indexed(
     Some((prelude, borrowed))
 }
 
+fn emit_cfg_call_scoped_borrowed_set_direct_indexed(
+    argument: &CfgScalarExpr,
+    element: &Type,
+    env: &HashMap<String, Type>,
+    signatures: &Signatures,
+    scope_index: Option<usize>,
+) -> Option<(String, String)> {
+    let expected = Type::Set(Box::new(element.clone()));
+    if signatures.canonical_type(&argument.ty) != signatures.canonical_type(&expected)
+        || !signatures.is_copy_type(element)
+    {
+        return None;
+    }
+    let CfgScalarExprKind::Aggregate(aggregate) = &argument.kind else {
+        return None;
+    };
+    let CfgAggregateConstantKind::Set(values) = &aggregate.kind else {
+        return None;
+    };
+    if values.is_empty() {
+        return None;
+    }
+
+    let element = signatures.canonical_type(element);
+    let element_c = c_type(&element, signatures);
+    let borrowed = match scope_index {
+        Some(index) => format!("flux__typed_borrowed_set_{index}"),
+        None => "flux__typed_borrowed_set".to_string(),
+    };
+    let mut prelude = String::new();
+    let mut seen = HashSet::new();
+    let mut items = Vec::with_capacity(values.len());
+    for (index, value) in values.iter().enumerate() {
+        let key = match value {
+            CfgAggregateValue::Scalar(constant) => {
+                format!("{}:{constant:?}", constant.ty().name())
+            }
+            CfgAggregateValue::EnumVariant {
+                enum_name,
+                variant,
+                payloads,
+            } if payloads.is_empty() => format!("enum:{enum_name}.{variant}"),
+            CfgAggregateValue::EnumVariant { .. } | CfgAggregateValue::InterfacePack { .. } => {
+                return None;
+            }
+            CfgAggregateValue::AbsentOptional => "none".to_string(),
+            CfgAggregateValue::Direct(_) | CfgAggregateValue::Aggregate(_) => return None,
+        };
+        if !seen.insert(key) {
+            continue;
+        }
+        let rendered = emit_cfg_aggregate_value(value, &element, env, signatures)?;
+        let temp = format!("{borrowed}_value_{index}");
+        prelude.push_str(&format!("{element_c} {temp} = {rendered}; "));
+        items.push(temp);
+    }
+
+    let storage = format!("{borrowed}_storage");
+    prelude.push_str(&format!(
+        "{element_c} {storage}[{}] = {{ {} }}; struct flux__list {borrowed} = (struct flux__list){{ .data = (void *){storage}, .len = {}, .stride = sizeof({element_c}) }}; ",
+        items.len(),
+        items.join(", "),
+        items.len()
+    ));
+    Some((prelude, borrowed))
+}
+
 fn emit_cfg_call_scoped_borrowed_list_direct(
     argument: &CfgScalarExpr,
     element: &Type,
@@ -55002,6 +55069,7 @@ where
     let mut rendered = Vec::with_capacity(arguments.len());
     let mut scoped_map_count = 0usize;
     let mut scoped_list_count = 0usize;
+    let mut scoped_set_count = 0usize;
 
     for (index, (argument, expected)) in arguments.iter().zip(params).enumerate() {
         let expected = signatures.canonical_type(expected);
@@ -55037,6 +55105,21 @@ where
             scoped_list_count += 1;
             continue;
         }
+        if let Type::Set(element) = &expected
+            && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+            && let Some((set_prelude, borrowed)) = emit_cfg_call_scoped_borrowed_set_direct_indexed(
+                argument,
+                element,
+                env,
+                signatures,
+                (scoped_set_count != 0).then_some(scoped_set_count),
+            )
+        {
+            prelude.push_str(&set_prelude);
+            rendered.push(borrowed);
+            scoped_set_count += 1;
+            continue;
+        }
 
         let value = emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
         if matches!(
@@ -55054,7 +55137,7 @@ where
         }
     }
 
-    (scoped_map_count != 0 || scoped_list_count != 0)
+    (scoped_map_count != 0 || scoped_list_count != 0 || scoped_set_count != 0)
         .then(|| format!("__extension__ ({{ {prelude}{}; }})", render_call(&rendered)))
 }
 
@@ -55073,6 +55156,7 @@ where
     let mut ordered = Vec::with_capacity(signature.param_details.len());
     let mut scoped_map_count = 0usize;
     let mut scoped_list_count = 0usize;
+    let mut scoped_set_count = 0usize;
 
     for parameter in &signature.param_details {
         if !parameter.named_only && positional_index < arguments.len() {
@@ -55115,6 +55199,24 @@ where
                     continue;
                 }
             }
+            if let Type::Set(element) = &expected
+                && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+            {
+                let scoped = emit_cfg_call_scoped_borrowed_set_direct_indexed(
+                    argument,
+                    element,
+                    env,
+                    signatures,
+                    (scoped_set_count != 0).then_some(scoped_set_count),
+                );
+                if let Some((set_prelude, borrowed)) = scoped {
+                    prelude.push_str(&set_prelude);
+                    ordered.push(borrowed);
+                    scoped_set_count += 1;
+                    positional_index += 1;
+                    continue;
+                }
+            }
 
             let value =
                 emit_cfg_ordinary_call_argument_direct(argument, &expected, env, signatures)?;
@@ -55145,7 +55247,9 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if positional_index != arguments.len() || (scoped_map_count == 0 && scoped_list_count == 0) {
+    if positional_index != arguments.len()
+        || (scoped_map_count == 0 && scoped_list_count == 0 && scoped_set_count == 0)
+    {
         return None;
     }
 
@@ -55259,6 +55363,7 @@ where
     let mut prelude = String::new();
     let mut scoped_map_count = 0usize;
     let mut scoped_list_count = 0usize;
+    let mut scoped_set_count = 0usize;
 
     for (source_index, (name, argument)) in arguments.iter().enumerate() {
         let parameter = if let Some(name) = name {
@@ -55304,6 +55409,23 @@ where
                 prelude.push_str(&list_prelude);
                 source_rendered.push(borrowed);
                 scoped_list_count += 1;
+                continue;
+            }
+        }
+        if let Type::Set(element) = &expected
+            && matches!(argument.kind, CfgScalarExprKind::Aggregate(_))
+        {
+            let scoped = emit_cfg_call_scoped_borrowed_set_direct_indexed(
+                argument,
+                element,
+                env,
+                signatures,
+                (scoped_set_count != 0).then_some(scoped_set_count),
+            );
+            if let Some((set_prelude, borrowed)) = scoped {
+                prelude.push_str(&set_prelude);
+                source_rendered.push(borrowed);
+                scoped_set_count += 1;
                 continue;
             }
         }
@@ -55357,7 +55479,7 @@ where
         ordered.push(constant_c_value(default));
     }
 
-    if scoped_map_count == 0 && scoped_list_count == 0 {
+    if scoped_map_count == 0 && scoped_list_count == 0 && scoped_set_count == 0 {
         return None;
     }
 
@@ -70035,6 +70157,250 @@ fn main() -> i64 {
             &apply_facts,
         )
         .expect("function-value temporary-list call should bypass checked AST");
+        assert_eq!(apply_emitted, apply_direct);
+    }
+
+    #[test]
+    fn synchronous_user_calls_with_temporary_sets_emit_from_typed_ir() {
+        let source = r#"
+fn observeBefore(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn observeAfter(value: i64) -> i64 {
+    print(value)
+    return value
+}
+
+fn consumeSets(before: i64, first: set<i64>, second: set<i64>, after: i64) -> i64 {
+    return before + first.count + second.count + after
+}
+
+fn consumeNamed(seed: i64, *, values: set<i64>, after: i64) -> i64 {
+    return seed + values.count + after
+}
+
+fn applySet(values: set<i64>, after: i64) -> i64 {
+    return values.count + after
+}
+
+fn positional(before: i64, after: i64) -> i64 {
+    return consumeSets(observeBefore(before), {1, 1, 2}, {3, 3}, observeAfter(after))
+}
+
+fn named(after: i64) -> i64 {
+    return consumeNamed(0, after: observeAfter(after), values: {4, 4, 5})
+}
+
+fn apply(transform: fn(set<i64>, i64) -> i64, after: i64) -> i64 {
+    return transform({6, 6, 7}, observeAfter(after))
+}
+
+fn main() -> i64 {
+    return 0
+}
+"#;
+        let database = crate::semantic::SemanticDatabase::analyze(source, SourceId::new(4267))
+            .expect("temporary-set user-call fixture should typecheck");
+
+        let positional_graph = database
+            .control_flow_graph("positional")
+            .expect("positional temporary-set CFG should exist");
+        let positional_facts = cfg_rewrite_facts(positional_graph);
+        let positional_call = positional_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    positional_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "consumeSets"
+                        && arguments
+                            .iter()
+                            .filter(|argument| matches!(argument.kind, CfgScalarExprKind::Aggregate(_)))
+                            .count() == 2
+                )
+            })
+            .expect("positional user call should preserve both temporary sets");
+        let positional_scalar = positional_facts
+            .scalar_exprs
+            .get(&source_span_key(positional_call.span))
+            .expect("positional temporary-set call should have scalar facts");
+        let positional_env = HashMap::from([
+            ("before".to_string(), Type::I64),
+            ("after".to_string(), Type::I64),
+        ]);
+        let positional_direct =
+            emit_cfg_scalar_expr_direct(positional_scalar, &positional_env, database.signatures())
+                .expect("positional temporary-set call should emit directly");
+        let before = positional_direct
+            .find(&function_c_name("observeBefore"))
+            .expect("before effect should be emitted");
+        let first_set = positional_direct
+            .find("flux__typed_borrowed_set_storage")
+            .expect("first set should receive call-scoped storage");
+        let second_set = positional_direct
+            .find("flux__typed_borrowed_set_1_storage")
+            .expect("second set should receive distinct call-scoped storage");
+        let after = positional_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("after effect should be emitted");
+        let consume = positional_direct
+            .rfind(&function_c_name("consumeSets"))
+            .expect("positional callee should be emitted last");
+        assert!(
+            before < first_set && first_set < second_set && second_set < after && after < consume,
+            "{positional_direct}"
+        );
+        assert!(
+            positional_direct.contains("flux__typed_borrowed_set_value_0")
+                && positional_direct.contains("flux__typed_borrowed_set_value_2")
+                && !positional_direct.contains("flux__typed_borrowed_set_value_1 ="),
+            "{positional_direct}"
+        );
+        let positional_fake = Expr {
+            line: positional_call.span.line,
+            span: positional_call.span,
+            kind: ExprKind::Str("checked-ast-positional-set-call".to_string()),
+        };
+        let positional_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &positional_fake,
+            &Type::I64,
+            &positional_env,
+            database.signatures(),
+            &HashMap::new(),
+            &positional_facts,
+        )
+        .expect("positional temporary-set call should bypass checked AST");
+        assert_eq!(positional_emitted, positional_direct);
+
+        let named_graph = database
+            .control_flow_graph("named")
+            .expect("named temporary-set CFG should exist");
+        let named_facts = cfg_rewrite_facts(named_graph);
+        let named_call = named_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    named_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::NamedCall { callee, .. },
+                        ..
+                    }) if callee == "consumeNamed"
+                )
+            })
+            .expect("named temporary-set call should remain in typed IR");
+        let named_scalar = named_facts
+            .scalar_exprs
+            .get(&source_span_key(named_call.span))
+            .expect("named temporary-set call should have scalar facts");
+        let named_env = HashMap::from([("after".to_string(), Type::I64)]);
+        let named_direct =
+            emit_cfg_scalar_expr_direct(named_scalar, &named_env, database.signatures())
+                .expect("named temporary-set call should emit directly");
+        let named_after = named_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("named computed peer should be emitted");
+        let named_set = named_direct
+            .find("flux__typed_borrowed_set_storage")
+            .expect("named set should receive call-scoped storage");
+        let named_consume = named_direct
+            .rfind(&function_c_name("consumeNamed"))
+            .expect("named callee should be emitted last");
+        assert!(
+            named_after < named_set && named_set < named_consume,
+            "{named_direct}"
+        );
+        let named_call_tail = &named_direct[named_consume..];
+        let declared_set = named_call_tail
+            .find("flux__typed_borrowed_set")
+            .expect("set should be restored to declaration order");
+        let declared_after = named_call_tail
+            .find("flux__typed_map_peer_arg_1")
+            .expect("after peer should be restored to declaration order");
+        assert!(declared_set < declared_after, "{named_direct}");
+        let named_fake = Expr {
+            line: named_call.span.line,
+            span: named_call.span,
+            kind: ExprKind::Str("checked-ast-named-set-call".to_string()),
+        };
+        let named_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &named_fake,
+            &Type::I64,
+            &named_env,
+            database.signatures(),
+            &HashMap::new(),
+            &named_facts,
+        )
+        .expect("named temporary-set call should bypass checked AST");
+        assert_eq!(named_emitted, named_direct);
+
+        let apply_graph = database
+            .control_flow_graph("apply")
+            .expect("function-value temporary-set CFG should exist");
+        let apply_facts = cfg_rewrite_facts(apply_graph);
+        let apply_call = apply_graph
+            .values()
+            .iter()
+            .find(|value| {
+                matches!(
+                    apply_facts.scalar_exprs.get(&source_span_key(value.span)),
+                    Some(CfgScalarExpr {
+                        kind: CfgScalarExprKind::Call { callee, arguments },
+                        ..
+                    }) if callee == "transform"
+                        && matches!(arguments.first().map(|argument| &argument.kind), Some(CfgScalarExprKind::Aggregate(_)))
+                )
+            })
+            .expect("function-value temporary-set call should remain in typed IR");
+        let apply_scalar = apply_facts
+            .scalar_exprs
+            .get(&source_span_key(apply_call.span))
+            .expect("function-value temporary-set call should have scalar facts");
+        let transform_ty = database
+            .signatures()
+            .get("apply")
+            .and_then(|signature| signature.param_details.first())
+            .map(|parameter| parameter.ty.clone())
+            .expect("apply should expose its function-value parameter type");
+        let apply_env = HashMap::from([
+            ("transform".to_string(), transform_ty),
+            ("after".to_string(), Type::I64),
+        ]);
+        let apply_direct =
+            emit_cfg_scalar_expr_direct(apply_scalar, &apply_env, database.signatures())
+                .expect("function-value temporary-set call should emit directly");
+        let function_set = apply_direct
+            .find("flux__typed_borrowed_set_storage")
+            .expect("function-value set should receive call-scoped storage");
+        let function_after = apply_direct
+            .find(&function_c_name("observeAfter"))
+            .expect("function-value computed peer should be emitted");
+        let function_call = apply_direct
+            .rfind(&local_c_name("transform"))
+            .expect("function-value call should be emitted last");
+        assert!(
+            function_set < function_after && function_after < function_call,
+            "{apply_direct}"
+        );
+        let apply_fake = Expr {
+            line: apply_call.span.line,
+            span: apply_call.span,
+            kind: ExprKind::Str("checked-ast-function-set-call".to_string()),
+        };
+        let apply_emitted = emit_expr_for_expected_with_cfg_proofs(
+            &apply_fake,
+            &Type::I64,
+            &apply_env,
+            database.signatures(),
+            &HashMap::new(),
+            &apply_facts,
+        )
+        .expect("function-value temporary-set call should bypass checked AST");
         assert_eq!(apply_emitted, apply_direct);
     }
 
