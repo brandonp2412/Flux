@@ -14594,13 +14594,7 @@ fn emit_windows_native_application(
             && let Some(value) = static_expr_str(&property.value, signatures)
         {
             match value.as_str() {
-                "none" | "solid" => {}
-                "dashed" | "dotted" | "double" => {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Windows borderStyle currently supports only 'none' and 'solid'",
-                    ));
-                }
+                "none" | "solid" | "dashed" | "dotted" | "double" => {}
                 _ => {
                     return Err(diag(
                         property.value.span,
@@ -15250,10 +15244,17 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
             let border_width = view_property(element, "border_width")
                 .and_then(|property| static_expr_i64(&property.value, signatures))
                 .unwrap_or(0);
-            let border_solid = view_property(element, "border_style")
+            let border_style = view_property(element, "border_style")
                 .and_then(|property| static_expr_str(&property.value, signatures))
-                .map(|value| value == "solid")
-                .unwrap_or(true);
+                .map(|value| match value.as_str() {
+                    "none" => 0,
+                    "solid" => 1,
+                    "dashed" => 2,
+                    "dotted" => 3,
+                    "double" => 4,
+                    _ => unreachable!("Windows border style is validated before emission"),
+                })
+                .unwrap_or(1);
             let mut edge_colors = Vec::new();
             for property_name in [
                 "border_top_color",
@@ -15291,7 +15292,7 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
                 );
             }
             out.push_str(&format!(
-                "static COLORREF flux__win_border_color_{0} = {border_color};\nstatic int64_t flux__win_border_width_{0} = INT64_C({border_width});\nstatic COLORREF flux__win_border_top_color_{0} = {1};\nstatic COLORREF flux__win_border_end_color_{0} = {2};\nstatic COLORREF flux__win_border_bottom_color_{0} = {3};\nstatic COLORREF flux__win_border_start_color_{0} = {4};\nstatic int64_t flux__win_border_top_width_{0} = INT64_C({5});\nstatic int64_t flux__win_border_end_width_{0} = INT64_C({6});\nstatic int64_t flux__win_border_bottom_width_{0} = INT64_C({7});\nstatic int64_t flux__win_border_start_width_{0} = INT64_C({8});\nstatic bool flux__win_border_solid_{0} = {border_solid};\n",
+                "static COLORREF flux__win_border_color_{0} = {border_color};\nstatic int64_t flux__win_border_width_{0} = INT64_C({border_width});\nstatic COLORREF flux__win_border_top_color_{0} = {1};\nstatic COLORREF flux__win_border_end_color_{0} = {2};\nstatic COLORREF flux__win_border_bottom_color_{0} = {3};\nstatic COLORREF flux__win_border_start_color_{0} = {4};\nstatic int64_t flux__win_border_top_width_{0} = INT64_C({5});\nstatic int64_t flux__win_border_end_width_{0} = INT64_C({6});\nstatic int64_t flux__win_border_bottom_width_{0} = INT64_C({7});\nstatic int64_t flux__win_border_start_width_{0} = INT64_C({8});\nstatic int flux__win_border_style_{0} = {border_style};\n",
                 element.name,
                 edge_colors[0],
                 edge_colors[1],
@@ -15596,12 +15597,67 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
     component[0] = value[5]; component[1] = value[6]; BYTE blue = (BYTE)strtoul(component, NULL, 16);
     *result = RGB(red, green, blue); return true;
 }
+enum {
+    FLUX__WIN_BORDER_STYLE_NONE = 0,
+    FLUX__WIN_BORDER_STYLE_SOLID = 1,
+    FLUX__WIN_BORDER_STYLE_DASHED = 2,
+    FLUX__WIN_BORDER_STYLE_DOTTED = 3,
+    FLUX__WIN_BORDER_STYLE_DOUBLE = 4,
+};
 static void flux__win_fill_border_edge(HDC dc, COLORREF color, int left, int top, int right, int bottom) {
     if (dc == NULL || right <= left || bottom <= top) return;
     HBRUSH brush = CreateSolidBrush(color);
     if (brush == NULL) return;
     RECT edge = {left, top, right, bottom};
     FillRect(dc, &edge, brush);
+    DeleteObject(brush);
+}
+static void flux__win_draw_border_edge(
+    HDC dc, COLORREF color, int left, int top, int right, int bottom, bool horizontal, int style
+) {
+    if (dc == NULL || style == FLUX__WIN_BORDER_STYLE_NONE || right <= left || bottom <= top) return;
+    if (style == FLUX__WIN_BORDER_STYLE_SOLID) {
+        flux__win_fill_border_edge(dc, color, left, top, right, bottom);
+        return;
+    }
+    int thickness = horizontal ? bottom - top : right - left;
+    if (style == FLUX__WIN_BORDER_STYLE_DOUBLE) {
+        if (thickness < 3) {
+            flux__win_fill_border_edge(dc, color, left, top, right, bottom);
+            return;
+        }
+        int band = thickness / 3;
+        if (band < 1) band = 1;
+        if (horizontal) {
+            flux__win_fill_border_edge(dc, color, left, top, right, top + band);
+            flux__win_fill_border_edge(dc, color, left, bottom - band, right, bottom);
+        } else {
+            flux__win_fill_border_edge(dc, color, left, top, left + band, bottom);
+            flux__win_fill_border_edge(dc, color, right - band, top, right, bottom);
+        }
+        return;
+    }
+    int64_t segment = style == FLUX__WIN_BORDER_STYLE_DOTTED
+        ? (int64_t)thickness
+        : (int64_t)thickness * INT64_C(3);
+    int64_t gap = style == FLUX__WIN_BORDER_STYLE_DOTTED
+        ? (int64_t)thickness
+        : (int64_t)thickness * INT64_C(2);
+    if (segment < 1) segment = 1;
+    if (gap < 1) gap = 1;
+    HBRUSH brush = CreateSolidBrush(color);
+    if (brush == NULL) return;
+    int64_t cursor = horizontal ? left : top;
+    int64_t limit = horizontal ? right : bottom;
+    while (cursor < limit) {
+        int64_t edge_end = cursor + segment;
+        if (edge_end > limit) edge_end = limit;
+        RECT edge = horizontal
+            ? (RECT){(LONG)cursor, top, (LONG)edge_end, bottom}
+            : (RECT){left, (LONG)cursor, right, (LONG)edge_end};
+        FillRect(dc, &edge, brush);
+        cursor = edge_end + gap;
+    }
     DeleteObject(brush);
 }
 static int flux__win_border_physical_width(int64_t logical_width, int limit) {
@@ -15616,9 +15672,9 @@ static void flux__win_draw_border(
     COLORREF top_color, COLORREF end_color, COLORREF bottom_color, COLORREF start_color,
     int64_t top_width_logical, int64_t end_width_logical,
     int64_t bottom_width_logical, int64_t start_width_logical,
-    bool solid
+    int style
 ) {
-    if (control == NULL || !solid) return;
+    if (control == NULL || style == FLUX__WIN_BORDER_STYLE_NONE) return;
     RECT rect = {0}; if (!GetClientRect(control, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) return;
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
@@ -15632,7 +15688,8 @@ static void flux__win_draw_border(
     if (region == NULL) { ReleaseDC(control, dc); return; }
     int region_type = GetWindowRgn(control, region);
     if (region_type == ERROR || region_type == NULLREGION) SetRectRgn(region, 0, 0, rect.right, rect.bottom);
-    if (top_color == end_color && top_color == bottom_color && top_color == start_color
+    if (style == FLUX__WIN_BORDER_STYLE_SOLID
+        && top_color == end_color && top_color == bottom_color && top_color == start_color
         && top_width == end_width && top_width == bottom_width && top_width == start_width) {
         HBRUSH brush = CreateSolidBrush(top_color);
         if (brush != NULL) { FrameRgn(dc, region, brush, top_width, top_width); DeleteObject(brush); }
@@ -15644,13 +15701,13 @@ static void flux__win_draw_border(
     COLORREF right_color = rtl ? start_color : end_color;
     int left_width = rtl ? end_width : start_width;
     int right_width = rtl ? start_width : end_width;
-    flux__win_fill_border_edge(dc, top_color, 0, 0, width, top_width);
-    flux__win_fill_border_edge(dc, bottom_color, 0, height - bottom_width, width, height);
+    flux__win_draw_border_edge(dc, top_color, 0, 0, width, top_width, true, style);
+    flux__win_draw_border_edge(dc, bottom_color, 0, height - bottom_width, width, height, true, style);
     int middle_top = top_width;
     int middle_bottom = height - bottom_width;
     if (middle_bottom < middle_top) middle_bottom = middle_top;
-    flux__win_fill_border_edge(dc, left_color, 0, middle_top, left_width, middle_bottom);
-    flux__win_fill_border_edge(dc, right_color, width - right_width, middle_top, width, middle_bottom);
+    flux__win_draw_border_edge(dc, left_color, 0, middle_top, left_width, middle_bottom, false, style);
+    flux__win_draw_border_edge(dc, right_color, width - right_width, middle_top, width, middle_bottom, false, style);
     SelectClipRgn(dc, NULL);
     DeleteObject(region); ReleaseDC(control, dc);
 }
@@ -15664,14 +15721,16 @@ static void flux__win_set_border_width(HWND control, int64_t *current, int64_t v
     if (value < 0 || value > INT32_MAX) { fputs("Flux runtime error: borderWidth must be non-negative and fit within a 32-bit signed integer\n", stderr); abort(); }
     if (*current != value) { *current = value; InvalidateRect(control, NULL, TRUE); }
 }
-static void flux__win_set_border_style(HWND control, bool *solid, const char *value) {
-    if (control == NULL || solid == NULL || value == NULL) return;
-    bool next = false;
-    if (strcmp(value, "solid") == 0) next = true;
-    else if (strcmp(value, "none") == 0) next = false;
-    else if (strcmp(value, "dashed") == 0 || strcmp(value, "dotted") == 0 || strcmp(value, "double") == 0) { fputs("Flux runtime error: Windows borderStyle currently supports only 'none' and 'solid'\n", stderr); abort(); }
+static void flux__win_set_border_style(HWND control, int *current, const char *value) {
+    if (control == NULL || current == NULL || value == NULL) return;
+    int next = FLUX__WIN_BORDER_STYLE_NONE;
+    if (strcmp(value, "none") == 0) next = FLUX__WIN_BORDER_STYLE_NONE;
+    else if (strcmp(value, "solid") == 0) next = FLUX__WIN_BORDER_STYLE_SOLID;
+    else if (strcmp(value, "dashed") == 0) next = FLUX__WIN_BORDER_STYLE_DASHED;
+    else if (strcmp(value, "dotted") == 0) next = FLUX__WIN_BORDER_STYLE_DOTTED;
+    else if (strcmp(value, "double") == 0) next = FLUX__WIN_BORDER_STYLE_DOUBLE;
     else { fputs("Flux runtime error: borderStyle must be one of 'none', 'solid', 'dashed', 'dotted', or 'double'\n", stderr); abort(); }
-    if (*solid != next) { *solid = next; InvalidateRect(control, NULL, TRUE); }
+    if (*current != next) { *current = next; InvalidateRect(control, NULL, TRUE); }
 }
 "#);
     }
@@ -15818,7 +15877,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
                 continue;
             }
             out.push_str(&format!(
-                "static WNDPROC flux__win_border_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_border_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcW(flux__win_border_orig_{index}, hwnd, message, wparam, lparam); if (message == WM_PAINT) flux__win_draw_border(hwnd, flux__win_border_top_color_{0}, flux__win_border_end_color_{0}, flux__win_border_bottom_color_{0}, flux__win_border_start_color_{0}, flux__win_border_top_width_{0}, flux__win_border_end_width_{0}, flux__win_border_bottom_width_{0}, flux__win_border_start_width_{0}, flux__win_border_solid_{0}); return result; }}\n",
+                "static WNDPROC flux__win_border_orig_{index} = NULL;\nstatic LRESULT CALLBACK flux__win_border_proc_{index}(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {{ LRESULT result = CallWindowProcW(flux__win_border_orig_{index}, hwnd, message, wparam, lparam); if (message == WM_PAINT) flux__win_draw_border(hwnd, flux__win_border_top_color_{0}, flux__win_border_end_color_{0}, flux__win_border_bottom_color_{0}, flux__win_border_start_color_{0}, flux__win_border_top_width_{0}, flux__win_border_end_width_{0}, flux__win_border_bottom_width_{0}, flux__win_border_start_width_{0}, flux__win_border_style_{0}); return result; }}\n",
                 element.name
             ));
         }
@@ -16653,7 +16712,7 @@ static void flux__win_set_radius(HWND control, int width, int height, int64_t ra
         {
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
-                "flux__win_set_border_style({variable}, &flux__win_border_solid_{}, {value});\n",
+                "flux__win_set_border_style({variable}, &flux__win_border_style_{}, {value});\n",
                 element.name
             ));
         }

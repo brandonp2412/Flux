@@ -2160,7 +2160,10 @@ app Screen
     assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_end_width_label, flux__ui_state_strokeWidth);"));
     assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_bottom_width_label, flux__ui_state_strokeWidth);"));
     assert!(windows.contains("flux__win_set_border_width(flux__ui_label, &flux__win_border_start_width_label, flux__ui_state_strokeWidth);"));
-    assert!(windows.contains("flux__win_set_border_style(flux__ui_label, &flux__win_border_solid_label, flux__ui_state_strokeStyle);"));
+    assert!(windows.contains("flux__win_set_border_style(flux__ui_label, &flux__win_border_style_label, flux__ui_state_strokeStyle);"));
+    assert!(windows.contains("FLUX__WIN_BORDER_STYLE_DASHED = 2"));
+    assert!(windows.contains("FLUX__WIN_BORDER_STYLE_DOTTED = 3"));
+    assert!(windows.contains("FLUX__WIN_BORDER_STYLE_DOUBLE = 4"));
     assert!(windows.contains(
         "SetWindowLongPtrW(flux__ui_label, GWLP_WNDPROC, (LONG_PTR)flux__win_border_proc_0)"
     ));
@@ -2248,7 +2251,7 @@ app Screen
     assert!(windows.contains("COLORREF left_color = rtl ? end_color : start_color;"));
     assert!(windows.contains("COLORREF right_color = rtl ? start_color : end_color;"));
     assert!(windows.contains(
-        "flux__win_draw_border(hwnd, flux__win_border_top_color_label, flux__win_border_end_color_label, flux__win_border_bottom_color_label, flux__win_border_start_color_label, flux__win_border_top_width_label, flux__win_border_end_width_label, flux__win_border_bottom_width_label, flux__win_border_start_width_label, flux__win_border_solid_label)"
+        "flux__win_draw_border(hwnd, flux__win_border_top_color_label, flux__win_border_end_color_label, flux__win_border_bottom_color_label, flux__win_border_start_color_label, flux__win_border_top_width_label, flux__win_border_end_width_label, flux__win_border_bottom_width_label, flux__win_border_start_width_label, flux__win_border_style_label)"
     ));
 
     let invalid_edge_width = r#"
@@ -2303,32 +2306,28 @@ app Screen
         "borderTopColor must use '#RRGGBB', '#RRGGBBAA', or a semantic Flux color token"
     ));
 
-    let dashed = r#"
-view Screen {
-    grid columns: 1fr
-    grid rows: auto
-    Text label at 1,1
-        text: "Dashed"
-        borderWidth: 2
-        borderStyle: "dashed"
-}
-app Screen
-"#;
-    let program = fluxc::parser::parse(dashed).expect("dashed border source should parse");
-    let signatures =
-        fluxc::typecheck::check(&program).expect("dashed border source should typecheck");
-    let error = fluxc::codegen::emit_c_for_target_with_source_paths(
-        &program,
-        &signatures,
-        &std::collections::HashMap::new(),
-        fluxc::codegen::NativeTarget::Windows,
-    )
-    .expect_err("unsupported Windows border style must fail explicitly");
-    assert!(
-        error
-            .message
-            .contains("borderStyle currently supports only 'none' and 'solid'")
-    );
+    for (style, expected) in [("dashed", 2), ("dotted", 3), ("double", 4)] {
+        let styled = format!(
+            "view Screen {{\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"Styled\"\n        borderWidth: 3\n        borderStyle: \"{style}\"\n}}\napp Screen\n"
+        );
+        let program = fluxc::parser::parse(&styled)
+            .expect("extended Windows border style source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("extended Windows border style source should typecheck");
+        let windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect("extended Windows border styles should lower natively");
+        assert!(windows.contains(&format!(
+            "static int flux__win_border_style_label = {expected};"
+        )));
+        assert!(windows.contains("flux__win_draw_border_edge("));
+        assert!(windows.contains("style == FLUX__WIN_BORDER_STYLE_DOUBLE"));
+        assert!(windows.contains("style == FLUX__WIN_BORDER_STYLE_DOTTED"));
+    }
 }
 
 #[test]
