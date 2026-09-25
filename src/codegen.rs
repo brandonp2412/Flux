@@ -14398,59 +14398,75 @@ fn emit_windows_native_application(
             }
             None => true,
         };
-        if let Some(property) = view_property(element, "wrap_mode") {
-            let Some(wrap_mode) = static_expr_str(&property.value, signatures) else {
+        let wrap_mode_uses_custom_painter = if let Some(property) =
+            view_property(element, "wrap_mode")
+        {
+            if let Some(wrap_mode) = static_expr_str(&property.value, signatures) {
+                match wrap_mode.as_str() {
+                    "word" => false,
+                    "char" | "wordChar" | "word_char" if !selectable => true,
+                    "char" | "wordChar" | "word_char" => {
+                        return Err(diag(
+                            property.value.span,
+                            "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
+                        ));
+                    }
+                    _ => {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
+                        ));
+                    }
+                }
+            } else if selectable {
                 return Err(diag(
                     property.value.span,
-                    "bootstrap Windows Text.wrapMode must be a compile-time string value",
+                    "bootstrap Windows selectable Text does not yet support state-driven wrapMode",
                 ));
-            };
-            match wrap_mode.as_str() {
-                "word" => {}
-                "char" | "wordChar" | "word_char" if !selectable => {}
-                "char" | "wordChar" | "word_char" => {
-                    return Err(diag(
-                        property.value.span,
-                        "bootstrap Windows selectable Text currently supports only wrapMode: 'word'",
-                    ));
-                }
-                _ => {
-                    return Err(diag(
-                        property.value.span,
-                        "Text.wrapMode must be one of 'word', 'char', or 'wordChar'",
-                    ));
-                }
+            } else {
+                true
             }
-        }
+        } else {
+            false
+        };
+        let mut ellipsize_is_dynamic = false;
         let ellipsize = if let Some(property) = view_property(element, "ellipsize") {
-            let Some(ellipsize) = static_expr_str(&property.value, signatures) else {
+            if let Some(ellipsize) = static_expr_str(&property.value, signatures) {
+                match ellipsize.as_str() {
+                    "none" => {}
+                    "start" | "middle" | "end" if !selectable => {}
+                    "start" | "middle" | "end" => {
+                        return Err(diag(
+                            property.value.span,
+                            &format!(
+                                "bootstrap Windows selectable Text does not yet support ellipsize: '{ellipsize}'"
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(diag(
+                            property.value.span,
+                            "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
+                        ));
+                    }
+                }
+                Some(ellipsize)
+            } else if selectable {
                 return Err(diag(
                     property.value.span,
-                    "bootstrap Windows Text.ellipsize must be a compile-time string value",
+                    "bootstrap Windows selectable Text does not yet support state-driven ellipsize",
                 ));
-            };
-            match ellipsize.as_str() {
-                "none" => {}
-                "start" | "middle" | "end" if !selectable => {}
-                "start" | "middle" | "end" => {
-                    return Err(diag(
-                        property.value.span,
-                        &format!(
-                            "bootstrap Windows selectable Text does not yet support ellipsize: '{ellipsize}'"
-                        ),
-                    ));
-                }
-                _ => {
-                    return Err(diag(
-                        property.value.span,
-                        "Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'",
-                    ));
-                }
+            } else {
+                ellipsize_is_dynamic = true;
+                None
             }
-            Some(ellipsize)
         } else {
             None
         };
+        let text_uses_custom_painter = uses_custom_text_layout
+            || wrap_mode_uses_custom_painter
+            || ellipsize_is_dynamic
+            || matches!(ellipsize.as_deref(), Some("start" | "middle"));
         if !wrap {
             let wrap_span = view_property(element, "wrap")
                 .expect("wrap exists when explicitly disabled")
@@ -14466,7 +14482,8 @@ fn emit_windows_native_application(
                         "bootstrap Windows selectable Text.wrap: false currently supports only left/fill alignment",
                     ));
                 }
-            } else if matches!(ellipsize.as_deref(), None | Some("none"))
+            } else if !text_uses_custom_painter
+                && matches!(ellipsize.as_deref(), None | Some("none"))
                 && let Some(alignment) = view_property(element, "text_align")
             {
                 let Some(alignment_value) = static_expr_str(&alignment.value, signatures) else {
@@ -14635,12 +14652,13 @@ fn emit_windows_native_application(
         element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
-                || view_property(element, "wrap_mode")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word")
-                || view_property(element, "ellipsize")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
+                || view_property(element, "wrap_mode").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
+                })
+                || view_property(element, "ellipsize").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures)
+                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
+                }))
     });
     let uses_dynamic_text_layout = view.elements.iter().any(|element| {
         element.kind == "Text"
@@ -15345,12 +15363,13 @@ static LRESULT CALLBACK flux__win_text_layout_proc(
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
-                || view_property(element, "wrap_mode")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word")
-                || view_property(element, "ellipsize")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
+                || view_property(element, "wrap_mode").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
+                })
+                || view_property(element, "ellipsize").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures)
+                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
+                }))
         {
             let initial_letter_spacing = view_property(element, "letter_spacing")
                 .and_then(|property| static_expr_i64(&property.value, signatures))
@@ -16875,10 +16894,17 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         out.push_str("flux__win_apply_fonts();\n");
     }
     for element in &view.elements {
-        if element.kind != "Text"
-            || (view_property(element, "letter_spacing").is_none()
-                && view_property(element, "line_height_percent").is_none())
-        {
+        let uses_text_layout_state = element.kind == "Text"
+            && (view_property(element, "letter_spacing").is_some()
+                || view_property(element, "line_height_percent").is_some()
+                || view_property(element, "wrap_mode").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
+                })
+                || view_property(element, "ellipsize").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures)
+                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
+                }));
+        if !uses_text_layout_state {
             continue;
         }
         let variable = ui_widget_c_name(&element.name);
@@ -16897,6 +16923,24 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
             let value = ui_expr_c(&property.value, view, signatures)?;
             out.push_str(&format!(
                 "int64_t flux__win_next_line_height_{0} = {value}; if (flux__win_next_line_height_{0} <= 0 || flux__win_next_line_height_{0} > INT32_MAX) {{ fputs(\"Flux runtime error: Text.lineHeightPercent must be greater than zero and fit within a 32-bit signed integer\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.line_height_percent != flux__win_next_line_height_{0}) {{ flux__win_text_layout_{0}.line_height_percent = flux__win_next_line_height_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "wrap_mode")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "const char *flux__win_next_wrap_mode_text_{0} = {value}; int flux__win_next_wrap_mode_{0} = FLUX__WIN_WRAP_WORD; if (flux__win_next_wrap_mode_text_{0} == NULL) {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }} if (strcmp(flux__win_next_wrap_mode_text_{0}, \"word\") == 0) flux__win_next_wrap_mode_{0} = FLUX__WIN_WRAP_WORD; else if (strcmp(flux__win_next_wrap_mode_text_{0}, \"char\") == 0) flux__win_next_wrap_mode_{0} = FLUX__WIN_WRAP_CHAR; else if (strcmp(flux__win_next_wrap_mode_text_{0}, \"wordChar\") == 0 || strcmp(flux__win_next_wrap_mode_text_{0}, \"word_char\") == 0) flux__win_next_wrap_mode_{0} = FLUX__WIN_WRAP_WORD_CHAR; else {{ fputs(\"Flux runtime error: Text.wrapMode must be one of 'word', 'char', or 'wordChar'\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.wrap_mode != flux__win_next_wrap_mode_{0}) {{ flux__win_text_layout_{0}.wrap_mode = flux__win_next_wrap_mode_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
+                element.name
+            ));
+        }
+        if let Some(property) = view_property(element, "ellipsize")
+            && static_expr_str(&property.value, signatures).is_none()
+        {
+            let value = ui_expr_c(&property.value, view, signatures)?;
+            out.push_str(&format!(
+                "const char *flux__win_next_ellipsize_text_{0} = {value}; int flux__win_next_ellipsize_{0} = FLUX__WIN_ELLIPSIZE_NONE; if (flux__win_next_ellipsize_text_{0} == NULL) {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }} if (strcmp(flux__win_next_ellipsize_text_{0}, \"none\") == 0) flux__win_next_ellipsize_{0} = FLUX__WIN_ELLIPSIZE_NONE; else if (strcmp(flux__win_next_ellipsize_text_{0}, \"start\") == 0) flux__win_next_ellipsize_{0} = FLUX__WIN_ELLIPSIZE_START; else if (strcmp(flux__win_next_ellipsize_text_{0}, \"middle\") == 0) flux__win_next_ellipsize_{0} = FLUX__WIN_ELLIPSIZE_MIDDLE; else if (strcmp(flux__win_next_ellipsize_text_{0}, \"end\") == 0) flux__win_next_ellipsize_{0} = FLUX__WIN_ELLIPSIZE_END; else {{ fputs(\"Flux runtime error: Text.ellipsize must be one of 'none', 'start', 'middle', or 'end'\\n\", stderr); abort(); }} if (flux__win_text_layout_{0}.ellipsize_mode != flux__win_next_ellipsize_{0}) {{ flux__win_text_layout_{0}.ellipsize_mode = flux__win_next_ellipsize_{0}; if ({variable} != NULL) InvalidateRect({variable}, NULL, TRUE); }}\n",
                 element.name
             ));
         }
@@ -17791,12 +17835,13 @@ static LRESULT CALLBACK flux__win_selectable_tap_proc_{index}(HWND hwnd, UINT me
         if element.kind == "Text"
             && (view_property(element, "letter_spacing").is_some()
                 || view_property(element, "line_height_percent").is_some()
-                || view_property(element, "wrap_mode")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| value != "word")
-                || view_property(element, "ellipsize")
-                    .and_then(|property| static_expr_str(&property.value, signatures))
-                    .is_some_and(|value| matches!(value.as_str(), "start" | "middle")))
+                || view_property(element, "wrap_mode").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures).is_none_or(|value| value != "word")
+                })
+                || view_property(element, "ellipsize").is_some_and(|property| {
+                    static_expr_str(&property.value, signatures)
+                        .is_none_or(|value| matches!(value.as_str(), "start" | "middle"))
+                }))
         {
             out.push_str(&format!(
                 "if (!SetWindowSubclass({variable}, flux__win_text_layout_proc, (UINT_PTR){}, (DWORD_PTR)(uintptr_t)&flux__win_text_layout_{})) return 1;\n",

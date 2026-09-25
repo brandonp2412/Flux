@@ -2777,6 +2777,51 @@ app Screen
         assert!(windows.contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc"));
     }
 
+    let dynamic_overflow_source = r#"
+view Screen {
+    state wrapping: str = "wordChar"
+    state overflow: str = "middle"
+    grid columns: 1fr
+    grid rows: auto
+    Text label at 1,1
+        text: "Dynamic native overflow"
+        wrap: false
+        textAlign: "center"
+        wrapMode: wrapping
+        ellipsize: overflow
+}
+app Screen
+"#;
+    let dynamic_overflow_program = fluxc::parser::parse(dynamic_overflow_source)
+        .expect("dynamic Windows Text overflow source should parse");
+    let dynamic_overflow_signatures = fluxc::typecheck::check(&dynamic_overflow_program)
+        .expect("dynamic Windows Text overflow source should typecheck");
+    let dynamic_overflow_windows = fluxc::codegen::emit_c_for_target_with_source_paths(
+        &dynamic_overflow_program,
+        &dynamic_overflow_signatures,
+        &std::collections::HashMap::new(),
+        fluxc::codegen::NativeTarget::Windows,
+    )
+    .expect("dynamic Windows Text overflow should lower through the native text painter");
+    assert!(dynamic_overflow_windows.contains(
+        "static flux__win_text_layout_state flux__win_text_layout_label = { INT64_C(0), INT64_C(100), false, FLUX__WIN_WRAP_WORD, FLUX__WIN_ELLIPSIZE_NONE }"
+    ));
+    assert!(dynamic_overflow_windows.contains("flux__win_next_wrap_mode_text_label"));
+    assert!(dynamic_overflow_windows.contains("flux__win_next_ellipsize_text_label"));
+    assert!(
+        dynamic_overflow_windows
+            .contains("flux__win_text_layout_label.wrap_mode = flux__win_next_wrap_mode_label")
+    );
+    assert!(
+        dynamic_overflow_windows.contains(
+            "flux__win_text_layout_label.ellipsize_mode = flux__win_next_ellipsize_label"
+        )
+    );
+    assert!(
+        dynamic_overflow_windows
+            .contains("SetWindowSubclass(flux__ui_label, flux__win_text_layout_proc")
+    );
+
     let selectable_char_source = r#"
 view Screen {
     grid columns: 1fr
@@ -2832,6 +2877,39 @@ app Screen
             .message
             .contains("selectable Text does not yet support ellipsize: 'middle'")
     );
+
+    for (property, message) in [
+        (
+            "ellipsize: overflow",
+            "selectable Text does not yet support state-driven ellipsize",
+        ),
+        (
+            "wrapMode: overflow",
+            "selectable Text does not yet support state-driven wrapMode",
+        ),
+    ] {
+        let source = format!(
+            "view Screen {{\n    state overflow: str = \"middle\"\n    grid columns: 1fr\n    grid rows: auto\n    Text label at 1,1\n        text: \"Selectable\"\n        selectable: true\n        {property}\n}}\napp Screen\n"
+        );
+        let program = fluxc::parser::parse(&source)
+            .expect("selectable dynamic Windows overflow source should parse");
+        let signatures = fluxc::typecheck::check(&program)
+            .expect("selectable dynamic Windows overflow source should typecheck");
+        let error = fluxc::codegen::emit_c_for_target_with_source_paths(
+            &program,
+            &signatures,
+            &std::collections::HashMap::new(),
+            fluxc::codegen::NativeTarget::Windows,
+        )
+        .expect_err(
+            "selectable Windows Text must not replace native selection for dynamic overflow",
+        );
+        assert!(
+            error.message.contains(message),
+            "unexpected selectable dynamic overflow diagnostic for {property}: {}",
+            error.message
+        );
+    }
 
     for (property, message) in [
         (
@@ -3440,12 +3518,14 @@ view Screen {
     state extent: i64 = 80
     state count: i64 = 0
     state horizontal: str = "center"
+    state wrapping: str = "wordChar"
+    state overflow: str = "middle"
     grid columns: 1fr
     grid rows: auto auto auto auto
     Text title at 1,1
         text: "Cross target"
         status: "loading"
-        ellipsize: "middle"
+        ellipsize: overflow
         radius: 6
         radiusTopLeft: 3
         radiusBottomRight: 9
@@ -3454,7 +3534,7 @@ view Screen {
         borderStyle: "solid"
         tooltip: "Native tooltip"
         accessibilityRole: "heading"
-        wrapMode: "wordChar"
+        wrapMode: wrapping
         minWidth: extent
         maxWidth: 320
         marginStart: extent
